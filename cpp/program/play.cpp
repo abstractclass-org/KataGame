@@ -2042,7 +2042,7 @@ FinishedGameData* Play::runGame(
 
     vector<double> valueSurpriseByTurn;
     computeValueSurpriseByTurn(
-      valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, Board::GAME_LENGTH_AREA,  //Enclosure fork: by game length
+      valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.x_size * board.y_size,  //Enclosure fork: a look-ahead horizon, KataGo's (Board::TIME_SCALE)
       playSettings.useSearchValueSurprise
     );
 
@@ -2067,7 +2067,7 @@ FinishedGameData* Play::runGame(
       //the value surprise of every turn at or before them (of just those turns themselves, for search value
       //surprise), so recompute.
       computeValueSurpriseByTurn(
-        valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, Board::GAME_LENGTH_AREA,  //Enclosure fork: by game length
+        valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.x_size * board.y_size,  //Enclosure fork: a look-ahead horizon, KataGo's (Board::TIME_SCALE)
         playSettings.useSearchValueSurprise
       );
 

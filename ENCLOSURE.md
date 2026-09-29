@@ -537,8 +537,38 @@ far horizon has a quarter of the weight, since it is harder to predict.
   closes a region now. The 4-round horizon and D2 carry what the opponent
   does in return.
 
-**Time horizons: scaled by game length (owner, 2026-09-30).** KataGo
-measures time by the board area, its proxy for a Go game's length.
+**Time horizons: split by what they measure (owner, 2026-09-30).**
+
+KataGo sets its time constants from the board area. In Go, the area sets
+both the game's length and the reach of its tactics; Enclosure keeps the
+19×19 board but has a shorter game.
+
+The only source is KataGo's methods doc: the short-term targets average
+"roughly the next 6 turns, 16 turns, and 50 turns ... on a 19x19 board, and
+correspondingly shorter for smaller boards in proportion to the board area".
+It gives two purposes:
+- lower-variance value feedback (bias-variance);
+- predicting what a search concludes "a few turns later", which the
+  uncertainty weighting and the optimistic policy use.
+
+Both count decisions, not fractions of a game.
+
+- **Look-ahead horizons are KataGo's 19×19 formulas, unscaled, counted in
+  edges** (the decisions in our search tree). This covers the short-term
+  value and score targets (about 6, 20 and 64 edges, that is 3, 10 and 32
+  turns), the short-term error targets (about 6 edges), value-surprise
+  weighting, and the future-node design's horizons (8 and 32 edges).
+- **Game-phase constants scale by game length** (below): the earliest
+  resignation, early forks and opening moves.
+- **The variance-time multiplier** keeps outputs near unit scale. It is
+  scaled provisionally and will be set from the measured size of its target
+  once self-play data exists.
+
+An intermediate version scaled everything by game length (2, 7 and 23
+edges). The owner found 2 edges, about one turn, too short, which led to
+this split.
+
+Game-phase constants:
 - `Board::TIME_SCALE` (Python `model_pytorch.TIME_SCALE`) = 120 / 328 ≈
   0.366: Enclosure's 120 edges against the measured mean length of KataGo's
   own 19×19 self-play games without handicap or setup stones.
@@ -550,21 +580,17 @@ measures time by the board area, its proxy for a Go game's length.
   - An earlier guess of 250 moves was replaced by this measurement (owner:
     find the source of every number).
 - `Board::GAME_LENGTH_AREA` = 361 × 0.366 ≈ 132 stands in for the board
-  area wherever KataGo means time:
-  - the short-term value and score targets: λ = 1 − 1/(1 + A · {0.016,
-    0.056, 0.176}) gives about 2, 7 and 23 edges instead of Go's 6, 20 and
-    64 moves. The shortest one also sets the short-term error targets.
-    KataGo's code comment on those constants: they "used to be 'nicer'
-    numbers 0.18, 0.06, 0.02" until a fix to the functional form, with
-    values nudged to keep 9×9-19×19 unchanged;
-  - value-surprise weighting;
+  area in the game-phase constants:
   - the earliest self-play resignation (A / 5);
   - the early-fork move (`earlyForkGameExpectedMoveProp` × A);
   - the number of opening policy moves (`policyInitAreaProp` × A).
-- Move counts scale by 0.366: the variance-time output multiplier (40 →
-  14.6) and its Huber delta (50 → 18.3), with the loss weight ÷ 0.366².
-- The future-node design's horizons become about 3 and 12 edges (KataGo:
-  8 and 32 moves).
+- Provisionally, until its target is measured: the variance-time output
+  multiplier (40 → 14.6) and its Huber delta (50 → 18.3), with the loss
+  weight ÷ 0.366².
+- (The look-ahead formulas keep the board area. KataGo's code comment on
+  the short-term constants: they "used to be 'nicer' numbers 0.18, 0.06,
+  0.02" until a fix to the functional form, with values nudged to keep
+  9×9-19×19 unchanged.)
 - Owner: the specific numbers are what made sense in Go, not only their
   scale. They may deserve tuning for Enclosure later.
 
