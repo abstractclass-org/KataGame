@@ -415,11 +415,11 @@ retune"). The rule:
 | Score distribution range | ±(361 + 60) points | ±5,052 points | Paper A.5: "an upper bound for the plausible final score difference", the board area plus 60 for komi |
 | Score target cap | 421 | 5,052 | The same bound, so targets stay in range |
 | Q-value score storage in int16 | ×60 | ×5 | Keeps ±421 within 32,000 at 1/60-point precision; ×5 keeps ±5,052 within it |
-| Huber delta: score mean | 12 | 144 | Code comment: Huber is "meanlike locally and ... medianlike for very large possible losses". The delta is where typical errors stop counting quadratically. The paper's first version used 10. |
+| Huber delta: score mean | 12 | 144 | Code comment: Huber is "meanlike locally and ... medianlike for very large possible losses". The specific deltas: source not yet found (to trace in KataGo's commits and issues). The paper's first version used 10. |
 | Huber delta: lead / stdev / q-value score / short-term score | 8 / 10 / 12 / 12 | 96 / 120 / 144 / 144 | As above |
 | Huber delta: short-term score error | 100 (squared points) | 14,400 | As above, in squared points |
 | Irreducible error floor: short-term score | 1e-4 ("one hundredth of a point", squared) | 1.44e-2 | A regulariser: a hundredth of the unit |
-| Loss weights: score mean 0.0015, lead 0.006, stdev 0.001, short-term score 0.0004, q-value score 0.0008 | as listed | ÷144 | Chosen for Go's magnitudes (the paper's first version: 0.004 for the self-predictions). Dividing keeps each term's share of the total loss. |
+| Loss weights: score mean 0.0015, lead 0.006, stdev 0.001, short-term score 0.0004, q-value score 0.0008 | as listed | ÷144 | Source not yet found (to trace in KataGo's commits and issues). The paper's first version used 0.004 for the self-predictions. Dividing keeps each term's share of the total loss whatever the original reason. |
 | Loss weight: short-term score error | 0.00002 | ÷20,736 | A fourth-degree loss |
 | Score distribution pdf and cdf losses | 0.02 each | unchanged | Over bins, not points (paper: pdf and cdf 0.02) |
 
@@ -537,17 +537,36 @@ far horizon has a quarter of the weight, since it is harder to predict.
   closes a region now. The 4-round horizon and D2 carry what the opponent
   does in return.
 
-**Time horizons, an open question for the owner.** Besides future
-positions, KataGo sets horizons from Go:
-- the short-term value and score targets average the next 6, 20 and 64
-  moves (λ = 1 − 1/(1 + 361 · {0.016, 0.056, 0.176}), from the board area);
-- the short-term error targets use λ ≈ 5/6;
-- the variance-time multiplier is 40 (moves).
-
-Enclosure's board has 361 points, but a game has 120 edges against about
-250 moves in Go. Keeping the area-based formulas makes the long horizon
-half an Enclosure game; scaling by game length keeps KataGo's proportions.
-Not changed yet: the rows use KataGo's formulas as they stand.
+**Time horizons: scaled by game length (owner, 2026-09-30).** KataGo
+measures time by the board area, its proxy for a Go game's length.
+- `Board::TIME_SCALE` (Python `model_pytorch.TIME_SCALE`) = 120 / 328 ≈
+  0.366: Enclosure's 120 edges against the measured mean length of KataGo's
+  own 19×19 self-play games without handicap or setup stones.
+  - Source: katagoarchive.org kata1 training games. On 2020-12-08, 732
+    games: mean 328.7, median 329, 10th-90th percentile 294-363. On
+    2026-09-26, 51,094 games: mean 328.1, median 327, 292-366.
+  - KataGo plays games out rather than resigning, so they are longer than
+    human games.
+  - An earlier guess of 250 moves was replaced by this measurement (owner:
+    find the source of every number).
+- `Board::GAME_LENGTH_AREA` = 361 × 0.366 ≈ 132 stands in for the board
+  area wherever KataGo means time:
+  - the short-term value and score targets: λ = 1 − 1/(1 + A · {0.016,
+    0.056, 0.176}) gives about 2, 7 and 23 edges instead of Go's 6, 20 and
+    64 moves. The shortest one also sets the short-term error targets.
+    KataGo's code comment on those constants: they "used to be 'nicer'
+    numbers 0.18, 0.06, 0.02" until a fix to the functional form, with
+    values nudged to keep 9×9-19×19 unchanged;
+  - value-surprise weighting;
+  - the earliest self-play resignation (A / 5);
+  - the early-fork move (`earlyForkGameExpectedMoveProp` × A);
+  - the number of opening policy moves (`policyInitAreaProp` × A).
+- Move counts scale by 0.366: the variance-time output multiplier (40 →
+  14.6) and its Huber delta (50 → 18.3), with the loss weight ÷ 0.366².
+- The future-node design's horizons become about 3 and 12 edges (KataGo:
+  8 and 32 moves).
+- Owner: the specific numbers are what made sense in Go, not only their
+  scale. They may deserve tuning for Enclosure later.
 
 **Data:** all three come from the finished game. Self-play already keeps
 every position of the game, and at the end each row's targets are read

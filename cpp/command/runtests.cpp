@@ -799,13 +799,13 @@ int MainCmds::runenclosuretests(const vector<string>& args) {
 }
 
 int MainCmds::runenclosurerowtests(const vector<string>& args) {
-  if(args.size() != 2 && args.size() != 3) {
-    cerr << "usage: " << args[0] << " OUT_FILE [SEED]" << endl;
+  if(args.size() < 2 || args.size() > 4) {
+    cerr << "usage: " << args[0] << " OUT_FILE [SEED [NPZ_DIR]]" << endl;
     return 1;
   }
   Board::initHash();
   ScoreValue::initTables();
-  Tests::runEnclosureRowTests(args[1], args.size() == 3 ? args[2] : "enclosure rows");
+  Tests::runEnclosureRowTests(args[1], args.size() >= 3 ? args[2] : "enclosure rows", args.size() == 4 ? args[3] : "");
   ScoreValue::freeTables();
   return 0;
 }

@@ -59,6 +59,11 @@ SCORE_BIN_WIDTH = 12.0
 # loss's scaling, so that training weighs every score term as KataGo does on Go-sized scores.
 SCORE_SCALE = SCORE_BIN_WIDTH
 
+# Enclosure fork (owner): KataGo's move counts are Go's. An Enclosure game has 120 edges against 328 moves, the
+# measured mean of KataGo's own 19x19 self-play games (C++ Board::GO_GAME_LENGTH has the source), so time-valued
+# constants scale by TIME_SCALE, as scores by SCORE_SCALE. The specific numbers are Go's and may deserve tuning later.
+TIME_SCALE = 120.0 / 328.0
+
 def enumerate_tensor(tensor):
     """Iterate over (idx_tuple, value) for all values in a tensor"""
     from itertools import product
@@ -3207,6 +3212,7 @@ class Model(torch.nn.Module):
         self.scorestdev_multiplier *= SCORE_SCALE
         self.lead_multiplier *= SCORE_SCALE
         self.shortterm_score_error_multiplier *= SCORE_SCALE ** 2  # a squared score error
+        self.variance_time_multiplier *= TIME_SCALE  # moves (see TIME_SCALE)
 
         self.trunk_normless = "trunk_normless" in config and config["trunk_normless"]
         self.trunk_final_rmsnorm = "trunk_final_rmsnorm" in config and config["trunk_final_rmsnorm"]

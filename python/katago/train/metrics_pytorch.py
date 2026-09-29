@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
 import math
 
-from ..train.model_pytorch import EXTRA_SCORE_DISTR_RADIUS, NUM_OFFSETS, SCORE_SCALE, policy_len, Model, compute_gain, ExtraOutputs, MetadataEncoder
+from ..train.model_pytorch import EXTRA_SCORE_DISTR_RADIUS, NUM_OFFSETS, SCORE_SCALE, TIME_SCALE, policy_len, Model, compute_gain, ExtraOutputs, MetadataEncoder
 from ..train.trainloop_helpers import env_flag
 
 import torch
@@ -301,8 +301,8 @@ class Metrics:
         assert pred.shape == target.shape
         assert pred.ndim == 1
         # Even if the training target is 0, add a tiny bit of irreducible error for regularizing the prediction.
-        loss = huber_loss(pred, target + 1.0e-5, delta = 50.0)
-        return 0.0003 * global_weight * weight * loss
+        loss = huber_loss(pred, target + 1.0e-5, delta = 50.0 * TIME_SCALE)  # Enclosure fork: moves, see TIME_SCALE
+        return 0.0003 / TIME_SCALE ** 2 * global_weight * weight * loss
 
 
     def loss_shortterm_value_error_samplewise(self, pred, td_value_pred_logits, td_value_target_probs, weight, global_weight):

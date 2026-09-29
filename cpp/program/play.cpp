@@ -1328,7 +1328,7 @@ static void computeValueSurpriseByTurn(
   vector<double>& valueSurpriseByTurn,
   const vector<ValueTargets>& whiteValueTargetsByTurn,
   const vector<ReportedSearchValues>& rawNNValues,
-  int boardArea,
+  double boardArea,
   bool useSearchValueSurprise
 ) {
   testAssert(whiteValueTargetsByTurn.size() == rawNNValues.size() + 1);
@@ -1912,7 +1912,7 @@ FinishedGameData* Play::runGame(
     //Check for resignation
     if(playSettings.allowResignation && historicalMctsWinLossValues.size() >= playSettings.resignConsecTurns) {
       //Play at least some moves no matter what
-      int minTurnForResignation = 1 + board.x_size * board.y_size / 5;
+      int minTurnForResignation = 1 + (int)(Board::GAME_LENGTH_AREA / 5);  //Enclosure fork: by game length
       if(i >= minTurnForResignation) {
         if(playSettings.resignThreshold > 0 || std::isnan(playSettings.resignThreshold))
           throw StringError("playSettings.resignThreshold > 0 || std::isnan(playSettings.resignThreshold)");
@@ -2042,7 +2042,7 @@ FinishedGameData* Play::runGame(
 
     vector<double> valueSurpriseByTurn;
     computeValueSurpriseByTurn(
-      valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.x_size * board.y_size,
+      valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, Board::GAME_LENGTH_AREA,  //Enclosure fork: by game length
       playSettings.useSearchValueSurprise
     );
 
@@ -2067,7 +2067,7 @@ FinishedGameData* Play::runGame(
       //the value surprise of every turn at or before them (of just those turns themselves, for search value
       //surprise), so recompute.
       computeValueSurpriseByTurn(
-        valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.x_size * board.y_size,
+        valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, Board::GAME_LENGTH_AREA,  //Enclosure fork: by game length
         playSettings.useSearchValueSurprise
       );
 
@@ -2446,7 +2446,7 @@ void Play::maybeForkGame(
   if(earlyFork) {
     moveIdx = (int)floor(
       gameRand.nextExponential() * (
-        playSettings.earlyForkGameExpectedMoveProp * finishedGameData->startBoard.x_size * finishedGameData->startBoard.y_size
+        playSettings.earlyForkGameExpectedMoveProp * Board::GAME_LENGTH_AREA  //Enclosure fork: by game length
       )
     );
   }

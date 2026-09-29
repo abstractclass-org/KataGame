@@ -85,12 +85,13 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
 
 // Enclosure fork: training rows from a self-play game (plan step 6).
 //
-//   katago runenclosurerowtests OUT_FILE [SEED]
+//   katago runenclosurerowtests OUT_FILE [SEED [NPZ_DIR]]
 //
+// With NPZ_DIR, the same rows are also written as KataGo's .npz training files there (needs libzip).
 // Plays one self-play game with the no-network evaluator (random policy and values, exact results at the end),
 // writes every row through TrainingDataWriter's text output, and appends the game's moves ("moves <n> <action>
 // ..."). The Enclosure repository's tools/check_katago_rows.py replays the game in its engine and checks every row.
-void Tests::runEnclosureRowTests(const string& outFile, const string& seed) {
+void Tests::runEnclosureRowTests(const string& outFile, const string& seed, const string& npzDir) {
   NeuralNet::globalInitialize();
   Logger logger(nullptr, false, false, false);
   logger.addOStream(cerr);
@@ -138,6 +139,11 @@ void Tests::runEnclosureRowTests(const string& outFile, const string& seed) {
   testAssert(gameData->endHist.isGameFinished);
   dataWriter.writeGame(*gameData);
   dataWriter.flushIfNonempty();
+  if(npzDir != "") {
+    TrainingDataWriter npzWriter(npzDir, inputsVersion, maxRows, firstFileMinRandProp, 19, 19, seed + "dwriter");
+    npzWriter.writeGame(*gameData);
+    npzWriter.flushIfNonempty();
+  }
   const vector<Move>& moves = gameData->endHist.moveHistory;
   out << "moves " << moves.size();
   for(const Move& m : moves)

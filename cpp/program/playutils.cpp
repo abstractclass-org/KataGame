@@ -241,7 +241,7 @@ void PlayUtils::initializeGameUsingPolicy(
   if(hist.isGameFinished)
     return;
 
-  double mean = board.x_size * board.y_size * proportionOfBoardArea;
+  double mean = Board::GAME_LENGTH_AREA * proportionOfBoardArea;  //Enclosure fork: opening moves by game length
   int numInitialMovesToPlay;
 
   if(policyInitGammaShape != 1.0) {

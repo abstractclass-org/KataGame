@@ -110,6 +110,17 @@ struct Board
   static constexpr int MAX_LEN = COMPILE_MAX_BOARD_LEN;  //Maximum edge length allowed for the board
   static constexpr int DEFAULT_LEN = std::min(MAX_LEN,19); //Default edge length for board if unspecified
   static constexpr int MAX_PLAY_SIZE = MAX_LEN * MAX_LEN;  //Maximum number of playable spaces
+
+  //Enclosure fork (owner): KataGo measures time horizons (short-term targets, value surprise, forks, resignation,
+  //opening moves) by the board area, its proxy for a Go game's length. An Enclosure game has enclosure::MAX_MOVES
+  //(120) edges against GO_GAME_LENGTH moves of a 19x19 KataGo self-play game, so KataGo's move counts are scaled by
+  //TIME_SCALE, and its area-based formulas use GAME_LENGTH_AREA. GO_GAME_LENGTH is measured: the mean length of
+  //KataGo's own 19x19 self-play games without handicap (katagoarchive.org kata1 training games: 2020-12-08, 732
+  //games, mean 328.7; 2026-09-26, 51,094 games, mean 328.1). The specific numbers are Go's and may deserve tuning
+  //for Enclosure later.
+  static constexpr double GO_GAME_LENGTH = 328.0;
+  static constexpr double TIME_SCALE = enclosure::MAX_MOVES / GO_GAME_LENGTH;
+  static constexpr double GAME_LENGTH_AREA = 19 * 19 * TIME_SCALE;
   static constexpr int MAX_ARR_SIZE = (MAX_LEN+1)*(MAX_LEN+2)+1; //Maximum size of arrays needed (points)
 
   //Location used to indicate an invalid spot on the board.

@@ -574,7 +574,8 @@ void TrainingWriteBuffers::addRow(
   }
 
   //Fill td-like value targets
-  int boardArea = board.x_size * board.y_size;
+  //Enclosure fork: time horizons by game length, not board area (Board::GAME_LENGTH_AREA).
+  double boardArea = Board::GAME_LENGTH_AREA;
   testAssert(whiteValueTargetsIdx >= 0 && whiteValueTargetsIdx < whiteValueTargets.size());
   fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 0.0, rowGlobal);
   //These three constants used to be 'nicer' numbers 0.18, 0.06, 0.02, but we screwed up the functional form
