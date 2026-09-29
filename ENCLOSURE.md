@@ -1,8 +1,8 @@
 # KataGo for Enclosure: the fork's design
 
-This branch (`enclosure`, from upstream `d91ea85`) turns KataGo into an
+`katago/` (upstream `d91ea85` plus our changes) turns KataGo into an
 Enclosure bot. The plan, its build order and the approved departures are in
-the Enclosure repository's `docs/katago-fork-plan.md`. This file records the
+`docs/katago-fork-plan.md` of this repository. This file records the
 design decisions inside the code.
 
 ## Principle
