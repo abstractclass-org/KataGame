@@ -34,6 +34,26 @@ branches on Enclosure.
 
 A `Move` is still `(Loc, Player)`.
 
+## Board and Rules (step 2)
+
+- **`Rules` is unchanged.** It is plain data (ko, scoring and tax rules,
+  komi), and Enclosure reads none of it. Configurations set komi to 0.
+- **`Board` holds an `enclosure::Position`** (`game/enclosure/engine.h`,
+  generated from the Enclosure repository's verified native engine by its
+  `tools/extract_katago_engine.py`).
+  - Callers outside `game/` use a few members (survey 2026-09-29): the size
+    (`x_size`, `y_size` = 19), `colors` (74 uses), `pos_hash`, `ko_loc`,
+    and Go stone logic (`getNumLiberties`, `isSimpleEye`, captures).
+  - `colors[point]` = `C_BLACK` / `C_WHITE` where the point is one of Blue's
+    / Red's nodes, else `C_EMPTY`: display and "whose point is this" keep
+    working.
+  - `pos_hash`: Zobrist over edges, protected and placed edges, scores and
+    the player to move (what the engine's `same_position` compares).
+  - `ko_loc` = `NULL_LOC`.
+  - The Go stone logic stays declared with neutral answers. Each caller is
+    reviewed at steps 3-4 (most are the Go input features, replaced
+    anyway).
+
 ## Players and turns
 
 Blue moves first and is `P_BLACK`; Red is `P_WHITE`. The turn order is
