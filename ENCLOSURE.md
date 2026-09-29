@@ -378,7 +378,8 @@ training rows and the Python head use the distribution (step 6).
   is exported, evaluated in C++ (Eigen, `NNEvaluator`) and in PyTorch on the
   332 unfinished positions of `tests/data/enclosure_inputs.txt`.
   - Largest differences: policy 6e-6 (relative), value 6e-7, score 4e-6
-    (in units of 20 points), ownership 7e-6. The tolerance is 1e-3.
+    (in units of the model's score multiplier, 240 points after the score
+    retune), ownership 7e-6. The tolerance is 1e-3.
   - A model with other weights fails at every position.
 - **Training augmentation** (`katago/train/enclosure_symmetry.py`, used by
   `data_processing_pytorch.py`):

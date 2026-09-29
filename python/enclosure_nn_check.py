@@ -113,7 +113,7 @@ def compare(args):
                 diffs = dict(
                     policy=np.abs(probs - c["probs"]).max() / max(probs.max(), 1e-9),
                     value=np.abs(value - c["value"]).max(),
-                    score=max(abs(float(scoremean[i]) - c["scoremean"]), abs(float(lead[i]) - c["lead"])) / 20.0,
+                    score=max(abs(float(scoremean[i]) - c["scoremean"]), abs(float(lead[i]) - c["lead"])) / model.scoremean_multiplier,
                     own=np.abs(own - c["own"]).max(),
                 )
                 for k, d in diffs.items():
