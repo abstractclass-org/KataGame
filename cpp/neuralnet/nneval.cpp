@@ -487,8 +487,10 @@ void NNEvaluator::fillRowBufs(
   if(buf.rowMetaBuf.size() < rowMetaLen)
     buf.rowMetaBuf.resize(rowMetaLen);
 
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 7, "");
-  if(inputsVersion == 3)
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 8, "");
+  if(inputsVersion == 8)
+    NNInputs::fillRowV8(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBuf.data(), buf.rowGlobalBuf.data());
+  else if(inputsVersion == 3)
     NNInputs::fillRowV3(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBuf.data(), buf.rowGlobalBuf.data());
   else if(inputsVersion == 4)
     NNInputs::fillRowV4(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBuf.data(), buf.rowGlobalBuf.data());
@@ -1040,6 +1042,38 @@ static bool daggerMatch(const Board& board, Player nextPla, Loc& banned, int sym
   return true;
 }
 
+//Enclosure fork: the symmetry of an evaluation is chosen by the thread asking for it (see evaluate).
+//One generator per thread, seeded from the first evaluator it serves.
+static Rand& clientSymmetryRand(const string& randSeed) {
+  static std::atomic<uint64_t> numClientThreads(0);
+  thread_local std::unique_ptr<Rand> rand;
+  if(rand == nullptr)
+    rand = std::make_unique<Rand>(randSeed + ":NNEvalClientThread:" + Global::uint64ToString(numClientThreads.fetch_add(1)));
+  return *rand;
+}
+
+//Enclosure fork: map an output computed on the image of board under symmetry back to board. Policy
+//entries follow the moves (only board's legal moves matter; the rest are masked afterwards), and
+//ownership follows the points.
+static void mapOutputBack(NNOutput& output, const Board& board, const Board& symBoard, int symmetry, int policySize) {
+  static thread_local std::vector<float> buf;
+  buf.assign(policySize, 0.0f);
+  for(int i = 0; i < policySize; i++)
+    if(i == enclosure::PASS || board.legalActions[i])
+      buf[i] = output.policyProbs[SymmetryHelpers::getSymAction(i, symBoard, symmetry)];
+  std::copy(buf.begin(), buf.end(), output.policyProbs);
+  if(output.whiteOwnerMap != NULL) {
+    const int nnXLen = output.nnXLen, nnYLen = output.nnYLen;
+    buf.assign(nnXLen * nnYLen, 0.0f);
+    for(int y = 0; y < board.y_size; y++)
+      for(int x = 0; x < board.x_size; x++) {
+        Loc symLoc = SymmetryHelpers::getSymLoc(x, y, board, symmetry);
+        buf[NNPos::xyToPos(x, y, nnXLen)] = output.whiteOwnerMap[NNPos::pointToPos(symLoc, board.x_size, nnXLen)];
+      }
+    std::copy(buf.begin(), buf.end(), output.whiteOwnerMap);
+  }
+}
+
 std::shared_ptr<NNOutput>* NNEvaluator::averageMultipleSymmetries(
   const Board& board,
   const BoardHistory& history,
@@ -1148,11 +1182,27 @@ void NNEvaluator::evaluate(
   buf.boardXSizeForServer = board.x_size;
   buf.boardYSizeForServer = board.y_size;
 
+  //Enclosure fork: a symmetry acts on the position, not on the input planes (an edge's planes re-anchor
+  //under a flip), so the backends' pixel symmetry cannot be used. The symmetry is chosen here as the
+  //server thread would (random, or the default), the inputs are the image position's, the backend
+  //gets the identity, and the outputs are mapped back when they arrive.
+  int symmetry = nnInputParams.symmetry;
+  if(symmetry == NNInputs::SYMMETRY_NOTSPECIFIED) {
+    if(currentDoRandomize.load(std::memory_order_acquire))
+      symmetry = (int)clientSymmetryRand(randSeed).nextUInt(SymmetryHelpers::NUM_SYMMETRIES);
+    else
+      symmetry = currentDefaultSymmetry.load(std::memory_order_acquire);
+  }
+  testAssert(symmetry >= 0 && symmetry < SymmetryHelpers::NUM_SYMMETRIES);
+  std::unique_ptr<Board> symBoard;
+  if(symmetry != 0)
+    symBoard = std::make_unique<Board>(SymmetryHelpers::getSymBoard(board, symmetry));
+
   if(!debugSkipNeuralNet) {
-    fillRowBufs(board, history, nextPlayer, sgfMeta, nnInputParams, buf);
+    fillRowBufs(symmetry != 0 ? *symBoard : board, history, nextPlayer, sgfMeta, nnInputParams, buf);
   }
 
-  buf.symmetry = nnInputParams.symmetry;
+  buf.symmetry = 0;
   buf.policyOptimism = nnInputParams.policyOptimism;
 
   unique_lock<std::mutex> lock(bufferMutex);
@@ -1166,6 +1216,9 @@ void NNEvaluator::evaluate(
   while(!buf.hasResult)
     buf.clientWaitingForResult.wait(resultLock);
   resultLock.unlock();
+
+  if(symmetry != 0)
+    mapOutputBack(*buf.result, board, *symBoard, symmetry, policySize);
 
   // Perform postprocessing on the result - turn the nn output into probabilities
   // As a hack though, if the only thing we were missing was the ownermap, just grab the old policy and values

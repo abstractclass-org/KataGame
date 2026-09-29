@@ -231,6 +231,121 @@ The search cannot expand Enclosure moves without it, so it comes first.
 - **Left for step 4:** the network's inputs, symmetries, and how the
   backends lay out the 48 channels per point.
 
+## Network inputs (step 4.1)
+
+Input version **V8** (`NNInputs::fillRowV8`) is the Enclosure network's
+input (the Enclosure repository's `net.input_planes`), laid out the KataGo
+way:
+
+- **Spatial, 215 planes** (`NUM_FEATURES_SPATIAL_V8`):
+  - 0: on board, all ones. KataGo's backends and PyTorch model take the
+    board mask from channel 0, so it stays first.
+  - 1-192: the observation's edge planes, `4 × 48`: each player's edges,
+    then each player's protected or just-placed edges, set at the edge's
+    lower end (the canonical `Edge`'s a) in the offset's plane.
+  - 193-214: the 22 feature planes (`features.h`, `planes.feature_planes`):
+    9 per player, then 4 history planes.
+- **Global, 5** (`NUM_FEATURES_GLOBAL_V8`): the observation's scalars (player
+  to move, edges left in the turn / 2, move count / 120, and both scores /
+  (18 · 18 · 61)). The plan puts the scalars here, not in constant planes.
+- **Absolute colours,** as the Enclosure network: plane k is Blue's for
+  k = 0. The player to move is a global input. (KataGo's Go inputs are
+  relative to the mover; the owner chose "our feature planes, as KataGo uses
+  its Go features".)
+- **Model versions 8-17** keep their architecture meanings but all read V8;
+  Go networks (and versions 3-7) are refused. Go's `fillRowV3`-`V7` stay in
+  the file, unreachable, to keep the diff from upstream small.
+- **The NN cache hash** already includes the history (step 2's
+  `historyHash`), so positions differing only in history planes are
+  cached apart.
+- `maxHistory <= 0` (KataGo's no-history evaluations) drops the 4 history
+  planes.
+- **Test:** `tests/enclosure/testnninputs.cpp` against
+  `tests/data/enclosure_inputs.txt` (the Enclosure repository's
+  `tools/export_katago_inputs.py`: 336 positions from 40 archived and 40
+  random games, with Python's reference inputs). Every spatial entry
+  (NHWC and NCHW) and every global matches; a changed fixture entry fails.
+
+## Symmetries (step 4.2, D5)
+
+**Measured** (`tests/enclosure/testsymmetry.cpp`, 2026-09-29): for each of
+KataGo's 8 symmetries, 100 random games were played on the board and on
+its image, each move mapped. Over 12,000 moves per symmetry, the image game
+was always the image of the game: legal moves (one to one), edges,
+protected and placed edges, history, and exact scores. The feature planes
+also moved point by point.
+
+| Symmetry | Rules respect it | Fixes the start position |
+|---|---|---|
+| 0 identity | yes | yes |
+| 1 flipY (y → 18 − y) | yes | yes |
+| 2-7 (flipX, transposes) | yes | no (Blue's start moves right or vertical) |
+
+So the rules are symmetric under all 8, but only the identity and the
+mirror map real games to real games: under the other 6, Blue starts on the
+right or on a vertical line, which never happens. How many to use is the
+owner's decision (D5 assumed only the mirror; see `docs/decisions.md`).
+The code uses all 8 for now (recommended: exact labels, KataGo's method,
+and reversible without new data); an arena A/B of 2 against 8 settles it.
+The code handles all 8. `SymmetryHelpers::NUM_SYMMETRIES` sets the count,
+and KataGo's numbering puts flipY at 1, so a count of 2 means identity and
+mirror.
+
+**How symmetries work in the fork:**
+
+- **They act on positions, not on input planes.** An edge's image is the
+  canonical edge between its endpoints' images, so under a flip a
+  vertical edge re-anchors at its other end: the edge planes are not a pixel
+  and channel permutation. `SymmetryHelpers::getSymEdge`,
+  `getSymPosition` and `getSymBoard` map edges; `getSymAction` and
+  `getSymMoveLoc` map moves. Between two of the mover's own nodes, only one
+  direction is listed as legal, so the image move is looked up on the image
+  board.
+- **Network evaluation (`NNEvaluator::evaluate`).** The symmetry is chosen
+  where the inputs are filled: at random (a per-thread generator seeded
+  from the evaluator's seed), or the default, as the server thread did. The
+  inputs are the image position's, and the backend gets the identity. On
+  return, the policy is mapped back move by move and the ownership point by
+  point, before the softmax and the cache. The backends' pixel symmetry is
+  never used.
+- **Root symmetry pruning** (`markDuplicateMoveLocs`): a symmetry is valid
+  when the position (edges, protected and placed edges) is its own image.
+  Of each set of equivalent legal moves, the lowest action is searched.
+  `computeRootSymRepresentativeLocs` and the analysis output map moves with
+  `getSymMoveLoc`, and principal variations move by move on the image
+  boards (`getSymMoveLocs`).
+- **`LocalPatternHasher::getHashWithSym`** hashes the image board's window
+  around the image move.
+- **Tests:**
+  - `testsymmetry`: the measurement above. Also 153,600 round trips and
+    compositions (inverse maps back; s1 then s2 is `compose(s1, s2)`), and
+    root pruning at the start, where the valid symmetries are {0, 1} and
+    69 legal moves become 36 (3 lie on the axis).
+  - `katago runenclosuretests`: the two-edges-one-mover square, searched
+    on its image under every symmetry, must find the image of the winning
+    turn; and root pruning at the start searches one move of each mirror
+    pair, while the analysis lists both, each with a legal principal
+    variation.
+- **Training-data augmentation** (KataGo's Python, step 6) mirrors pixels
+  too. It must re-anchor edge planes and remap policy channels the same
+  way, and is tested against these helpers.
+
+## Score utility (step 4.3)
+
+c_score = 0 (owner, option (b)): `staticScoreUtilityFactor` and
+`dynamicScoreUtilityFactor` are 0 in `selfplay1.cfg`, `analysis_example.cfg`
+and `match_example.cfg`. Upstream's defaults (0.10 and 0.30) apply where a
+config leaves them unset, so every config the fork uses sets them. The score
+value tables clamp scores beyond Go's range, so Enclosure's large scores
+are safe there.
+
+## Score distribution bins (D1, owner 2026-09-29)
+
+842 bins as KataGo, each 12 points wide, covering margins of ±5,052 (every
+margin in `net1`'s self-play, 99% of full-length human games; measurements
+in `docs/decisions.md`). Larger margins go to the end bins. Only the
+training rows and the Python head use the distribution (step 6).
+
 ## Sizes at 17,329 actions (steps 4-6)
 
 - **`NNOutput` stores a dense policy** of `MAX_NN_POLICY_SIZE` floats,

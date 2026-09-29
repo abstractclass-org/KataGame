@@ -5,11 +5,12 @@
 namespace NNModelVersion {
 
   constexpr int latestModelVersionImplemented = 17;
-  constexpr int latestInputsVersionImplemented = 7;
+  //Enclosure fork: every model version reads the Enclosure inputs (V8); Go's V3-V7 are not used.
+  constexpr int latestInputsVersionImplemented = 8;
   constexpr int defaultModelVersion = 17;
 
-  constexpr int oldestModelVersionImplemented = 3;
-  constexpr int oldestInputsVersionImplemented = 3;
+  constexpr int oldestModelVersionImplemented = 8;
+  constexpr int oldestInputsVersionImplemented = 8;
 
   // Which V* feature version from NNInputs does a given model version consume?
   int getInputsVersion(int modelVersion);

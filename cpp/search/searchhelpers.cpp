@@ -349,7 +349,8 @@ void Search::computeRootSymRepresentativeLocs() {
       continue;
     rootSymRepresentativeLoc[loc] = Board::NULL_LOC;
     for(int symmetry: rootSymmetries) {
-      Loc symLoc = SymmetryHelpers::getSymLoc(loc, rootBoard, symmetry);
+      //Enclosure fork: a move's image (the root is its own image under rootSymmetries).
+      Loc symLoc = SymmetryHelpers::getSymMoveLoc(loc, rootBoard, symmetry);
       if(!rootSymDupLoc[symLoc]) {
         rootSymRepresentativeLoc[loc] = symLoc;
         break;

@@ -785,8 +785,6 @@ void Search::beginSearch(bool pondering) {
   }
 
   if(searchParams.rootSymmetryPruning) {
-    //Enclosure fork: pruning needs the symmetries of edges, which come with the network inputs (plan step 4, D5).
-    throw StringError("rootSymmetryPruning is not supported for Enclosure yet (edge symmetries: plan step 4)");
     const std::vector<int>& avoidMoveUntilByLoc = rootPla == P_BLACK ? avoidMoveUntilByLocBlack : avoidMoveUntilByLocWhite;
     if(rootPruneOnlySymmetries.size() > 0)
       SymmetryHelpers::markDuplicateMoveLocs(rootBoard,rootHistory,&rootPruneOnlySymmetries,avoidMoveUntilByLoc,rootSymDupLoc,rootSymmetries);

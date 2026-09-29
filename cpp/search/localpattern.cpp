@@ -62,91 +62,43 @@ LocalPatternHasher::~LocalPatternHasher() {
 }
 
 
-Hash128 LocalPatternHasher::getHash(const Board& board, Loc loc, Player pla) const {
-  Hash128 hash = zobristPla[pla];
-
-  //Enclosure fork. Go hashes point colours and atari around the move's point. An edge has no single
-  //point, and nodes alone do not show which of them are joined, so the window is centred on the edge's
-  //source point and hashes the edges that reach into it, with their protection (Go's atari flag marks
-  //what is fragile now; a protected edge cannot be cut this turn).
+//Enclosure fork. Go hashes point colours and atari around the move's point. An edge has no single
+//point, and nodes alone do not show which of them are joined, so the window is centred on the edge's
+//source point and hashes the edges that reach into it, with their protection (Go's atari flag marks
+//what is fragile now; a protected edge cannot be cut this turn). flipColors swaps the edges' owners.
+static Hash128 hashEdgeWindow(const LocalPatternHasher& hasher, const Board& board, Loc loc, Player pla, bool flipColors) {
+  Hash128 hash = hasher.zobristPla[flipColors ? getOpp(pla) : pla];
   if(loc != Board::PASS_LOC && loc != Board::NULL_LOC) {
     assert(loc >= Board::MOVE_LOC_BASE && loc < Board::NUM_MOVE_LOCS);
     int cell = Board::actionOfMoveLoc(loc) / enclosure::NOFF;
     int cx = cell % enclosure::SIZE;
     int cy = cell / enclosure::SIZE;
-    int xRadius = xSize/2;
-    int yRadius = ySize/2;
+    int xRadius = hasher.xSize/2;
+    int yRadius = hasher.ySize/2;
     auto inWindow = [&](int x, int y) { return std::abs(x - cx) <= xRadius && std::abs(y - cy) <= yRadius; };
     for(int owner = 0; owner < 2; owner++) {
       for(const enclosure::Edge& e : board.pos.edges[owner]) {
         if(!inWindow(e.ax, e.ay) && !inWindow(e.bx, e.by))
           continue;
         int idx = Board::edgeIndex(e);
-        hash ^= zobristEdge[owner * enclosure::PASS + idx];
+        hash ^= hasher.zobristEdge[(flipColors ? 1 - owner : owner) * enclosure::PASS + idx];
         if(enclosure::contains(board.pos.protected_, e))
-          hash ^= zobristProtected[idx];
+          hash ^= hasher.zobristProtected[idx];
       }
     }
   }
-
   return hash;
 }
 
+Hash128 LocalPatternHasher::getHash(const Board& board, Loc loc, Player pla) const {
+  return hashEdgeWindow(*this, board, loc, pla, false);
+}
+
+//Enclosure fork: the hash of the image of board and loc (SymmetryHelpers acts on edges), so a
+//symmetry of 0 without flipColors gives getHash.
 Hash128 LocalPatternHasher::getHashWithSym(const Board& board, Loc loc, Player pla, int symmetry, bool flipColors) const {
-  //Enclosure fork: only the pattern bonus table (off by default) uses this; it needs edge symmetries (plan step 4).
-  throw StringError("LocalPatternHasher::getHashWithSym is not supported for Enclosure yet (edge symmetries: plan step 4)");
-  Player symPla = flipColors ? getOpp(pla) : pla;
-  Hash128 hash = zobristPla[symPla];
-
-  if(loc != Board::PASS_LOC && loc != Board::NULL_LOC) {
-    const int dxi = board.adj_offsets[2];
-    const int dyi = board.adj_offsets[3];
-    assert(dxi == 1);
-    assert(dyi == board.x_size+1);
-
-    int xRadius = xSize/2;
-    int yRadius = ySize/2;
-    int xCenter = xSize/2;
-    int yCenter = ySize/2;
-
-    bool transpose = SymmetryHelpers::isTranspose(symmetry);
-    bool flipX = SymmetryHelpers::isFlipX(symmetry);
-    bool flipY = SymmetryHelpers::isFlipY(symmetry);
-
-    int x = Location::getX(loc,board.x_size);
-    int y = Location::getY(loc,board.x_size);
-    int dxMin = -xRadius, dxMax = xRadius, dyMin = -yRadius, dyMax = yRadius;
-    if(x < xRadius) { dxMin = -x; } else if(x >= board.x_size-xRadius) { dxMax = board.x_size-1-x; }
-    if(y < yRadius) { dyMin = -y; } else if(y >= board.y_size-yRadius) { dyMax = board.y_size-1-y; }
-    for(int dy = dyMin; dy <= dyMax; dy++) {
-      for(int dx = dxMin; dx <= dxMax; dx++) {
-        Loc loc2 = loc + dx * dxi + dy * dyi;
-        int y2 = dy + yCenter;
-        int x2 = dx + xCenter;
-
-        int symXY2;
-        int symX2 = flipX ? xSize - x2 - 1 : x2;
-        int symY2 = flipY ? ySize - y2 - 1 : y2;
-        if(transpose) {
-          std::swap(symX2,symY2);
-          symXY2 = symY2 * ySize + symX2;
-        }
-        else {
-          symXY2 = symY2 * xSize + symX2;
-        }
-
-        int symColor;
-        if(board.colors[loc2] == P_BLACK || board.colors[loc2] == P_WHITE)
-          symColor = (int)(flipColors ? getOpp(board.colors[loc2]) : board.colors[loc2]);
-        else
-          symColor = (int)board.colors[loc2];
-
-        hash ^= zobristLocalPattern[symColor * xSize * ySize + symXY2];
-        if((board.colors[loc2] == P_BLACK || board.colors[loc2] == P_WHITE) && board.getNumLiberties(loc2) == 1)
-          hash ^= zobristAtari[symXY2];
-      }
-    }
-  }
-
-  return hash;
+  if(symmetry == 0)
+    return hashEdgeWindow(*this, board, loc, pla, flipColors);
+  Board symBoard = SymmetryHelpers::getSymBoard(board, symmetry);
+  return hashEdgeWindow(*this, symBoard, SymmetryHelpers::getSymMoveLoc(loc, symBoard, symmetry), pla, flipColors);
 }

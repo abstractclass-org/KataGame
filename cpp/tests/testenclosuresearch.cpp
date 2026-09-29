@@ -168,7 +168,8 @@ void Tests::runEnclosureSearchTests() {
   //move) and Blue cannot reach Red's old edges; Red's new ones are protected. Checked exhaustively on the
   //Enclosure repository's Python engine: 2 of Red's 45,601 two-edge turns win, all others lose.
   //A search that negated values across Red's own turn would avoid the win.
-  {
+  //Then the same on the position's image under each symmetry: the mirrored position gets the mirrored moves.
+  for(int symmetry = 0; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
     enclosure::Position p;
     p.edges[0] = {enclosure::make_edge(0, 16, 3, 16), enclosure::make_edge(0, 18, 3, 18)};
     p.edges[1].push_back(enclosure::make_edge(5, 5, 8, 5));
@@ -179,36 +180,42 @@ void Tests::runEnclosureSearchTests() {
     p.moves_left = 2;
     p.move_count = 117;
     p.area_ok[0] = p.area_ok[1] = false;
-    Board board;
-    board.setPosition(p);
+    Board original;
+    original.setPosition(p);
+    Board board = SymmetryHelpers::getSymBoard(original, symmetry);
     BoardHistory hist(board, P_WHITE, Rules(), 0);
     testAssert(hist.presumedNextMovePla == P_WHITE);
+    auto sym = [&](const enclosure::Edge& e) { return SymmetryHelpers::getSymEdge(e, symmetry); };
+    const enclosure::Edge winA = sym(enclosure::make_edge(5, 8, 8, 8));
+    const enclosure::Edge winB = sym(enclosure::make_edge(5, 5, 5, 8));
+    cout << "Symmetry " << symmetry << endl;
 
-    auto closesSquare = [](const Board& b) {
-      return enclosure::contains(b.pos.edges[1], enclosure::make_edge(5, 8, 8, 8)) &&
-             enclosure::contains(b.pos.edges[1], enclosure::make_edge(5, 5, 5, 8));
+    auto closesSquare = [&](const Board& b) {
+      return enclosure::contains(b.pos.edges[1], winA) && enclosure::contains(b.pos.edges[1], winB);
     };
 
     //With random priors, finding 1 winning pair of ~40,000 by visits alone is luck. So the root considers only
     //20 first edges (KataGo's allowMoves): both winning ones and 18 losing ones, among them the one-edge
-    //triangle. Red's second edge, the node under test, keeps every legal move.
+    //triangle. Red's second edge, the node under test, keeps every legal move. The allowed moves are the
+    //images of the original position's.
     vector<Loc> legalFirst;
-    board.getLegalMoveLocs(legalFirst);
-    vector<Loc> allowed = {moveOf(8, 8, -3, 0), moveOf(5, 5, 0, 3), moveOf(5, 5, 3, 3)};
+    original.getLegalMoveLocs(legalFirst);
+    vector<Loc> allowedOriginal = {moveOf(8, 8, -3, 0), moveOf(5, 5, 0, 3), moveOf(5, 5, 3, 3)};
     for(Loc loc : legalFirst)
-      if(allowed.size() < 20 && std::find(allowed.begin(), allowed.end(), loc) == allowed.end())
-        allowed.push_back(loc);
-    for(Loc loc : allowed)
-      testAssert(hist.isLegal(board, loc, P_WHITE));
+      if(allowedOriginal.size() < 20 && std::find(allowedOriginal.begin(), allowedOriginal.end(), loc) == allowedOriginal.end())
+        allowedOriginal.push_back(loc);
     vector<int> avoidWhite(Board::NUM_MOVE_LOCS, 1);  //Banned at the root only (depth 1)
-    for(Loc loc : allowed)
-      avoidWhite[loc] = 0;
+    for(Loc loc : allowedOriginal) {
+      Loc symLoc = SymmetryHelpers::getSymMoveLoc(loc, board, symmetry);
+      testAssert(hist.isLegal(board, symLoc, P_WHITE));
+      avoidWhite[symLoc] = 0;
+    }
 
     //The random priors are noise here; flattened, the search tries every second edge instead of waiting for
     //thousands of visits before a low-prior one beats first-play urgency (every tried line is a loss).
     SearchParams params = testParams(100000);
     params.nnPolicyTemperature = 100.0f;
-    Search search(params, nnEval, &logger, "enclosure two edges one mover");
+    Search search(params, nnEval, &logger, "enclosure two edges one mover " + Global::intToString(symmetry));
     search.setPosition(P_WHITE, board, hist);
     search.setAvoidMoveUntilByLoc(vector<int>(), avoidWhite);
     search.runWholeSearch(P_WHITE);
@@ -218,8 +225,7 @@ void Tests::runEnclosureSearchTests() {
     BoardHistory h1 = hist;
     h1.makeBoardMoveAssumeLegal(b1, first, P_WHITE, NULL);
     cout << "Red's first edge " << Location::toString(first, board) << ", red win value " << values.winValue << endl;
-    testAssert(enclosure::contains(b1.pos.edges[1], enclosure::make_edge(5, 8, 8, 8)) ||
-               enclosure::contains(b1.pos.edges[1], enclosure::make_edge(5, 5, 5, 8)));
+    testAssert(enclosure::contains(b1.pos.edges[1], winA) || enclosure::contains(b1.pos.edges[1], winB));
     testAssert(values.winValue > 0.9);  //winValue is White's, and Red is White
 
     //Tree reuse between Red's two edges: the root becomes that child, still Red to move, with its visits.
@@ -242,6 +248,45 @@ void Tests::runEnclosureSearchTests() {
     testAssert(closesSquare(b2));
     testAssert(h2.presumedNextMovePla == P_BLACK);
     testAssert(values2.winValue > 0.9);
+  }
+
+  //4. Root symmetry pruning at the start, which is its own mirror image (y -> 18 - y): the root searches one
+  //move of each mirror pair, and the analysis lists both, each with a legal principal variation.
+  {
+    Board board;
+    BoardHistory hist(board, P_BLACK, Rules(), 0);
+    SearchParams params = testParams(3000);
+    params.rootSymmetryPruning = true;
+    Search search(params, nnEval, &logger, "enclosure root symmetry pruning");
+    search.setPosition(P_BLACK, board, hist);
+    search.runWholeSearch(P_BLACK);
+    set<Loc> children;
+    ConstSearchNodeChildrenReference kids = search.rootNode->getChildren();
+    for(int i = 0; i < kids.iterateAndCountChildren(); i++)
+      children.insert(kids[i].getMoveLoc());
+    int pairs = 0;
+    for(Loc loc : children) {
+      Loc mirror = SymmetryHelpers::getSymMoveLoc(loc, board, 1);
+      testAssert(mirror == loc || children.count(mirror) == 0);
+      pairs += mirror != loc;
+    }
+    vector<AnalysisData> data;
+    search.getAnalysisData(data, 1, false, 6, true);
+    set<Loc> listed;
+    for(const AnalysisData& d : data) {
+      listed.insert(d.move);
+      Board b = board;
+      BoardHistory h = hist;
+      testAssert(d.pv.size() >= 1 && d.pv[0] == d.move);
+      for(Loc loc : d.pv) {
+        testAssert(h.isLegal(b, loc, h.presumedNextMovePla));
+        h.makeBoardMoveAssumeLegal(b, loc, h.presumedNextMovePla, NULL);
+      }
+    }
+    for(Loc loc : children)
+      testAssert(listed.count(loc) == 1 && listed.count(SymmetryHelpers::getSymMoveLoc(loc, board, 1)) == 1);
+    cout << "Root symmetry pruning: " << children.size() << " root moves searched (" << pairs
+         << " with a mirror image), " << listed.size() << " listed with images" << endl;
   }
 
   delete nnEval;

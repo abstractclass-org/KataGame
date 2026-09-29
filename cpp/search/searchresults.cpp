@@ -1167,7 +1167,8 @@ void Search::getAnalysisData(
     for(int i = 0; i<buf.size(); i++) {
       const AnalysisData& data = buf[i];
       for(int symmetry : rootSymmetries) {
-        Loc symMove = SymmetryHelpers::getSymLoc(data.move, rootBoard, symmetry);
+        //Enclosure fork: moves map as edges (the root is its own image under rootSymmetries).
+        Loc symMove = SymmetryHelpers::getSymMoveLoc(data.move, rootBoard, symmetry);
         if(contains(isDone,symMove))
           continue;
         const std::vector<int>& avoidMoveUntilByLoc = rootPla == P_BLACK ? avoidMoveUntilByLocBlack : avoidMoveUntilByLocWhite;
@@ -1182,8 +1183,7 @@ void Search::getAnalysisData(
         if(symmetry != 0)
           newData.isSymmetryOf = data.move;
         newData.symmetry = symmetry;
-        for(int j = 0; j<newData.pv.size(); j++)
-          newData.pv[j] = SymmetryHelpers::getSymLoc(newData.pv[j], rootBoard, symmetry);
+        newData.pv = SymmetryHelpers::getSymMoveLocs(rootBoard, newData.pv, symmetry);
       }
     }
     buf = std::move(newBuf);

@@ -8,6 +8,7 @@
 #include "../core/rand.h"
 #include "../game/board.h"
 #include "../game/boardhistory.h"
+#include "../game/enclosure/features.h"
 #include "../game/rules.h"
 
 //Enclosure fork: the policy has one entry per edge, NUM_OFFSETS per point (the Enclosure action
@@ -118,6 +119,17 @@ namespace NNInputs {
   const int NUM_FEATURES_SPATIAL_V7 = 22;
   const int NUM_FEATURES_GLOBAL_V7 = 19;
 
+  //Enclosure fork: V8, the Enclosure inputs (the Enclosure repository's net.input_planes, with its
+  //scalars moved to the global inputs). Spatial: 0 on board (the backends' mask), then the
+  //observation's 4 * 48 edge planes (each player's edges, then each player's protected or
+  //just-placed edges, by source point and offset), then the feature planes (planes.feature_planes:
+  //9 per player, then 4 history). Global: the observation's 5 scalars.
+  //Absolute colours, as the Enclosure network: plane k is Blue's (P_BLACK) for k = 0 and Red's for 1.
+  const int V8_EDGE_PLANES_START = 1;
+  const int V8_FEATURE_PLANES_START = V8_EDGE_PLANES_START + 4 * enclosure::NOFF;
+  const int NUM_FEATURES_SPATIAL_V8 = V8_FEATURE_PLANES_START + enclosure::FEATURE_PLANES;
+  const int NUM_FEATURES_GLOBAL_V8 = enclosure::SCALARS;
+
   Hash128 getHash(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
     const MiscNNInputParams& nnInputParams
@@ -140,6 +152,10 @@ namespace NNInputs {
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
   );
   void fillRowV7(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
+  );
+  void fillRowV8(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
   );
@@ -226,6 +242,21 @@ namespace SymmetryHelpers {
   //Applies a symmetry to a board
   Board getSymBoard(const Board& board, int symmetry);
 
+  //Enclosure fork: symmetries of edges, positions and moves (getSymLoc is for points only).
+  //An edge maps to the edge between its endpoints' images, canonical again, so a flip can re-anchor
+  //it at its other end: the input planes, which hold an edge at its lower end, are not a plain
+  //permutation of pixels and channels. So the fork transforms positions, not input planes.
+  enclosure::Edge getSymEdge(const enclosure::Edge& e, int symmetry);
+  //Every edge (both players', protected, placed, history) mapped; scores and turn state kept.
+  enclosure::Position getSymPosition(const enclosure::Position& p, int symmetry);
+  //A move's policy index (Enclosure action) under a symmetry, as a move of symBoard, the image of the
+  //board it is played on. Between two of the mover's nodes only one direction is listed, and the
+  //image may be listed from its other end: then that one is returned.
+  int getSymAction(int action, const Board& symBoard, int symmetry);
+  Loc getSymMoveLoc(Loc moveLoc, const Board& symBoard, int symmetry);
+  //A sequence of moves from board (a principal variation) mapped move by move, on the image boards.
+  std::vector<Loc> getSymMoveLocs(const Board& board, const std::vector<Loc>& moves, int symmetry);
+
   //Get the inverse of the specified symmetry
   int invert(int symmetry);
   //Get the symmetry equivalent to first applying firstSymmetry and then applying nextSymmetry.
@@ -237,7 +268,7 @@ namespace SymmetryHelpers {
   inline bool isFlipY(int symmetry) { return (symmetry & 0x1) != 0; }
 
   //Fill isSymDupLoc with true on all but one copy of each symmetrically equivalent move, and false everywhere else.
-  //isSymDupLocs should be an array of size Board::MAX_ARR_SIZE
+  //Enclosure fork: isSymDupLocs should be an array of size Board::NUM_MOVE_LOCS (move Locs)
   //If onlySymmetries is not NULL, will only consider the symmetries specified there.
   //validSymmetries will be filled with all symmetries of the current board, including using history for checking ko/superko and some encore-related state.
   //This implementation is dependent on specific order of the symmetries (i.e. transpose is coded as 0x4)
