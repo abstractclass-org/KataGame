@@ -52,6 +52,13 @@ def policy_len(pos_len):
 # SCORE_BIN_WIDTH points of final margin wide (margins of +-5,052; larger ones fall in the end bins).
 SCORE_BIN_WIDTH = 12.0
 
+# Enclosure fork (owner): scores stay in raw points, and every constant that KataGo tuned for Go's point scale
+# is scaled by SCORE_SCALE, the ratio of Enclosure's score spread to Go's (the D1 bin width against KataGo's
+# 1-point bins, from the measured margins). Quantities in points scale by SCORE_SCALE (output multipliers,
+# Huber deltas, target caps), squared points by SCORE_SCALE^2, and the loss weights by the inverse of their
+# loss's scaling, so that training weighs every score term as KataGo does on Go-sized scores.
+SCORE_SCALE = SCORE_BIN_WIDTH
+
 def enumerate_tensor(tensor):
     """Iterate over (idx_tuple, value) for all values in a tensor"""
     from itertools import product
@@ -3193,6 +3200,13 @@ class Model(torch.nn.Module):
             self.variance_time_multiplier = 40.0
             self.shortterm_value_error_multiplier = 0.25
             self.shortterm_score_error_multiplier = 150.0
+        # Enclosure fork: see SCORE_SCALE. (KataGo's 20: "so that on typical data the neural net would only need
+        # to output values around unit scale"; Enclosure's typical margins are about 12 times Go's.)
+        self.td_score_multiplier *= SCORE_SCALE
+        self.scoremean_multiplier *= SCORE_SCALE
+        self.scorestdev_multiplier *= SCORE_SCALE
+        self.lead_multiplier *= SCORE_SCALE
+        self.shortterm_score_error_multiplier *= SCORE_SCALE ** 2  # a squared score error
 
         self.trunk_normless = "trunk_normless" in config and config["trunk_normless"]
         self.trunk_final_rmsnorm = "trunk_final_rmsnorm" in config and config["trunk_final_rmsnorm"]

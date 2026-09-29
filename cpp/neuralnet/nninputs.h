@@ -23,6 +23,13 @@ namespace NNPos {
   static_assert(MAX_NN_POLICY_SIZE == enclosure::PASS + 1, "policy index = Enclosure action index");
   //Extra score distribution radius, used for writing score in data rows and for the neural net score belief output
   constexpr int EXTRA_SCORE_DISTR_RADIUS = 60;
+  //Enclosure fork (owner): scores stay in points, and constants KataGo tuned for Go's point scale are scaled by
+  //SCORE_SCALE, Enclosure's score spread against Go's (the D1 bin width: 12-point bins against Go's 1-point ones).
+  //The score distribution keeps its 2 * (MAX_BOARD_AREA + EXTRA_SCORE_DISTR_RADIUS) bins, each SCORE_SCALE wide.
+  constexpr double SCORE_SCALE = 12.0;
+  //Score targets are capped at the distribution's range (KataGo: 361 + 60, "an upper bound for the plausible
+  //final score difference").
+  constexpr double SCORE_TARGET_CAP = (MAX_BOARD_AREA + EXTRA_SCORE_DISTR_RADIUS) * SCORE_SCALE;
   //Used various places we clip komi beyond board area.
   constexpr float KOMI_CLIP_RADIUS = 20.0f;
 

@@ -41,7 +41,7 @@ def read_npz_training_data(
     rand = np.random.default_rng(seed=list(os.urandom(12)))
     num_bin_features = modelconfigs.get_num_bin_input_features(model_config)
     num_global_features = modelconfigs.get_num_global_input_features(model_config)
-    (h_base,h_builder) = build_history_matrices(model_config, device)
+    # Enclosure fork: history dropout acts on the Enclosure history planes (apply_history_dropout), not Go's.
 
     # Version 16 always predicts q values; version 17+ does so only when configured.
     include_qvalues = model_config["version"] == 16 or (
@@ -149,9 +149,7 @@ def read_npz_training_data(
                 if include_qvalues:
                     batch_qValueTargetsNCMove = torch.from_numpy(qValueTargetsNCMove[start:end]).to(device)
 
-                (batch_binaryInputNCHW, batch_globalInputNC) = apply_history_matrices(
-                    model_config, batch_binaryInputNCHW, batch_globalInputNC, batch_globalTargetsNC, h_base, h_builder
-                )
+                batch_binaryInputNCHW = apply_history_dropout(model_config, batch_binaryInputNCHW)
 
                 if randomize_symmetries:
                     # Enclosure fork: edges move as edges (enclosure_symmetry); the policy mapping reads the
@@ -298,6 +296,24 @@ def build_history_matrices(model_config: modelconfigs.ModelConfig, device):
 
     return (h_base, h_builder)
 
+
+# Enclosure fork: KataGo's random history masking (apply_history_matrices, the same draws) on the Enclosure
+# history planes, the feature planes marking the edges placed 2-5 turns ago, newest first. History item k is
+# kept only if none of k+1 independent draws stops it (each with probability 0.02), so older history is
+# dropped more often, and never a newer item without the older ones. The observation's current- and
+# previous-turn edge planes carry the rules' protection and are never dropped. The C++ evaluation without
+# history (maxHistory <= 0) drops all four.
+ENCLOSURE_HISTORY_PLANES_START = 211
+ENCLOSURE_NUM_HISTORY_PLANES = 4
+
+def apply_history_dropout(model_config, batch_binaryInputNCHW):
+    assert modelconfigs.get_num_bin_input_features(model_config) == ENCLOSURE_HISTORY_PLANES_START + ENCLOSURE_NUM_HISTORY_PLANES
+    n = batch_binaryInputNCHW.shape[0]
+    should_stop_history = torch.rand((n, ENCLOSURE_NUM_HISTORY_PLANES), device=batch_binaryInputNCHW.device) >= 0.98
+    include_history = (torch.cumsum(should_stop_history, axis=1, dtype=torch.float32) <= 0.1).to(batch_binaryInputNCHW.dtype)
+    out = batch_binaryInputNCHW.clone()
+    out[:, ENCLOSURE_HISTORY_PLANES_START:] *= include_history.view(n, ENCLOSURE_NUM_HISTORY_PLANES, 1, 1)
+    return out
 
 def apply_history_matrices(model_config, batch_binaryInputNCHW, batch_globalInputNC, batch_globalTargetsNC, h_base, h_builder):
     num_global_features = modelconfigs.get_num_global_input_features(model_config)

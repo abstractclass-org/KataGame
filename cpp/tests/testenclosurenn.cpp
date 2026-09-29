@@ -15,7 +15,10 @@
 #include <iomanip>
 #include <sstream>
 
+#include "../dataio/trainingwrite.h"
+#include "../neuralnet/modelversion.h"
 #include "../neuralnet/nneval.h"
+#include "../program/play.h"
 #include "../tests/testsearchcommon.h"
 
 using namespace std;
@@ -76,6 +79,73 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
     positions++;
   }
   cout << positions << " positions evaluated into " << outFile << endl;
+  delete nnEval;
+  NeuralNet::globalCleanup();
+}
+
+// Enclosure fork: training rows from a self-play game (plan step 6).
+//
+//   katago runenclosurerowtests OUT_FILE [SEED]
+//
+// Plays one self-play game with the no-network evaluator (random policy and values, exact results at the end),
+// writes every row through TrainingDataWriter's text output, and appends the game's moves ("moves <n> <action>
+// ..."). The Enclosure repository's tools/check_katago_rows.py replays the game in its engine and checks every row.
+void Tests::runEnclosureRowTests(const string& outFile, const string& seed) {
+  NeuralNet::globalInitialize();
+  Logger logger(nullptr, false, false, false);
+  logger.addOStream(cerr);
+  NNEvaluator* nnEval = startNNEval("/dev/null", logger, seed, 19, 19, 0, true, false, false, true, false);
+
+  ofstream out(outFile);
+  const int inputsVersion = NNModelVersion::getInputsVersion(NNModelVersion::defaultModelVersion);
+  const int maxRows = 256;
+  const double firstFileMinRandProp = 1.0;
+  const int debugOnlyWriteEvery = 1;
+  TrainingDataWriter dataWriter(&out, inputsVersion, maxRows, firstFileMinRandProp, 19, 19, debugOnlyWriteEvery, seed + "dwriter");
+
+  SearchParams params;
+  params.maxVisits = 20;
+  params.useGraphSearch = true;
+  params.staticScoreUtilityFactor = 0.0;
+  params.dynamicScoreUtilityFactor = 0.0;
+  MatchPairer::BotSpec botSpec;
+  botSpec.botIdx = 0;
+  botSpec.botName = "test";
+  botSpec.nnEval = nnEval;
+  botSpec.baseParams = params;
+
+  Board initialBoard;
+  BoardHistory initialHist(initialBoard, P_BLACK, Rules(), 0);
+  ExtraBlackAndKomi extraBlackAndKomi;
+  PlaySettings playSettings;
+  playSettings.forSelfPlay = true;
+  Rand rand(seed + "play");
+  OtherGameProperties otherGameProps;
+  auto shouldStop = []() noexcept { return false; };
+  FinishedGameData* gameData = Play::runGame(
+    initialBoard, P_BLACK, initialHist, extraBlackAndKomi,
+    botSpec, botSpec,
+    seed + "search",
+    false, true,
+    logger, false, false,
+    1000, shouldStop,
+    nullptr,
+    playSettings, otherGameProps,
+    rand,
+    nullptr,
+    nullptr
+  );
+  testAssert(gameData->endHist.isGameFinished);
+  dataWriter.writeGame(*gameData);
+  dataWriter.flushIfNonempty();
+  const vector<Move>& moves = gameData->endHist.moveHistory;
+  out << "moves " << moves.size();
+  for(const Move& m : moves)
+    out << " " << Board::actionOfMoveLoc(m.loc);
+  out << "\n";
+  cout << "game of " << moves.size() << " moves, red minus blue " << gameData->endHist.finalWhiteMinusBlackScore
+       << ", rows written to " << outFile << endl;
+  delete gameData;
   delete nnEval;
   NeuralNet::globalCleanup();
 }

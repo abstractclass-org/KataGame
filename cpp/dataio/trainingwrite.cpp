@@ -387,7 +387,7 @@ static void fillQValueTarget(const vector<QValueTargetMove>& whiteQValueTargets,
     cPosTarget[i] = 0;
   }
 
-  float scoreTargetCap = (float)(NNPos::MAX_BOARD_AREA + NNPos::EXTRA_SCORE_DISTR_RADIUS);
+  float scoreTargetCap = (float)NNPos::SCORE_TARGET_CAP;  //Enclosure fork: SCORE_SCALE
 
   size_t size = whiteQValueTargets.size();
   for(size_t i = 0; i<size; i++) {
@@ -403,7 +403,8 @@ static void fillQValueTarget(const vector<QValueTargetMove>& whiteQValueTargets,
       score = -scoreTargetCap;
 
     cPosTarget[pos] = clampToRadius32000(winLoss*32000.0f,rand);
-    cPosTarget[pos+policySize] = clampToRadius32000(score*60.0f,rand);
+    //Enclosure fork: stored as score * 60 / SCORE_SCALE, so the capped range still fits the int16 (KataGo: score * 60).
+    cPosTarget[pos+policySize] = clampToRadius32000(score*(float)(60.0 / NNPos::SCORE_SCALE),rand);
     cPosTarget[pos+policySize*2] = (int16_t)(std::max((int64_t)0,std::min(entry.visits,(int64_t)32000)));
   }
 }
@@ -433,7 +434,7 @@ static void fillValueTDTargets(const vector<ValueTargets>& whiteValueTargetsByTu
     noResultValue += weightNow * targets.noResult;
     score += weightNow * (nextPlayer == P_WHITE ? targets.score : -targets.score);
   }
-  double scoreTargetCap = NNPos::MAX_BOARD_AREA + NNPos::EXTRA_SCORE_DISTR_RADIUS;
+  double scoreTargetCap = NNPos::SCORE_TARGET_CAP;  //Enclosure fork: SCORE_SCALE
   if(score > scoreTargetCap)
     score = scoreTargetCap;
   if(score < -scoreTargetCap)
@@ -594,7 +595,7 @@ void TrainingWriteBuffers::addRow(
   if(thisTargets.hasLead && !(actualGameEndHist.isGameFinished && actualGameEndHist.isNoResult)) {
     //Flip based on next player for training
     float lead = nextPlayer == P_WHITE ? thisTargets.lead : -thisTargets.lead;
-    float scoreTargetCap = NNPos::MAX_BOARD_AREA + NNPos::EXTRA_SCORE_DISTR_RADIUS;
+    float scoreTargetCap = (float)NNPos::SCORE_TARGET_CAP;  //Enclosure fork: SCORE_SCALE
     if(lead > scoreTargetCap)
       lead = scoreTargetCap;
     if(lead < -scoreTargetCap)
@@ -747,24 +748,44 @@ void TrainingWriteBuffers::addRow(
     for(int i = 0; i<posArea*2; i++)
       rowOwnership[i] = 0;
 
-    //Fill ownership info
-    Player opp = getOpp(nextPlayer);
-    for(int y = 0; y<board.y_size; y++) {
-      for(int x = 0; x<board.x_size; x++) {
-        int pos = NNPos::xyToPos(x,y,dataXLen);
-        Loc loc = Location::getLoc(x,y,board.x_size);
-        if(finalOwnership[loc] == nextPlayer) rowOwnership[pos] = 1;
-        else if(finalOwnership[loc] == opp) rowOwnership[pos] = -1;
-        //Mark full area points that ended up not being owned
-        if(finalFullArea[loc] != C_EMPTY && finalOwnership[loc] == C_EMPTY)
-          rowOwnership[pos+posArea] = (finalFullArea[loc] == nextPlayer ? 1 : -1);
+    //Enclosure fork (D2, owner): ownership is the future occupancy. Per point, the mean over the turn ends after
+    //this row's position of +1 inside the mover's regions, -1 inside the opponent's, 0 in neither or both, stored
+    //x 120 (as KataGo's scoring target). Scores are paid at every turn end, so this is what each point is worth to
+    //each side from here on. The Enclosure repository's net1 used the same target. C1 (Go's seki areas) stays 0.
+    testAssert(posHistForFutureBoards != NULL);
+    {
+      const vector<Board>& boards = *posHistForFutureBoards;
+      testAssert(whiteValueTargetsIdx >= 0 && whiteValueTargetsIdx < (int)boards.size());
+      const int mover = Board::indexOfPlayer(nextPlayer);
+      vector<float> occupancySum(posArea, 0.0f);
+      int turnEnds = 0;
+      uint8_t inside[2][enclosure::N_POINTS];
+      for(int j = whiteValueTargetsIdx + 1; j < (int)boards.size(); j++) {
+        const enclosure::Position& p = boards[j].pos;
+        //Right after a turn end, the turn's placed edges have become protected.
+        if(!p.placed.empty() || p.move_count <= boards[whiteValueTargetsIdx].pos.move_count)
+          continue;
+        turnEnds++;
+        for(int k = 0; k < 2; k++)
+          enclosure::enclosed_area(p.edges[k], inside[k]);
+        for(int x = 0; x < enclosure::SIZE; x++)
+          for(int y = 0; y < enclosure::SIZE; y++) {
+            int q = x * enclosure::SIZE + y;  //The engine's point order
+            occupancySum[NNPos::xyToPos(x,y,dataXLen)] += (float)inside[mover][q] - (float)inside[1-mover][q];
+          }
       }
+      if(turnEnds > 0)
+        for(int pos = 0; pos < posArea; pos++)
+          rowOwnership[pos] = clampToRadius120(occupancySum[pos] / turnEnds * 120.0f, rand);
     }
 
     //Fill score vector "onehot"-like
+    //Enclosure fork (D1): bins SCORE_SCALE points wide; in bin units the split between the two nearest bin
+    //centres is KataGo's.
     for(int i = 0; i<scoreDistrLen; i++)
       rowScoreDistr[i] = 0;
-    int centerScore = (int)round(score);
+    float binScore = (float)(score / NNPos::SCORE_SCALE);
+    int centerScore = (int)round(binScore);
     int lowerIdx = centerScore+scoreDistrMid-1;
     int upperIdx = centerScore+scoreDistrMid;
     if(upperIdx <= 0)
@@ -772,14 +793,16 @@ void TrainingWriteBuffers::addRow(
     else if(lowerIdx >= scoreDistrLen-1)
       rowScoreDistr[scoreDistrLen-1] = 100;
     else {
-      float lambda = score - (centerScore-0.5f);
+      float lambda = binScore - (centerScore-0.5f);
       int upperProp = (int)round(lambda*100.0f);
       rowScoreDistr[lowerIdx] = 100-upperProp;
       rowScoreDistr[upperIdx] = upperProp;
     }
   }
 
-  if(posHistForFutureBoards == NULL) {
+  //Enclosure fork (owner): Go's future stone positions are not a target (weight 0; the head is kept). The
+  //Enclosure spatial targets that may take its place are designed in ENCLOSURE.md.
+  if(true) {
     rowGlobal[33] = 0.0f;
     for(int i = 0; i<posArea; i++) {
       rowOwnership[i+posArea*2] = 0;
@@ -818,7 +841,8 @@ void TrainingWriteBuffers::addRow(
   }
 
 
-  if(finalWhiteScoring == NULL || (actualGameEndHist.isGameFinished && actualGameEndHist.isNoResult)) {
+  //Enclosure fork (owner): Go's final area/territory is not a target (weight 0; the head is kept).
+  if(true) {
     rowGlobal[34] = 0.0f;
     for(int i = 0; i<posArea; i++) {
       rowOwnership[i+posArea*4] = 0;

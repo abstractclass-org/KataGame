@@ -394,6 +394,165 @@ training rows and the Python head use the distribution (step 6).
     C++ inputs of the image position, and every legal move lands on
     `getSymAction`'s image. Scrambled symmetry labels fail.
 
+## Score scale (step 6, owner 2026-09-29)
+
+**Decided:** scores stay in raw points, and every constant KataGo tuned to
+Go's point scale is scaled by `SCORE_SCALE` = 12 (C++ `NNPos::SCORE_SCALE`,
+Python `model_pytorch.SCORE_SCALE`). That is D1's bin width against
+KataGo's 1-point bins, from the measured margins. Training then weighs every
+score term exactly as KataGo does on Go-sized scores (owner: "scale-invariant
+retune"). The rule:
+- quantities in points × s;
+- squared points × s²;
+- each loss weight ÷ its loss's growth: a Huber loss whose argument and
+  delta both scale by s grows by s², and the squared-error one by s⁴.
+
+| Constant | KataGo | Enclosure | Why KataGo picked it |
+|---|---|---|---|
+| Output multipliers: score mean, stdev, lead, short-term scores | 20 | 240 | Paper A.5: "an arbitrary reasonable scaling factor so that on typical data the neural net would only need to output values around unit scale" |
+| Short-term score error multiplier | 150 (squared points) | 21,600 | Same aim, for a squared error (model v13 rescaled it) |
+| Score distribution range | ±(361 + 60) points | ±5,052 points | Paper A.5: "an upper bound for the plausible final score difference", the board area plus 60 for komi |
+| Score target cap | 421 | 5,052 | The same bound, so targets stay in range |
+| Q-value score storage in int16 | ×60 | ×5 | Keeps ±421 within 32,000 at 1/60-point precision; ×5 keeps ±5,052 within it |
+| Huber delta: score mean | 12 | 144 | Code comment: Huber is "meanlike locally and ... medianlike for very large possible losses". The delta is where typical errors stop counting quadratically. The paper's first version used 10. |
+| Huber delta: lead / stdev / q-value score / short-term score | 8 / 10 / 12 / 12 | 96 / 120 / 144 / 144 | As above |
+| Huber delta: short-term score error | 100 (squared points) | 14,400 | As above, in squared points |
+| Irreducible error floor: short-term score | 1e-4 ("one hundredth of a point", squared) | 1.44e-2 | A regulariser: a hundredth of the unit |
+| Loss weights: score mean 0.0015, lead 0.006, stdev 0.001, short-term score 0.0004, q-value score 0.0008 | as listed | ÷144 | Chosen for Go's magnitudes (the paper's first version: 0.004 for the self-predictions). Dividing keeps each term's share of the total loss. |
+| Loss weight: short-term score error | 0.00002 | ÷20,736 | A fourth-degree loss |
+| Score distribution pdf and cdf losses | 0.02 each | unchanged | Over bins, not points (paper: pdf and cdf 0.02) |
+
+The paper's base weights, for reference: value 1.5, policy 1.0, opponent
+policy 0.15, ownership 1.5/b², score pdf and cdf 0.02 each, L2 3e-5.
+
+## Training rows and the trainer (step 6, 2026-09-29)
+
+- **Rows** (`trainingwrite.cpp`):
+  - policy targets of 17,329 moves;
+  - D2 ownership in channel 0, × 120 with KataGo's stochastic rounding. It
+    is computed from the game's positions after the row, at every turn end;
+  - score targets capped and binned as above;
+  - Go's seki, future positions and area targets zero, with weight 0 (the
+    seki loss is zeroed in Python, since its weight is the ownership
+    weight);
+  - no-result never occurs.
+- **History dropout** (owner: KataGo-style), in
+  `data_processing_pytorch.apply_history_dropout`:
+  - KataGo's draws (each item stops with probability 0.02, older ones
+    first) on the 4 history planes;
+  - the current- and previous-turn edge planes carry protection and are
+    never dropped;
+  - measured on 200,000 rows: planes kept 98.0 / 96.0 / 94.1 / 92.3 %,
+    against 0.98^k.
+- **Soft-policy mask** (metrics): a move is on the board when its source
+  point is (48 moves per point).
+- **Tests:**
+  - `katago runenclosurerowtests OUT [SEED]` plays one self-play game with
+    the no-network evaluator and writes its rows as text.
+  - The Enclosure repository's `tools/check_katago_rows.py` replays the
+    game in its engine and checks every row: inputs equal `input_planes`,
+    policy targets on legal moves, D2 ownership within the storage
+    rounding, result, score and the score distribution's mean, q-value
+    range, and Go targets zero. Three games, 360 rows: 0 failures.
+  - `--npz` writes them for `katago/python/enclosure_rows_check.py`. It
+    reads them with KataGo's `read_npz_training_data` (symmetries and
+    history dropout on), then runs the forward pass, the metrics and one
+    backward pass (no optimizer step). 21 batches: shapes as expected, and
+    every loss and gradient finite. The Go-only losses are 0.
+  - Writing real `.npz` files still needs libzip (`sudo apt install
+    libzip-dev`, the owner's, before step 8). The test uses the writer's
+    text output instead.
+
+## Spatial targets (step 6; design for the owner, 2026-09-29)
+
+**Decided (owner):**
+- KataGo's Go-only spatial targets (seki, future stone positions, final
+  area/territory) get weight 0, with their heads kept.
+- The ownership target is D2: per point, the mean over the remaining turn
+  ends of +1 inside the mover's regions, −1 inside the opponent's, and 0
+  otherwise.
+- The owner asked for Enclosure-specific targets instead. They are worked
+  out below, to be added one at a time (weight 0 until each is tested in
+  the arena).
+
+KataGo's reasons, from its code comments: auxiliary spatial targets give
+the trunk dense, per-point gradients about the future beyond the one
+policy and value number per position. Future positions use a fixed horizon
+(so a fixed number of points are "wrong" whatever the board size), and the
+far horizon has a quarter of the weight, since it is harder to predict.
+
+### 1. Future nodes (KataGo's future positions, for nodes)
+
+- **Target,** from the row's mover's side: per point, +1 if it is one of
+  the mover's nodes, −1 if one of the opponent's, 0 otherwise. It is taken
+  at two horizons, near and far, and past the end of the game the final
+  position is used.
+  - KataGo takes the board 8 and 32 moves later (`trainingwrite.cpp`), 4
+    and 16 rounds of Go. An Enclosure round is 2 turns, 4 edges.
+  - Mapping rounds gives 16 and 64 edges, over half of a 120-edge game.
+    Scaling by game length (about 250 moves in Go) gives about 4 and 16
+    edges.
+  - The choice belongs with the other time horizons below.
+- **Head and loss:** KataGo's `futurepos` head (2 channels) and its loss,
+  unchanged: squared error of tanh, horizon weights [1, 0.25], summed and
+  divided by √area, weight 0.25.
+- **What it teaches:** where each side will build next (and which nodes
+  vanish when their edges are cut). It is a spatial summary of the next
+  moves, like Go's.
+
+### 2. Edges that get cut (the counterpart of Go's dead stones and seki)
+
+- **Target:** per lattice point on a current edge (its endpoints and the
+  lattice points it passes through), 3 classes: no current edge there is
+  cut before the game ends; one of the mover's edges there is cut; one of
+  the opponent's is cut. (If both, the mover's.) An edge counts as cut when
+  that edge is removed, even if an identical edge is placed again later.
+- **Head and loss:** the `seki` head's 3 sign logits, with cross-entropy
+  per point divided by the board area. KataGo's adaptive seki scaling is
+  replaced by a plain weight, tuned when tested: it tracks how rare seki
+  is, which does not carry over.
+- **What it teaches:** which walls are weak. It is the fragility a static
+  input plane cannot show: protection lasts one turn, and a cut depends on
+  the opponent's reach and tempo.
+
+### 3. Region occupancy at several horizons (both players together)
+
+- **The owner's point:** a next-turn region gain leans greedy. So the
+  target takes both players together, over horizons out to the end of the
+  game.
+- **Target,** from the mover's side: per point, +1 inside the mover's
+  regions, −1 inside the opponent's, 0 in neither or both. It is taken at
+  the turn end 1 round and 4 rounds later.
+  - The change from now needs no separate target: the current regions are
+    an input (the enclosed feature planes), so predicting the future
+    occupancy is predicting the gain and loss of both players at once.
+  - D2 ownership (the mean over all remaining turn ends) is the
+    end-of-game member of the same ladder. So the network learns near,
+    middle and whole-game occupancy, and no single horizon dominates.
+- **Head and loss:** a new 2-channel 1×1 head, like `futurepos`, with its
+  loss form (weights [1, 0.25], ÷√area). The `scoring` head has one channel
+  only, so it stays at weight 0.
+- **Why not "next turn's gain" alone:** a short horizon rewards whatever
+  closes a region now. The 4-round horizon and D2 carry what the opponent
+  does in return.
+
+**Time horizons, an open question for the owner.** Besides future
+positions, KataGo sets horizons from Go:
+- the short-term value and score targets average the next 6, 20 and 64
+  moves (λ = 1 − 1/(1 + 361 · {0.016, 0.056, 0.176}), from the board area);
+- the short-term error targets use λ ≈ 5/6;
+- the variance-time multiplier is 40 (moves).
+
+Enclosure's board has 361 points, but a game has 120 edges against about
+250 moves in Go. Keeping the area-based formulas makes the long horizon
+half an Enclosure game; scaling by game length keeps KataGo's proportions.
+Not changed yet: the rows use KataGo's formulas as they stand.
+
+**Data:** all three come from the finished game. Self-play already keeps
+every position of the game, and at the end each row's targets are read
+from the positions h rounds later (nodes, region masks from the engine's
+`enclosed_area`, and which edges survive).
+
 ## Sizes at 17,329 actions (steps 4-6)
 
 - **`NNOutput` stores a dense policy** of `MAX_NN_POLICY_SIZE` floats,

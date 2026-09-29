@@ -798,6 +798,18 @@ int MainCmds::runenclosuretests(const vector<string>& args) {
   return 0;
 }
 
+int MainCmds::runenclosurerowtests(const vector<string>& args) {
+  if(args.size() != 2 && args.size() != 3) {
+    cerr << "usage: " << args[0] << " OUT_FILE [SEED]" << endl;
+    return 1;
+  }
+  Board::initHash();
+  ScoreValue::initTables();
+  Tests::runEnclosureRowTests(args[1], args.size() == 3 ? args[2] : "enclosure rows");
+  ScoreValue::freeTables();
+  return 0;
+}
+
 int MainCmds::runenclosurenntests(const vector<string>& args) {
   if(args.size() != 4) {
     cerr << "usage: " << args[0] << " MODEL_FILE INPUTS_FILE OUT_FILE" << endl;

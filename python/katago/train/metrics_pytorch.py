@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
 import math
 
-from ..train.model_pytorch import EXTRA_SCORE_DISTR_RADIUS, policy_len, Model, compute_gain, ExtraOutputs, MetadataEncoder
+from ..train.model_pytorch import EXTRA_SCORE_DISTR_RADIUS, NUM_OFFSETS, SCORE_SCALE, policy_len, Model, compute_gain, ExtraOutputs, MetadataEncoder
 from ..train.trainloop_helpers import env_flag
 
 import torch
@@ -109,13 +109,13 @@ class Metrics:
         ) / (sum_sqrtvisits + 1.0)  # Add 1.0 to sum of sqrt visits so that we don't divide by 0 if we have no such data.
 
         pred_score = pred_score_prescaled * mask * self.scoremean_multiplier
-        loss_qvalues_score_by_move = huber_loss(pred_score, target_score, delta = 12.0) * sqrtvisits
+        loss_qvalues_score_by_move = huber_loss(pred_score, target_score, delta = 12.0 * SCORE_SCALE) * sqrtvisits  # Enclosure fork: SCORE_SCALE
         loss_qvalues_score = torch.sum(
             loss_qvalues_score_by_move * sqrtvisits,
             dim=1,
         ) / (sum_sqrtvisits + 1.0)  # Add 1.0 to sum of sqrt visits so that we don't divide by 0 if we have no such data.
 
-        return 1.5 * global_weight * loss_qvalues_winloss, 0.0008 * global_weight * loss_qvalues_score
+        return 1.5 * global_weight * loss_qvalues_winloss, 0.0008 / SCORE_SCALE ** 2 * global_weight * loss_qvalues_score
 
 
     def loss_value_samplewise(self, pred_logits, target_probs, weight, global_weight):
@@ -139,8 +139,8 @@ class Metrics:
         n = pred.shape[0]
         assert pred.shape == (n, self.num_td_values)
         assert target.shape == (n, self.num_td_values)
-        loss = torch.sum(huber_loss(pred, target, delta = 12.0), dim=1)
-        return 0.0004 * global_weight * weight * loss
+        loss = torch.sum(huber_loss(pred, target, delta = 12.0 * SCORE_SCALE), dim=1)  # Enclosure fork: SCORE_SCALE
+        return 0.0004 / SCORE_SCALE ** 2 * global_weight * weight * loss
 
 
     def loss_ownership_samplewise(self, pred_pretanh, target, weight, mask, mask_sum_hw, global_weight):
@@ -254,8 +254,8 @@ class Metrics:
         # be what users want.
         assert pred.shape == target.shape
         assert pred.ndim == 1
-        loss = huber_loss(pred, target, delta = 12.0)
-        return 0.0015 * global_weight * weight * loss
+        loss = huber_loss(pred, target, delta = 12.0 * SCORE_SCALE)  # Enclosure fork: SCORE_SCALE
+        return 0.0015 / SCORE_SCALE ** 2 * global_weight * weight * loss
 
 
     def loss_scorebelief_cdf_samplewise(self, pred_logits, target_probs, weight, global_weight):
@@ -284,8 +284,8 @@ class Metrics:
             ),
             dim=1
         ))
-        loss = huber_loss(pred, stdev_of_belief, delta = 10.0)
-        return 0.001 * global_weight * loss
+        loss = huber_loss(pred, stdev_of_belief, delta = 10.0 * SCORE_SCALE)  # Enclosure fork: SCORE_SCALE
+        return 0.001 / SCORE_SCALE ** 2 * global_weight * loss
 
     def loss_lead_samplewise(self, pred, target, weight, global_weight):
         # Huber will incentivize this to not actually converge to the mean,
@@ -294,8 +294,8 @@ class Metrics:
         # be what users want.
         assert pred.shape == target.shape
         assert pred.ndim == 1
-        loss = huber_loss(pred, target, delta = 8.0)
-        return 0.0060 * global_weight * weight * loss
+        loss = huber_loss(pred, target, delta = 8.0 * SCORE_SCALE)  # Enclosure fork: SCORE_SCALE
+        return 0.0060 / SCORE_SCALE ** 2 * global_weight * weight * loss
 
     def loss_variance_time_samplewise(self, pred, target, weight, global_weight):
         assert pred.shape == target.shape
@@ -318,9 +318,9 @@ class Metrics:
         predscore = td_score_pred[:,2].detach()
         realscore = td_score_target[:,2]
         # Even if the training target is 0, add a tiny bit of irreducible error for regularizing the prediction, one hundredth of a point.
-        sqerror = torch.square(predscore-realscore) + 1.0e-4
-        loss = huber_loss(pred, sqerror, delta = 100.0)
-        return 0.00002 * global_weight * weight * loss
+        sqerror = torch.square(predscore-realscore) + 1.0e-4 * SCORE_SCALE ** 2  # Enclosure fork: SCORE_SCALE
+        loss = huber_loss(pred, sqerror, delta = 100.0 * SCORE_SCALE ** 2)
+        return 0.00002 / SCORE_SCALE ** 4 * global_weight * weight * loss
 
     def accuracy1(self, pred_logits, target_probs, weight, global_weight):
         return torch.sum(global_weight * weight * (torch.argmax(pred_logits,dim=1) == torch.argmax(target_probs,dim=1)))
@@ -591,7 +591,8 @@ class Metrics:
         h = input_binary_nchw.shape[2]
         w = input_binary_nchw.shape[3]
 
-        policymask = torch.cat((mask.view(n,h*w),mask.new_ones((n,1))),dim=1)
+        # Enclosure fork: a move is on the board when its source point is; each point has NUM_OFFSETS moves.
+        policymask = torch.cat((mask.view(n,h*w).repeat_interleave(NUM_OFFSETS, dim=1),mask.new_ones((n,1))),dim=1)
 
         target_policy_player = target_policy_ncmove[:, 0, :]
         target_policy_player = target_policy_player / torch.sum(target_policy_player, dim=1, keepdim=True)
@@ -627,7 +628,8 @@ class Metrics:
 
         target_score_distribution = score_distribution_ns / 100.0
 
-        target_ownership = target_value_nchw[:, 0, :, :]
+        # Enclosure fork (D2): the future occupancy, stored x 120 as the scoring target (trainingwrite.cpp).
+        target_ownership = target_value_nchw[:, 0, :, :] / 120.0
         target_seki = target_value_nchw[:, 1, :, :]
         target_futurepos = target_value_nchw[:, 2:4, :, :]
         target_scoring = target_value_nchw[:, 4, :, :] / 120.0
@@ -821,11 +823,12 @@ class Metrics:
             mask_sum_hw,
             global_weight,
         ).sum()
+        # Enclosure fork (owner): Go's seki is not a target; weight 0, the head is kept.
         (loss_seki,seki_weight_scale) = self.loss_seki_samplewise(
             seki_logits,
             target_seki,
             target_ownership,
-            target_weight_ownership,
+            target_weight_ownership * 0.0,
             mask,
             mask_sum_hw,
             global_weight,
@@ -895,7 +898,7 @@ class Metrics:
                 policy_logits[:, 6, :],
                 policy_logits[:, 7, :],
                 target_qvalue_ncmove[:, 0, :] / 32000.0,
-                target_qvalue_ncmove[:, 1, :] / 60.0,
+                target_qvalue_ncmove[:, 1, :] / (60.0 / SCORE_SCALE),  # Enclosure fork: stored as score * 60 / SCORE_SCALE
                 target_qvalue_ncmove[:, 2, :],
                 global_weight
             )
