@@ -1265,7 +1265,7 @@ int MainCmds::analysis(const vector<string>& args) {
           }
 
           vector<int>& avoidMoveUntilByLoc = avoidPla == P_BLACK ? rbase.avoidMoveUntilByLocBlack : rbase.avoidMoveUntilByLocWhite;
-          avoidMoveUntilByLoc.resize(Board::MAX_ARR_SIZE);
+          avoidMoveUntilByLoc.resize(Board::NUM_MOVE_LOCS);
           if(hasAllowMoves) {
             std::fill(avoidMoveUntilByLoc.begin(),avoidMoveUntilByLoc.end(),(int)untilDepth);
             for(Loc loc: parsedLocs) {

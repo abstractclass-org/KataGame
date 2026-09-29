@@ -108,9 +108,9 @@ void PlayUtils::setKomiWithNoise(const ExtraBlackAndKomi& extraBlackAndKomi, Boa
 
 Loc PlayUtils::chooseRandomLegalMove(const Board& board, const BoardHistory& hist, Player pla, Rand& gameRand, Loc banMove) {
   int numLegalMoves = 0;
-  Loc locs[Board::MAX_ARR_SIZE];
+  Loc locs[Board::NUM_MOVE_LOCS];
   testAssert(pla == hist.presumedNextMovePla);
-  for(Loc loc = 0; loc < Board::MAX_ARR_SIZE; loc++) {
+  for(Loc loc = 0; loc < Board::NUM_MOVE_LOCS; loc++) {
     if(hist.isLegal(board,loc,pla) && loc != banMove) {
       locs[numLegalMoves] = loc;
       numLegalMoves += 1;
@@ -125,9 +125,9 @@ Loc PlayUtils::chooseRandomLegalMove(const Board& board, const BoardHistory& his
 
 int PlayUtils::chooseRandomLegalMoves(const Board& board, const BoardHistory& hist, Player pla, Rand& gameRand, Loc* buf, int len) {
   int numLegalMoves = 0;
-  Loc locs[Board::MAX_ARR_SIZE];
+  Loc locs[Board::NUM_MOVE_LOCS];
   testAssert(pla == hist.presumedNextMovePla);
-  for(Loc loc = 0; loc < Board::MAX_ARR_SIZE; loc++) {
+  for(Loc loc = 0; loc < Board::NUM_MOVE_LOCS; loc++) {
     if(hist.isLegal(board,loc,pla)) {
       locs[numLegalMoves] = loc;
       numLegalMoves += 1;
@@ -794,7 +794,7 @@ vector<bool> PlayUtils::computeAnticipatedStatusesWithOwnership(
         continue;
 
       if(board.colors[loc] == P_WHITE || board.colors[loc] == P_BLACK) {
-        int pos = NNPos::locToPos(loc,board.x_size,nnXLen,nnYLen);
+        int pos = NNPos::pointToPos(loc,board.x_size,nnXLen);
         double minOwnership = ownerships[pos];
         double maxOwnership = ownerships[pos];
         double ownershipSum = 0.0;
@@ -803,7 +803,7 @@ vector<bool> PlayUtils::computeAnticipatedStatusesWithOwnership(
         //Run through the whole chain
         Loc cur = loc;
         do {
-          pos = NNPos::locToPos(cur,board.x_size,nnXLen,nnYLen);
+          pos = NNPos::pointToPos(cur,board.x_size,nnXLen);
           minOwnership = std::min(ownerships[pos],minOwnership);
           maxOwnership = std::max(ownerships[pos],maxOwnership);
           ownershipSum += ownerships[pos];
@@ -1186,7 +1186,7 @@ Loc PlayUtils::maybeFriendlyPass(
   for(int y = 0; y<board.y_size && !foundUnsurroundedSpot; y++) {
     for(int x = 0; x<board.x_size && !foundUnsurroundedSpot; x++) {
       Loc loc = Location::getLoc(x,y,board.x_size);
-      int pos = NNPos::locToPos(loc,board.x_size,nnXLen,nnYLen);
+      int pos = NNPos::pointToPos(loc,board.x_size,nnXLen);
       if(ownerships[pos] > highOwnershipThreshold && area[loc] != C_WHITE)
         foundUnsurroundedSpot = true;
       if(ownerships[pos] < -highOwnershipThreshold && area[loc] != C_BLACK)

@@ -238,6 +238,7 @@ Board::Board(const Board& other)
   numWhiteCaptures = other.numWhiteCaptures;
   memcpy(adj_offsets, other.adj_offsets, sizeof(short)*8);
   pos = other.pos;
+  legalActions = other.legalActions;
 }
 
 void Board::init(int xS, int yS)
@@ -333,7 +334,7 @@ void Board::initHash()
 }
 
 //The canonical edge as an action index: from its lower end (the engine's Edge ordering).
-static int edgeIndex(const enclosure::Edge& e) {
+int Board::edgeIndex(const enclosure::Edge& e) {
   return (e.ay * enclosure::SIZE + e.ax) * enclosure::NOFF + enclosure::OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
 }
 
@@ -368,6 +369,11 @@ void Board::syncFromPosition() {
   h ^= scoreHash(pos.scores[0], 0x9E3779B97F4A7C15ULL);
   h ^= scoreHash(pos.scores[1], 0xC2B2AE3D27D4EB4FULL);
   pos_hash = h;
+  legalActions.reset();
+  std::vector<int> actions;
+  pos.legal_actions(actions);
+  for(int a : actions)
+    legalActions.set(a);
 }
 
 Hash128 Board::getSitHashWithSimpleKo(Player pla) const {
@@ -441,9 +447,7 @@ bool Board::isLegal(Loc loc, Player pla, bool) const {
     return false;
   if(loc != PASS_LOC && (loc < MOVE_LOC_BASE || loc >= NUM_MOVE_LOCS))
     return false;
-  std::vector<int> actions;
-  pos.legal_actions(actions);
-  return std::find(actions.begin(), actions.end(), actionOfMoveLoc(loc)) != actions.end();
+  return legalActions.test(actionOfMoveLoc(loc));
 }
 
 bool Board::playMove(Loc loc, Player pla, bool isMultiStoneSuicideLegal) {

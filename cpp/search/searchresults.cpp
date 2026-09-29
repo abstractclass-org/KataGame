@@ -247,7 +247,7 @@ bool Search::getPlaySelectionValues(
       return false;
     const std::vector<int>& avoidMoveUntilByLoc = rootPla == P_BLACK ? avoidMoveUntilByLocBlack : avoidMoveUntilByLocWhite;
     if(avoidMoveUntilByLoc.size() > 0) {
-      testAssert(avoidMoveUntilByLoc.size() >= Board::MAX_ARR_SIZE);
+      testAssert(avoidMoveUntilByLoc.size() >= Board::NUM_MOVE_LOCS);
       int untilDepth = avoidMoveUntilByLoc[moveLoc];
       if(untilDepth > 0)
         return false;

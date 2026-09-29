@@ -122,11 +122,11 @@ struct Search {
   std::vector<FocusMoves*> rootFocusToCleanUp;
 
   //If rootSymmetryPruning==true and the board is symmetric, mask all the equivalent copies of each move except one.
-  bool rootSymDupLoc[Board::MAX_ARR_SIZE];
+  bool rootSymDupLoc[Board::NUM_MOVE_LOCS];
   //For each location, the location that the search actually explores for a move there at the root. Equal to the
   //location itself unless rootSymDupLoc masks it, in which case it is the unmasked equivalent copy, or NULL_LOC
   //if there is none. Recomputed at the start of each search.
-  Loc rootSymRepresentativeLoc[Board::MAX_ARR_SIZE];
+  Loc rootSymRepresentativeLoc[Board::NUM_MOVE_LOCS];
   //If rootSymmetryPruning==true, symmetries under which the root board and history are invariant, including some heuristics for ko and encore-related state.
   std::vector<int> rootSymmetries;
   std::vector<int> rootPruneOnlySymmetries;

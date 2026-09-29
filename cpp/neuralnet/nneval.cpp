@@ -868,12 +868,9 @@ void NNEvaluator::serve(
         // At this point, these aren't probabilities, since this is before the postprocessing
         // that happens for each result. These just need to be unnormalized log probabilities.
         // Illegal move filtering happens later.
-        for(int y = 0; y<boardYSize; y++) {
-          for(int x = 0; x<boardXSize; x++) {
-            int pos = NNPos::xyToPos(x,y,nnXLen);
-            policyProbs[pos] = (float)rand.nextGaussian();
-          }
-        }
+        //Enclosure fork: one entry per edge, not per point (see NNPos).
+        for(int pos = 0; pos<NNPos::getPassPos(nnXLen,nnYLen); pos++)
+          policyProbs[pos] = (float)rand.nextGaussian();
         policyProbs[NNPos::locToPos(Board::PASS_LOC,boardXSize,nnXLen,nnYLen)] = (float)rand.nextGaussian();
 
         resultBuf->result->nnXLen = nnXLen;

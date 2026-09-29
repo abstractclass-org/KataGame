@@ -81,7 +81,8 @@ the 29 `getOpp` calls in `search/`:
   `moveHistory.back().pla`.**
   - Subtree value bias in `Search::allocateOrFindNode` (on in self-play,
     `subtreeValueBiasFactor = 0.30`). Its key's previous move stays the
-    literal previous move, which may be the same player's first edge.
+    literal previous move, which may be the same player's first edge. Its
+    local pattern is adapted to edges (below).
 - **"The other player" as an identity: unchanged.** Visit-cap contempt,
   pondering's assumed side, and playout doubling advantage all name a player,
   not the next mover.
@@ -115,6 +116,27 @@ Tests (behaviour, run with asserts on):
 - **Transposed turns share a node** in the graph search (A then B equals B
   then A).
 - **PV players** follow the 1-2-2 order.
+
+## Subtree value bias (owner, 2026-09-29)
+
+KataGo buckets search nodes by the mover, the last move, the move before it,
+and a 5×5 window of point colours and atari around the last move. Each
+bucket's average error of the network against deeper search then corrects
+new nodes in the same bucket (`docs/KataGoMethods.md`).
+
+- **Enclosure keeps the intention:** the same local tactic in the same local
+  shape shares a bucket.
+- **`LocalPatternHasher::getHash`** centres a **7×7** window on the edge's
+  source point, which covers the whole edge. It hashes every edge of either
+  player with an endpoint in the window (owner and exact edge), plus
+  whether each is protected.
+  - Point colours alone would miss which nodes are joined: a closed wall and
+    four loose nodes would share a bucket.
+  - Protection plays the part of Go's atari flag.
+- **Unchanged:** λ = 0.30 (the self-play config), α, and the key's last two
+  moves. The mover comes from the history.
+- **`getHashWithSym`** (the pattern bonus table, off by default) refuses
+  until edge symmetries exist (step 4).
 
 ## Moves where points are expected (found 2026-09-29; blocks step 3)
 
@@ -150,7 +172,32 @@ Found so far:
   `isAdjacentToPla(moveLoc, ...)`.
 
 Every such place is resized to `Board::NUM_MOVE_LOCS`, or to the policy
-size, or given the point a move means.
+size, or given the point a move means. Also found and fixed:
+
+- **`getEndingWhiteScoreBonus`** (Go's dame-filling bonus, on in self-play)
+  read ownership at `whiteOwnerMap[action index]`, past its 361 entries. It
+  returns 0 now, which is exactly neutral: it only shifts the score, and
+  score utility is 0.
+- **`NNPos::locToPos` meant both** a move's policy index and a point's
+  spatial index. It now takes moves only. Points use
+  `NNPos::pointToPos`.
+- **Root symmetry pruning** refuses to run until edge symmetries exist
+  (step 4). It is off by default and in self-play.
+
+## Policy indexing (moved from step 4 into step 3)
+
+The search cannot expand Enclosure moves without it, so it comes first.
+
+- **`NNPos::MAX_NN_POLICY_SIZE`** = 19 × 19 × 48 + 1 = 17,329.
+- **`locToPos`** maps a move to its action index, with pass last at
+  17,328.
+- **The no-network evaluator (`debugSkipNeuralNet`)** fills every policy
+  entry.
+- **`Board` keeps its legal moves as a bitset**, updated with the position,
+  so `isLegal` is a lookup. The evaluator asks it once for each of the
+  17,329 entries.
+- **Left for step 4:** the network's inputs, symmetries, and how the
+  backends lay out the 48 channels per point.
 
 ## Sizes at 17,329 actions (steps 4-6)
 

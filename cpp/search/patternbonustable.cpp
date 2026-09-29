@@ -13,7 +13,7 @@ using namespace std;
 static std::mutex initMutex;
 static std::atomic<bool> isInited(false);
 static LocalPatternHasher patternHasher;
-static Hash128 ZOBRIST_MOVE_LOCS[Board::MAX_ARR_SIZE];
+static Hash128 ZOBRIST_MOVE_LOCS[Board::NUM_MOVE_LOCS];  //Indexed by move (Enclosure fork)
 
 static void initIfNeeded() {
   if(isInited)
@@ -25,7 +25,7 @@ static void initIfNeeded() {
   patternHasher.init(9,9,rand);
 
   rand.init("Reseed PatternBonusTable zobrist so that zobrists don't change when Board::MAX_ARR_SIZE changes");
-  for(int i = 0; i<Board::MAX_ARR_SIZE; i++) {
+  for(int i = 0; i<Board::NUM_MOVE_LOCS; i++) {
     uint64_t h0 = rand.nextUInt64();
     uint64_t h1 = rand.nextUInt64();
     ZOBRIST_MOVE_LOCS[i] = Hash128(h0,h1);

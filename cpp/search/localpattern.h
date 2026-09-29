@@ -12,12 +12,18 @@ struct LocalPatternHasher {
   std::vector<Hash128> zobristLocalPattern;
   std::vector<Hash128> zobristPla;
   std::vector<Hash128> zobristAtari;
+  //Enclosure fork: by owner and edge index, and by edge index for protected edges.
+  std::vector<Hash128> zobristEdge;
+  std::vector<Hash128> zobristProtected;
 
   LocalPatternHasher();
   ~LocalPatternHasher();
 
   void init(int xSize, int ySize, Rand& rand);
 
+  //Enclosure fork: loc is a move. The window (xSize by ySize points) is centred on the edge's source
+  //point, and hashes every edge of either player with an endpoint inside it, and whether it is protected
+  //(owner, 2026-09-29; ENCLOSURE.md, "Subtree value bias").
   Hash128 getHash(const Board& board, Loc loc, Player pla) const;
 
   //Returns the hash that would occur if symmetry were applied to both board and loc.

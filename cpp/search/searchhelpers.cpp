@@ -18,8 +18,8 @@ uint32_t Search::chooseIndexWithTemperature(
   double* processedRelProbsBuf
 ) {
   testAssert(numRelativeProbs > 0);
-  testAssert(numRelativeProbs <= Board::MAX_ARR_SIZE); //We're just doing this on the stack
-  double processedRelProbs[Board::MAX_ARR_SIZE];
+  testAssert(numRelativeProbs <= NNPos::MAX_NN_POLICY_SIZE); //We're just doing this on the stack
+  double processedRelProbs[NNPos::MAX_NN_POLICY_SIZE];
   if(processedRelProbsBuf == NULL)
     processedRelProbsBuf = &processedRelProbs[0];
 
@@ -212,10 +212,10 @@ std::shared_ptr<NNOutput>* Search::maybeAddPolicyNoiseAndTemp(SearchThread& thre
   if(avoidMoveUntilRescaleRoot) {
     const std::vector<int>& avoidMoveUntilByLoc = rootPla == P_BLACK ? avoidMoveUntilByLocBlack : avoidMoveUntilByLocWhite;
     if(avoidMoveUntilByLoc.size() > 0) {
-      testAssert(avoidMoveUntilByLoc.size() >= Board::MAX_ARR_SIZE);
+      testAssert(avoidMoveUntilByLoc.size() >= Board::NUM_MOVE_LOCS);
       double policySum = 0.0;
-      for(Loc loc = 0; loc<Board::MAX_ARR_SIZE; loc++) {
-        if((rootBoard.isOnBoard(loc) || loc == Board::PASS_LOC) && avoidMoveUntilByLoc[loc] <= 0) {
+      for(Loc loc = 0; loc<Board::NUM_MOVE_LOCS; loc++) {
+        if((loc >= Board::MOVE_LOC_BASE || loc == Board::PASS_LOC) && avoidMoveUntilByLoc[loc] <= 0) {
           int pos = getPos(loc);
           if(noisedPolicyProbs[pos] > 0) {
             policySum += noisedPolicyProbs[pos];
@@ -308,7 +308,7 @@ double Search::getUtilityFromNN(const NNOutput& nnOutput) const {
 
 
 bool Search::isAllowedRootMove(Loc moveLoc) const {
-  assert(moveLoc == Board::PASS_LOC || rootBoard.isOnBoard(moveLoc));
+  assert(moveLoc == Board::PASS_LOC || (moveLoc >= Board::MOVE_LOC_BASE && moveLoc < Board::NUM_MOVE_LOCS));
 
   //A bad situation that can happen that unnecessarily prolongs training games is where one player
   //repeatedly passes and the other side repeatedly fills the opponent's space and/or suicides over and over.
@@ -343,9 +343,9 @@ bool Search::isAllowedRootMove(Loc moveLoc) const {
 
 //Must be called after rootSymDupLoc and rootSymmetries are computed for the current search.
 void Search::computeRootSymRepresentativeLocs() {
-  for(Loc loc = 0; loc < Board::MAX_ARR_SIZE; loc++) {
+  for(Loc loc = 0; loc < Board::NUM_MOVE_LOCS; loc++) {
     rootSymRepresentativeLoc[loc] = loc;
-    if(!searchParams.rootSymmetryPruning || loc == Board::PASS_LOC || !rootBoard.isOnBoard(loc) || !rootSymDupLoc[loc])
+    if(!searchParams.rootSymmetryPruning || loc < Board::MOVE_LOC_BASE || !rootSymDupLoc[loc])
       continue;
     rootSymRepresentativeLoc[loc] = Board::NULL_LOC;
     for(int symmetry: rootSymmetries) {
@@ -366,6 +366,10 @@ double Search::getPatternBonus(Hash128 patternBonusHash, Player prevMovePla) con
 
 
 double Search::getEndingWhiteScoreBonus(const SearchNode& parent, Loc moveLoc) const {
+  //Enclosure fork: Go's dame-filling bonus reads ownership at the move's point; an edge has none.
+  //Neutral: the bonus only shifts the score, and score utility is 0 (ENCLOSURE.md).
+  (void)parent; (void)moveLoc;
+  return 0.0;
   if(&parent != rootNode || moveLoc == Board::NULL_LOC)
     return 0.0;
 

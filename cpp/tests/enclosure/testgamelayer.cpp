@@ -75,6 +75,16 @@ int main(int argc, char** argv) {
       Player pla = hist.presumedNextMovePla;
       if(pla != board.nextPla())
         fail(where + ": BoardHistory and Board disagree on the player to move");
+      //isLegal (the cached set) agrees with the legal list on every action, pass included.
+      int numLegal = 0;
+      for(int a = 0; a <= enclosure::PASS; a++)
+        if(board.isLegal(Board::moveLocOfAction(a), pla, false))
+          numLegal++;
+      for(int a : legal)
+        if(!board.isLegal(Board::moveLocOfAction(a), pla, false))
+          numLegal = -1;
+      if(numLegal != (int)legal.size())
+        fail(where + ": isLegal differs from the legal list");
       if(!hist.isLegal(board, loc, pla))
         fail(where + ": the move is not legal for BoardHistory");
       if(loc != Board::PASS_LOC) {

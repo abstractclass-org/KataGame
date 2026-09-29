@@ -6,7 +6,7 @@
 static std::mutex initMutex;
 static std::atomic<bool> isInited(false);
 static LocalPatternHasher patternHasher;
-static Hash128 ZOBRIST_MOVE_LOCS[Board::MAX_ARR_SIZE][2];
+static Hash128 ZOBRIST_MOVE_LOCS[Board::NUM_MOVE_LOCS][2];  //Indexed by move (Enclosure fork)
 static Hash128 ZOBRIST_KO_BAN[Board::MAX_ARR_SIZE];
 
 static void initIfNeeded() {
@@ -16,9 +16,9 @@ static void initIfNeeded() {
   if(isInited)
     return;
   Rand rand("ValueBiasTable ZOBRIST STUFF");
-  patternHasher.init(5,5,rand);
+  patternHasher.init(7,7,rand);  //Enclosure fork: 7x7 covers a whole edge from its source (offsets up to 3; owner)
 
-  for(int i = 0; i<Board::MAX_ARR_SIZE; i++) {
+  for(int i = 0; i<Board::NUM_MOVE_LOCS; i++) {
     for(int j = 0; j<2; j++) {
       uint64_t h0 = rand.nextUInt64();
       uint64_t h1 = rand.nextUInt64();

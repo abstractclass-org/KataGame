@@ -44,6 +44,18 @@ void LocalPatternHasher::init(int x, int y, Rand& rand) {
       zobristAtari[dy*xSize + dx] = Hash128(h0,h1);
     }
   }
+  zobristEdge.resize(2 * enclosure::PASS);
+  zobristProtected.resize(enclosure::PASS);
+  for(int i = 0; i<2 * enclosure::PASS; i++) {
+    uint64_t h0 = rand.nextUInt64();
+    uint64_t h1 = rand.nextUInt64();
+    zobristEdge[i] = Hash128(h0,h1);
+  }
+  for(int i = 0; i<enclosure::PASS; i++) {
+    uint64_t h0 = rand.nextUInt64();
+    uint64_t h1 = rand.nextUInt64();
+    zobristProtected[i] = Hash128(h0,h1);
+  }
 }
 
 LocalPatternHasher::~LocalPatternHasher() {
@@ -53,31 +65,26 @@ LocalPatternHasher::~LocalPatternHasher() {
 Hash128 LocalPatternHasher::getHash(const Board& board, Loc loc, Player pla) const {
   Hash128 hash = zobristPla[pla];
 
+  //Enclosure fork. Go hashes point colours and atari around the move's point. An edge has no single
+  //point, and nodes alone do not show which of them are joined, so the window is centred on the edge's
+  //source point and hashes the edges that reach into it, with their protection (Go's atari flag marks
+  //what is fragile now; a protected edge cannot be cut this turn).
   if(loc != Board::PASS_LOC && loc != Board::NULL_LOC) {
-    const int dxi = board.adj_offsets[2];
-    const int dyi = board.adj_offsets[3];
-    assert(dxi == 1);
-    assert(dyi == board.x_size+1);
-
+    assert(loc >= Board::MOVE_LOC_BASE && loc < Board::NUM_MOVE_LOCS);
+    int cell = Board::actionOfMoveLoc(loc) / enclosure::NOFF;
+    int cx = cell % enclosure::SIZE;
+    int cy = cell / enclosure::SIZE;
     int xRadius = xSize/2;
     int yRadius = ySize/2;
-    int xCenter = xSize/2;
-    int yCenter = ySize/2;
-
-    int x = Location::getX(loc,board.x_size);
-    int y = Location::getY(loc,board.x_size);
-    int dxMin = -xRadius, dxMax = xRadius, dyMin = -yRadius, dyMax = yRadius;
-    if(x < xRadius) { dxMin = -x; } else if(x >= board.x_size-xRadius) { dxMax = board.x_size-1-x; }
-    if(y < yRadius) { dyMin = -y; } else if(y >= board.y_size-yRadius) { dyMax = board.y_size-1-y; }
-    for(int dy = dyMin; dy <= dyMax; dy++) {
-      for(int dx = dxMin; dx <= dxMax; dx++) {
-        Loc loc2 = loc + dx * dxi + dy * dyi;
-        int y2 = dy + yCenter;
-        int x2 = dx + xCenter;
-        int xy2 = y2 * xSize + x2;
-        hash ^= zobristLocalPattern[(int)board.colors[loc2] * xSize * ySize + xy2];
-        if((board.colors[loc2] == P_BLACK || board.colors[loc2] == P_WHITE) && board.getNumLiberties(loc2) == 1)
-          hash ^= zobristAtari[xy2];
+    auto inWindow = [&](int x, int y) { return std::abs(x - cx) <= xRadius && std::abs(y - cy) <= yRadius; };
+    for(int owner = 0; owner < 2; owner++) {
+      for(const enclosure::Edge& e : board.pos.edges[owner]) {
+        if(!inWindow(e.ax, e.ay) && !inWindow(e.bx, e.by))
+          continue;
+        int idx = Board::edgeIndex(e);
+        hash ^= zobristEdge[owner * enclosure::PASS + idx];
+        if(enclosure::contains(board.pos.protected_, e))
+          hash ^= zobristProtected[idx];
       }
     }
   }
@@ -86,6 +93,8 @@ Hash128 LocalPatternHasher::getHash(const Board& board, Loc loc, Player pla) con
 }
 
 Hash128 LocalPatternHasher::getHashWithSym(const Board& board, Loc loc, Player pla, int symmetry, bool flipColors) const {
+  //Enclosure fork: only the pattern bonus table (off by default) uses this; it needs edge symmetries (plan step 4).
+  throw StringError("LocalPatternHasher::getHashWithSym is not supported for Enclosure yet (edge symmetries: plan step 4)");
   Player symPla = flipColors ? getOpp(pla) : pla;
   Hash128 hash = zobristPla[symPla];
 

@@ -664,7 +664,7 @@ void Search::selectBestChildToDescend(
           continue;
       }
       if(avoidMoveUntilByLoc.size() > 0) {
-        assert(avoidMoveUntilByLoc.size() >= Board::MAX_ARR_SIZE);
+        assert(avoidMoveUntilByLoc.size() >= Board::NUM_MOVE_LOCS);
         int untilDepth = avoidMoveUntilByLoc[moveLoc];
         if(thread.history.moveHistory.size() - rootHistory.moveHistory.size() < untilDepth)
           continue;
@@ -718,7 +718,7 @@ void Search::selectBestChildToDescend(
         continue;
     }
     if(avoidMoveUntilByLoc.size() > 0) {
-      assert(avoidMoveUntilByLoc.size() >= Board::MAX_ARR_SIZE);
+      assert(avoidMoveUntilByLoc.size() >= Board::NUM_MOVE_LOCS);
       int untilDepth = avoidMoveUntilByLoc[moveLoc];
       if(thread.history.moveHistory.size() - rootHistory.moveHistory.size() < untilDepth)
         continue;

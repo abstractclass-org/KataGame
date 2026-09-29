@@ -10,36 +10,50 @@
 #include "../game/boardhistory.h"
 #include "../game/rules.h"
 
+//Enclosure fork: the policy has one entry per edge, NUM_OFFSETS per point (the Enclosure action
+//index (y * 19 + x) * 48 + offset), plus pass last. Spatial planes (inputs, ownership) still use
+//xyToPos, one entry per point.
 namespace NNPos {
   constexpr int MAX_BOARD_LEN = Board::MAX_LEN;
   constexpr int MAX_BOARD_AREA = MAX_BOARD_LEN * MAX_BOARD_LEN;
+  constexpr int NUM_OFFSETS = enclosure::NOFF;
   //Policy output adds +1 for the pass move
-  constexpr int MAX_NN_POLICY_SIZE = MAX_BOARD_AREA + 1;
+  constexpr int MAX_NN_POLICY_SIZE = MAX_BOARD_AREA * NUM_OFFSETS + 1;
+  static_assert(MAX_NN_POLICY_SIZE == enclosure::PASS + 1, "policy index = Enclosure action index");
   //Extra score distribution radius, used for writing score in data rows and for the neural net score belief output
   constexpr int EXTRA_SCORE_DISTR_RADIUS = 60;
   //Used various places we clip komi beyond board area.
   constexpr float KOMI_CLIP_RADIUS = 20.0f;
 
   inline int xyToPos(int x, int y, int nnXLen) { return y * nnXLen + x; }
-  inline int locToPos(Loc loc, int boardXSize, int nnXLen, int nnYLen) {
-    if(loc == Board::PASS_LOC)
-      return nnXLen * nnYLen;
-    else if(loc == Board::NULL_LOC)
-      return nnXLen * (nnYLen + 1);
+  //A point's index in a spatial plane (KataGo's locToPos for points; locToPos is for moves here).
+  inline int pointToPos(Loc loc, int boardXSize, int nnXLen) {
+    assert(loc >= 0 && loc < Board::MAX_ARR_SIZE);
     return Location::getY(loc,boardXSize) * nnXLen + Location::getX(loc,boardXSize);
   }
-  inline Loc posToLoc(int pos, int boardXSize, int boardYSize, int nnXLen, int nnYLen) {
-    if(pos == nnXLen * nnYLen)
-      return Board::PASS_LOC;
-    int x = pos % nnXLen;
-    int y = pos / nnXLen;
-    if(x < 0 || x >= boardXSize || y < 0 || y >= boardYSize)
-      return Board::NULL_LOC;
-    return Location::getLoc(x,y,boardXSize);
+  //Moves (Board::moveLocOfAction) and policy indices. The board and the net are both 19x19.
+  inline int getPassPos(int nnXLen, int nnYLen) { return nnXLen * nnYLen * NUM_OFFSETS; }
+  inline bool isPassPos(int pos, int nnXLen, int nnYLen) { return pos == getPassPos(nnXLen, nnYLen); }
+  inline int getPolicySize(int nnXLen, int nnYLen) { return nnXLen * nnYLen * NUM_OFFSETS + 1; }
+  inline int locToPos(Loc loc, int boardXSize, int nnXLen, int nnYLen) {
+    assert(boardXSize == enclosure::SIZE && nnXLen == enclosure::SIZE && nnYLen == enclosure::SIZE);
+    (void)boardXSize;
+    if(loc == Board::PASS_LOC)
+      return getPassPos(nnXLen, nnYLen);
+    else if(loc == Board::NULL_LOC)
+      return getPolicySize(nnXLen, nnYLen);
+    assert(loc >= Board::MOVE_LOC_BASE && loc < Board::NUM_MOVE_LOCS);
+    return Board::actionOfMoveLoc(loc);
   }
-  inline int getPassPos(int nnXLen, int nnYLen) { return nnXLen * nnYLen; }
-  inline bool isPassPos(int pos, int nnXLen, int nnYLen) { return pos == nnXLen * nnYLen; }
-  inline int getPolicySize(int nnXLen, int nnYLen) { return nnXLen * nnYLen + 1; }
+  inline Loc posToLoc(int pos, int boardXSize, int boardYSize, int nnXLen, int nnYLen) {
+    assert(boardXSize == enclosure::SIZE && boardYSize == enclosure::SIZE && nnXLen == enclosure::SIZE && nnYLen == enclosure::SIZE);
+    (void)boardXSize; (void)boardYSize;
+    if(pos == getPassPos(nnXLen, nnYLen))
+      return Board::PASS_LOC;
+    if(pos < 0 || pos > getPassPos(nnXLen, nnYLen))
+      return Board::NULL_LOC;
+    return Board::moveLocOfAction(pos);
+  }
 }
 
 namespace NNInputs {

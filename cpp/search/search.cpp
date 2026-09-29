@@ -785,6 +785,8 @@ void Search::beginSearch(bool pondering) {
   }
 
   if(searchParams.rootSymmetryPruning) {
+    //Enclosure fork: pruning needs the symmetries of edges, which come with the network inputs (plan step 4, D5).
+    throw StringError("rootSymmetryPruning is not supported for Enclosure yet (edge symmetries: plan step 4)");
     const std::vector<int>& avoidMoveUntilByLoc = rootPla == P_BLACK ? avoidMoveUntilByLocBlack : avoidMoveUntilByLocWhite;
     if(rootPruneOnlySymmetries.size() > 0)
       SymmetryHelpers::markDuplicateMoveLocs(rootBoard,rootHistory,&rootPruneOnlySymmetries,avoidMoveUntilByLoc,rootSymDupLoc,rootSymmetries);
@@ -793,7 +795,7 @@ void Search::beginSearch(bool pondering) {
   }
   else {
     //Just in case, don't leave the values undefined.
-    std::fill(rootSymDupLoc,rootSymDupLoc+Board::MAX_ARR_SIZE, false);
+    std::fill(rootSymDupLoc,rootSymDupLoc+Board::NUM_MOVE_LOCS, false);
     rootSymmetries.clear();
     rootSymmetries.push_back(0);
   }
@@ -980,7 +982,8 @@ SearchNode* Search::allocateOrFindNode(SearchThread& thread, Player nextPla, Loc
           Loc prevMoveLoc = thread.history.moveHistory[thread.history.moveHistory.size()-2].loc;
           //Avoid subtree value bias application when bestChildMoveLoc is a pass
           if(prevMoveLoc != Board::NULL_LOC && bestChildMoveLoc != Board::PASS_LOC) {
-            child->subtreeValueBiasTableEntry = subtreeValueBiasTable->get(getOpp(thread.pla), prevMoveLoc, bestChildMoveLoc, thread.history.getRecentBoard(1));
+            //Enclosure fork: the mover comes from the history (two-edge turns); the previous move may be the same player's first edge.
+            child->subtreeValueBiasTableEntry = subtreeValueBiasTable->get(thread.history.moveHistory.back().pla, prevMoveLoc, bestChildMoveLoc, thread.history.getRecentBoard(1));
           }
         }
       }

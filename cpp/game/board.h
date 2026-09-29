@@ -21,6 +21,8 @@
 #include "../external/nlohmann_json/json.hpp"
 #include "../game/enclosure/engine.h"
 
+#include <bitset>
+
 #ifndef COMPILE_MAX_BOARD_LEN
 #define COMPILE_MAX_BOARD_LEN 19
 #endif
@@ -125,6 +127,8 @@ struct Board
   static int actionOfMoveLoc(Loc loc) { return loc == PASS_LOC ? enclosure::PASS : loc - MOVE_LOC_BASE; }
   //Enclosure players (0 blue, 1 red) and Players.
   static Player playerOfIndex(int p) { return p == 0 ? P_BLACK : P_WHITE; }
+  //A stored (canonical, undirected) edge as an action index from its lower end: below enclosure::PASS.
+  static int edgeIndex(const enclosure::Edge& e);
   static int indexOfPlayer(Player pla) { return pla == P_BLACK ? 0 : 1; }
 
   //Zobrist hashing. The Go tables stay for callers that mix them in; the Enclosure position is hashed
@@ -283,10 +287,12 @@ struct Board
   short adj_offsets[8]; //Point offsets: 0-3 adjacent, 4-7 diagonal, as in KataGo.
 
   enclosure::Position pos; //The Enclosure position (the rules live here).
+  //pos.legal_actions() by action index, so isLegal is a lookup (the evaluator asks for every policy entry).
+  std::bitset<enclosure::PASS + 1> legalActions;
 
   private:
   void init(int xS, int yS);
-  void syncFromPosition(); //colors and pos_hash from pos
+  void syncFromPosition(); //colors, pos_hash and legalActions from pos
 
   friend std::ostream& operator<<(std::ostream& out, const Board& board);
 };
