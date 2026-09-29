@@ -359,8 +359,21 @@ training rows and the Python head use the distribution (step 6).
     optimistic, as upstream) are written as blocks of 48 channels.
   - C++ (`desc.cpp`): `p2Conv.outChannels` must be `policyOutChannels ×
     48`. The Eigen backend sizes its buffers and decodes the blocks (the
-    optimism blend per entry). CUDA/TensorRT come later: no CUDA toolkit is
-    installed, and the GPU serves YshanV1.
+    optimism blend per entry).
+  - CUDA (`cudaandrocmbackend.inc`, 2026-09-30):
+    - the host and device policy buffers hold 48 channels per output;
+    - the pass buffer holds one logit per output;
+    - the decode reads NHWC or NCHW;
+    - the backend refuses any symmetry but the identity.
+
+    Tested with `katago runenclosurenntests MODEL INPUTS OUT [fp16] [nhwc]`
+    on the RTX 5080 against PyTorch:
+    - FP32 with TF32 off (`NVIDIA_TF32_OVERRIDE=0`), NCHW and NHWC: within
+      7e-6, as the CPU;
+    - FP32 with TF32 on (cuDNN's default on this GPU): within 3e-3;
+    - FP16, NHWC and NCHW: within 6e-3.
+
+    TensorRT comes later.
 - **Inputs in PyTorch:** `modelconfigs` gives 215 spatial and 5 global
   inputs. The model's first layers read them from there instead of Go's
   hard-coded 22 and 19.

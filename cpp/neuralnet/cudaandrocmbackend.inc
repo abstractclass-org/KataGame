@@ -4499,7 +4499,7 @@ struct Model {
     CudaUtils::checkBufferSize(maxBatchSize,nnXLen,nnYLen,numInputChannels);
     CudaUtils::checkBufferSize(maxBatchSize,nnXLen,nnYLen,numInputGlobalChannels);
     CudaUtils::checkBufferSize(maxBatchSize,nnXLen,nnYLen,numInputMetaChannels);
-    CudaUtils::checkBufferSize(maxBatchSize,nnXLen,nnYLen,numPolicyChannels);
+    CudaUtils::checkBufferSize(maxBatchSize,nnXLen,nnYLen,numPolicyChannels * NNPos::NUM_OFFSETS);  //Enclosure fork
     CudaUtils::checkBufferSize(maxBatchSize,nnXLen,nnYLen,numValueChannels);
     CudaUtils::checkBufferSize(maxBatchSize,nnXLen,nnYLen,numScoreValueChannels);
     CudaUtils::checkBufferSize(maxBatchSize,nnXLen,nnYLen,numOwnershipChannels);
@@ -4734,16 +4734,19 @@ struct Buffers {
       inputMetaBuf = NULL;
     }
 
+    //Enclosure fork: NUM_OFFSETS channels per policy output.
+    testAssert(m.policyHead->p2Channels == m.numPolicyChannels * NNPos::NUM_OFFSETS);
     if(m.modelVersion >= 17)
-      testAssert(m.policyHead->p2Channels == 2 || m.policyHead->p2Channels == 4);
+      testAssert(m.numPolicyChannels == 2 || m.numPolicyChannels == 4);
     else if(m.modelVersion >= 16)
-      testAssert(m.policyHead->p2Channels == 4);
+      testAssert(m.numPolicyChannels == 4);
     else if(m.modelVersion >= 12)
-      testAssert(m.policyHead->p2Channels == 2);
+      testAssert(m.numPolicyChannels == 2);
     else
-      testAssert(m.policyHead->p2Channels == 1);
+      testAssert(m.numPolicyChannels == 1);
 
-    policyPassBufBytes = m.policyHead->p2Channels * batchFloatBytes;
+    //Enclosure fork: one pass logit per policy output; p2Channels is NUM_OFFSETS per output.
+    policyPassBufBytes = m.numPolicyChannels * batchFloatBytes;
     CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&policyPassBuf), policyPassBufBytes));
     policyBufBytes = m.policyHead->p2Channels * batchXYFloatBytes;
     CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&policyBuf), policyBufBytes));
@@ -5367,8 +5370,9 @@ struct InputBuffers {
     singleInputMetaBytes = (size_t)m.numInputMetaChannels * sizeof(float);
     singlePolicyPassResultElts = (size_t)(m.numPolicyChannels);
     singlePolicyPassResultBytes = (size_t)(m.numPolicyChannels) * sizeof(float);
-    singlePolicyResultElts = (size_t)(m.numPolicyChannels * nnXLen * nnYLen);
-    singlePolicyResultBytes = (size_t)(m.numPolicyChannels * nnXLen * nnYLen) * sizeof(float);
+    //Enclosure fork: NUM_OFFSETS policy channels per output (channel = output * NUM_OFFSETS + offset).
+    singlePolicyResultElts = (size_t)(m.numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen);
+    singlePolicyResultBytes = (size_t)(m.numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen) * sizeof(float);
     singleValueResultElts = (size_t)m.numValueChannels;
     singleValueResultBytes = (size_t)m.numValueChannels * sizeof(float);
     singleScoreValueResultElts = (size_t)m.numScoreValueChannels;
@@ -5386,7 +5390,7 @@ struct InputBuffers {
     userInputGlobalBufferBytes = (size_t)m.numInputGlobalChannels * maxBatchSize * sizeof(float);
     userInputMetaBufferBytes = (size_t)m.numInputMetaChannels * maxBatchSize * sizeof(float);
     policyPassResultBufferBytes = (size_t)maxBatchSize * m.numPolicyChannels * sizeof(float);
-    policyResultBufferBytes = (size_t)maxBatchSize * m.numPolicyChannels * nnXLen * nnYLen * sizeof(float);
+    policyResultBufferBytes = (size_t)maxBatchSize * m.numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen * sizeof(float);
     valueResultBufferBytes = (size_t)maxBatchSize * m.numValueChannels * sizeof(float);
     scoreValueResultBufferBytes = (size_t)maxBatchSize * m.numScoreValueChannels * sizeof(float);
     ownershipResultBufferBytes = (size_t)maxBatchSize * nnXLen * nnYLen * m.numOwnershipChannels * sizeof(float);
@@ -5408,7 +5412,7 @@ struct InputBuffers {
         userInputMetaBuffer = mallocPinned((size_t)m.numInputMetaChannels * maxBatchSize);
 
       policyPassResults = mallocPinned((size_t)maxBatchSize * m.numPolicyChannels);
-      policyResults = mallocPinned((size_t)maxBatchSize * m.numPolicyChannels * nnXLen * nnYLen);
+      policyResults = mallocPinned((size_t)maxBatchSize * m.numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen);
       valueResults = mallocPinned((size_t)maxBatchSize * m.numValueChannels);
 
       scoreValueResults = mallocPinned((size_t)maxBatchSize * m.numScoreValueChannels);
@@ -5517,6 +5521,8 @@ void NeuralNet::getOutput(
     else {
       testAssert(!hasRowMeta);
     }
+    //Enclosure fork: NNEvaluator applies symmetries to the position; planes are never transformed here.
+    testAssert(inputBufs[nIdx]->symmetry == 0);
     SymmetryHelpers::copyInputsWithSymmetry(rowSpatial, rowSpatialInput, 1, nnYLen, nnXLen, numSpatialFeatures, gpuHandle->inputsUseNHWC, inputBufs[nIdx]->symmetry);
   }
 
@@ -5537,8 +5543,8 @@ void NeuralNet::getOutput(
     assert(inputBuffers->singleInputMetaBytes == inputBuffers->singleInputMetaElts*4);
     assert(inputBuffers->singlePolicyPassResultElts == numPolicyChannels);
     assert(inputBuffers->singlePolicyPassResultBytes == numPolicyChannels * sizeof(float));
-    assert(inputBuffers->singlePolicyResultElts == numPolicyChannels*nnXLen*nnYLen);
-    assert(inputBuffers->singlePolicyResultBytes == numPolicyChannels*nnXLen*nnYLen * sizeof(float));
+    assert(inputBuffers->singlePolicyResultElts == numPolicyChannels*NNPos::NUM_OFFSETS*nnXLen*nnYLen);
+    assert(inputBuffers->singlePolicyResultBytes == numPolicyChannels*NNPos::NUM_OFFSETS*nnXLen*nnYLen * sizeof(float));
     assert(inputBuffers->scoreValueResultBufferBytes == buffers->scoreValueBufBytes);
     assert(inputBuffers->ownershipResultBufferBytes == buffers->ownershipBufBytes);
     assert(inputBuffers->singleOwnershipResultElts == nnXLen*nnYLen);
@@ -5564,8 +5570,8 @@ void NeuralNet::getOutput(
     assert(inputBuffers->singleInputMetaBytes == inputBuffers->singleInputMetaElts*4);
     assert(inputBuffers->singlePolicyPassResultElts == numPolicyChannels);
     assert(inputBuffers->singlePolicyPassResultBytes == numPolicyChannels * sizeof(float));
-    assert(inputBuffers->singlePolicyResultElts == numPolicyChannels*nnXLen*nnYLen);
-    assert(inputBuffers->singlePolicyResultBytes == numPolicyChannels*nnXLen*nnYLen * sizeof(float));
+    assert(inputBuffers->singlePolicyResultElts == numPolicyChannels*NNPos::NUM_OFFSETS*nnXLen*nnYLen);
+    assert(inputBuffers->singlePolicyResultBytes == numPolicyChannels*NNPos::NUM_OFFSETS*nnXLen*nnYLen * sizeof(float));
     assert(inputBuffers->scoreValueResultBufferBytes == buffers->scoreValueBufBytes);
     assert(inputBuffers->ownershipResultBufferBytes == buffers->ownershipBufBytes);
     assert(inputBuffers->singleOwnershipResultElts == nnXLen*nnYLen);
@@ -5617,7 +5623,8 @@ void NeuralNet::getOutput(
 
   assert(outputs.size() == batchSize);
 
-  float policyProbsTmp[NNPos::MAX_NN_POLICY_SIZE];
+  const int K = NNPos::NUM_OFFSETS;
+  const int xy = nnXLen * nnYLen;
 
   for(int row = 0; row < batchSize; row++) {
     NNOutput* output = outputs[row];
@@ -5626,37 +5633,34 @@ void NeuralNet::getOutput(
     float policyOptimism = (float)inputBufs[row]->policyOptimism;
 
     const float* policyPassSrcBuf = inputBuffers->policyPassResults + row * numPolicyChannels;
-    const float* policySrcBuf = inputBuffers->policyResults + row * numPolicyChannels * nnXLen * nnYLen;
+    const float* policySrcBuf = inputBuffers->policyResults + row * numPolicyChannels * K * xy;
     float* policyProbs = output->policyProbs;
 
     // These are in logits, the client does the postprocessing to turn them into
     // policy probabilities and white game outcome probabilities
     // Also we don't fill in the nnHash here either
     // Handle version >= 12 policy optimism
+    //Enclosure fork: channel c = output * K + offset; policy entry (y * nnXLen + x) * K + offset. Symmetries are
+    //applied by NNEvaluator, so this copies straight through.
+    auto src = [&](int output, int pos, int k) {
+      int c = output * K + k;
+      return gpuHandle->usingNHWC ? policySrcBuf[pos * numPolicyChannels * K + c] : policySrcBuf[c * xy + pos];
+    };
     if(numPolicyChannels == 2 || (numPolicyChannels == 4 && modelVersion >= 16)) {
-      if(gpuHandle->usingNHWC) {
-        for(int i = 0; i<nnXLen*nnYLen; i++) {
-          float p = policySrcBuf[i*numPolicyChannels];
-          float pOpt = policySrcBuf[i*numPolicyChannels+1];
-          policyProbsTmp[i] = p + (pOpt-p) * policyOptimism;
+      for(int pos = 0; pos < xy; pos++)
+        for(int k = 0; k < K; k++) {
+          float p = src(0, pos, k);
+          float pOpt = src(1, pos, k);
+          policyProbs[pos * K + k] = p + (pOpt-p) * policyOptimism;
         }
-        SymmetryHelpers::copyOutputsWithSymmetry(policyProbsTmp, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-        policyProbs[nnXLen*nnYLen] = policyPassSrcBuf[0] + (policyPassSrcBuf[1] - policyPassSrcBuf[0]) * policyOptimism;
-      }
-      else {
-        for(int i = 0; i<nnXLen*nnYLen; i++) {
-          float p = policySrcBuf[i];
-          float pOpt = policySrcBuf[i+nnXLen*nnYLen];
-          policyProbsTmp[i] = p + (pOpt-p) * policyOptimism;
-        }
-        SymmetryHelpers::copyOutputsWithSymmetry(policyProbsTmp, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-        policyProbs[nnXLen*nnYLen] = policyPassSrcBuf[0] + (policyPassSrcBuf[1] - policyPassSrcBuf[0]) * policyOptimism;
-      }
+      policyProbs[xy * K] = policyPassSrcBuf[0] + (policyPassSrcBuf[1] - policyPassSrcBuf[0]) * policyOptimism;
     }
     else {
       assert(numPolicyChannels == 1);
-      SymmetryHelpers::copyOutputsWithSymmetry(policySrcBuf, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-      policyProbs[nnXLen*nnYLen] = policyPassSrcBuf[0];
+      for(int pos = 0; pos < xy; pos++)
+        for(int k = 0; k < K; k++)
+          policyProbs[pos * K + k] = src(0, pos, k);
+      policyProbs[xy * K] = policyPassSrcBuf[0];
     }
 
     int numValueChannels = gpuHandle->model->numValueChannels;

@@ -1,7 +1,8 @@
 // Enclosure fork: a network's evaluation in C++ (plan step 5), for comparison with PyTorch.
 //
-//   katago runenclosurenntests MODEL_FILE INPUTS_FILE OUT_FILE
+//   katago runenclosurenntests MODEL_FILE INPUTS_FILE OUT_FILE [fp16] [nhwc]
 //
+// fp16 and nhwc select those backend modes (the CUDA backend's usual FP16 path uses NHWC).
 // Replays each position of INPUTS_FILE (tests/data/enclosure_inputs.txt), evaluates it with NNEvaluator
 // (symmetry 0) and writes one line per position to OUT_FILE:
 //   <label> <player to move 0 blue, 1 red> <win> <loss> <noresult> <scoremean> <lead>
@@ -24,11 +25,11 @@
 using namespace std;
 using namespace TestSearchCommon;
 
-void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFile, const string& outFile) {
+void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFile, const string& outFile, bool useFP16, bool useNHWC) {
   NeuralNet::globalInitialize();
   Logger logger(nullptr, false, false, false);
   logger.addOStream(cerr);
-  NNEvaluator* nnEval = startNNEval(modelFile, logger, "", 19, 19, 0, true, false, false, false, true);
+  NNEvaluator* nnEval = startNNEval(modelFile, logger, "", 19, 19, 0, true, useNHWC, useFP16, false, true);
 
   ifstream in(inputsFile);
   if(!in)
