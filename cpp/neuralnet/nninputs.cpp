@@ -81,6 +81,10 @@ double ScoreValue::approxWhiteScoreOfScoreValueSmooth(double scoreValue, double 
 }
 
 double ScoreValue::whiteScoreMeanSqOfScoreGridded(double finalWhiteMinusBlackScore, double drawEquivalentWinsForWhite) {
+  //Enclosure fork: scores are exact areas, not on Go's half-point grid, so a final score is a point mass
+  //(no draw smearing over +-0.5; the score bins are Enclosure's, departure D1).
+  (void)drawEquivalentWinsForWhite;
+  return finalWhiteMinusBlackScore * finalWhiteMinusBlackScore;
   testAssert((int)(finalWhiteMinusBlackScore * 2) == finalWhiteMinusBlackScore * 2);
   bool finalScoreIsInteger = ((int)finalWhiteMinusBlackScore == finalWhiteMinusBlackScore);
   if(!finalScoreIsInteger)

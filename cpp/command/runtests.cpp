@@ -788,3 +788,12 @@ int MainCmds::runconfigtests(const vector<string>& args) {
   return 0;
 }
 
+
+int MainCmds::runenclosuretests(const vector<string>& args) {
+  (void)args;
+  Board::initHash();
+  ScoreValue::initTables();
+  Tests::runEnclosureSearchTests();
+  ScoreValue::freeTables();
+  return 0;
+}

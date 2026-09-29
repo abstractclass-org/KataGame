@@ -129,6 +129,9 @@ struct Board
   static Player playerOfIndex(int p) { return p == 0 ? P_BLACK : P_WHITE; }
   //A stored (canonical, undirected) edge as an action index from its lower end: below enclosure::PASS.
   static int edgeIndex(const enclosure::Edge& e);
+
+  //Replace the position (tests and analysis of a given position); colours, hash and legal moves follow.
+  void setPosition(const enclosure::Position& p);
   static int indexOfPlayer(Player pla) { return pla == P_BLACK ? 0 : 1; }
 
   //Zobrist hashing. The Go tables stay for callers that mix them in; the Enclosure position is hashed

@@ -103,19 +103,51 @@ Training rows need no change for turn order: KataGo's opponent-policy target
 is the next move's policy, whoever plays it (`policyTargetsByTurn[i + 1]`),
 and value targets are written from the row's `nextPla`.
 
-Tests (behaviour, run with asserts on):
+**Graph search:** `Board::simpleRepetitionBoundGt` returns true, not Go's
+safe false. Enclosure positions never recur (the move count only rises and
+is hashed), so the state hash alone identifies a node. False would chain
+the move path into every graph hash, and transposed turns (A then B, B then
+A) would never share a node.
 
-- **Two edges, one mover:** near line 120, blue has a pair of edges that
-  wins and pairs that lose. A search with a uniform network
-  (`debugSkipNeuralNet`) and terminal results must choose the winning first
-  edge and value it as a win for blue. Negating across the turn would pick
-  the worst edge.
-- **Tree reuse between our two edges:** after `makeMove` of the first edge,
-  the root keeps that child's visits and its `nextPla` is still the same
-  player.
-- **Transposed turns share a node** in the graph search (A then B equals B
-  then A).
-- **PV players** follow the 1-2-2 order.
+Tests: `katago runenclosuretests` (`tests/testenclosuresearch.cpp`), run in
+a Debug build (asserts on, `-D_GLIBCXX_ASSERTIONS`) with KataGo's
+no-network evaluator (`debugSkipNeuralNet`: random logits and values, exact
+results at the end of the game). Graph search and subtree value bias are on.
+
+- **Tree invariants.** Random games are searched at edges 1-4, 31-32 and
+  117-120: blue's opening edge, each edge of a turn, and the last turns.
+  - Every node's `nextPla` is the history's.
+  - Every child's move is legal for that player.
+  - The PV replays with the history's players.
+- **Transposed turns share a graph hash.**
+- **Two edges, one mover.**
+  - Red plays edges 118-119 as one turn; Blue's single edge 120 ends the
+    game.
+  - Red holds two sides of a 3×3 square; only the other two sides together
+    win. That was checked exhaustively on the Python engine: 2 of Red's
+    45,601 two-edge turns win, and all others lose.
+  - The search runs 100,000 visits with c_score = 0 and flattened random
+    priors (`nnPolicyTemperature` 100). The root considers 20 first edges
+    (KataGo's allowMoves): both winners and 18 losers. Red's second edge,
+    the node under test, keeps every legal move. With raw random priors,
+    first-play urgency keeps a low-prior second edge untried for thousands
+    of visits, because every tried line loses.
+  - The search must pick a winning first edge and value it as a Red win.
+  - After `makeMove`, the root must still be Red, with that child's visits
+    kept (tree reuse between our two edges).
+  - It must then complete the square.
+  - Negating values across Red's own turn would avoid the win.
+- **Checked against the bug it targets:** with `getOpp` put back into
+  `playoutDescend`, the tests fail at once.
+- **Result (2026-09-29):**
+  - All 10 invariant positions pass (55-1,387 nodes each).
+  - Red opens with I9-F9 (win value 0.997); the root keeps 93,891 visits
+    after `makeMove`; Red completes the square with F6-F9 (0.999).
+
+**Terminal scores:** `ScoreValue::whiteScoreMeanSqOfScoreGridded` asserted
+Go's half-point grid. Enclosure scores are exact areas, so a final score is
+a point mass (mean square = score²), in line with D1's Enclosure score
+bins.
 
 ## Subtree value bias (owner, 2026-09-29)
 

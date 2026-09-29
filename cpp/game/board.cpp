@@ -344,6 +344,11 @@ static Hash128 scoreHash(double score, uint64_t salt) {
   return Hash128(Hash::splitMix64(bits ^ salt), Hash::murmurMix(bits + salt));
 }
 
+void Board::setPosition(const enclosure::Position& p) {
+  pos = p;
+  syncFromPosition();
+}
+
 void Board::syncFromPosition() {
   for(int i = 0; i < MAX_ARR_SIZE; i++)
     colors[i] = C_WALL;
@@ -416,7 +421,9 @@ bool Board::setStoneFailIfNoLibs(Loc, Color) { return false; }
 bool Board::setStonesFailIfNoLibs(const std::vector<Move>&) { return false; }
 int Board::setStonesTolerant(const std::vector<Move>&) { return 0; }
 void Board::regenChainsFromColors() {}
-bool Board::simpleRepetitionBoundGt(Loc, int) const { return false; }
+//Enclosure positions never recur (the move count only rises and is hashed), so the state alone identifies a
+//node and the graph search merges transposed turns. (false, Go's safe answer, would chain the move path.)
+bool Board::simpleRepetitionBoundGt(Loc, int) const { return true; }
 bool Board::searchIsLadderCaptured(Loc, bool, std::vector<Loc>&) { return false; }
 bool Board::searchIsLadderCapturedAttackerFirst2Libs(Loc, std::vector<Loc>&, std::vector<Loc>&) { return false; }
 

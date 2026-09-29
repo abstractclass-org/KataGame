@@ -1392,7 +1392,7 @@ int MainCmds::analysis(const vector<string>& args) {
           foundIllegalMove = true;
           break;
         }
-        nextPla = getOpp(movePla);
+        nextPla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
       }
 
       if(foundIllegalMove) {

@@ -413,7 +413,7 @@ bool Search::makeMove(Loc moveLoc, Player movePla, bool preventEncore) {
 
   //Compute these first so we can know if we need to set forceNonTerminal below.
   rootHistory.makeBoardMoveAssumeLegal(rootBoard,moveLoc,rootPla,rootKoHashTable,preventEncore);
-  rootPla = getOpp(rootPla);
+  rootPla = rootHistory.presumedNextMovePla;  //Enclosure fork: two-edge turns
   rootKoHashTable->recompute(rootHistory);
 
   if(rootNode != NULL) {
@@ -1436,7 +1436,7 @@ bool Search::playoutDescend(
 
       //Make the move! We need to make the move before we create the node so we can see the new state and get the right graphHash.
       thread.history.makeBoardMoveAssumeLegal(thread.board,bestChildMoveLoc,thread.pla,rootKoHashTable);
-      thread.pla = getOpp(thread.pla);
+      thread.pla = thread.history.presumedNextMovePla;  //Enclosure fork: two-edge turns
       if(searchParams.useGraphSearch)
         thread.graphHash = GraphHash::getGraphHash(
           thread.graphHash, thread.history, thread.pla, searchParams.graphSearchRepBound, searchParams.drawEquivalentWinsForWhite
@@ -1500,7 +1500,7 @@ bool Search::playoutDescend(
 
       //Make the move!
       thread.history.makeBoardMoveAssumeLegal(thread.board,bestChildMoveLoc,thread.pla,rootKoHashTable);
-      thread.pla = getOpp(thread.pla);
+      thread.pla = thread.history.presumedNextMovePla;  //Enclosure fork: two-edge turns
       if(searchParams.useGraphSearch)
         thread.graphHash = GraphHash::getGraphHash(
           thread.graphHash, thread.history, thread.pla, searchParams.graphSearchRepBound, searchParams.drawEquivalentWinsForWhite

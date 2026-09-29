@@ -258,7 +258,7 @@ void PlayUtils::initializeGameUsingPolicy(
     //Make the move!
     assert(hist.isLegal(board,loc,pla));
     hist.makeBoardMoveAssumeLegal(board,loc,pla,NULL);
-    pla = getOpp(pla);
+    pla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
 
     //Rarely, playing the random moves out this way will end the game
     if(doEndGameIfAllPassAlive)
@@ -985,7 +985,7 @@ PlayUtils::BenchmarkResults PlayUtils::benchmarkSearchOnPositionsAndPrint(
         cerr << "SGF Illegal move " << (moveNum+1) << " for " << PlayerIO::colorToChar(moves[moveNum].pla) << ": " << Location::toString(moves[moveNum].loc,board) << endl;
         throw StringError("Illegal move in SGF");
       }
-      nextPla = getOpp(moves[moveNum].pla);
+      nextPla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
       moveNum += 1;
     }
 
@@ -1217,7 +1217,7 @@ Loc PlayUtils::maybeFriendlyPass(
       Board boardAfterPass = board;
       BoardHistory histAfterPass = hist;
       histAfterPass.makeBoardMoveAssumeLegal(boardAfterPass,Board::PASS_LOC,pla,NULL);
-      Player plaAfterPass = getOpp(pla);
+      Player plaAfterPass = histAfterPass.presumedNextMovePla;  //Enclosure fork: two-edge turns
       bot->setPosition(plaAfterPass,boardAfterPass,histAfterPass);
       bot->runWholeSearch(plaAfterPass);
       valuesAfterPass = bot->getRootValuesRequireSuccess();
@@ -1226,7 +1226,7 @@ Loc PlayUtils::maybeFriendlyPass(
       Board boardAfterMove = board;
       BoardHistory histAfterMove = hist;
       histAfterMove.makeBoardMoveAssumeLegal(boardAfterMove,moveLoc,pla,NULL);
-      Player plaAfterMove = getOpp(pla);
+      Player plaAfterMove = histAfterMove.presumedNextMovePla;  //Enclosure fork: two-edge turns
       bot->setPosition(plaAfterMove,boardAfterMove,histAfterMove);
       bot->runWholeSearch(plaAfterMove);
       valuesAfterMove = bot->getRootValuesRequireSuccess();

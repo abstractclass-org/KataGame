@@ -229,7 +229,7 @@ int AnalysisData::getPVLenUpToPhaseEnd(const Board& initialBoard, const BoardHis
   int j;
   for(j = 0; j<pv.size(); j++) {
     hist.makeBoardMoveAssumeLegal(board,pv[j],nextPla,NULL);
-    nextPla = getOpp(nextPla);
+    nextPla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
     if(hist.encorePhase != initialHist.encorePhase)
       break;
   }
@@ -246,7 +246,7 @@ void AnalysisData::writePVUpToPhaseEnd(std::ostream& out, const Board& initialBo
     out << Location::toString(pv[j],board);
 
     hist.makeBoardMoveAssumeLegal(board,pv[j],nextPla,NULL);
-    nextPla = getOpp(nextPla);
+    nextPla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
     if(hist.encorePhase != initialHist.encorePhase)
       break;
   }
@@ -263,7 +263,7 @@ void AnalysisData::writePVVisitsUpToPhaseEnd(std::ostream& out, const Board& ini
     out << pvVisits[j];
 
     hist.makeBoardMoveAssumeLegal(board,pv[j],nextPla,NULL);
-    nextPla = getOpp(nextPla);
+    nextPla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
     if(hist.encorePhase != initialHist.encorePhase)
       break;
   }
@@ -280,7 +280,7 @@ void AnalysisData::writePVEdgeVisitsUpToPhaseEnd(std::ostream& out, const Board&
     out << pvEdgeVisits[j];
 
     hist.makeBoardMoveAssumeLegal(board,pv[j],nextPla,NULL);
-    nextPla = getOpp(nextPla);
+    nextPla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
     if(hist.encorePhase != initialHist.encorePhase)
       break;
   }

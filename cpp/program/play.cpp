@@ -567,7 +567,7 @@ void GameInitializer::createGameSharedUnsynchronized(
         break;
       }
       hist.makeBoardMoveAssumeLegal(board,startPos.moves[i].loc,startPos.moves[i].pla,NULL);
-      pla = getOpp(startPos.moves[i].pla);
+      pla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
     }
 
     //No handicap when starting from a sampled position.
@@ -1029,7 +1029,7 @@ static void recordTreePositionsRec(
       Board copy = board;
       BoardHistory histCopy = hist;
       histCopy.makeBoardMoveAssumeLegal(copy, moveLoc, pla, NULL);
-      Player nextPla = getOpp(pla);
+      Player nextPla = histCopy.presumedNextMovePla;  //Enclosure fork: two-edge turns
       recordTreePositionsRec(
         gameData,
         copy,histCopy,nextPla,
@@ -1485,7 +1485,7 @@ static void reanalyzeCheapSearchPositions(
     testAssert(move.pla == pla);
     testAssert(hist.isLegal(board,move.loc,move.pla));
     hist.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL);
-    pla = getOpp(pla);
+    pla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
   }
 }
 
@@ -1863,7 +1863,7 @@ FinishedGameData* Play::runGame(
         if(sidePositionForkLoc != Board::NULL_LOC) {
           SidePosition* sp = new SidePosition(board,hist,pla,(int)gameData->changedNeuralNets.size());
           sp->hist.makeBoardMoveAssumeLegal(sp->board,sidePositionForkLoc,sp->pla,NULL);
-          sp->pla = getOpp(sp->pla);
+          sp->pla = sp->hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
           if(sp->hist.isGameFinished) delete sp;
           else sidePositionsToSearch.push_back(sp);
         }
@@ -1941,7 +1941,7 @@ FinishedGameData* Play::runGame(
     int nextTurnIdx = (int)hist.moveHistory.size();
     maybeCheckForNewNNEval(nextTurnIdx);
 
-    pla = getOpp(pla);
+    pla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
   }
 
   gameData->endHist = hist;
@@ -2235,7 +2235,7 @@ FinishedGameData* Play::runGame(
 
         SidePosition* sp2 = new SidePosition(sp->board,sp->hist,sp->pla,(int)gameData->changedNeuralNets.size());
         sp2->hist.makeBoardMoveAssumeLegal(sp2->board,responseLoc,sp2->pla,NULL);
-        sp2->pla = getOpp(sp2->pla);
+        sp2->pla = sp2->hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
         if(sp2->hist.isGameFinished)
           delete sp2;
         else {
@@ -2255,7 +2255,7 @@ FinishedGameData* Play::runGame(
           Loc forkLoc = chooseRandomForkingMove(nnResultBuf.result.get(), sp2->board, sp2->hist, sp2->pla, gameRand, banMove);
           if(forkLoc != Board::NULL_LOC) {
             sp2->hist.makeBoardMoveAssumeLegal(sp2->board,forkLoc,sp2->pla,NULL);
-            sp2->pla = getOpp(sp2->pla);
+            sp2->pla = sp2->hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
             if(sp2->hist.isGameFinished) delete sp2;
             else sidePositionsToSearch.push_back(sp2);
           }
@@ -2334,7 +2334,7 @@ FinishedGameData* Play::runGame(
         Move move = gameData->endHist.moveHistory[turnIdx];
         testAssert(move.pla == pla);
         hist.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL);
-        pla = getOpp(pla);
+        pla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
       }
 
       for(int i = 0; i<gameData->sidePositions.size(); i++) {
@@ -2401,7 +2401,7 @@ static void replayGameUpToMove(const FinishedGameData* finishedGameData, int mov
     }
     testAssert(finishedGameData->endHist.moveHistory[i].pla == pla);
     hist.makeBoardMoveAssumeLegal(board,loc,pla,NULL);
-    pla = getOpp(pla);
+    pla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
 
     if(hist.isGameFinished)
       return;
@@ -2500,7 +2500,7 @@ void Play::maybeForkGame(
       Search::resolveAlwaysComputePassAliveUnderSuicideRules(bot->searchParams, bot->nnEvaluator) ? 1 : 0;
     nnInputParams.excludeTerritoryAdjAtariOverride =
       Search::resolveExcludeTerritoryAdjacentToAtari(bot->searchParams, bot->nnEvaluator) ? 1 : 0;
-    bot->nnEvaluator->evaluate(copy,copyHist,getOpp(pla),nnInputParams,buf,false,false);
+    bot->nnEvaluator->evaluate(copy,copyHist,copyHist.presumedNextMovePla,nnInputParams,buf,false,false);
     std::shared_ptr<NNOutput> nnOutput = std::move(buf.result);
     double whiteScore = nnOutput->whiteScoreMean;
     if(bestMove == Board::NULL_LOC || (pla == P_WHITE && whiteScore > bestScore) || (pla == P_BLACK && whiteScore < bestScore)) {
@@ -2512,7 +2512,7 @@ void Play::maybeForkGame(
   //Make that move
   testAssert(hist.isLegal(board,bestMove,pla));
   hist.makeBoardMoveAssumeLegal(board,bestMove,pla,NULL);
-  pla = getOpp(pla);
+  pla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
 
   //If the game is over now, don't actually do anything
   if(hist.isGameFinished)
@@ -2597,7 +2597,7 @@ void Play::maybeHintForkGame(
     return;
 
   hist.makeBoardMoveAssumeLegal(board,otherGameProps.hintLoc,pla,NULL);
-  pla = getOpp(pla);
+  pla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
 
   //If the game is over now, don't actually do anything
   if(hist.isGameFinished)

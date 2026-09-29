@@ -1083,6 +1083,7 @@ add_executable(katago
   tests/testownership.cpp
   tests/testsearchcommon.cpp
   tests/testsearchnonn.cpp
+  tests/testenclosuresearch.cpp
   tests/testsearch.cpp
   tests/testsearchv3.cpp
   tests/testsearchv8.cpp
