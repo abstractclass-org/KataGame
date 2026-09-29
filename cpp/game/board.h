@@ -9,7 +9,8 @@
  *
  * A Loc names either a point (Location::getLoc, as in KataGo: ownership,
  * network planes, symmetries) or a move: NULL_LOC, PASS_LOC, or
- * MOVE_LOC_BASE + the Enclosure action index (y * 19 + x) * 48 + offset.
+ * MOVE_LOC_BASE + the Enclosure action index (y * 19 + x) * 48 + offset. MOVE_LOC_BASE is
+ * MAX_ARR_SIZE: moves and points never share a value.
  */
 
 #ifndef GAME_BOARD_H_
@@ -113,9 +114,11 @@ struct Board
   static constexpr Loc NULL_LOC = 0;
   //Location used to indicate a pass move is desired.
   static constexpr Loc PASS_LOC = 1;
-  //Moves: MOVE_LOC_BASE + the Enclosure action index.
-  static constexpr Loc MOVE_LOC_BASE = 2;
+  //Moves: MOVE_LOC_BASE + the Enclosure action index. Moves start after the points, so no Loc is
+  //both, and a move used as a point is out of range of every point array (see ENCLOSURE.md).
+  static constexpr Loc MOVE_LOC_BASE = MAX_ARR_SIZE;
   static constexpr int NUM_MOVE_LOCS = MOVE_LOC_BASE + enclosure::PASS;  //Every move Loc is below this
+  static_assert(NUM_MOVE_LOCS <= 32767, "move Locs must fit in a short");
 
   //Enclosure actions (enclosure::PASS for a pass) and move Locs.
   static Loc moveLocOfAction(int action) { return action == enclosure::PASS ? PASS_LOC : (Loc)(MOVE_LOC_BASE + action); }
