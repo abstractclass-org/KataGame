@@ -285,8 +285,8 @@ So the rules are symmetric under all 8, but only the identity and the
 mirror map real games to real games: under the other 6, Blue starts on the
 right or on a vertical line, which never happens. How many to use is the
 owner's decision (D5 assumed only the mirror; see `docs/decisions.md`).
-The code uses all 8 for now (recommended: exact labels, KataGo's method,
-and reversible without new data); an arena A/B of 2 against 8 settles it.
+**Decided (owner): all 8** (exact labels, KataGo's method, and reversible
+without new data; an arena A/B of 2 against 8 can revisit it).
 The code handles all 8. `SymmetryHelpers::NUM_SYMMETRIES` sets the count,
 and KataGo's numbering puts flipY at 1, so a count of 2 means identity and
 mirror.
@@ -345,6 +345,54 @@ are safe there.
 margin in `net1`'s self-play, 99% of full-length human games; measurements
 in `docs/decisions.md`). Larger margins go to the end bins. Only the
 training rows and the Python head use the distribution (step 6).
+
+## The network's policy head, export and CPU backend (step 5, 2026-09-29)
+
+- **Policy layout:** every policy output has 48 channels per point,
+  channel = output × 48 + offset. So policy entry (y · 19 + x) · 48 +
+  offset (the action index) reads the NHWC output in place. Pass stays one
+  logit per output.
+  - PyTorch (`model_pytorch.py`): `conv2p` has `num_policy_outputs × 48`
+    channels. The head returns (N, outputs, 17,329) with pass last.
+    `NUM_OFFSETS` and `policy_len` hold the numbers.
+  - Export (`export_model_pytorch.py`): the chosen outputs (regular and
+    optimistic, as upstream) are written as blocks of 48 channels.
+  - C++ (`desc.cpp`): `p2Conv.outChannels` must be `policyOutChannels ×
+    48`. The Eigen backend sizes its buffers and decodes the blocks (the
+    optimism blend per entry). CUDA/TensorRT come later: no CUDA toolkit is
+    installed, and the GPU serves YshanV1.
+- **Inputs in PyTorch:** `modelconfigs` gives 215 spatial and 5 global
+  inputs. The model's first layers read them from there instead of Go's
+  hard-coded 22 and 19.
+- **Go's score parity** (the komi feature times a parity vector in the
+  score-belief head) is kept as a no-op: the vector is zero. The last global
+  input is a score here, not komi.
+- **Score-belief bin centres** are in points: 12 × (bin − 421 + 0.5)
+  (D1).
+- **No result:** the fork never sets `isNoResult`. Its rules (area scoring,
+  positional ko) take KataGo's branch that zeroes the no-result output, so
+  win and loss share the probability, as under Go's area rules.
+- **Test:** `katago/python/enclosure_nn_check.py` with `katago
+  runenclosurenntests`. A b6c96 is initialised at random, then every
+  parameter and statistic is perturbed so that no layer is an identity. It
+  is exported, evaluated in C++ (Eigen, `NNEvaluator`) and in PyTorch on the
+  332 unfinished positions of `tests/data/enclosure_inputs.txt`.
+  - Largest differences: policy 6e-6 (relative), value 6e-7, score 4e-6
+    (in units of 20 points), ownership 7e-6. The tolerance is 1e-3.
+  - A model with other weights fails at every position.
+- **Training augmentation** (`katago/train/enclosure_symmetry.py`, used by
+  `data_processing_pytorch.py`):
+  - point planes and the value targets move as pixels;
+  - the edge planes and the policy and q-value targets go through index
+    maps. A stored edge goes to its image's lower end. A move between two
+    of the mover's nodes (read from the node feature planes before the
+    symmetry) goes to its image's lower end; any other move goes to the
+    image of its source.
+  - Symmetries are numbered as in C++.
+  - Test: `katago/python/enclosure_symmetry_check.py` against `testsymmetry
+    -dump`. For 40 positions × 8 symmetries, the augmented inputs equal the
+    C++ inputs of the image position, and every legal move lands on
+    `getSymAction`'s image. Scrambled symmetry labels fail.
 
 ## Sizes at 17,329 actions (steps 4-6)
 

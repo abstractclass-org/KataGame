@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
 import math
 
-from ..train.model_pytorch import EXTRA_SCORE_DISTR_RADIUS, Model, compute_gain, ExtraOutputs, MetadataEncoder
+from ..train.model_pytorch import EXTRA_SCORE_DISTR_RADIUS, policy_len, Model, compute_gain, ExtraOutputs, MetadataEncoder
 from ..train.trainloop_helpers import env_flag
 
 import torch
@@ -27,7 +27,7 @@ class Metrics:
         self.world_size = world_size
         self.pos_len = raw_model.pos_len
         self.pos_area = raw_model.pos_len * raw_model.pos_len
-        self.policy_len = raw_model.pos_len * raw_model.pos_len + 1
+        self.policy_len = policy_len(raw_model.pos_len)  # Enclosure fork: one entry per edge, plus pass
         self.value_len = 3
         self.num_td_values = 3
         self.num_futurepos_values = 2

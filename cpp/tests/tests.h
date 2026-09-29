@@ -52,6 +52,7 @@ namespace Tests {
   //testsearchnonn.cpp
   void runNNLessSearchTests();
   void runEnclosureSearchTests();
+  void runEnclosureNNTests(const std::string& modelFile, const std::string& inputsFile, const std::string& outFile);
   //testsearch.cpp
   void runSearchTests(const std::string& modelFile, bool inputsNHWC, bool cudaNHWC, int symmetry, bool useFP16);
   //testsearchv3.cpp

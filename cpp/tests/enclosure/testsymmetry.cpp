@@ -13,10 +13,26 @@
 //
 // Prints one line per symmetry. Exit code 0 when every symmetry either agrees
 // throughout or is reported as broken by the rules (the table is the result).
+//
+//   testsymmetry -dump INPUTS_FILE OUT_FILE [POSITIONS]
+//
+// Writes the reference for the Python training augmentation
+// (katago/python/katago/train/enclosure_symmetry.py): for the first POSITIONS
+// (default 40) positions of INPUTS_FILE (tests/data/enclosure_inputs.txt) and
+// each symmetry, the V8 inputs of the position and of its image, and each legal
+// move with its image (SymmetryHelpers::getSymAction):
+//   sym <label> <symmetry>
+//   in <count> <index> ...       (nonzero spatial entries, NCHW: channel * 361 + y * 19 + x)
+//   global <5 values>
+//   image <count> <index> ...
+//   moves <count> <action> <image action> ...
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <set>
+#include <sstream>
 
 #include "../../core/rand.h"
 #include "../../neuralnet/nninputs.h"
@@ -75,9 +91,74 @@ static int featureDifferences(const enclosure::Position& p, const enclosure::Pos
   return d;
 }
 
+static void writeInputs(ostream& out, const char* tag, const Board& board) {
+  const int S = enclosure::SIZE, C = NNInputs::NUM_FEATURES_SPATIAL_V8, G = NNInputs::NUM_FEATURES_GLOBAL_V8;
+  vector<float> spatial(C * S * S), global(G);
+  BoardHistory hist(board, board.nextPla(), Rules(), 0);
+  NNInputs::fillRowV8(board, hist, board.nextPla(), MiscNNInputParams(), S, S, false, spatial.data(), global.data());
+  vector<int> nonzero;
+  for(int i = 0; i < C * S * S; i++)
+    if(spatial[i] != 0.0f)
+      nonzero.push_back(i);
+  out << tag << " " << nonzero.size();
+  for(int i : nonzero)
+    out << " " << i;
+  out << "\n";
+  if(strcmp(tag, "in") == 0) {
+    out << "global";
+    for(float g : global)
+      out << " " << g;
+    out << "\n";
+  }
+}
+
+static int dump(const string& inputsFile, const string& outFile, int maxPositions) {
+  ifstream in(inputsFile);
+  if(!in) {
+    fprintf(stderr, "cannot open %s\n", inputsFile.c_str());
+    return 2;
+  }
+  ofstream out(outFile);
+  out.precision(9);
+  string line;
+  int positions = 0;
+  while(positions < maxPositions && getline(in, line)) {
+    istringstream head(line);
+    string word, label;
+    int n;
+    if(!(head >> word >> label >> n) || word != "position")
+      continue;
+    Board board;
+    for(int i = 0; i < n; i++) {
+      int action;
+      head >> action;
+      board.playMoveAssumeLegal(Board::moveLocOfAction(action), board.nextPla());
+    }
+    if(board.isGameOver())
+      continue;
+    positions++;
+    vector<Loc> legal;
+    board.getLegalMoveLocs(legal);
+    for(int symmetry = 0; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
+      Board image = SymmetryHelpers::getSymBoard(board, symmetry);
+      out << "sym " << label << " " << symmetry << "\n";
+      writeInputs(out, "in", board);
+      writeInputs(out, "image", image);
+      out << "moves " << legal.size();
+      for(Loc loc : legal)
+        out << " " << Board::actionOfMoveLoc(loc) << " " << SymmetryHelpers::getSymAction(Board::actionOfMoveLoc(loc), image, symmetry);
+      out << "\n";
+    }
+  }
+  printf("wrote %s: %d positions, %d symmetries each\n", outFile.c_str(), positions, SymmetryHelpers::NUM_SYMMETRIES);
+  return 0;
+}
+
 int main(int argc, char** argv) {
-  const int gamesPerSymmetry = argc > 1 ? atoi(argv[1]) : 100;
   Board::initHash();
+  if(argc >= 4 && strcmp(argv[1], "-dump") == 0)
+    return dump(argv[2], argv[3], argc > 4 ? atoi(argv[4]) : 40);
+  const int gamesPerSymmetry = argc > 1 ? atoi(argv[1]) : 100;
   const Board start;
   printf("sym  flipY flipX transpose | start fixed | moves  legal-diff state-diff feature-diff max-score-diff\n");
   int unexpected = 0;

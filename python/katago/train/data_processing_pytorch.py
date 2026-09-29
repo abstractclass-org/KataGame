@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional
 
 from ..train import modelconfigs
+from ..train import enclosure_symmetry
 
 # Needs to be kept in sync with GLOBAL_TARGET_NUM_CHANNELS in trainingwrite.cpp C++ code among other places.
 # Data format version 2 files (recorded in channel 63 of each row) had only 64 channels; they are zero-padded
@@ -153,12 +154,14 @@ def read_npz_training_data(
                 )
 
                 if randomize_symmetries:
-                    symm = int(rand.integers(0,8))
-                    batch_binaryInputNCHW = apply_symmetry(batch_binaryInputNCHW, symm)
-                    batch_policyTargetsNCMove = apply_symmetry_policy(batch_policyTargetsNCMove, symm, pos_len)
-                    batch_valueTargetsNCHW = apply_symmetry(batch_valueTargetsNCHW, symm)
+                    # Enclosure fork: edges move as edges (enclosure_symmetry); the policy mapping reads the
+                    # mover's nodes from the inputs before the symmetry.
+                    symm = int(rand.integers(0,enclosure_symmetry.NUM_SYMMETRIES))
+                    batch_policyTargetsNCMove = enclosure_symmetry.apply_symmetry_policy(batch_policyTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC)
                     if include_qvalues:
-                        batch_qValueTargetsNCMove = apply_symmetry_policy(batch_qValueTargetsNCMove, symm, pos_len)
+                        batch_qValueTargetsNCMove = enclosure_symmetry.apply_symmetry_policy(batch_qValueTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC)
+                    batch_binaryInputNCHW = enclosure_symmetry.apply_symmetry_inputs(batch_binaryInputNCHW, symm)
+                    batch_valueTargetsNCHW = enclosure_symmetry.apply_symmetry_points(batch_valueTargetsNCHW, symm)
 
                 batch_binaryInputNCHW = batch_binaryInputNCHW.contiguous()
                 batch_policyTargetsNCMove = batch_policyTargetsNCMove.contiguous()

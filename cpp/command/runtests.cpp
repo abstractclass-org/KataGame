@@ -797,3 +797,15 @@ int MainCmds::runenclosuretests(const vector<string>& args) {
   ScoreValue::freeTables();
   return 0;
 }
+
+int MainCmds::runenclosurenntests(const vector<string>& args) {
+  if(args.size() != 4) {
+    cerr << "usage: " << args[0] << " MODEL_FILE INPUTS_FILE OUT_FILE" << endl;
+    return 1;
+  }
+  Board::initHash();
+  ScoreValue::initTables();
+  Tests::runEnclosureNNTests(args[1], args[2], args[3]);
+  ScoreValue::freeTables();
+  return 0;
+}

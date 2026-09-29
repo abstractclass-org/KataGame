@@ -71,6 +71,7 @@ runownershiptests : Run neural net search on some hardcoded positions and print 
 
 runoutputtests : Run a bunch of things and dump details to stdout
 runenclosuretests : Enclosure fork: the search under two-edge turns (no network needed)
+runenclosurenntests : Enclosure fork: MODEL INPUTS OUT, a network's outputs for comparison with PyTorch
 runsearchtests : Run a bunch of things using a neural net and dump details to stdout
 runsearchtestsv3 : Run a bunch more things using a neural net and dump details to stdout
 runsearchtestsv8 : Run a bunch more things using a neural net and dump details to stdout
@@ -123,6 +124,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::runownershiptests(subArgs);
   else if(subcommand == "runenclosuretests")
     return MainCmds::runenclosuretests(subArgs);
+  else if(subcommand == "runenclosurenntests")
+    return MainCmds::runenclosurenntests(subArgs);
   else if(subcommand == "runoutputtests")
     return MainCmds::runoutputtests(subArgs);
   else if(subcommand == "runsearchtests")

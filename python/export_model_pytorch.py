@@ -21,7 +21,7 @@ from katago.train.model_pytorch import RMSNormMask
 
 from katago.train import modelconfigs
 from katago.train.model_pytorch import Model, ResBlock, NestedBottleneckResBlock, TransformerAttentionBlock, TransformerFFNBlock, NestedBottleneckTransformerBlock
-from katago.train.model_pytorch import compute_attn_logit_dataless_bounds
+from katago.train.model_pytorch import compute_attn_logit_dataless_bounds, NUM_OFFSETS
 from katago.train.load_model import load_model
 
 # A transformer FFN hidden channel is pruned when no weight touching it exceeds this in
@@ -726,9 +726,12 @@ def main(args):
 
     def write_policy_head(name,policyhead):
         writeln(name)
+        # Enclosure fork: conv2p has NUM_OFFSETS channels per policy output (channel = output * NUM_OFFSETS +
+        # offset). conv2p_w[k] is output k's block, and the chosen outputs are written in blocks, in order.
+        conv2p_w = policyhead.conv2p.weight.view(-1, NUM_OFFSETS, *policyhead.conv2p.weight.shape[1:])
         if version >= 17:
-            assert policyhead.conv2p.weight.shape[0] == 6 or policyhead.conv2p.weight.shape[0] == 8
-            if policyhead.conv2p.weight.shape[0] == 6:
+            assert conv2p_w.shape[0] == 6 or conv2p_w.shape[0] == 8
+            if conv2p_w.shape[0] == 6:
                 writeln(2) # we're going to write 2 policy output channels - regular and optimistic (see below)
             else:
                 writeln(4) # we're going to write 4 policy output channels - regular, optimistic, q winloss, q score (see below)
@@ -747,20 +750,20 @@ def main(args):
 
         # Write the this-move prediction and the optimistic policy prediction
         if version <= 11:
-            assert policyhead.conv2p.weight.shape[0] == 4
-            write_conv_weight(name+".conv2p", torch.stack((policyhead.conv2p.weight[0],), dim=0))
+            assert conv2p_w.shape[0] == 4
+            write_conv_weight(name+".conv2p", torch.stack((conv2p_w[0],), dim=0).flatten(0, 1))
             assert policyhead.linear_pass.weight.shape[0] == 4
             write_matmul(name+".linear_pass", torch.stack((policyhead.linear_pass.weight[0],), dim=0))
             assert policyhead.linear_pass.bias is None
         elif version <= 14:
-            assert policyhead.conv2p.weight.shape[0] == 6
-            write_conv_weight(name+".conv2p", torch.stack((policyhead.conv2p.weight[0], policyhead.conv2p.weight[5]), dim=0))
+            assert conv2p_w.shape[0] == 6
+            write_conv_weight(name+".conv2p", torch.stack((conv2p_w[0], conv2p_w[5]), dim=0).flatten(0, 1))
             assert policyhead.linear_pass.weight.shape[0] == 6
             write_matmul(name+".linear_pass", torch.stack((policyhead.linear_pass.weight[0], policyhead.linear_pass.weight[5]), dim=0))
             assert policyhead.linear_pass.bias is None
         elif version == 15 and true_version == 14:
-            assert policyhead.conv2p.weight.shape[0] == 6
-            write_conv_weight(name+".conv2p", torch.stack((policyhead.conv2p.weight[0], policyhead.conv2p.weight[5]), dim=0))
+            assert conv2p_w.shape[0] == 6
+            write_conv_weight(name+".conv2p", torch.stack((conv2p_w[0], conv2p_w[5]), dim=0).flatten(0, 1))
             assert policyhead.linear_pass.weight.shape[0] == 6
             linear_pass_stack = [policyhead.linear_pass.weight[0], policyhead.linear_pass.weight[5]]
             c_p1 = int(policyhead.linear_g.weight.shape[0])
@@ -771,9 +774,9 @@ def main(args):
             write_matbias(name+".linear_pass_bias", torch.tensor([0.0]*c_p1,dtype=torch.float32,device="cpu"))
             write_activation(name+".act_pass", torch.nn.Identity())
             write_matmul(name+".linear_pass2", torch.tensor([[1.0,0.0]+[0.0]*(c_p1-2),[0.0,1.0]+[0.0]*(c_p1-2)],dtype=torch.float32,device="cpu"))
-        elif version <= 15 or policyhead.conv2p.weight.shape[0] == 6:
-            assert policyhead.conv2p.weight.shape[0] == 6
-            write_conv_weight(name+".conv2p", torch.stack((policyhead.conv2p.weight[0], policyhead.conv2p.weight[5]), dim=0))
+        elif version <= 15 or conv2p_w.shape[0] == 6:
+            assert conv2p_w.shape[0] == 6
+            write_conv_weight(name+".conv2p", torch.stack((conv2p_w[0], conv2p_w[5]), dim=0).flatten(0, 1))
             write_matmul(name+".linear_pass", policyhead.linear_pass.weight)
             write_matbias(name+".linear_pass_bias", policyhead.linear_pass.bias)
             write_activation(name+".act_pass", policyhead.act_pass)
@@ -781,8 +784,8 @@ def main(args):
             write_matmul(name+".linear_pass2", torch.stack((policyhead.linear_pass2.weight[0], policyhead.linear_pass2.weight[5]), dim=0))
             assert policyhead.linear_pass2.bias is None
         else:
-            assert policyhead.conv2p.weight.shape[0] == 8
-            write_conv_weight(name+".conv2p", torch.stack((policyhead.conv2p.weight[0], policyhead.conv2p.weight[5], policyhead.conv2p.weight[6], policyhead.conv2p.weight[7]), dim=0))
+            assert conv2p_w.shape[0] == 8
+            write_conv_weight(name+".conv2p", torch.stack((conv2p_w[0], conv2p_w[5], conv2p_w[6], conv2p_w[7]), dim=0).flatten(0, 1))
             write_matmul(name+".linear_pass", policyhead.linear_pass.weight)
             write_matbias(name+".linear_pass_bias", policyhead.linear_pass.bias)
             write_activation(name+".act_pass", policyhead.act_pass)

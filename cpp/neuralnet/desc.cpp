@@ -9,6 +9,7 @@
 #include "../neuralnet/modelversion.h"
 #include "../neuralnet/sgfmetadata.h"
 #include "../neuralnet/nninterface.h"
+#include "../neuralnet/nninputs.h"
 
 #include "../core/test.h"
 
@@ -2137,8 +2138,9 @@ PolicyHeadDesc::PolicyHeadDesc(istream& in, int vrsn, bool binaryFloats) {
                gpoolToPassMul.inChannels,
                g1BN.numChannels * 3));
   if(modelVersion >= 15) {
-    if(p2Conv.outChannels != policyOutChannels)
-      throw StringError(name + Global::strprintf(": p2Conv.outChannels (%d) != %d", p2Conv.outChannels, policyOutChannels));
+    //Enclosure fork: NUM_OFFSETS channels per policy output (channel = output * NUM_OFFSETS + offset).
+    if(p2Conv.outChannels != policyOutChannels * NNPos::NUM_OFFSETS)
+      throw StringError(name + Global::strprintf(": p2Conv.outChannels (%d) != %d", p2Conv.outChannels, policyOutChannels * NNPos::NUM_OFFSETS));
     if(gpoolToPassMul.outChannels != gpoolToPassBias.numChannels)
       throw StringError(name + Global::strprintf(": gpoolToPassMul.outChannels (%d) != gpoolToPassBias.numChannels (%d)", gpoolToPassMul.outChannels, gpoolToPassBias.numChannels));
     if(gpoolToPassMul.outChannels != gpoolToPassMul2.inChannels)
@@ -2149,8 +2151,9 @@ PolicyHeadDesc::PolicyHeadDesc(istream& in, int vrsn, bool binaryFloats) {
       throw StringError(name + Global::strprintf(": gpoolToPassMul2.outChannels (%d) != %d", gpoolToPassMul2.outChannels, policyOutChannels));
   }
   else {
-    if(p2Conv.outChannels != policyOutChannels)
-      throw StringError(name + Global::strprintf(": p2Conv.outChannels (%d) != %d", p2Conv.outChannels, policyOutChannels));
+    //Enclosure fork: NUM_OFFSETS channels per policy output (channel = output * NUM_OFFSETS + offset).
+    if(p2Conv.outChannels != policyOutChannels * NNPos::NUM_OFFSETS)
+      throw StringError(name + Global::strprintf(": p2Conv.outChannels (%d) != %d", p2Conv.outChannels, policyOutChannels * NNPos::NUM_OFFSETS));
     if(gpoolToPassMul.outChannels != policyOutChannels)
       throw StringError(name + Global::strprintf(": gpoolToPassMul.outChannels (%d) != %d", gpoolToPassMul.outChannels, policyOutChannels));
   }

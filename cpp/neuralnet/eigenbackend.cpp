@@ -2242,7 +2242,7 @@ struct Buffers {
     trunk(desc.trunk.trunkNumChannels, nnXLen, nnYLen, maxBatchSize),
 
     policyPass(desc.numPolicyChannels, maxBatchSize),
-    policy(desc.numPolicyChannels, nnXLen, nnYLen, maxBatchSize),
+    policy(desc.numPolicyChannels * NNPos::NUM_OFFSETS, nnXLen, nnYLen, maxBatchSize),  //Enclosure fork: channels per output
 
     value(desc.numValueChannels, maxBatchSize),
     scoreValue(desc.numScoreValueChannels, maxBatchSize),
@@ -2282,7 +2282,7 @@ struct InputBuffers {
     singleInputMetaElts = m.numInputMetaChannels;
 
     singlePolicyPassResultElts = (size_t)(m.numPolicyChannels);
-    singlePolicyResultElts = (size_t)(m.numPolicyChannels * nnXLen * nnYLen);
+    singlePolicyResultElts = (size_t)(m.numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen);
     singleValueResultElts = (size_t)m.numValueChannels;
     singleScoreValueResultElts = (size_t)m.numScoreValueChannels;
     singleOwnershipResultElts = (size_t)m.numOwnershipChannels * nnXLen * nnYLen;
@@ -2482,6 +2482,8 @@ void NeuralNet::getOutput(
     else {
       testAssert(!hasRowMeta);
     }
+    //Enclosure fork: NNEvaluator applies symmetries to the position; planes are never transformed here.
+    testAssert(inputBufs[nIdx]->symmetry == 0);
     SymmetryHelpers::copyInputsWithSymmetry(rowSpatial, rowSpatialInput, 1, nnYLen, nnXLen, numSpatialFeatures, computeHandle->inputsUseNHWC, inputBufs[nIdx]->symmetry);
   }
 
@@ -2524,11 +2526,9 @@ void NeuralNet::getOutput(
   );
 
   assert(inputBuffers->singlePolicyPassResultElts == numPolicyChannels);
-  assert(inputBuffers->singlePolicyResultElts == numPolicyChannels * nnXLen * nnYLen);
+  assert(inputBuffers->singlePolicyResultElts == numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen);
 
   assert(outputs.size() == batchSize);
-
-  float policyProbsTmp[NNPos::MAX_NN_POLICY_SIZE];
 
   float* policyPassData = policyPass.data();
   float* policyData = policy.data();
@@ -2543,27 +2543,32 @@ void NeuralNet::getOutput(
     float policyOptimism = (float)inputBufs[row]->policyOptimism;
 
     const float* policyPassSrcBuf = policyPassData + row * numPolicyChannels;
-    const float* policySrcBuf = policyData + row * numPolicyChannels * nnXLen * nnYLen;
+    const int K = NNPos::NUM_OFFSETS;
+    const float* policySrcBuf = policyData + row * numPolicyChannels * K * nnXLen * nnYLen;
     float* policyProbs = output->policyProbs;
 
     // These are in logits, the client does the postprocessing to turn them into
     // policy probabilities and white game outcome probabilities
     // Also we don't fill in the nnHash here either
     // Handle version >= 12 policy optimism
+    //Enclosure fork: channel = output * K + offset, and policy entry (y * nnXLen + x) * K + offset. Symmetries
+    //are applied by NNEvaluator, so the backend copies straight through.
     if(numPolicyChannels == 2 || (numPolicyChannels == 4 && modelVersion >= 16)) {
       // Eigen is all NHWC
       for(int i = 0; i<nnXLen*nnYLen; i++) {
-        float p = policySrcBuf[i*numPolicyChannels];
-        float pOpt = policySrcBuf[i*numPolicyChannels+1];
-        policyProbsTmp[i] = p + (pOpt-p) * policyOptimism;
+        const float* src = policySrcBuf + i * numPolicyChannels * K;
+        for(int k = 0; k < K; k++) {
+          float p = src[k];
+          float pOpt = src[K + k];
+          policyProbs[i * K + k] = p + (pOpt-p) * policyOptimism;
+        }
       }
-      SymmetryHelpers::copyOutputsWithSymmetry(policyProbsTmp, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-      policyProbs[nnXLen*nnYLen] = policyPassSrcBuf[0] + (policyPassSrcBuf[1] - policyPassSrcBuf[0]) * policyOptimism;
+      policyProbs[nnXLen*nnYLen*K] = policyPassSrcBuf[0] + (policyPassSrcBuf[1] - policyPassSrcBuf[0]) * policyOptimism;
     }
     else {
       assert(numPolicyChannels == 1);
-      SymmetryHelpers::copyOutputsWithSymmetry(policySrcBuf, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-      policyProbs[inputBuffers->singlePolicyResultElts] = policyPassSrcBuf[0];
+      std::copy(policySrcBuf, policySrcBuf + nnXLen*nnYLen*K, policyProbs);
+      policyProbs[nnXLen*nnYLen*K] = policyPassSrcBuf[0];
     }
 
     int numValueChannels = computeHandle->model->numValueChannels;

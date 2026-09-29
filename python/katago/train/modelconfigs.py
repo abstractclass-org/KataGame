@@ -45,17 +45,19 @@ ModelConfig = Dict[str,Any]
 def get_version(config: ModelConfig):
     return config["version"]
 
+# Enclosure fork: every version reads the Enclosure inputs (the C++ NNInputs V8): on board, 4 * 48 edge
+# planes, 22 feature planes; 5 global inputs.
 def get_num_bin_input_features(config: ModelConfig):
     version = get_version(config)
     if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16 or version == 17:
-        return 22
+        return 215
     else:
         assert(False)
 
 def get_num_global_input_features(config: ModelConfig):
     version = get_version(config)
     if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16 or version == 17:
-        return 19
+        return 5
     else:
         assert(False)
 

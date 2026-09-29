@@ -23,6 +23,7 @@ namespace MainCmds {
   int runnnsymmetriestest(const std::vector<std::string>& args);
   int runoutputtests(const std::vector<std::string>& args);
   int runenclosuretests(const std::vector<std::string>& args);
+  int runenclosurenntests(const std::vector<std::string>& args);
   int runsearchtests(const std::vector<std::string>& args);
   int runsearchtestsv3(const std::vector<std::string>& args);
   int runsearchtestsv8(const std::vector<std::string>& args);

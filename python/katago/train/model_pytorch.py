@@ -42,6 +42,16 @@ FUSED_ROPE_BACKWARD = env_flag("KATAGO_FUSED_ROPE_BACKWARD", default=True)
 
 EXTRA_SCORE_DISTR_RADIUS = 60
 
+# Enclosure fork: a move is an edge, (y * 19 + x) * NUM_OFFSETS + offset, plus pass last. Each policy
+# output has NUM_OFFSETS channels per point; channel = output * NUM_OFFSETS + offset.
+NUM_OFFSETS = 48
+def policy_len(pos_len):
+    return pos_len * pos_len * NUM_OFFSETS + 1
+
+# Enclosure fork (D1, owner): the score distribution keeps KataGo's 2 * (19 * 19 + 60) = 842 bins, each
+# SCORE_BIN_WIDTH points of final margin wide (margins of +-5,052; larger ones fall in the end bins).
+SCORE_BIN_WIDTH = 12.0
+
 def enumerate_tensor(tensor):
     """Iterate over (idx_tuple, value) for all values in a tensor"""
     from itertools import product
@@ -2753,7 +2763,8 @@ class PolicyHead(torch.nn.Module):
             is_after_batchnorm=True,
         )
         self.act2 = act(activation)
-        self.conv2p = torch.nn.Conv2d(c_p1, self.num_policy_outputs, kernel_size=1, padding="same", bias=False)
+        # Enclosure fork: NUM_OFFSETS channels per policy output.
+        self.conv2p = torch.nn.Conv2d(c_p1, self.num_policy_outputs * NUM_OFFSETS, kernel_size=1, padding="same", bias=False)
 
 
     def initialize(self):
@@ -2820,8 +2831,11 @@ class PolicyHead(torch.nn.Module):
 
         # mask out parts outside the board by making them a huge neg number, so that they're 0 after softmax
         outpolicy = outpolicy - (1.0 - mask) * 5000.0
+        # Enclosure fork: N(O*K)HW -> NO(HW*K), so that entry (y * W + x) * K + offset is that edge's move.
+        n, _, h, w = outpolicy.shape
+        outpolicy = outpolicy.view(n, self.num_policy_outputs, NUM_OFFSETS, h * w).permute(0, 1, 3, 2).reshape(n, self.num_policy_outputs, h * w * NUM_OFFSETS)
         # NC(HW) concat with NC1
-        return torch.cat((outpolicy.view(outpolicy.shape[0],outpolicy.shape[1],-1), outpass.unsqueeze(-1)),dim=2)
+        return torch.cat((outpolicy, outpass.unsqueeze(-1)),dim=2)
 
 
 class ValueHead(torch.nn.Module):
@@ -2860,8 +2874,9 @@ class ValueHead(torch.nn.Module):
         self.linear_s3 = torch.nn.Linear(c_sv2, num_scorebeliefs, bias=True)
         self.linear_smix = torch.nn.Linear(3 * c_v1, num_scorebeliefs, bias=True)
 
+        # Enclosure fork (D1): bin centres in points of margin, SCORE_BIN_WIDTH apart.
         self.register_buffer("score_belief_offset_vector", torch.tensor(
-            data=[(float(i-self.scorebelief_mid)+0.5) for i in range(self.scorebelief_len)],
+            data=[SCORE_BIN_WIDTH * (float(i-self.scorebelief_mid)+0.5) for i in range(self.scorebelief_len)],
             dtype=torch.float32,
             requires_grad=False,
         ), persistent=False)
@@ -2870,8 +2885,10 @@ class ValueHead(torch.nn.Module):
             dtype=torch.float32,
             requires_grad=False,
         ), persistent=False)
+        # Enclosure fork: Go's score parity (with the komi feature, the last global input) has no meaning in
+        # Enclosure, whose last global input is a score. Kept as a no-op: the vector is zero.
         self.register_buffer("score_belief_parity_vector", torch.tensor(
-            [0.5-float((i-self.scorebelief_mid) % 2) for i in range(self.scorebelief_len)],
+            [0.0 for i in range(self.scorebelief_len)],
             dtype=torch.float32,
             requires_grad=False,
         ), persistent=False)
@@ -3189,19 +3206,22 @@ class Model(torch.nn.Module):
 
         self.activation = "relu" if "activation" not in config else config["activation"]
 
+        # Enclosure fork: the input sizes come from modelconfigs (the Enclosure inputs), not Go's 22 and 19.
+        num_bin_features = modelconfigs.get_num_bin_input_features(config)
+        num_global_features = modelconfigs.get_num_global_input_features(config)
         if config["initial_conv_1x1"]:
-            self.conv_spatial = torch.nn.Conv2d(22, self.c_trunk, kernel_size=1, padding="same", bias=False)
+            self.conv_spatial = torch.nn.Conv2d(num_bin_features, self.c_trunk, kernel_size=1, padding="same", bias=False)
         else:
-            self.conv_spatial = torch.nn.Conv2d(22, self.c_trunk, kernel_size=3, padding="same", bias=False)
-        self.linear_global = torch.nn.Linear(19, self.c_trunk, bias=False)
+            self.conv_spatial = torch.nn.Conv2d(num_bin_features, self.c_trunk, kernel_size=3, padding="same", bias=False)
+        self.linear_global = torch.nn.Linear(num_global_features, self.c_trunk, bias=False)
 
         if "metadata_encoder" in config and config["metadata_encoder"] is not None:
             self.metadata_encoder = MetadataEncoder(config)
         else:
             self.metadata_encoder = None
 
-        self.bin_input_shape = [22, pos_len, pos_len]
-        self.global_input_shape = [19]
+        self.bin_input_shape = [num_bin_features, pos_len, pos_len]
+        self.global_input_shape = [num_global_features]
 
         # Create shared GAB template MLP if any block uses GAB
         has_gab = any(_block_kind_uses_gab(bk[1]) for bk in self.block_kind)
