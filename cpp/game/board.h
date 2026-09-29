@@ -2,6 +2,14 @@
  * board.h
  * Originally from an unreleased project back in 2010, modified since.
  * Authors: brettharrison (original), David Wu (original and later modifications).
+ *
+ * Enclosure fork (see ENCLOSURE.md): the Board holds an Enclosure position
+ * (game/enclosure/engine.h, the verified engine). The public interface is
+ * KataGo's; Go-only members keep their names with neutral values.
+ *
+ * A Loc names either a point (Location::getLoc, as in KataGo: ownership,
+ * network planes, symmetries) or a move: NULL_LOC, PASS_LOC, or
+ * MOVE_LOC_BASE + the Enclosure action index (y * 19 + x) * 48 + offset.
  */
 
 #ifndef GAME_BOARD_H_
@@ -10,21 +18,20 @@
 #include "../core/global.h"
 #include "../core/hash.h"
 #include "../external/nlohmann_json/json.hpp"
+#include "../game/enclosure/engine.h"
 
 #ifndef COMPILE_MAX_BOARD_LEN
 #define COMPILE_MAX_BOARD_LEN 19
 #endif
 
-//TYPES AND CONSTANTS-----------------------------------------------------------------
-
 struct Board;
 
-//Player
+//Player: Blue moves first and is P_BLACK; Red is P_WHITE.
 typedef int8_t Player;
 static constexpr Player P_BLACK = 1;
 static constexpr Player P_WHITE = 2;
 
-//Color of a point on the board
+//Color of a point: whose node it is, if anyone's.
 typedef int8_t Color;
 static constexpr Color C_EMPTY = 0;
 static constexpr Color C_BLACK = 1;
@@ -44,11 +51,12 @@ namespace PlayerIO {
   Player parsePlayer(const std::string& s);
 }
 
-//Location of a point on the board
-//(x,y) is represented as (x+1) + (y+1)*(x_size+1)
+//A point or a move, see the top of this file.
 typedef short Loc;
+
 namespace Location
 {
+  //Points, as in KataGo.
   inline Loc getLoc(int x, int y, int x_size) { return (Loc)((x+1) + (y+1)*(x_size+1)); }
   inline int getX(Loc loc, int x_size) { return (loc % (x_size+1)) - 1; }
   inline int getY(Loc loc, int x_size) { return (loc / (x_size+1)) - 1; }
@@ -63,6 +71,8 @@ namespace Location
   int distance(Loc loc0, Loc loc1, int x_size);
   int euclideanDistanceSquared(Loc loc0, Loc loc1, int x_size);
 
+  //Moves, in the site's notation: "pass", or the edge's two points, source first, such as "D10-D13"
+  //(columns A-S are x 0-18, rows 1-19 are y 0-18).
   std::string toString(Loc loc, int x_size, int y_size);
   std::string toString(Loc loc, const Board& b);
   std::string toStringMach(Loc loc, int x_size);
@@ -85,10 +95,6 @@ namespace Location
 //Simple structure for storing moves. Not used below, but this is a convenient place to define it.
 STRUCT_NAMED_PAIR(Loc,loc,Player,pla,Move);
 
-//Fast lightweight board designed for playouts and simulations, where speed is essential.
-//Simple ko rule only.
-//Does not enforce player turn order.
-
 struct Board
 {
   //Initialization------------------------------
@@ -101,14 +107,25 @@ struct Board
   static constexpr int MAX_LEN = COMPILE_MAX_BOARD_LEN;  //Maximum edge length allowed for the board
   static constexpr int DEFAULT_LEN = std::min(MAX_LEN,19); //Default edge length for board if unspecified
   static constexpr int MAX_PLAY_SIZE = MAX_LEN * MAX_LEN;  //Maximum number of playable spaces
-  static constexpr int MAX_ARR_SIZE = (MAX_LEN+1)*(MAX_LEN+2)+1; //Maximum size of arrays needed
+  static constexpr int MAX_ARR_SIZE = (MAX_LEN+1)*(MAX_LEN+2)+1; //Maximum size of arrays needed (points)
 
   //Location used to indicate an invalid spot on the board.
   static constexpr Loc NULL_LOC = 0;
   //Location used to indicate a pass move is desired.
   static constexpr Loc PASS_LOC = 1;
+  //Moves: MOVE_LOC_BASE + the Enclosure action index.
+  static constexpr Loc MOVE_LOC_BASE = 2;
+  static constexpr int NUM_MOVE_LOCS = MOVE_LOC_BASE + enclosure::PASS;  //Every move Loc is below this
 
-  //Zobrist Hashing------------------------------
+  //Enclosure actions (enclosure::PASS for a pass) and move Locs.
+  static Loc moveLocOfAction(int action) { return action == enclosure::PASS ? PASS_LOC : (Loc)(MOVE_LOC_BASE + action); }
+  static int actionOfMoveLoc(Loc loc) { return loc == PASS_LOC ? enclosure::PASS : loc - MOVE_LOC_BASE; }
+  //Enclosure players (0 blue, 1 red) and Players.
+  static Player playerOfIndex(int p) { return p == 0 ? P_BLACK : P_WHITE; }
+  static int indexOfPlayer(Player pla) { return pla == P_BLACK ? 0 : 1; }
+
+  //Zobrist hashing. The Go tables stay for callers that mix them in; the Enclosure position is hashed
+  //from its edges, protected and placed edges, scores and turn state (what the engine compares).
   static bool IS_ZOBRIST_INITALIZED;
   static Hash128 ZOBRIST_SIZE_X_HASH[MAX_LEN+1];
   static Hash128 ZOBRIST_SIZE_Y_HASH[MAX_LEN+1];
@@ -121,43 +138,33 @@ struct Board
   static Hash128 ZOBRIST_SECOND_ENCORE_START_HASH[MAX_ARR_SIZE][4];
   static const Hash128 ZOBRIST_PASS_ENDS_PHASE;
   static const Hash128 ZOBRIST_GAME_IS_OVER;
+  static Hash128 ZOBRIST_EDGE_HASH[2][enclosure::PASS];  //[owner][canonical edge as an action]
+  static Hash128 ZOBRIST_PROTECTED_HASH[enclosure::PASS];
+  static Hash128 ZOBRIST_PLACED_HASH[enclosure::PASS];
+  static Hash128 ZOBRIST_MOVE_COUNT_HASH[enclosure::MAX_MOVES+2];
+  static Hash128 ZOBRIST_MOVES_LEFT_HASH[3];
 
   //Structs---------------------------------------
 
-  //Tracks a chain/string/group of stones
+  //Go chains. Unused (no stones in Enclosure); kept for the interface.
   struct ChainData {
-    Player owner;        //Owner of chain
-    short num_locs;      //Number of stones in chain
-    short num_liberties; //Number of liberties in chain
+    Player owner;
+    short num_locs;
+    short num_liberties;
   };
 
-  //Tracks locations for fast random selection
-  /* struct PointList { */
-  /*   PointList(); */
-  /*   PointList(const PointList&); */
-  /*   void operator=(const PointList&); */
-  /*   void add(Loc); */
-  /*   void remove(Loc); */
-  /*   int size() const; */
-  /*   Loc& operator[](int); */
-  /*   bool contains(Loc loc) const; */
-
-  /*   Loc list_[MAX_PLAY_SIZE];   //Locations in the list */
-  /*   int indices_[MAX_ARR_SIZE]; //Maps location to index in the list */
-  /*   int size_; */
-  /* }; */
-
-  //Move data passed back when moves are made to allow for undos
+  //Undo information: the position before the move.
   struct MoveRecord {
     Player pla;
     Loc loc;
     Loc ko_loc;
-    uint8_t capDirs; //First 4 bits indicate directions of capture, fifth bit indicates suicide
+    uint8_t capDirs;
+    enclosure::Position before;
   };
 
   //Constructors---------------------------------
-  Board();  //Create Board of size (DEFAULT_LEN,DEFAULT_LEN)
-  Board(int x, int y); //Create Board of size (x,y)
+  Board();  //The Enclosure starting position (19 x 19)
+  Board(int x, int y); //The same; the size must be 19 x 19
   Board(const Board& other);
 
   Board& operator=(const Board&) = default;
@@ -166,122 +173,68 @@ struct Board
 
   double sqrtBoardArea() const;
 
-  //Gets the number of stones of the chain at loc. Precondition: location must be black or white.
+  //Go stones (none in Enclosure): neutral answers.
   int getChainSize(Loc loc) const;
-  //Gets the number of liberties of the chain at loc. Precondition: location must be black or white.
   int getNumLiberties(Loc loc) const;
-  //Returns the number of liberties a new stone placed here would have, or max if it would be >= max.
   int getNumLibertiesAfterPlay(Loc loc, Player pla, int max) const;
-  //Returns a fast lower and upper bound on the number of liberties a new stone placed here would have
   void getBoundNumLibertiesAfterPlay(Loc loc, Player pla, int& lowerBound, int& upperBound) const;
-  //Gets the number of empty spaces directly adjacent to this location
   int getNumImmediateLiberties(Loc loc) const;
-
-  //Check if moving here would be a self-capture
   bool isSuicide(Loc loc, Player pla) const;
-  //Check if moving here would be an illegal self-capture
   bool isIllegalSuicide(Loc loc, Player pla, bool isMultiStoneSuicideLegal) const;
-  //Check if moving here is illegal due to simple ko
   bool isKoBanned(Loc loc) const;
-  //Check if moving here is legal, ignoring simple ko
-  bool isLegalIgnoringKo(Loc loc, Player pla, bool isMultiStoneSuicideLegal) const;
-  //Check if moving here is legal. Equivalent to isLegalIgnoringKo && !isKoBanned
-  bool isLegal(Loc loc, Player pla, bool isMultiStoneSuicideLegal) const;
-  //Check if this location is on the board
-  bool isOnBoard(Loc loc) const;
-  //Check if this location contains a simple eye for the specified player.
   bool isSimpleEye(Loc loc, Player pla) const;
-  //Check if a move at this location would be a capture of an opponent group.
   bool wouldBeCapture(Loc loc, Player pla) const;
-  //Check if a move at this location would be a capture in a simple ko mouth.
   bool wouldBeKoCapture(Loc loc, Player pla) const;
   Loc getKoCaptureLoc(Loc loc, Player pla) const;
-  //Check if this location is adjacent to stones of the specified color
+  bool isAdjacentToChain(Loc loc, Loc chain) const;
+  bool isNonPassAliveSelfConnection(Loc loc, Player pla, const Color* passAliveArea) const;
+
+  //Moves. `pla` must be the player to move (nextPla()): Enclosure's turns are 1-2-2, not alternating.
+  bool isLegalIgnoringKo(Loc loc, Player pla, bool isMultiStoneSuicideLegal) const;
+  bool isLegal(Loc loc, Player pla, bool isMultiStoneSuicideLegal) const;
+  //Every legal move Loc (PASS_LOC only when no edge can be placed).
+  void getLegalMoveLocs(std::vector<Loc>& out) const;
+  //The player to move, and whether the game is over (after line 120).
+  Player nextPla() const;
+  bool isGameOver() const;
+
+  //Points.
+  bool isOnBoard(Loc loc) const;
+  //Is the point next to one of pla's nodes (4 or 8 neighbours)?
   bool isAdjacentToPla(Loc loc, Player pla) const;
   bool isAdjacentOrDiagonalToPla(Loc loc, Player pla) const;
-  //Check if this location is adjacent a given chain.
-  bool isAdjacentToChain(Loc loc, Loc chain) const;
-  //Does this connect two pla distinct groups that are not both pass-alive and not within opponent pass-alive area either?
-  bool isNonPassAliveSelfConnection(Loc loc, Player pla, const Color* passAliveArea) const;
-  //Is this board empty?
+  //Is the board in its starting position (no move played)?
   bool isEmpty() const;
-  //Count the number of stones on the board
+  //Number of nodes on the board, both players', and one player's.
   int numStonesOnBoard() const;
   int numPlaStonesOnBoard(Player pla) const;
 
-  //Get a hash that combines the position of the board with simple ko prohibition and a player to move.
   Hash128 getSitHashWithSimpleKo(Player pla) const;
 
-  //Lift any simple ko ban recorded on thie board due to an immediate prior ko capture.
+  //No ko in Enclosure.
   void clearSimpleKoLoc();
-  //Directly set that there is a simple ko prohibition on this location. Note that this is not necessarily safe
-  //when also using a BoardHistory, since the BoardHistory may not know about this change, or the game could be in cleanup phase, etc.
   void setSimpleKoLoc(Loc loc);
 
-  //Sets the specified stone if possible, including overwriting existing stones.
-  //Resolves any captures and/or suicides that result from setting that stone, including deletions of the stone itself.
-  //Returns false if location or color were out of range.
+  //Placing Go stones is not possible in Enclosure: these do nothing and return false (0 placed).
   bool setStone(Loc loc, Color color);
-
-  //Sets the specified stone, including overwriting existing stones, but only if doing so will
-  //not result in any captures or zero liberty groups.
-  //Returns false if location or color were out of range, or if would cause a zero liberty group.
-  //In case of failure, will restore the position, but may result in chain ids or ordering in the board changing.
   bool setStoneFailIfNoLibs(Loc loc, Color color);
-  //Same, but sets multiple stones, and only requires that the final configuration contain no zero-liberty groups.
-  //If it does contain a zero liberty group, fails and returns false and leaves the board in an arbitrarily changed but valid state.
-  //Also returns false if any location is specified more than once.
   bool setStonesFailIfNoLibs(const std::vector<Move>& placements);
-  //Faithfully overlays the given placements (loc -> color, where C_EMPTY clears a location) onto the current board,
-  //even if doing so temporarily produces groups with zero liberties. Then SIMULTANEOUSLY removes every black or white
-  //stone belonging to a group that has zero liberties (so if two touching groups of opposing colors both have zero
-  //liberties, both groups are removed). Placements on walls or off-board locations are ignored, as are placements with
-  //a color other than C_EMPTY/C_BLACK/C_WHITE. Clears the simple ko location. Returns the number of stones removed by
-  //the zero-liberty cleanup.
   int setStonesTolerant(const std::vector<Move>& placements);
-
-  //Recompute pos_hash and all chain bookkeeping (chain_head, next_in_chain, chain_data) from scratch
-  //based purely on the current colors[] array. Does not modify colors[] or ko_loc. Requires that colors[]
-  //already be a valid configuration (walls intact); any stone group is allowed, including zero-liberty groups.
   void regenChainsFromColors();
 
-  //Attempts to play the specified move. Returns true if successful, returns false if the move was illegal.
+  //Plays the move if legal (pla must be the player to move); returns whether it was.
   bool playMove(Loc loc, Player pla, bool isMultiStoneSuicideLegal);
-
-  //Plays the specified move, assuming it is legal.
   void playMoveAssumeLegal(Loc loc, Player pla);
-
-  //Plays the specified move, assuming it is legal, and returns a MoveRecord for the move
   MoveRecord playMoveRecorded(Loc loc, Player pla);
-
-  //Undo the move given by record. Moves MUST be undone in the order they were made.
-  //Undos will NOT typically restore the precise representation in the board to the way it was. The heads of chains
-  //might change, the order of the circular lists might change, etc.
   void undo(MoveRecord record);
-
-  //Get what the position hash would be if we were to play this move and resolve captures and suicides.
-  //Assumes the move is on an empty location.
   Hash128 getPosHashAfterMove(Loc loc, Player pla) const;
-
-  //Returns true if, for a move just played at loc, the sum of the number of stones in loc's group and the sizes of the empty regions it touches
-  //are greater than bound. See also https://senseis.xmp.net/?Cycle for some interesting test cases for thinking about this bound.
-  //Returns false for passes.
   bool simpleRepetitionBoundGt(Loc loc, int bound) const;
 
-  //Get a random legal move that does not fill a simple eye.
-  /* Loc getRandomMCLegal(Player pla); */
-
-  //Check if the given stone is in unescapable atari or can be put into unescapable atari.
-  //WILL perform a mutable search - may alter the linked lists or heads, etc.
   bool searchIsLadderCaptured(Loc loc, bool defenderFirst, std::vector<Loc>& buf);
   bool searchIsLadderCapturedAttackerFirst2Libs(Loc loc, std::vector<Loc>& buf, std::vector<Loc>& workingMoves);
 
-  //If a point is a pass-alive stone or pass-alive territory for a color, mark it that color.
-  //If nonPassAliveStones, also marks non-pass-alive stones that are not part of the opposing pass-alive territory.
-  //If safeBigTerritories, also marks for each pla empty regions bordered by pla stones and no opp stones, where all pla stones are pass-alive.
-  //If unsafeBigTerritories, also marks for each pla empty regions bordered by pla stones and no opp stones, regardless.
-  //All other points are marked as C_EMPTY.
-  //[result] must be a buffer of size MAX_ARR_SIZE and will get filled with the result
+  //Areas: result[point] = C_BLACK / C_WHITE where only Blue's / Red's regions enclose the point,
+  //C_EMPTY otherwise (the flags are Go's and ignored).
   void calculateArea(
     Color* result,
     bool nonPassAliveStones,
@@ -289,16 +242,6 @@ struct Board
     bool unsafeBigTerritories,
     bool isMultiStoneSuicideLegal
   ) const;
-
-
-  //Calculates the area (including non pass alive stones, safe and unsafe big territories)
-  //However, strips out any "seki" regions.
-  //Seki regions are that are adjacent to any remaining empty regions.
-  //If keepTerritories, then keeps the surrounded territories in seki regions, only strips points for stones,
-  //except that if excludeTerritoryAdjacentToAtari, empty points adjacent to a chain in atari
-  //(e.g. unfilled ko mouths in seki) are also stripped (rules version 3 scoring behavior).
-  //If keepStones, then keeps the stones, only strips points for surrounded territories.
-  //whiteMinusBlackIndependentLifeRegionCount - multiply this by two for a group tax.
   void calculateIndependentLifeArea(
     Color* result,
     int& whiteMinusBlackIndependentLifeRegionCount,
@@ -308,10 +251,10 @@ struct Board
     bool isMultiStoneSuicideLegal
   ) const;
 
-  //Run some basic sanity checks on the board state, throws an exception if not consistent, for testing/debugging
+  //Scores (the engine's): Blue's is P_BLACK's.
+  double getScore(Player pla) const;
+
   void checkConsistency() const;
-  //For the moment, only used in testing since it does extra consistency checks.
-  //If we need a version to be used in "prod", we could make an efficient version maybe as operator==.
   bool isEqualForTesting(const Board& other, bool checkNumCaptures = true, bool checkSimpleKo = true) const;
 
   static Board parseBoard(int xSize, int ySize, const std::string& s, char lineDelimiter = '\n');
@@ -322,68 +265,27 @@ struct Board
 
   //Data--------------------------------------------
 
-  int x_size;                  //Horizontal size of board
-  int y_size;                  //Vertical size of board
-  Color colors[MAX_ARR_SIZE];  //Color of each location on the board.
+  int x_size;                  //19
+  int y_size;                  //19
+  Color colors[MAX_ARR_SIZE];  //Whose node each point is (C_WALL off the board).
+  ChainData chain_data[MAX_ARR_SIZE]; //Unused (Go).
+  Loc chain_head[MAX_ARR_SIZE];       //Unused (Go).
+  Loc next_in_chain[MAX_ARR_SIZE];    //Unused (Go).
+  Loc ko_loc;   //Always NULL_LOC.
 
-  //Every chain of stones has one of its stones arbitrarily designated as the head.
-  ChainData chain_data[MAX_ARR_SIZE]; //For each head stone, the chaindata for the chain under that head. Undefined otherwise.
-  Loc chain_head[MAX_ARR_SIZE];       //Where is the head of this chain? Undefined if EMPTY or WALL
-  Loc next_in_chain[MAX_ARR_SIZE];    //Location of next stone in chain. Circular linked list. Undefined if EMPTY or WALL
+  Hash128 pos_hash; //Zobrist hash of the Enclosure position (including the turn state).
+  int numBlackCaptures; //0 (Go).
+  int numWhiteCaptures; //0 (Go).
 
-  Loc ko_loc;   //A simple ko capture was made here, making it illegal to replay here next move
+  short adj_offsets[8]; //Point offsets: 0-3 adjacent, 4-7 diagonal, as in KataGo.
 
-  /* PointList empty_list; //List of all empty locations on board */
-
-  Hash128 pos_hash; //A zobrist hash of the current board position (does not include ko point or player to move)
-
-  int numBlackCaptures; //Number of b stones captured, informational and used by board history when clearing pos
-  int numWhiteCaptures; //Number of w stones captured, informational and used by board history when clearing pos
-
-  short adj_offsets[8]; //Indices 0-3: Offsets to add for adjacent points. Indices 4-7: Offsets for diagonal points. 2 and 3 are +x and +y.
+  enclosure::Position pos; //The Enclosure position (the rules live here).
 
   private:
   void init(int xS, int yS);
-  int countHeuristicConnectionLibertiesX2(Loc loc, Player pla) const;
-  bool isLibertyOf(Loc loc, Loc head) const;
-  void mergeChains(Loc loc1, Loc loc2);
-  int removeChain(Loc loc);
-  void removeSingleStone(Loc loc);
-
-  void addChain(Loc loc, Player pla);
-  Loc addChainHelper(Loc head, Loc tailTarget, Loc loc, Color color);
-  void rebuildChain(Loc loc, Player pla);
-  Loc rebuildChainHelper(Loc head, Loc tailTarget, Loc loc, Color color);
-  void changeSurroundingLiberties(Loc loc, Color color, int delta);
+  void syncFromPosition(); //colors and pos_hash from pos
 
   friend std::ostream& operator<<(std::ostream& out, const Board& board);
-
-  int findLiberties(Loc loc, std::vector<Loc>& buf, int bufStart, int bufIdx) const;
-  int findLibertyGainingCaptures(Loc loc, std::vector<Loc>& buf, int bufStart, int bufIdx) const;
-  bool hasLibertyGainingCaptures(Loc loc) const;
-
-  void calculateAreaForPla(
-    Player pla,
-    bool safeBigTerritories,
-    bool unsafeBigTerritories,
-    bool isMultiStoneSuicideLegal,
-    Color* result
-  ) const;
-
-  bool isAdjacentToPlaHead(Player pla, Loc loc, Loc plaHead) const;
-
-  void calculateIndependentLifeAreaHelper(
-    const Color* basicArea,
-    Color* result,
-    int& whiteMinusBlackIndependentLifeRegionCount
-  ) const;
-
-  bool countEmptyHelper(bool* emptyCounted, Loc initialLoc, int& count, int bound) const;
-
-  //static void monteCarloOwner(Player player, Board* board, int mc_counts[]);
 };
-
-
-
 
 #endif // GAME_BOARD_H_
