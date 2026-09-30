@@ -56,9 +56,10 @@ cp -r "$KATAGO"/python/katago "$DATED_ARCHIVE"
 cp -r "$KATAGO"/python/muon "$DATED_ARCHIVE"
 cp "$KATAGO_BIN" "$DATED_ARCHIVE"/bin/katago
 cp "$SELFPLAY_CONFIG" "$DATED_ARCHIVE"/selfplay.cfg
-git -C "$REPO" show --no-patch --no-color > "$DATED_ARCHIVE"/version.txt
-git -C "$REPO" diff --no-color > "$DATED_ARCHIVE"/diff.txt
-git -C "$REPO" diff --staged --no-color > "$DATED_ARCHIVE"/diffstaged.txt
+# A record only (as upstream): WSL's git has no Git LFS, so a diff touching the LFS model may fail.
+git -C "$REPO" show --no-patch --no-color > "$DATED_ARCHIVE"/version.txt || true
+git -C "$REPO" diff --no-color > "$DATED_ARCHIVE"/diff.txt || true
+git -C "$REPO" diff --staged --no-color > "$DATED_ARCHIVE"/diffstaged.txt || true
 
 cd "$DATED_ARCHIVE"
 set -x
