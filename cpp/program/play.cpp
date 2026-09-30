@@ -826,7 +826,9 @@ void Play::extractPolicyTarget(
   testAssert(success);
 
   testAssert(locsBuf.size() == playSelectionValuesBuf.size());
-  testAssert(locsBuf.size() <= toMoveBot->rootBoard.x_size * toMoveBot->rootBoard.y_size + 1);
+  // Enclosure: moves are edges, not points (Go's bound, board area + 1, is often exceeded): at most one per
+  // policy entry.
+  testAssert(locsBuf.size() <= (size_t)NNPos::MAX_NN_POLICY_SIZE);
 
   //Make sure we don't overflow int16
   double maxValue = 0.0;
