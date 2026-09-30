@@ -562,7 +562,10 @@ bool Search::shouldSuppressPass(const SearchNode* n) const {
 
 double Search::interpolateEarly(double halflife, double earlyValue, double value) const {
   double rawHalflives = (double)rootHistory.getCurrentTurnNumber() / halflife;
-  double halflives = rawHalflives * 19.0 / sqrt(rootBoard.x_size*rootBoard.y_size);
+  // Enclosure: a game-phase constant, so the game-length area stands in for the board area (as for forks,
+  // resignation and opening moves; Board::GAME_LENGTH_AREA, ENCLOSURE.md "Time horizons"): Go's 19 moves
+  // of half-life become about 11.5 edges of a 120-edge game.
+  double halflives = rawHalflives * 19.0 / sqrt(Board::GAME_LENGTH_AREA);
   return value + (earlyValue - value) * pow(0.5, halflives);
 }
 
