@@ -10,7 +10,7 @@
 # Every other setting is upstream's; each can be overridden from the environment (e.g. for a smoke cycle).
 #   bash katago/python/selfplay/enclosure_loop.sh NAMEPREFIX BASEDIR TRAININGNAME MODELKIND [CYCLES]
 #   e.g. bash katago/python/selfplay/enclosure_loop.sh v2 ~/v2runs/v2a b6c96 b6c96
-set -o pipefail
+set -euo pipefail  # (the shebang -eu is ignored when run as "bash enclosure_loop.sh")
 {
 if [[ $# -lt 4 ]]
 then
