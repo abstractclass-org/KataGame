@@ -7,6 +7,10 @@
 #   - shuffled files hold 10,000 rows, not 70,000: an Enclosure row is about 240 KB uncompressed (two
 #     17,329-entry policy targets and three q-value targets) against Go's 5.5 KB, and each shuffle
 #     worker holds one file's rows in memory (about 2.4 GB here).
+#   - optionally, the next larger network trains on the same data each cycle (NEXT_TRAININGNAME,
+#     NEXT_MODELKIND), in train.sh's 'extra' mode: exported to models_extra/, never used by self-play. As
+#     KataGo's run: "concurrently training the next larger size on the same data and switching when its
+#     average loss caught up to the smaller size" (Wu 2019, section 2). The switch is made by hand.
 # Every other setting is upstream's; each can be overridden from the environment (e.g. for a smoke cycle).
 #   bash katago/python/selfplay/enclosure_loop.sh NAMEPREFIX BASEDIR TRAININGNAME MODELKIND [CYCLES]
 #   e.g. bash katago/python/selfplay/enclosure_loop.sh v2 ~/v2runs/v2a b6c96 b6c96
@@ -46,6 +50,8 @@ SHUFFLE_KEEPROWS="${SHUFFLE_KEEPROWS:-600000}"
 # Enclosure's row size (see above).
 ROWS_PER_SHUFFLE_FILE="${ROWS_PER_SHUFFLE_FILE:-10000}"
 SELFPLAY_CONFIG="${SELFPLAY_CONFIG:-$KATAGO/cpp/configs/training/selfplay_enclosure.cfg}"
+NEXT_TRAININGNAME="${NEXT_TRAININGNAME:-}"  # e.g. b10c128 beside a b6c96 run; empty: none
+NEXT_MODELKIND="${NEXT_MODELKIND:-$NEXT_TRAININGNAME}"
 
 # As upstream: freeze the scripts, binary and config of this run.
 DATE_FOR_FILENAME=$(date "+%Y%m%d-%H%M%S")
@@ -75,6 +81,11 @@ do
     )
     echo "Train"
     time ./train.sh "$BASEDIR" "$TRAININGNAME" "$MODELKIND" "$BATCHSIZE" main -samples-per-epoch "$NUM_TRAIN_SAMPLES_PER_EPOCH" -swa-period-samples "$NUM_TRAIN_SAMPLES_PER_SWA" -quit-if-no-data -stop-when-train-bucket-limited -no-repeat-files -max-train-bucket-per-new-data "$MAX_TRAIN_PER_DATA" -max-train-bucket-size "$MAX_TRAIN_SAMPLES_PER_CYCLE"
+    if [[ -n "$NEXT_TRAININGNAME" ]]
+    then
+        echo "Train next size"
+        time ./train.sh "$BASEDIR" "$NEXT_TRAININGNAME" "$NEXT_MODELKIND" "$BATCHSIZE" extra -samples-per-epoch "$NUM_TRAIN_SAMPLES_PER_EPOCH" -swa-period-samples "$NUM_TRAIN_SAMPLES_PER_SWA" -quit-if-no-data -stop-when-train-bucket-limited -no-repeat-files -max-train-bucket-per-new-data "$MAX_TRAIN_PER_DATA" -max-train-bucket-size "$MAX_TRAIN_SAMPLES_PER_CYCLE"
+    fi
     echo "Export"
     (
         time ./export_model_for_selfplay.sh "$NAMEPREFIX" "$BASEDIR" 0 | tee -a "$BASEDIR"/logs/outexport.txt
