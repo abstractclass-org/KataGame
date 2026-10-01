@@ -14,7 +14,8 @@
 # Every other setting is upstream's; each can be overridden from the environment (e.g. for a smoke cycle).
 #   bash katago/python/selfplay/enclosure_loop.sh NAMEPREFIX BASEDIR TRAININGNAME MODELKIND [CYCLES]
 #   e.g. bash katago/python/selfplay/enclosure_loop.sh v2 ~/v2runs/v2a b6c96 b6c96
-set -euo pipefail  # (the shebang -eu is ignored when run as "bash enclosure_loop.sh")
+set -eu  # upstream's shebang flags (ignored when run as "bash enclosure_loop.sh"); no pipefail, as upstream:
+# the shuffle exits 1 until -min-rows rows exist, and upstream relies on its pipe into tee to carry on
 {
 if [[ $# -lt 4 ]]
 then
