@@ -493,7 +493,11 @@ bool Board::isLegal(Loc loc, Player pla, bool) const {
     return false;
   if(loc != PASS_LOC && (loc < MOVE_LOC_BASE || loc >= NUM_MOVE_LOCS))
     return false;
-  return legalActions().test(actionOfMoveLoc(loc));
+  //A lookup once the legal moves are listed; else this move alone (the search checks its chosen child at every
+  //step of a descent, search.cpp, where listing all of them cost about 24 us a step).
+  if(legalActionsState.load(std::memory_order_acquire) == LEGAL_READY)
+    return legalActionsCache.test(actionOfMoveLoc(loc));
+  return pos.is_legal(actionOfMoveLoc(loc));
 }
 
 bool Board::playMove(Loc loc, Player pla, bool isMultiStoneSuicideLegal) {

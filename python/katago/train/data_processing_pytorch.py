@@ -97,6 +97,8 @@ def read_npz_training_data(
 
         assert binaryInputNCHW.shape[1] == num_bin_features
         assert globalInputNC.shape[1] == num_global_features
+        if ENCLOSURE_ZERO_INPUT_CHANNELS:
+            binaryInputNCHW[:, ENCLOSURE_ZERO_INPUT_CHANNELS] = 0.0
         return (npz_file, binaryInputNCHW, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove)
 
     if not npz_files:
@@ -303,6 +305,11 @@ def build_history_matrices(model_config: modelconfigs.ModelConfig, device):
 # dropped more often, and never a newer item without the older ones. The observation's current- and
 # previous-turn edge planes carry the rules' protection and are never dropped. The C++ evaluation without
 # history (maxHistory <= 0) drops all four.
+# Enclosure fork, for input-plane comparisons (2026-10-02): ENCLOSURE_ZERO_INPUT_CHANNELS="200,201,209,210" blanks
+# those spatial input channels in every row read, training and validation alike (feature planes start at 193; per
+# player 9: node, enclosed, solid, reach 1-3, unreached, held ground, its openings). Unset: no change.
+ENCLOSURE_ZERO_INPUT_CHANNELS = [int(c) for c in os.environ.get("ENCLOSURE_ZERO_INPUT_CHANNELS", "").split(",") if c]
+
 ENCLOSURE_HISTORY_PLANES_START = 211
 ENCLOSURE_NUM_HISTORY_PLANES = 4
 

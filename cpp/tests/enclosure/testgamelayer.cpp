@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   string line;
-  int games = 0, moves = 0, failures = 0, transpositions = 0;
+  int games = 0, moves = 0, failures = 0, transpositions = 0, singleChecks = 0;
   auto fail = [&](const string& what) {
     if(failures < 20)
       fprintf(stderr, "FAIL %s\n", what.c_str());
@@ -71,6 +71,20 @@ int main(int argc, char** argv) {
       if((int)legal.size() != count || legalHash(legal) != hash)
         fail(where + ": legal moves differ (" + Global::intToString((int)legal.size()) + " against " +
              Global::intToString(count) + ")");
+      //Position::is_legal (one move, what Board::isLegal asks before the list is built) agrees with the list:
+      //every listed move at every position, every action at every 50th.
+      for(int a : legal)
+        if(!board.pos.is_legal(a))
+          fail(where + ": is_legal rejects listed action " + Global::intToString(a));
+      if(moves % 50 == 0) {
+        vector<char> listed(enclosure::PASS + 1, 0);
+        for(int a : legal)
+          listed[a] = 1;
+        for(int a = 0; a <= enclosure::PASS; a++)
+          if(board.pos.is_legal(a) != (bool)listed[a])
+            fail(where + ": is_legal differs from the list at action " + Global::intToString(a));
+        singleChecks++;
+      }
       Loc loc = Board::moveLocOfAction(action);
       Player pla = hist.presumedNextMovePla;
       if(pla != board.nextPla())
@@ -146,6 +160,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  printf("%d games, %d moves, %d transpositions checked, %d failures\n", games, moves, transpositions, failures);
+  printf("%d games, %d moves, %d transpositions checked, %d positions with every action checked one by one, %d failures\n",
+         games, moves, transpositions, singleChecks, failures);
   return failures == 0 ? 0 : 1;
 }

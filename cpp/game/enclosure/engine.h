@@ -358,6 +358,44 @@ struct Position {
     if (out.empty()) out.push_back(PASS);
   }
 
+  // Whether one action is in legal_actions(), without listing them all: the same conditions, checked for this
+  // edge only (the search asks about one move at every step of a descent, where the whole list is rarely needed).
+  bool is_legal(int action) const {
+    if (terminal() || action < 0 || action > PASS) return false;
+    if (action == PASS) {
+      std::vector<int> all;
+      legal_actions(all);
+      return all.size() == 1 && all[0] == PASS;
+    }
+    const int cell = action / NOFF, k = action % NOFF;
+    const int ax = cell % SIZE, ay = cell / SIZE;
+    const int bx = ax + OFFS[k].dx, by = ay + OFFS[k].dy;
+    if (bx < 0 || bx >= SIZE || by < 0 || by >= SIZE) return false;
+    bool a_node = false, b_node = false, a_inside = false, b_inside = false, mid_node = false;
+    const Edge self = make_edge(ax, ay, bx, by);
+    for (const Edge& e : edges[player]) {
+      if (e == self) return false;  // own_dir: the edge exists
+      auto at = [&](int x, int y) { return (e.ax == x && e.ay == y) || (e.bx == x && e.by == y); };
+      a_node |= at(ax, ay);
+      b_node |= at(bx, by);
+      for (int s = 0; s < INTERIOR_N[k]; ++s) mid_node |= at(ax + INTERIOR[k][s].dx, ay + INTERIOR[k][s].dy);
+      const int ke = OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
+      for (int s = 0; s < INTERIOR_N[ke]; ++s) {
+        const int px = e.ax + INTERIOR[ke][s].dx, py = e.ay + INTERIOR[ke][s].dy;
+        a_inside |= px == ax && py == ay;
+        b_inside |= px == bx && py == by;
+      }
+    }
+    if (!a_node || a_inside || b_inside || mid_node) return false;
+    if (b_node && (bx < ax || (bx == ax && by < ay))) return false;  // listed from b's side
+    int hits = 0;
+    for (const Edge& e : edges[1 - player])
+      if (intersects(ax, ay, bx, by, e.ax, e.ay, e.bx, e.by)) {
+        if (++hits > 1 || contains(protected_, e)) return false;
+      }
+    return true;
+  }
+
   void end_turn() {
     for (int p = 0; p < 2; ++p) scores[p] = snap(scores[p] + area(p));
     for (int h = HISTORY_TURNS - 1; h > 0; --h) {
