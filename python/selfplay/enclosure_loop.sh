@@ -4,9 +4,12 @@
 #   - KataGo lives in katago/ of this repository (upstream assumes the repository root);
 #   - Python is the project's .venv-katago; the binary is ~/katago-build-cuda/katago (override KATAGO_BIN);
 #   - the self-play config is configs/training/selfplay_enclosure.cfg;
-#   - shuffled files hold 10,000 rows, not 70,000: an Enclosure row is about 240 KB uncompressed (two
-#     17,329-entry policy targets and three q-value targets) against Go's 5.5 KB, and each shuffle
-#     worker holds one file's rows in memory (about 2.4 GB here).
+#   - the shuffle's row counts are upstream's scaled to the same bytes per worker: an Enclosure row is
+#     186,167 bytes uncompressed (measured: two 17,329-entry policy targets and three q-value targets)
+#     against Go's 7,675 (shuffle.py's constants), 24.3 times as large. So each sharding worker takes
+#     3,300 rows (upstream 80,000, -worker-group-size) and shuffled files hold 2,900 rows (upstream
+#     70,000). With upstream's counts the first real shuffle (2026-10-02, 100,000 rows) ran WSL out of
+#     memory; shuffle.py's own memory estimate uses Go's row size and is too low by the same factor.
 #   - optionally, the next larger network trains on the same data each cycle (NEXT_TRAININGNAME,
 #     NEXT_MODELKIND), in train.sh's 'extra' mode: exported to models_extra/, never used by self-play. As
 #     KataGo's run: "concurrently training the next larger size on the same data and switching when its
@@ -49,7 +52,8 @@ MAX_TRAIN_SAMPLES_PER_CYCLE="${MAX_TRAIN_SAMPLES_PER_CYCLE:-500000}"
 TAPER_WINDOW_SCALE="${TAPER_WINDOW_SCALE:-50000}"
 SHUFFLE_KEEPROWS="${SHUFFLE_KEEPROWS:-600000}"
 # Enclosure's row size (see above).
-ROWS_PER_SHUFFLE_FILE="${ROWS_PER_SHUFFLE_FILE:-10000}"
+ROWS_PER_SHUFFLE_FILE="${ROWS_PER_SHUFFLE_FILE:-2900}"
+SHUFFLE_WORKER_GROUP_ROWS="${SHUFFLE_WORKER_GROUP_ROWS:-3300}"
 SELFPLAY_CONFIG="${SELFPLAY_CONFIG:-$KATAGO/cpp/configs/training/selfplay_enclosure.cfg}"
 NEXT_TRAININGNAME="${NEXT_TRAININGNAME:-}"  # e.g. b10c128 beside a b6c96 run; empty: none
 NEXT_MODELKIND="${NEXT_MODELKIND:-$NEXT_TRAININGNAME}"
@@ -78,7 +82,7 @@ do
     time ./bin/katago selfplay -max-games-total "$NUM_GAMES_PER_CYCLE" -output-dir "$BASEDIR"/selfplay -models-dir "$BASEDIR"/models -config "$DATED_ARCHIVE"/selfplay.cfg ${SELFPLAY_OVERRIDES:+-override-config "$SELFPLAY_OVERRIDES"} | tee -a "$BASEDIR"/selfplay/stdout.txt
     echo "Shuffle"
     (
-        time SKIP_VALIDATE=1 ./shuffle.sh "$BASEDIR" "$SCRATCHDIR" "$NUM_THREADS_FOR_SHUFFLING" -min-rows "$SHUFFLE_MINROWS" -keep-target-rows "$SHUFFLE_KEEPROWS" -taper-window-scale "$TAPER_WINDOW_SCALE" -approx-rows-per-out-file "$ROWS_PER_SHUFFLE_FILE" | tee -a "$BASEDIR"/logs/outshuffle.txt
+        time SKIP_VALIDATE=1 ./shuffle.sh "$BASEDIR" "$SCRATCHDIR" "$NUM_THREADS_FOR_SHUFFLING" -min-rows "$SHUFFLE_MINROWS" -keep-target-rows "$SHUFFLE_KEEPROWS" -taper-window-scale "$TAPER_WINDOW_SCALE" -approx-rows-per-out-file "$ROWS_PER_SHUFFLE_FILE" -worker-group-size "$SHUFFLE_WORKER_GROUP_ROWS" | tee -a "$BASEDIR"/logs/outshuffle.txt
     )
     echo "Train"
     time ./train.sh "$BASEDIR" "$TRAININGNAME" "$MODELKIND" "$BATCHSIZE" main -samples-per-epoch "$NUM_TRAIN_SAMPLES_PER_EPOCH" -swa-period-samples "$NUM_TRAIN_SAMPLES_PER_SWA" -quit-if-no-data -stop-when-train-bucket-limited -no-repeat-files -max-train-bucket-per-new-data "$MAX_TRAIN_PER_DATA" -max-train-bucket-size "$MAX_TRAIN_SAMPLES_PER_CYCLE"
