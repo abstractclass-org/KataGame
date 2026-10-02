@@ -30,7 +30,9 @@ SCRATCHDIR="$BASEDIR"/shufflescratch
 mkdir -p "$BASEDIR" "$LOGSDIR" "$SCRATCHDIR" "$BASEDIR"/selfplay
 
 # enclosure_loop.sh's values (upstream's, Enclosure's row size).
-NUM_THREADS_FOR_SHUFFLING="${NUM_THREADS_FOR_SHUFFLING:-8}"
+# 4 shuffle workers, not the loop's 8: a worker holds about 1.7 GB of Enclosure rows (shuffle.py's estimate, made
+# for Go's rows, says 72 MB), and here the shuffle runs beside self-play (2026-10-03: 8 workers ran out of 8 GB).
+NUM_THREADS_FOR_SHUFFLING="${NUM_THREADS_FOR_SHUFFLING:-4}"
 NUM_TRAIN_SAMPLES_PER_EPOCH="${NUM_TRAIN_SAMPLES_PER_EPOCH:-100000}"
 MAX_TRAIN_PER_DATA="${MAX_TRAIN_PER_DATA:-8}"
 NUM_TRAIN_SAMPLES_PER_SWA="${NUM_TRAIN_SAMPLES_PER_SWA:-80000}"
@@ -49,7 +51,7 @@ EXPORT_EVERY="${EXPORT_EVERY:-10}"  # upstream's
 CPUS="${CPUS:-0-15}"
 # Memory caps (GB) per part; self-play at 512 games peaked at 20.9 GB.
 MEM_SELFPLAY="${MEM_SELFPLAY:-24G}"
-MEM_SHUFFLE="${MEM_SHUFFLE:-8G}"
+MEM_SHUFFLE="${MEM_SHUFFLE:-10G}"
 MEM_TRAIN="${MEM_TRAIN:-6G}"
 
 # As upstream: freeze the scripts, binary and config of this run.
@@ -63,8 +65,11 @@ cp "$SELFPLAY_CONFIG" "$DATED_ARCHIVE"/selfplay.cfg
 git -C "$REPO" show --no-patch --no-color > "$DATED_ARCHIVE"/version.txt || true
 cd "$DATED_ARCHIVE"
 
+ONLY="${ONLY:-}"  # e.g. ONLY=shuffle: start only these parts (one that stopped), leaving the others running
 part() {  # NAME MEMORY NICE COMMAND...: one part, detached, in its own memory cap, logging to logs/NAME.log
     local name="$1" mem="$2" nice="$3"; shift 3
+    if [[ -n "$ONLY" && " $ONLY " != *" $name "* ]]; then return; fi
+    systemctl --user reset-failed "${NAMEPREFIX}-$name.scope" 2>/dev/null || true
     echo "=== $(date '+%F %T') start $name ===" >> "$LOGSDIR/$name.log"
     setsid nohup systemd-run --user --scope -q --unit="${NAMEPREFIX}-$name" -p MemoryMax="$mem" -p MemorySwapMax=0 \
         taskset -c "$CPUS" nice -n "$nice" "$@" >> "$LOGSDIR/$name.log" 2>&1 < /dev/null &
