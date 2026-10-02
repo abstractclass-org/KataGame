@@ -1253,6 +1253,9 @@ void NNEvaluator::evaluate(
     bool isLegal[NNPos::MAX_NN_POLICY_SIZE];
     int legalCount = 0;
     testAssert(nextPlayer == history.presumedNextMovePla);
+    //Enclosure fork: list the legal moves once, so the checks below are lookups (on a board whose list is not yet
+    //built, Board::isLegal checks one move at a time, which suits the search's single checks, not 17,329 of them).
+    (void)board.legalActions();
     for(int i = 0; i<policySize; i++) {
       Loc loc = NNPos::posToLoc(i,xSize,ySize,nnXLen,nnYLen);
       isLegal[i] = history.isLegal(board,loc,nextPlayer);
