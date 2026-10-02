@@ -48,6 +48,12 @@ MAX_TRAIN_PER_DATA="${MAX_TRAIN_PER_DATA:-8}"
 NUM_TRAIN_SAMPLES_PER_SWA="${NUM_TRAIN_SAMPLES_PER_SWA:-80000}"
 BATCHSIZE="${BATCHSIZE:-128}"
 SHUFFLE_MINROWS="${SHUFFLE_MINROWS:-100000}"
+# Until the first trained model exists, the window is random play only, which shuffle.py caps at -min-rows; an
+# epoch is NUM_TRAIN_SAMPLES_PER_EPOCH (100,000) and must fit in it after the 1% validation split and each
+# file's partial batch, which Enclosure's small files (scaled for memory) make about 3%. With 100,000 the first
+# training never starts (2026-10-02). So the bootstrap window is larger (owner, 2026-10-02); upstream's again
+# from the first model on.
+BOOTSTRAP_MINROWS="${BOOTSTRAP_MINROWS:-110000}"
 MAX_TRAIN_SAMPLES_PER_CYCLE="${MAX_TRAIN_SAMPLES_PER_CYCLE:-500000}"
 TAPER_WINDOW_SCALE="${TAPER_WINDOW_SCALE:-50000}"
 SHUFFLE_KEEPROWS="${SHUFFLE_KEEPROWS:-600000}"
@@ -81,8 +87,10 @@ do
     echo "Selfplay"
     time ./bin/katago selfplay -max-games-total "$NUM_GAMES_PER_CYCLE" -output-dir "$BASEDIR"/selfplay -models-dir "$BASEDIR"/models -config "$DATED_ARCHIVE"/selfplay.cfg ${SELFPLAY_OVERRIDES:+-override-config "$SELFPLAY_OVERRIDES"} | tee -a "$BASEDIR"/selfplay/stdout.txt
     echo "Shuffle"
+    MINROWS="$SHUFFLE_MINROWS"
+    if [[ -z "$(ls -A "$BASEDIR"/models 2>/dev/null)" ]]; then MINROWS="$BOOTSTRAP_MINROWS"; echo "No model yet: -min-rows $MINROWS"; fi
     (
-        time SKIP_VALIDATE=1 ./shuffle.sh "$BASEDIR" "$SCRATCHDIR" "$NUM_THREADS_FOR_SHUFFLING" -min-rows "$SHUFFLE_MINROWS" -keep-target-rows "$SHUFFLE_KEEPROWS" -taper-window-scale "$TAPER_WINDOW_SCALE" -approx-rows-per-out-file "$ROWS_PER_SHUFFLE_FILE" -worker-group-size "$SHUFFLE_WORKER_GROUP_ROWS" | tee -a "$BASEDIR"/logs/outshuffle.txt
+        time SKIP_VALIDATE=1 ./shuffle.sh "$BASEDIR" "$SCRATCHDIR" "$NUM_THREADS_FOR_SHUFFLING" -min-rows "$MINROWS" -keep-target-rows "$SHUFFLE_KEEPROWS" -taper-window-scale "$TAPER_WINDOW_SCALE" -approx-rows-per-out-file "$ROWS_PER_SHUFFLE_FILE" -worker-group-size "$SHUFFLE_WORKER_GROUP_ROWS" | tee -a "$BASEDIR"/logs/outshuffle.txt
     )
     echo "Train"
     time ./train.sh "$BASEDIR" "$TRAININGNAME" "$MODELKIND" "$BATCHSIZE" main -samples-per-epoch "$NUM_TRAIN_SAMPLES_PER_EPOCH" -swa-period-samples "$NUM_TRAIN_SAMPLES_PER_SWA" -quit-if-no-data -stop-when-train-bucket-limited -no-repeat-files -max-train-bucket-per-new-data "$MAX_TRAIN_PER_DATA" -max-train-bucket-size "$MAX_TRAIN_SAMPLES_PER_CYCLE"
