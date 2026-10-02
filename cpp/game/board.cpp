@@ -14,6 +14,7 @@
 #include <cassert>
 #include <cstring>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 #include "../core/rand.h"
@@ -226,6 +227,20 @@ Board::Board(int x, int y)
 
 Board::Board(const Board& other)
 {
+  copyFrom(other);
+}
+
+Board& Board::operator=(const Board& other)
+{
+  if(this != &other)
+    copyFrom(other);
+  return *this;
+}
+
+static constexpr uint8_t LEGAL_STALE = 0, LEGAL_COMPUTING = 1, LEGAL_READY = 2;
+
+void Board::copyFrom(const Board& other)
+{
   x_size = other.x_size;
   y_size = other.y_size;
   memcpy(colors, other.colors, sizeof(Color)*MAX_ARR_SIZE);
@@ -238,7 +253,35 @@ Board::Board(const Board& other)
   numWhiteCaptures = other.numWhiteCaptures;
   memcpy(adj_offsets, other.adj_offsets, sizeof(short)*8);
   pos = other.pos;
-  legalActions = other.legalActions;
+  //A copy keeps the other board's legal moves only if they are complete; else it computes its own when asked.
+  if(other.legalActionsState.load(std::memory_order_acquire) == LEGAL_READY) {
+    legalActionsCache = other.legalActionsCache;
+    legalActionsState.store(LEGAL_READY, std::memory_order_relaxed);
+  }
+  else
+    legalActionsState.store(LEGAL_STALE, std::memory_order_relaxed);
+}
+
+const std::bitset<enclosure::PASS + 1>& Board::legalActions() const {
+  if(legalActionsState.load(std::memory_order_acquire) != LEGAL_READY)
+    computeLegalActions();
+  return legalActionsCache;
+}
+
+void Board::computeLegalActions() const {
+  uint8_t expected = LEGAL_STALE;
+  if(legalActionsState.compare_exchange_strong(expected, LEGAL_COMPUTING, std::memory_order_acq_rel)) {
+    legalActionsCache.reset();
+    std::vector<int> actions;
+    pos.legal_actions(actions);
+    for(int a : actions)
+      legalActionsCache.set(a);
+    legalActionsState.store(LEGAL_READY, std::memory_order_release);
+    return;
+  }
+  //Another thread is computing them: wait for it.
+  while(legalActionsState.load(std::memory_order_acquire) != LEGAL_READY)
+    std::this_thread::yield();
 }
 
 void Board::init(int xS, int yS)
@@ -374,11 +417,7 @@ void Board::syncFromPosition() {
   h ^= scoreHash(pos.scores[0], 0x9E3779B97F4A7C15ULL);
   h ^= scoreHash(pos.scores[1], 0xC2B2AE3D27D4EB4FULL);
   pos_hash = h;
-  legalActions.reset();
-  std::vector<int> actions;
-  pos.legal_actions(actions);
-  for(int a : actions)
-    legalActions.set(a);
+  legalActionsState.store(LEGAL_STALE, std::memory_order_release);
 }
 
 Hash128 Board::getSitHashWithSimpleKo(Player pla) const {
@@ -454,7 +493,7 @@ bool Board::isLegal(Loc loc, Player pla, bool) const {
     return false;
   if(loc != PASS_LOC && (loc < MOVE_LOC_BASE || loc >= NUM_MOVE_LOCS))
     return false;
-  return legalActions.test(actionOfMoveLoc(loc));
+  return legalActions().test(actionOfMoveLoc(loc));
 }
 
 bool Board::playMove(Loc loc, Player pla, bool isMultiStoneSuicideLegal) {

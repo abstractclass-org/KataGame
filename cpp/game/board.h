@@ -21,6 +21,7 @@
 #include "../external/nlohmann_json/json.hpp"
 #include "../game/enclosure/engine.h"
 
+#include <atomic>
 #include <bitset>
 
 #ifndef COMPILE_MAX_BOARD_LEN
@@ -192,7 +193,7 @@ struct Board
   Board(int x, int y); //The same; the size must be 19 x 19
   Board(const Board& other);
 
-  Board& operator=(const Board&) = default;
+  Board& operator=(const Board& other);
 
   //Functions------------------------------------
 
@@ -306,11 +307,18 @@ struct Board
 
   enclosure::Position pos; //The Enclosure position (the rules live here).
   //pos.legal_actions() by action index, so isLegal is a lookup (the evaluator asks for every policy entry).
-  std::bitset<enclosure::PASS + 1> legalActions;
+  //Computed on first use after a move, then kept: the search plays many moves (every step of every descent)
+  //whose legal moves nobody asks for (2026-10-02: recomputing them after every move was about a fifth of
+  //self-play's CPU). Safe to call from several threads at once.
+  const std::bitset<enclosure::PASS + 1>& legalActions() const;
 
   private:
+  mutable std::bitset<enclosure::PASS + 1> legalActionsCache;
+  mutable std::atomic<uint8_t> legalActionsState; //LEGAL_STALE, LEGAL_COMPUTING or LEGAL_READY
+  void computeLegalActions() const;
+  void copyFrom(const Board& other);
   void init(int xS, int yS);
-  void syncFromPosition(); //colors, pos_hash and legalActions from pos
+  void syncFromPosition(); //colors and pos_hash from pos; marks legalActions stale
 
   friend std::ostream& operator<<(std::ostream& out, const Board& board);
 };

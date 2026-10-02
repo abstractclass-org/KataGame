@@ -1059,7 +1059,7 @@ static void mapOutputBack(NNOutput& output, const Board& board, const Board& sym
   static thread_local std::vector<float> buf;
   buf.assign(policySize, 0.0f);
   for(int i = 0; i < policySize; i++)
-    if(i == enclosure::PASS || board.legalActions[i])
+    if(i == enclosure::PASS || board.legalActions()[i])
       buf[i] = output.policyProbs[SymmetryHelpers::getSymAction(i, symBoard, symmetry)];
   std::copy(buf.begin(), buf.end(), output.policyProbs);
   if(output.whiteOwnerMap != NULL) {

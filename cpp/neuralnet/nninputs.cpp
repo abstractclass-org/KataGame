@@ -694,13 +694,13 @@ int SymmetryHelpers::getSymAction(int action, const Board& symBoard, int symmetr
   getSymXY(ax, ay, symmetry);
   getSymXY(bx, by, symmetry);
   const int forward = (ay * enclosure::SIZE + ax) * enclosure::NOFF + enclosure::OFF_INDEX[bx - ax + 3][by - ay + 3];
-  if(symBoard.legalActions[forward])
+  if(symBoard.legalActions()[forward])
     return forward;
   //bx, by is off the board only if the action was, and then it has no reverse.
   if(bx < 0 || bx >= enclosure::SIZE || by < 0 || by >= enclosure::SIZE)
     return forward;
   const int reverse = (by * enclosure::SIZE + bx) * enclosure::NOFF + enclosure::OFF_INDEX[ax - bx + 3][ay - by + 3];
-  return symBoard.legalActions[reverse] ? reverse : forward;
+  return symBoard.legalActions()[reverse] ? reverse : forward;
 }
 
 Loc SymmetryHelpers::getSymMoveLoc(Loc moveLoc, const Board& symBoard, int symmetry) {
