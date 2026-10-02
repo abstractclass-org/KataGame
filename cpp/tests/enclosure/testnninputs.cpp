@@ -94,7 +94,13 @@ int main(int argc, char** argv) {
     for(int i = 0; i < count; i++) {
       int index;
       spatialRow >> index;
-      expected[(index / PY_PLANES) * C + v8Channel(index % PY_PLANES)] = 1.0f;
+      const int plane = index % PY_PLANES;
+      //With ENCLOSURE_NO_HELD_GROUND, held ground and its openings (each player's planes 7 and 8) are zero.
+      const int f = plane - PY_FEATURES_START;
+      if(enclosure::NO_HELD_GROUND && f >= 0 && (f % enclosure::PER_PLAYER == 7 || f % enclosure::PER_PLAYER == 8) &&
+         f < 2 * enclosure::PER_PLAYER)
+        continue;
+      expected[(index / PY_PLANES) * C + v8Channel(plane)] = 1.0f;
     }
 
     MiscNNInputParams params;

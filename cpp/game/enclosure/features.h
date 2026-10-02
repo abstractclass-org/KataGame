@@ -3,6 +3,8 @@
 // native/enclosure_native.cpp (last changed in commit 274883c). Do not edit:
 // change the source there and rerun the script.
 
+#include <cstdlib>
+
 #include "engine.h"
 
 namespace enclosure {
@@ -387,6 +389,14 @@ inline double held_ground(const Position& p, int player, const int* mine, const 
   return best;
 }
 
+// ENCLOSURE_NO_HELD_GROUND=1 (owner, 2026-10-03, "no_maxflow"): held ground and its openings (planes 7 and 8 of
+// each player) stay zero and their max flow is not computed, about 15% of self-play's CPU. Measured first: on
+// v2a's own data a network learned as well without them (decisions/katago-fork.md). The input shape is unchanged.
+inline const bool NO_HELD_GROUND = [] {
+  const char* v = std::getenv("ENCLOSURE_NO_HELD_GROUND");
+  return v != nullptr && *v != 0 && *v != '0';
+}();
+
 // Feature planes (planes.feature_planes) as 0/1 bytes, channels last:
 // out[(y * SIZE + x) * FEATURE_PLANES + f].
 inline void feature_planes(const Position& p, uint8_t* out) {
@@ -420,10 +430,12 @@ inline void feature_planes(const Position& p, uint8_t* out) {
     edge_points(solid_edges, mask);
     for (int q = 0; q < N_POINTS; ++q)
       if (mask[q]) set(q, base + 2);
-    held_ground(p, k, d, dist[1 - k], mask, border, &counts[k]);
-    for (int q = 0; q < N_POINTS; ++q)
-      if (mask[q]) set(q, base + 7);
-    for (int s : border) { set(steps.u[s], base + 8); set(steps.v[s], base + 8); }
+    if (!NO_HELD_GROUND) {
+      held_ground(p, k, d, dist[1 - k], mask, border, &counts[k]);
+      for (int q = 0; q < N_POINTS; ++q)
+        if (mask[q]) set(q, base + 7);
+      for (int s : border) { set(steps.u[s], base + 8); set(steps.v[s], base + 8); }
+    }
   }
   for (int h = 0; h < HISTORY_TURNS; ++h) {
     if (!p.history_n[h]) continue;
