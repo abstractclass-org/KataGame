@@ -268,6 +268,11 @@ const std::bitset<enclosure::PASS + 1>& Board::legalActions() const {
   return legalActionsCache;
 }
 
+void Board::setLegalActions(const std::bitset<enclosure::PASS + 1>& bits) const {
+  legalActionsCache = bits;
+  legalActionsState.store(LEGAL_READY, std::memory_order_release);
+}
+
 void Board::computeLegalActions() const {
   uint8_t expected = LEGAL_STALE;
   if(legalActionsState.compare_exchange_strong(expected, LEGAL_COMPUTING, std::memory_order_acq_rel)) {

@@ -311,6 +311,9 @@ struct Board
   //whose legal moves nobody asks for (2026-10-02: recomputing them after every move was about a fifth of
   //self-play's CPU). Safe to call from several threads at once.
   const std::bitset<enclosure::PASS + 1>& legalActions() const;
+  //Sets the legal moves when they are known otherwise (the image of another board's under a symmetry: legality
+  //is geometry, which a symmetry keeps). Only on a board no other thread reads yet.
+  void setLegalActions(const std::bitset<enclosure::PASS + 1>& bits) const;
 
   private:
   mutable std::bitset<enclosure::PASS + 1> legalActionsCache;

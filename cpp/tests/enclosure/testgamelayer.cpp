@@ -17,6 +17,7 @@
 
 #include "../../core/rand.h"
 #include "../../game/boardhistory.h"
+#include "../../neuralnet/nninputs.h"
 
 using namespace std;
 
@@ -84,6 +85,14 @@ int main(int argc, char** argv) {
           if(board.pos.is_legal(a) != (bool)listed[a])
             fail(where + ": is_legal differs from the list at action " + Global::intToString(a));
         singleChecks++;
+        //The image's legal moves under each symmetry, mapped (getSymBoard) and listed afresh, are the same.
+        for(int symmetry = 1; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
+          Board mapped = SymmetryHelpers::getSymBoard(board, symmetry);
+          Board fresh(board.x_size, board.y_size);
+          fresh.setPosition(SymmetryHelpers::getSymPosition(board.pos, symmetry));
+          if(mapped.legalActions() != fresh.legalActions())
+            fail(where + ": mapped legal moves differ under symmetry " + Global::intToString(symmetry));
+        }
       }
       Loc loc = Board::moveLocOfAction(action);
       Player pla = hist.presumedNextMovePla;

@@ -653,18 +653,43 @@ Loc SymmetryHelpers::getSymLoc(Loc loc, int xSize, int ySize, int symmetry) {
 }
 
 
-//Enclosure fork: the image of the Enclosure position (Go's stones, ko and chains do not exist).
-Board SymmetryHelpers::getSymBoard(const Board& board, int symmetry) {
-  Board symBoard(board.x_size, board.y_size);
-  symBoard.setPosition(getSymPosition(board.pos, symmetry));
-  return symBoard;
-}
-
 static void getSymXY(int& x, int& y, int symmetry) {
   if(SymmetryHelpers::isFlipX(symmetry)) x = enclosure::SIZE - x - 1;
   if(SymmetryHelpers::isFlipY(symmetry)) y = enclosure::SIZE - y - 1;
   if(SymmetryHelpers::isTranspose(symmetry)) std::swap(x,y);
 }
+
+//Enclosure fork: the image of the Enclosure position (Go's stones, ko and chains do not exist).
+Board SymmetryHelpers::getSymBoard(const Board& board, int symmetry) {
+  Board symBoard(board.x_size, board.y_size);
+  symBoard.setPosition(getSymPosition(board.pos, symmetry));
+  //Enclosure fork: the image's legal moves are the images of the board's (legality is geometry, which a symmetry
+  //keeps), so they are mapped (about 440 moves) instead of listed again (24 us; most evaluations use a random
+  //symmetry). An edge between two of the mover's nodes is listed from its lexicographically first end only
+  //(Position::legal_actions), and the image may change which end that is.
+  const std::bitset<enclosure::PASS + 1>& bits = board.legalActions();
+  std::bitset<enclosure::PASS + 1> image;
+  if(bits.test(enclosure::PASS))
+    image.set(enclosure::PASS);
+  bool node[enclosure::SIZE][enclosure::SIZE] = {};
+  for(const enclosure::Edge& e : symBoard.pos.edges[symBoard.pos.player])
+    node[e.ax][e.ay] = node[e.bx][e.by] = true;
+  for(size_t a = bits._Find_first(); a < (size_t)enclosure::PASS; a = bits._Find_next(a)) {
+    const int cell = (int)a / enclosure::NOFF, k = (int)a % enclosure::NOFF;
+    int ax = cell % enclosure::SIZE, ay = cell / enclosure::SIZE;
+    int bx = ax + enclosure::OFFS[k].dx, by = ay + enclosure::OFFS[k].dy;
+    getSymXY(ax, ay, symmetry);
+    getSymXY(bx, by, symmetry);
+    const bool fromB = node[bx][by] && (bx < ax || (bx == ax && by < ay));
+    if(fromB)
+      image.set((by * enclosure::SIZE + bx) * enclosure::NOFF + enclosure::OFF_INDEX[ax - bx + 3][ay - by + 3]);
+    else
+      image.set((ay * enclosure::SIZE + ax) * enclosure::NOFF + enclosure::OFF_INDEX[bx - ax + 3][by - ay + 3]);
+  }
+  symBoard.setLegalActions(image);
+  return symBoard;
+}
+
 
 enclosure::Edge SymmetryHelpers::getSymEdge(const enclosure::Edge& e, int symmetry) {
   int ax = e.ax, ay = e.ay, bx = e.bx, by = e.by;
