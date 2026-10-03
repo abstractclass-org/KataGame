@@ -84,6 +84,11 @@ cycle=0
 while [[ "$CYCLES" -eq 0 || "$cycle" -lt "$CYCLES" ]]
 do
     cycle=$((cycle + 1))
+    # Enclosure (owner, 2026-10-03): refresh the start positions (our lost games, tools/export_start_poses.py) before
+    # each cycle's self-play, which reads them at its start (hintPosesDir in SELFPLAY_OVERRIDES).
+    if [[ -n "${START_POSES_CMD:-}" ]]; then
+        (cd "$REPO" && eval "$START_POSES_CMD") || echo "start positions: export failed, the previous file stays"
+    fi
     echo "Selfplay"
     time ./bin/katago selfplay -max-games-total "$NUM_GAMES_PER_CYCLE" -output-dir "$BASEDIR"/selfplay -models-dir "$BASEDIR"/models -config "$DATED_ARCHIVE"/selfplay.cfg ${SELFPLAY_OVERRIDES:+-override-config "$SELFPLAY_OVERRIDES"} | tee -a "$BASEDIR"/selfplay/stdout.txt
     echo "Shuffle"
