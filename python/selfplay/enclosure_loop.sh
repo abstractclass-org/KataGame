@@ -79,6 +79,30 @@ git -C "$REPO" diff --no-color > "$DATED_ARCHIVE"/diff.txt || true
 git -C "$REPO" diff --staged --no-color > "$DATED_ARCHIVE"/diffstaged.txt || true
 
 cd "$DATED_ARCHIVE"
+# Enclosure (owner, 2026-10-04): the archived binary must read what the archived export script writes. The archive
+# takes the working tree as it is, so on 2026-10-04 it held a new export format (version 17) that its binary could
+# not read; nothing failed until the first export, 70 minutes later, and then every self-play died at once while
+# the loop kept shuffling and training on old data (1.5 h). So export the latest checkpoint with the archived script
+# and load it with the archived binary now, and stop before self-play if that fails.
+CHECKPOINT="$BASEDIR"/train/"$TRAININGNAME"/checkpoint.ckpt
+if [[ -f "$CHECKPOINT" ]]
+then
+    LOADCHECK="$BASEDIR"/loadcheck
+    rm -rf "$LOADCHECK"; mkdir -p "$LOADCHECK"
+    if python3 -W ignore ./export_model_pytorch.py -checkpoint "$CHECKPOINT" -export-dir "$LOADCHECK" -model-name loadcheck \
+           -filename-prefix model -use-swa > "$LOADCHECK"/export.log 2>&1 \
+       && gzip "$LOADCHECK"/model.bin \
+       && ./bin/katago analysis -model "$LOADCHECK"/model.bin.gz -config "$KATAGO"/cpp/configs/analysis_enclosure.cfg \
+           < /dev/null > "$LOADCHECK"/load.log 2>&1
+    then
+        echo "Load check passed: the archived binary reads the archived export script's model"
+        rm -rf "$LOADCHECK"
+    else
+        echo "Load check FAILED: the archived binary cannot read the archived export script's model; stopping"
+        tail -n 5 "$LOADCHECK"/export.log "$LOADCHECK"/load.log
+        exit 1
+    fi
+fi
 set -x
 cycle=0
 while [[ "$CYCLES" -eq 0 || "$cycle" -lt "$CYCLES" ]]
