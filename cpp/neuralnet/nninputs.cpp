@@ -291,8 +291,18 @@ void NNInputs::fillScoring(
 
 
 NNOutput::NNOutput()
-  :whiteOwnerMap(NULL),noisedPolicyProbs(NULL)
+  :whiteOwnerMap(NULL),noisedPolicyProbs(NULL),hasRegret(false),regretValue(0.0f),regretRanking(0.0f),
+   auxMap(NULL),auxValues(NULL)
 {}
+
+//Enclosure fork: a copy of an optional array, or NULL.
+static float* copyOrNull(const float* src, size_t n) {
+  if(src == NULL)
+    return NULL;
+  float* dst = new float[n];
+  std::copy(src, src + n, dst);
+  return dst;
+}
 NNOutput::NNOutput(const NNOutput& other) {
   nnHash = other.nnHash;
   whiteWinProb = other.whiteWinProb;
@@ -323,6 +333,12 @@ NNOutput::NNOutput(const NNOutput& other) {
 
   std::copy(other.policyProbs, other.policyProbs+NNPos::MAX_NN_POLICY_SIZE, policyProbs);
   policyOptimismUsed = other.policyOptimismUsed;
+
+  hasRegret = other.hasRegret;
+  regretValue = other.regretValue;
+  regretRanking = other.regretRanking;
+  auxMap = copyOrNull(other.auxMap, (size_t)NUM_AUX_MAP_CHANNELS * nnXLen * nnYLen);
+  auxValues = copyOrNull(other.auxValues, NUM_AUX_VALUES);
 }
 
 NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
@@ -392,6 +408,38 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
   }
 
   noisedPolicyProbs = NULL;
+
+  //Enclosure fork: RGSC's heads and the aux outputs, averaged like the rest (the aux arrays over the outputs that
+  //have them).
+  hasRegret = others[0]->hasRegret;
+  regretValue = 0.0f;
+  regretRanking = 0.0f;
+  for(int i = 0; i<len; i++) {
+    regretValue += others[i]->regretValue / floatLen;
+    regretRanking += others[i]->regretRanking / floatLen;
+  }
+  auto averageOf = [&](float* NNOutput::* field, size_t n) {
+    float* avg = NULL;
+    float count = 0.0f;
+    for(int i = 0; i<len; i++) {
+      const float* src = (*others[i]).*field;
+      if(src == NULL)
+        continue;
+      if(avg == NULL) {
+        avg = new float[n];
+        std::fill(avg, avg + n, 0.0f);
+      }
+      count += 1.0f;
+      for(size_t j = 0; j<n; j++)
+        avg[j] += src[j];
+    }
+    if(avg != NULL)
+      for(size_t j = 0; j<n; j++)
+        avg[j] /= count;
+    return avg;
+  };
+  auxMap = averageOf(&NNOutput::auxMap, (size_t)NUM_AUX_MAP_CHANNELS * nnXLen * nnYLen);
+  auxValues = averageOf(&NNOutput::auxValues, NUM_AUX_VALUES);
 
   //For technical correctness in case of impossibly rare hash collisions:
   //Just give up if they don't all match in move legality
@@ -473,6 +521,14 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
   std::copy(other.policyProbs, other.policyProbs+NNPos::MAX_NN_POLICY_SIZE, policyProbs);
   policyOptimismUsed = other.policyOptimismUsed;
 
+  hasRegret = other.hasRegret;
+  regretValue = other.regretValue;
+  regretRanking = other.regretRanking;
+  delete[] auxMap;
+  auxMap = copyOrNull(other.auxMap, (size_t)NUM_AUX_MAP_CHANNELS * nnXLen * nnYLen);
+  delete[] auxValues;
+  auxValues = copyOrNull(other.auxValues, NUM_AUX_VALUES);
+
   return *this;
 }
 
@@ -486,6 +542,10 @@ NNOutput::~NNOutput() {
     delete[] noisedPolicyProbs;
     noisedPolicyProbs = NULL;
   }
+  delete[] auxMap;
+  auxMap = NULL;
+  delete[] auxValues;
+  auxValues = NULL;
 }
 
 

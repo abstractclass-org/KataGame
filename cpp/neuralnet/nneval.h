@@ -49,6 +49,9 @@ struct NNResultBuf {
   std::mutex resultMutex;
   bool hasResult;
   bool includeOwnerMap;
+  //Enclosure fork (owner, 2026-10-04): set by the caller before evaluate (which leaves it as is): fill
+  //NNOutput::auxMap and auxValues when the model has them (NNEvaluator::hasAuxOutputs).
+  bool includeAuxOutputs;
   int boardXSizeForServer;
   int boardYSizeForServer;
   std::vector<float> rowSpatialBuf;
@@ -131,6 +134,10 @@ class NNEvaluator {
   std::string getAbbrevInternalModelName() const;
   Logger* getLogger();
   bool isNeuralNetLess() const;
+  //Enclosure fork (owner, 2026-10-04): the model's exported training-only outputs (NNResultBuf::includeAuxOutputs)
+  //and RGSC's heads (NNOutput::hasRegret).
+  bool hasAuxOutputs() const { return modelHasAux; }
+  bool hasRegretHeads() const { return modelHasRegret; }
   // The build-time max batch size: backend buffers are allocated for this many rows, and
   // fixed-shape backends (NeuralNet::BatchPolicy::FixedShape) pad every inference up to exactly
   // this many rows, so it is also the one input shape their sessions get compiled for.
@@ -286,6 +293,9 @@ class NNEvaluator {
   int modelVersion;
   int inputsVersion;
   int numInputMetaChannels;
+  //Enclosure fork (owner, 2026-10-04): whether the model has the exported training-only outputs, and RGSC's heads.
+  bool modelHasAux;
+  bool modelHasRegret;
 
   ModelPostProcessParams postProcessParams;
 

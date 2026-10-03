@@ -456,6 +456,35 @@ struct PolicyHeadDesc {
   void releaseWeights();
 };
 
+//Enclosure fork (owner, 2026-10-04): one of RGSC's two heads (regret value, regret ranking; Tsai et al., ICLR
+//2026), in the value head's shape: conv, norm and activation, the value head's pooling, a hidden layer, one output
+//(model_pytorch.RegretHead).
+struct RegretHeadDesc {
+  std::string name;
+  ConvLayerDesc conv1;
+  BatchNormLayerDesc bn1;
+  ActivationLayerDesc act1;
+  MatMulLayerDesc mul2;
+  MatBiasLayerDesc bias2;
+  ActivationLayerDesc act2;
+  MatMulLayerDesc mul3;
+  MatBiasLayerDesc bias3;
+
+  RegretHeadDesc();
+  ~RegretHeadDesc();
+  RegretHeadDesc(std::istream& in, int modelVersion, bool binaryFloats);
+  RegretHeadDesc(RegretHeadDesc&& other);
+
+  RegretHeadDesc(const RegretHeadDesc&) = delete;
+  RegretHeadDesc& operator=(const RegretHeadDesc&) = delete;
+
+  RegretHeadDesc& operator=(RegretHeadDesc&& other);
+
+  int64_t getNumParameters() const;
+  void applyScale8ToReduceActivations();
+  void releaseWeights();
+};
+
 struct ValueHeadDesc {
   std::string name;
   int modelVersion;
@@ -470,6 +499,16 @@ struct ValueHeadDesc {
   MatMulLayerDesc sv3Mul;
   MatBiasLayerDesc sv3Bias;
   ConvLayerDesc vOwnershipConv;
+
+  //Enclosure fork (owner, 2026-10-04): the training-only outputs, exported. Version 17's first value-head option
+  //holds the aux version (0: none). All raw, from the player to move's view, scaled like the other outputs
+  //(ModelPostProcessParams::outputScaleMultiplier).
+  int auxVersion;
+  ConvLayerDesc auxTrunkConv;    //trunk -> 8: the 2 future positions, the 2 territory incomes, the 4 cut-edge logits
+  ConvLayerDesc auxScoringConv;  //v1 -> 1: the future occupancy (KataGo's scoring head)
+  MatMulLayerDesc auxValueMul;   //v2 -> 12: the misc value outputs 4-9 and the more-misc 2-7 (TD values and scores)
+  MatBiasLayerDesc auxValueBias;
+  std::vector<RegretHeadDesc> regretHeads;  //none, or 2: the regret value, then the regret ranking
 
   ValueHeadDesc();
   ~ValueHeadDesc();

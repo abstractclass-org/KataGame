@@ -213,6 +213,23 @@ struct NNOutput {
   //If not NULL, then contains policy with dirichlet noise or any other noise adjustments for this node
   float* noisedPolicyProbs;
 
+  //Enclosure fork (owner, 2026-10-04): RGSC's heads (ValueHeadDesc::regretHeads). hasRegret is false when the model
+  //has none. The regret value is in [0, 4]; for the ranking score only the order matters.
+  bool hasRegret;
+  float regretValue;
+  float regretRanking;
+
+  //Enclosure fork (owner, 2026-10-04): the exported training-only outputs (ValueHeadDesc::auxVersion), when requested
+  //(NNResultBuf::includeAuxOutputs) and the model has them, else NULL. Raw outputs (before any tanh, softmax or
+  //multiplier), from the player to move's view, with the model's output scale applied.
+  //auxMap: NUM_AUX_MAP_CHANNELS channels of nnXLen*nnYLen, mapped back to the board like whiteOwnerMap: 0-1 the
+  //future positions, 2-3 the territory-income logits (mover's, opponent's), 4-7 the cut-edge logits, 8 the future
+  //occupancy. auxValues: NUM_AUX_VALUES, the misc value outputs 4-9 then the more-misc 2-7 (TD values and scores).
+  static constexpr int NUM_AUX_MAP_CHANNELS = 9;
+  static constexpr int NUM_AUX_VALUES = 12;
+  float* auxMap;
+  float* auxValues;
+
   NNOutput(); //Does NOT initialize values
   NNOutput(const NNOutput& other);
   ~NNOutput();

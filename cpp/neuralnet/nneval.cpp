@@ -14,6 +14,7 @@ NNResultBuf::NNResultBuf()
     resultMutex(),
     hasResult(false),
     includeOwnerMap(false),
+    includeAuxOutputs(false),
     boardXSizeForServer(0),
     boardYSizeForServer(0),
     rowSpatialBuf(),
@@ -142,6 +143,8 @@ NNEvaluator::NNEvaluator(
     modelVersion = desc.modelVersion;
     inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
     numInputMetaChannels = desc.numInputMetaChannels;
+    modelHasAux = desc.valueHead.auxVersion >= 1;
+    modelHasRegret = !desc.valueHead.regretHeads.empty();
     computeContext = NeuralNet::createComputeContext(
       gpuIdxs,logger,nnXLen,nnYLen,
       homeDataDirOverride,
@@ -155,6 +158,8 @@ NNEvaluator::NNEvaluator(
   else {
     internalModelName = "random";
     modelVersion = NNModelVersion::defaultModelVersion;
+    modelHasAux = false;
+    modelHasRegret = false;
     inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
   }
 
@@ -926,6 +931,10 @@ void NNEvaluator::serve(
           emptyOutput->whiteOwnerMap = new float[nnXLen*nnYLen];
         else
           emptyOutput->whiteOwnerMap = NULL;
+        if(resultBufs[row]->includeAuxOutputs && modelHasAux) {
+          emptyOutput->auxMap = new float[NNOutput::NUM_AUX_MAP_CHANNELS*nnXLen*nnYLen];
+          emptyOutput->auxValues = new float[NNOutput::NUM_AUX_VALUES];
+        }
         outputBuf.push_back(emptyOutput);
       }
 
@@ -1072,6 +1081,20 @@ static void mapOutputBack(NNOutput& output, const Board& board, const Board& sym
       }
     std::copy(buf.begin(), buf.end(), output.whiteOwnerMap);
   }
+  //Enclosure fork (owner, 2026-10-04): the aux maps follow the points too, channel by channel.
+  if(output.auxMap != NULL) {
+    const int nnXLen = output.nnXLen, nnYLen = output.nnYLen;
+    for(int c = 0; c < NNOutput::NUM_AUX_MAP_CHANNELS; c++) {
+      float* channel = output.auxMap + c * nnXLen * nnYLen;
+      buf.assign(nnXLen * nnYLen, 0.0f);
+      for(int y = 0; y < board.y_size; y++)
+        for(int x = 0; x < board.x_size; x++) {
+          Loc symLoc = SymmetryHelpers::getSymLoc(x, y, board, symmetry);
+          buf[NNPos::xyToPos(x, y, nnXLen)] = channel[NNPos::pointToPos(symLoc, board.x_size, nnXLen)];
+        }
+      std::copy(buf.begin(), buf.end(), channel);
+    }
+  }
 }
 
 std::shared_ptr<NNOutput>* NNEvaluator::averageMultipleSymmetries(
@@ -1165,7 +1188,9 @@ void NNEvaluator::evaluate(
   bool hadResultWithoutOwnerMap = false;
   shared_ptr<NNOutput> resultWithoutOwnerMap;
   if(nnCacheTable != NULL && !skipCache && nnCacheTable->get(nnHash,buf.result)) {
-    if(!(includeOwnerMap && buf.result->whiteOwnerMap == NULL))
+    //Enclosure fork: a cached result also lacks what was asked when it has no aux outputs.
+    if(!(includeOwnerMap && buf.result->whiteOwnerMap == NULL) &&
+       !(buf.includeAuxOutputs && modelHasAux && buf.result->auxMap == NULL))
     {
       m_numCacheHits.fetch_add(1, std::memory_order_relaxed);
       buf.hasResult = true;
@@ -1239,7 +1264,10 @@ void NNEvaluator::evaluate(
     buf.result->policyOptimismUsed = (float)resultWithoutOwnerMap->policyOptimismUsed;
     buf.result->nnXLen = resultWithoutOwnerMap->nnXLen;
     buf.result->nnYLen = resultWithoutOwnerMap->nnYLen;
-    testAssert(buf.result->whiteOwnerMap != NULL);
+    buf.result->hasRegret = resultWithoutOwnerMap->hasRegret;
+    buf.result->regretValue = resultWithoutOwnerMap->regretValue;
+    buf.result->regretRanking = resultWithoutOwnerMap->regretRanking;
+    testAssert(!includeOwnerMap || buf.result->whiteOwnerMap != NULL);
   }
   else {
     float* policy = buf.result->policyProbs;
@@ -1521,6 +1549,28 @@ void NNEvaluator::evaluate(
     else {
       throw StringError("NNEval value postprocessing not implemented for model version");
     }
+  }
+
+  //Enclosure fork (owner, 2026-10-04): RGSC's heads (when not kept from the cached result above) and the aux outputs,
+  //with the output scale (the backends' scale8 leaves every output divided by 8). The regret value through the
+  //authors' sigmoid x 4; the ranking score raw. The aux outputs stay raw (model_pytorch's head outputs).
+  if(buf.result->hasRegret && !hadResultWithoutOwnerMap) {
+    double rawRegret = buf.result->regretValue * postProcessParams.outputScaleMultiplier;
+    buf.result->regretValue = (float)(4.0 / (1.0 + exp(-rawRegret)));
+    buf.result->regretRanking = (float)(buf.result->regretRanking * postProcessParams.outputScaleMultiplier);
+  }
+  if(buf.result->auxMap != NULL) {
+    for(int c = 0; c<NNOutput::NUM_AUX_MAP_CHANNELS; c++)
+      for(int pos = 0; pos<nnXLen*nnYLen; pos++) {
+        int y = pos / nnXLen;
+        int x = pos % nnXLen;
+        float& v = buf.result->auxMap[c*nnXLen*nnYLen + pos];
+        v = (y >= board.y_size || x >= board.x_size) ? 0.0f : v * (float)postProcessParams.outputScaleMultiplier;
+      }
+  }
+  if(buf.result->auxValues != NULL) {
+    for(int i = 0; i<NNOutput::NUM_AUX_VALUES; i++)
+      buf.result->auxValues[i] *= (float)postProcessParams.outputScaleMultiplier;
   }
 
   // Postprocess ownermap

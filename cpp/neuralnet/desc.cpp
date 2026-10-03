@@ -2242,7 +2242,74 @@ void PolicyHeadDesc::releaseWeights() {
 
 //-----------------------------------------------------------------------------
 
-ValueHeadDesc::ValueHeadDesc() : modelVersion(-1) {}
+RegretHeadDesc::RegretHeadDesc() {}
+
+RegretHeadDesc::RegretHeadDesc(istream& in, int vrsn, bool binaryFloats) {
+  in >> name;
+  if(in.fail())
+    throw StringError(name + ": regret head failed to parse name");
+  conv1 = ConvLayerDesc(in,binaryFloats);
+  bn1 = BatchNormLayerDesc(in,binaryFloats);
+  act1 = ActivationLayerDesc(in,vrsn);
+  mul2 = MatMulLayerDesc(in,binaryFloats);
+  bias2 = MatBiasLayerDesc(in,binaryFloats);
+  act2 = ActivationLayerDesc(in,vrsn);
+  mul3 = MatMulLayerDesc(in,binaryFloats);
+  bias3 = MatBiasLayerDesc(in,binaryFloats);
+  if(in.fail())
+    throw StringError(name + ": regret head istream fail after parsing layers");
+  if(conv1.outChannels != bn1.numChannels)
+    throw StringError(name + ": conv1.outChannels != bn1.numChannels");
+  if(mul2.inChannels != bn1.numChannels * 3)
+    throw StringError(name + ": mul2.inChannels != bn1.numChannels * 3");
+  if(mul2.outChannels != bias2.numChannels || mul2.outChannels != mul3.inChannels)
+    throw StringError(name + ": mul2.outChannels does not match bias2 and mul3");
+  if(mul3.outChannels != 1 || bias3.numChannels != 1)
+    throw StringError(name + ": a regret head has one output");
+}
+
+RegretHeadDesc::~RegretHeadDesc() {}
+
+RegretHeadDesc::RegretHeadDesc(RegretHeadDesc&& other) {
+  *this = std::move(other);
+}
+
+RegretHeadDesc& RegretHeadDesc::operator=(RegretHeadDesc&& other) {
+  name = std::move(other.name);
+  conv1 = std::move(other.conv1);
+  bn1 = std::move(other.bn1);
+  act1 = std::move(other.act1);
+  mul2 = std::move(other.mul2);
+  bias2 = std::move(other.bias2);
+  act2 = std::move(other.act2);
+  mul3 = std::move(other.mul3);
+  bias3 = std::move(other.bias3);
+  return *this;
+}
+
+int64_t RegretHeadDesc::getNumParameters() const {
+  return conv1.getNumParameters() + bn1.getNumParameters() + mul2.getNumParameters() + bias2.getNumParameters() +
+    mul3.getNumParameters() + bias3.getNumParameters();
+}
+
+void RegretHeadDesc::applyScale8ToReduceActivations() {
+  bn1.applyScale8ToReduceActivations();
+  act1.applyScale8ToReduceActivations();
+  bias2.applyScale8ToReduceActivations();
+  act2.applyScale8ToReduceActivations();
+  bias3.applyScale8ToReduceActivations();
+}
+
+void RegretHeadDesc::releaseWeights() {
+  conv1.releaseWeights();
+  bn1.releaseWeights();
+  mul2.releaseWeights();
+  bias2.releaseWeights();
+  mul3.releaseWeights();
+  bias3.releaseWeights();
+}
+
+ValueHeadDesc::ValueHeadDesc() : modelVersion(-1), auxVersion(0) {}
 
 ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
   in >> name;
@@ -2251,10 +2318,13 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
   if(in.fail())
     throw StringError(name + ": value head failed to parse name");
 
+  auxVersion = 0;
   if(modelVersion >= 17) {
     int unused = 0;
-    in >> unused;
-    if(unused != 0) throw StringError(name + ": unknown/unsupported value option A: " + Global::intToString(unused));
+    //Enclosure fork: option A is the aux version (the exported training-only outputs; 0: none).
+    in >> auxVersion;
+    if(auxVersion < 0 || auxVersion > 1)
+      throw StringError(name + ": unknown/unsupported value option A (aux version): " + Global::intToString(auxVersion));
     in >> unused;
     if(unused != 0) throw StringError(name + ": unknown/unsupported value option B: " + Global::intToString(unused));
     in >> unused;
@@ -2275,6 +2345,20 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
   sv3Mul = MatMulLayerDesc(in,binaryFloats);
   sv3Bias = MatBiasLayerDesc(in,binaryFloats);
   vOwnershipConv = ConvLayerDesc(in,binaryFloats);
+
+  if(auxVersion >= 1) {
+    auxTrunkConv = ConvLayerDesc(in,binaryFloats);
+    auxScoringConv = ConvLayerDesc(in,binaryFloats);
+    auxValueMul = MatMulLayerDesc(in,binaryFloats);
+    auxValueBias = MatBiasLayerDesc(in,binaryFloats);
+    int numRegretHeads = 0;
+    in >> numRegretHeads;
+    if(in.fail() || (numRegretHeads != 0 && numRegretHeads != 2))
+      throw StringError(name + ": number of regret heads must be 0 or 2, got " + Global::intToString(numRegretHeads));
+    regretHeads.reserve(numRegretHeads);
+    for(int i = 0; i < numRegretHeads; i++)
+      regretHeads.push_back(RegretHeadDesc(in,modelVersion,binaryFloats));
+  }
 
   if(in.fail())
     throw StringError(name + ": value head istream fail after parsing layers");
@@ -2340,6 +2424,18 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
                v1Conv.outChannels));
   if(vOwnershipConv.outChannels != 1)
     throw StringError(name + Global::strprintf(": vOwnershipConv.outChannels (%d) != 1", vOwnershipConv.outChannels));
+
+  if(auxVersion >= 1) {
+    if(auxTrunkConv.inChannels != v1Conv.inChannels || auxTrunkConv.outChannels != 8)
+      throw StringError(name + ": auxTrunkConv must map the trunk's channels to 8");
+    if(auxScoringConv.inChannels != v1Conv.outChannels || auxScoringConv.outChannels != 1)
+      throw StringError(name + ": auxScoringConv must map v1's channels to 1");
+    if(auxValueMul.inChannels != v2Mul.outChannels || auxValueMul.outChannels != 12 || auxValueBias.numChannels != 12)
+      throw StringError(name + ": auxValueMul must map v2's channels to 12");
+    for(const RegretHeadDesc& r: regretHeads)
+      if(r.conv1.inChannels != v1Conv.inChannels)
+        throw StringError(name + ": " + r.name + " must read the trunk's channels");
+  }
 }
 
 ValueHeadDesc::~ValueHeadDesc() {}
@@ -2362,12 +2458,31 @@ ValueHeadDesc& ValueHeadDesc::operator=(ValueHeadDesc&& other) {
   sv3Mul = std::move(other.sv3Mul);
   sv3Bias = std::move(other.sv3Bias);
   vOwnershipConv = std::move(other.vOwnershipConv);
+  auxVersion = other.auxVersion;
+  auxTrunkConv = std::move(other.auxTrunkConv);
+  auxScoringConv = std::move(other.auxScoringConv);
+  auxValueMul = std::move(other.auxValueMul);
+  auxValueBias = std::move(other.auxValueBias);
+  regretHeads = std::move(other.regretHeads);
   return *this;
 }
 
 void ValueHeadDesc::iterConvLayers(const std::function<void(const ConvLayerDesc& desc)>& f) const {
   f(v1Conv);
   f(vOwnershipConv);
+  if(auxVersion >= 1) {
+    f(auxTrunkConv);
+    f(auxScoringConv);
+    for(const RegretHeadDesc& r: regretHeads)
+      f(r.conv1);
+  }
+}
+
+static int64_t regretHeadsNumParameters(const std::vector<RegretHeadDesc>& heads) {
+  int64_t n = 0;
+  for(const RegretHeadDesc& r: heads)
+    n += r.getNumParameters();
+  return n;
 }
 
 int64_t ValueHeadDesc::getNumParameters() const {
@@ -2380,7 +2495,11 @@ int64_t ValueHeadDesc::getNumParameters() const {
     v3Bias.getNumParameters() +
     sv3Mul.getNumParameters() +
     sv3Bias.getNumParameters() +
-    vOwnershipConv.getNumParameters();
+    vOwnershipConv.getNumParameters() +
+    (auxVersion >= 1 ?
+     auxTrunkConv.getNumParameters() + auxScoringConv.getNumParameters() +
+     auxValueMul.getNumParameters() + auxValueBias.getNumParameters() : 0) +
+    regretHeadsNumParameters(regretHeads);
 }
 
 void ValueHeadDesc::transformToReduceActivations() {
@@ -2398,6 +2517,12 @@ void ValueHeadDesc::applyScale8ToReduceActivations() {
   v2Activation.applyScale8ToReduceActivations();
   v3Bias.applyScale8ToReduceActivations();
   sv3Bias.applyScale8ToReduceActivations();
+  //Enclosure fork: the aux outputs and the regret heads read scaled activations like the rest; their biases and
+  //activations scale the same way, and their outputs come out scaled by 1/8 (outputScaleMultiplier undoes it).
+  if(auxVersion >= 1)
+    auxValueBias.applyScale8ToReduceActivations();
+  for(RegretHeadDesc& r: regretHeads)
+    r.applyScale8ToReduceActivations();
 }
 
 void ValueHeadDesc::releaseWeights() {
@@ -2410,6 +2535,14 @@ void ValueHeadDesc::releaseWeights() {
   sv3Mul.releaseWeights();
   sv3Bias.releaseWeights();
   vOwnershipConv.releaseWeights();
+  if(auxVersion >= 1) {
+    auxTrunkConv.releaseWeights();
+    auxScoringConv.releaseWeights();
+    auxValueMul.releaseWeights();
+    auxValueBias.releaseWeights();
+  }
+  for(RegretHeadDesc& r: regretHeads)
+    r.releaseWeights();
 }
 
 //-----------------------------------------------------------------------------

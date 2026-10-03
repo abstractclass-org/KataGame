@@ -311,6 +311,10 @@ def main(args):
         elif model_config.get("exclude_territory_adjacent_to_atari"):
             logging.warn("Autoupgrading v15 or v16 model to v17 due to exclude_territory_adjacent_to_atari")
             version = 17
+        else:
+            # Enclosure fork (owner, 2026-10-04): always version 17, whose first value-head option carries the
+            # exported training-only outputs and RGSC's heads (write_value_head; ValueHeadDesc::auxVersion).
+            version = 17
 
     if model_config.get("always_compute_pass_alive_under_suicide_rules") and version < 17:
         raise Exception(
@@ -799,8 +803,9 @@ def main(args):
     def write_value_head(name, valuehead):
         writeln(name)
         if version >= 17:
-            # Write some dummy placeholders for future features
-            writeln(0)
+            # Enclosure fork (owner, 2026-10-04): the first option is the aux version (1: the training-only outputs
+            # and RGSC's heads follow the ownership conv); the other two stay placeholders.
+            writeln(1)
             writeln(0)
             writeln(0)
         write_conv(name+".conv1", valuehead.conv1)
@@ -824,6 +829,29 @@ def main(args):
         write_matbias(name+".bias_miscvaluehead", b)
 
         write_conv(name+".conv_ownership",valuehead.conv_ownership)
+
+        if version >= 17:
+            # Enclosure fork (owner, 2026-10-04): the training-only outputs, raw (ValueHeadDesc, aux version 1).
+            # From the trunk: the future positions and territory incomes (4), the cut-edge logits (4).
+            write_conv_weight(name+".conv_aux_trunk", torch.cat((valuehead.conv_futurepos.weight, valuehead.conv_seki.weight), dim=0))
+            # From v1: the future occupancy (KataGo's scoring head).
+            write_conv(name+".conv_scoring", valuehead.conv_scoring)
+            # From v2: the misc value outputs not exported above (4-9) and the more-misc ones (2-7).
+            write_matmul(name+".linear_auxvalue", torch.cat((valuehead.linear_miscvaluehead.weight[4:10], valuehead.linear_moremiscvaluehead.weight[2:8]), dim=0))
+            write_matbias(name+".bias_auxvalue", torch.cat((valuehead.linear_miscvaluehead.bias[4:10], valuehead.linear_moremiscvaluehead.bias[2:8]), dim=0))
+            # RGSC's heads (model_pytorch.RegretHead): none, or the regret value then the regret ranking.
+            regret_heads = [("regret_value", valuehead.regret_value), ("regret_ranking", valuehead.regret_ranking)] if valuehead.regret_heads else []
+            writeln(len(regret_heads))
+            for head_name, head in regret_heads:
+                writeln(name+"."+head_name)
+                write_conv(name+"."+head_name+".conv1", head.conv1)
+                write_biasmask(name+"."+head_name+".bias1", head.bias1)
+                write_activation(name+"."+head_name+".act1", head.act1)
+                write_matmul(name+"."+head_name+".linear2", head.linear2.weight)
+                write_matbias(name+"."+head_name+".bias2", head.linear2.bias)
+                write_activation(name+"."+head_name+".act2", head.act2)
+                write_matmul(name+"."+head_name+".linear_out", head.linear_out.weight)
+                write_matbias(name+"."+head_name+".bias_out", head.linear_out.bias)
 
     def write_model(model):
         write_trunk("model",model)

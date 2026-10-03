@@ -4264,6 +4264,41 @@ struct PolicyHead {
 
 //------------------------------------------------------------------------------
 
+//Enclosure fork (owner, 2026-10-04): where the value head writes the exported training-only outputs and RGSC's
+//heads (device pointers; NULL when the model has none). wantAux: some row of the batch asked for the aux outputs.
+struct ValueHeadExtraBufs {
+  bool wantAux;
+  float* auxTrunkBuf;    //N x 8 x XY, in the model's layout (NHWC or NCHW)
+  float* auxScoringBuf;  //N x XY
+  float* auxValueBuf;    //N x 12
+  float* regretBuf;      //2 x N: the regret value's raw output, then the ranking's
+};
+
+//Enclosure fork (owner, 2026-10-04): one of RGSC's heads, the value head's layers in miniature.
+struct RegretHeadLayers {
+  const int c1;
+  const int c2;
+  const ConvLayer conv1;
+  const BatchNormLayer bn1;
+  const MatMulLayer mul2;
+  const MatBiasLayer bias2;
+  const MatMulLayer mul3;
+  const MatBiasLayer bias3;
+
+  RegretHeadLayers(
+    CudaHandles* cudaHandles, CudnnManager* manager, const RegretHeadDesc* desc, int nnX, int nnY, bool useFP16, bool useNHWC
+  ) :
+    c1(desc->conv1.outChannels),
+    c2(desc->mul2.outChannels),
+    conv1(cudaHandles,manager,&desc->conv1,useFP16,useNHWC),
+    bn1(cudaHandles,&desc->bn1,&desc->act1,nnX,nnY,useFP16,useNHWC),
+    mul2(cudaHandles,&desc->mul2,false),
+    bias2(cudaHandles,&desc->bias2,false,desc->act2.activation),
+    mul3(cudaHandles,&desc->mul3,false),
+    bias3(cudaHandles,&desc->bias3,false,ACTIVATION_IDENTITY)
+  {}
+};
+
 struct ValueHead {
   const string name;
   const int modelVersion;
@@ -4321,7 +4356,22 @@ struct ValueHead {
     sv3Bias(cudaHandles,&desc->sv3Bias,false,ACTIVATION_IDENTITY),
     vOwnershipConv(cudaHandles,manager,&desc->vOwnershipConv,useFP16,useNHWC)
   {
+    if(desc->auxVersion >= 1) {
+      auxTrunkConv = std::make_unique<ConvLayer>(cudaHandles,manager,&desc->auxTrunkConv,useFP16,useNHWC);
+      auxScoringConv = std::make_unique<ConvLayer>(cudaHandles,manager,&desc->auxScoringConv,useFP16,useNHWC);
+      auxValueMul = std::make_unique<MatMulLayer>(cudaHandles,&desc->auxValueMul,false);
+      auxValueBias = std::make_unique<MatBiasLayer>(cudaHandles,&desc->auxValueBias,false,ACTIVATION_IDENTITY);
+    }
+    for(const RegretHeadDesc& r: desc->regretHeads)
+      regretHeads.push_back(std::make_unique<RegretHeadLayers>(cudaHandles,manager,&r,nnX,nnY,useFP16,useNHWC));
   }
+
+  //Enclosure fork (owner, 2026-10-04): the exported training-only outputs (NULL without them) and RGSC's heads.
+  std::unique_ptr<ConvLayer> auxTrunkConv;
+  std::unique_ptr<ConvLayer> auxScoringConv;
+  std::unique_ptr<MatMulLayer> auxValueMul;
+  std::unique_ptr<MatBiasLayer> auxValueBias;
+  std::vector<std::unique_ptr<RegretHeadLayers>> regretHeads;
 
   ~ValueHead()
   {
@@ -4350,6 +4400,18 @@ struct ValueHead {
     b = sizeof(float)*batchSize*ownershipChannels*nnXLen*nnYLen;
     bytes = std::max(bytes,b);
 
+    if(auxTrunkConv != nullptr) {
+      bytes = std::max(bytes,auxTrunkConv->requiredWorkspaceBytes(cudaHandles,batchSize));
+      bytes = std::max(bytes,auxScoringConv->requiredWorkspaceBytes(cudaHandles,batchSize));
+      bytes = std::max(bytes,auxValueMul->requiredWorkspaceBytes(cudaHandles));
+    }
+    for(const std::unique_ptr<RegretHeadLayers>& r: regretHeads) {
+      bytes = std::max(bytes,r->conv1.requiredWorkspaceBytes(cudaHandles,batchSize));
+      bytes = std::max(bytes,r->mul2.requiredWorkspaceBytes(cudaHandles));
+      bytes = std::max(bytes,r->mul3.requiredWorkspaceBytes(cudaHandles));
+      bytes = std::max(bytes,sizeof(float)*batchSize*r->c1*nnXLen*nnYLen);
+    }
+
     return bytes;
   }
 
@@ -4364,6 +4426,7 @@ struct ValueHead {
     float* valueBuf,
     float* scoreValueBuf,
     void* ownershipBuf,
+    const ValueHeadExtraBufs& extra,
     void* workspaceBuf,
     size_t workspaceBytes
   ) const {
@@ -4412,6 +4475,53 @@ struct ValueHead {
       CUDA_ERR("vOwnership copy",cudaPeekAtLastError());
     }
 
+    //Enclosure fork (owner, 2026-10-04): the aux outputs, when a row asked for them: 1x1 convs into float buffers
+    //(through half scratch in FP16), the TD values and scores from v2.
+    if(extra.wantAux && auxTrunkConv != nullptr) {
+      auto convToFloat = [&](const ConvLayer& conv, void* inBuf, float* outBuf, int channels) {
+        if(!usingFP16) {
+          conv.apply(cudaHandles,scratch,batchSize,false,inBuf,outBuf,workspaceBuf,workspaceBytes);
+        }
+        else {
+          SizedBuf<void*> halfOut(scratch->allocator, scratch->getBufSizeXY(channels));
+          conv.apply(cudaHandles,scratch,batchSize,false,inBuf,halfOut.buf,workspaceBuf,workspaceBytes);
+          customCudaCopyFromHalf((const half*)halfOut.buf,outBuf,batchSize*channels*nnXLen*nnYLen,cudaHandles->stream);
+          CUDA_ERR("aux copy",cudaPeekAtLastError());
+        }
+      };
+      convToFloat(*auxTrunkConv,trunkBuf,extra.auxTrunkBuf,8);
+      convToFloat(*auxScoringConv,v1Out2.buf,extra.auxScoringBuf,1);
+      auxValueMul->apply(cudaHandles,scratch,batchSize,v2Out.buf,extra.auxValueBuf,workspaceBuf,workspaceBytes);
+      auxValueBias->apply(cudaHandles,batchSize,extra.auxValueBuf);
+    }
+
+    //Enclosure fork (owner, 2026-10-04): RGSC's heads, at every evaluation (the search reads them), as the value
+    //head above: conv, norm and activation, pooling (in float), hidden layer, one output.
+    for(size_t h = 0; h < regretHeads.size(); h++) {
+      const RegretHeadLayers& r = *regretHeads[h];
+      SizedBuf<void*> r1Out(scratch->allocator, scratch->getBufSizeXY(r.c1));
+      SizedBuf<void*> r1Out2(scratch->allocator, scratch->getBufSizeXY(r.c1));
+      SizedBuf<void*> r1Mean(scratch->allocator, scratch->getBufSizeFloat(r.c1*3));
+      SizedBuf<void*> r2Out(scratch->allocator, scratch->getBufSizeFloat(r.c2));
+      r.conv1.apply(cudaHandles,scratch,batchSize,false,trunkBuf,r1Out.buf,workspaceBuf,workspaceBytes);
+      r.bn1.apply(cudaHandles,batchSize,r1Out.buf,maskBuf,r1Out2.buf);
+      void* toPool = r1Out2.buf;
+      if(usingFP16) {
+        customCudaCopyFromHalf((const half*)r1Out2.buf,(float*)workspaceBuf,batchSize*r.c1*nnXLen*nnYLen,cudaHandles->stream);
+        CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+        toPool = workspaceBuf;
+      }
+      if(!usingNHWC)
+        customCudaValueHeadPoolNCHW((float*)toPool,(float*)r1Mean.buf,batchSize,r.c1,nnXLen*nnYLen,maskSumBuf,cudaHandles->stream);
+      else
+        customCudaValueHeadPoolNHWC((const float*)toPool,(float*)r1Mean.buf,batchSize,nnXLen*nnYLen,r.c1,maskSumBuf,cudaHandles->stream);
+      CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+      r.mul2.apply(cudaHandles,scratch,batchSize,r1Mean.buf,r2Out.buf,workspaceBuf,workspaceBytes);
+      r.bias2.apply(cudaHandles,batchSize,r2Out.buf);
+      float* out = extra.regretBuf + h * batchSize;
+      r.mul3.apply(cudaHandles,scratch,batchSize,r2Out.buf,out,workspaceBuf,workspaceBytes);
+      r.bias3.apply(cudaHandles,batchSize,out);
+    }
   }
 
 };
@@ -4547,6 +4657,7 @@ struct Model {
     float* valueBuf,
     float* scoreValueBuf,
     void* ownershipBuf,
+    const ValueHeadExtraBufs& extra,
 
     void* workspaceBuf,
     size_t workspaceBytes
@@ -4635,6 +4746,7 @@ struct Model {
       valueBuf,
       scoreValueBuf,
       ownershipBuf,
+      extra,
       workspaceBuf,
       workspaceBytes
     );
@@ -4701,6 +4813,12 @@ struct Buffers {
   void* ownershipBuf;
   size_t ownershipBufBytes;
 
+  //Enclosure fork (owner, 2026-10-04): the aux outputs and RGSC's heads, NULL when the model has none.
+  float* auxTrunkBuf;
+  float* auxScoringBuf;
+  float* auxValueBuf;
+  float* regretBuf;
+
   void* workspaceBuf;
   size_t workspaceBytes;
 
@@ -4761,6 +4879,18 @@ struct Buffers {
     ownershipBufBytes = m.valueHead->ownershipChannels * batchXYFloatBytes;
     CUDA_ERR("Buffers",cudaMalloc(&ownershipBuf, ownershipBufBytes));
 
+    auxTrunkBuf = NULL;
+    auxScoringBuf = NULL;
+    auxValueBuf = NULL;
+    regretBuf = NULL;
+    if(m.valueHead->auxTrunkConv != nullptr) {
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&auxTrunkBuf), 8 * batchXYFloatBytes));
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&auxScoringBuf), batchXYFloatBytes));
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&auxValueBuf), 12 * batchFloatBytes));
+    }
+    if(!m.valueHead->regretHeads.empty())
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&regretBuf), m.valueHead->regretHeads.size() * batchFloatBytes));
+
     //In theory the requiredWorkspaceBytes calls could give us values non-monotone in batch size
     //such as if the convolution algorithm changes between batch size 1 and larger.
     //So we call it for all the batch sizes.
@@ -4791,6 +4921,14 @@ struct Buffers {
     (void)cudaFree(valueBuf);
     (void)cudaFree(scoreValueBuf);
     (void)cudaFree(ownershipBuf);
+    if(auxTrunkBuf != NULL)
+      (void)cudaFree(auxTrunkBuf);
+    if(auxScoringBuf != NULL)
+      (void)cudaFree(auxScoringBuf);
+    if(auxValueBuf != NULL)
+      (void)cudaFree(auxValueBuf);
+    if(regretBuf != NULL)
+      (void)cudaFree(regretBuf);
 
     (void)cudaFree(workspaceBuf);
   }
@@ -5357,6 +5495,13 @@ struct InputBuffers {
   float* valueResults; //Host pointer
   float* scoreValueResults; //Host pointer
   float* ownershipResults; //Host pointer
+  //Enclosure fork (owner, 2026-10-04): host copies of the aux outputs and RGSC's heads (NULL without them).
+  int numRegretHeads;
+  bool hasAux;
+  float* auxTrunkResults; //Host pointer
+  float* auxScoringResults; //Host pointer
+  float* auxValueResults; //Host pointer
+  float* regretResults; //Host pointer
 
   InputBuffers(const LoadedModel* loadedModel, int maxBatchSz, int nnXLen, int nnYLen) {
     const ModelDesc& m = loadedModel->modelDesc;
@@ -5405,6 +5550,12 @@ struct InputBuffers {
     valueResults = NULL;
     scoreValueResults = NULL;
     ownershipResults = NULL;
+    numRegretHeads = (int)m.valueHead.regretHeads.size();
+    hasAux = m.valueHead.auxVersion >= 1;
+    auxTrunkResults = NULL;
+    auxScoringResults = NULL;
+    auxValueResults = NULL;
+    regretResults = NULL;
     try {
       userInputBuffer = mallocPinned((size_t)m.numInputChannels * maxBatchSize * nnXLen * nnYLen);
       userInputGlobalBuffer = mallocPinned((size_t)m.numInputGlobalChannels * maxBatchSize);
@@ -5417,6 +5568,13 @@ struct InputBuffers {
 
       scoreValueResults = mallocPinned((size_t)maxBatchSize * m.numScoreValueChannels);
       ownershipResults = mallocPinned((size_t)maxBatchSize * nnXLen * nnYLen * m.numOwnershipChannels);
+      if(hasAux) {
+        auxTrunkResults = mallocPinned((size_t)maxBatchSize * 8 * nnXLen * nnYLen);
+        auxScoringResults = mallocPinned((size_t)maxBatchSize * nnXLen * nnYLen);
+        auxValueResults = mallocPinned((size_t)maxBatchSize * 12);
+      }
+      if(numRegretHeads > 0)
+        regretResults = mallocPinned((size_t)maxBatchSize * numRegretHeads);
     }
     catch(...) {
       freeBuffers();
@@ -5593,6 +5751,18 @@ void NeuralNet::getOutput(
     }
   }
 
+  //Enclosure fork (owner, 2026-10-04): the aux outputs only when some row asked for them (an output with auxMap).
+  ValueHeadExtraBufs extra;
+  extra.wantAux = false;
+  if(inputBuffers->hasAux)
+    for(int row = 0; row < batchSize; row++)
+      if(outputs[row]->auxMap != NULL)
+        extra.wantAux = true;
+  extra.auxTrunkBuf = buffers->auxTrunkBuf;
+  extra.auxScoringBuf = buffers->auxScoringBuf;
+  extra.auxValueBuf = buffers->auxValueBuf;
+  extra.regretBuf = buffers->regretBuf;
+
   gpuHandle->model->apply(
     gpuHandle->cudaHandles.get(),
     scratch,
@@ -5609,6 +5779,7 @@ void NeuralNet::getOutput(
     buffers->valueBuf,
     buffers->scoreValueBuf,
     buffers->ownershipBuf,
+    extra,
 
     buffers->workspaceBuf,
     buffers->workspaceBytes
@@ -5619,6 +5790,13 @@ void NeuralNet::getOutput(
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->valueResults, buffers->valueBuf, inputBuffers->singleValueResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->scoreValueResults, buffers->scoreValueBuf, inputBuffers->singleScoreValueResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->ownershipResults, buffers->ownershipBuf, inputBuffers->singleOwnershipResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
+  if(inputBuffers->numRegretHeads > 0)
+    CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->regretResults, buffers->regretBuf, sizeof(float)*inputBuffers->numRegretHeads*batchSize, cudaMemcpyDeviceToHost, stream));
+  if(extra.wantAux) {
+    CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->auxTrunkResults, buffers->auxTrunkBuf, sizeof(float)*8*nnXLen*nnYLen*batchSize, cudaMemcpyDeviceToHost, stream));
+    CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->auxScoringResults, buffers->auxScoringBuf, sizeof(float)*nnXLen*nnYLen*batchSize, cudaMemcpyDeviceToHost, stream));
+    CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->auxValueResults, buffers->auxValueBuf, sizeof(float)*12*batchSize, cudaMemcpyDeviceToHost, stream));
+  }
   CUDA_ERR("getOutput",cudaStreamSynchronize(stream));
 
   assert(outputs.size() == batchSize);
@@ -5668,6 +5846,23 @@ void NeuralNet::getOutput(
     output->whiteWinProb = inputBuffers->valueResults[row * numValueChannels];
     output->whiteLossProb = inputBuffers->valueResults[row * numValueChannels + 1];
     output->whiteNoResultProb = inputBuffers->valueResults[row * numValueChannels + 2];
+
+    //Enclosure fork (owner, 2026-10-04): RGSC's heads (raw; NNEvaluator applies the output scale and the sigmoid),
+    //and the aux outputs when asked for, channel-major. The 8 trunk channels come in the model's layout.
+    if(inputBuffers->numRegretHeads == 2) {
+      output->hasRegret = true;
+      output->regretValue = inputBuffers->regretResults[row];
+      output->regretRanking = inputBuffers->regretResults[batchSize + row];
+    }
+    if(output->auxMap != NULL && extra.wantAux) {
+      const float* trunkAux = inputBuffers->auxTrunkResults + (size_t)row * 8 * xy;
+      for(int c = 0; c < 8; c++)
+        for(int pos = 0; pos < xy; pos++)
+          output->auxMap[c * xy + pos] = gpuHandle->usingNHWC ? trunkAux[pos * 8 + c] : trunkAux[c * xy + pos];
+      std::copy(inputBuffers->auxScoringResults + (size_t)row * xy, inputBuffers->auxScoringResults + (size_t)(row + 1) * xy,
+                output->auxMap + 8 * xy);
+      std::copy(inputBuffers->auxValueResults + row * 12, inputBuffers->auxValueResults + (row + 1) * 12, output->auxValues);
+    }
 
     //As above, these are NOT actually from white's perspective, but rather the player to move.
     //As usual the client does the postprocessing.
