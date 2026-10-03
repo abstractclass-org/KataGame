@@ -52,7 +52,7 @@ CPUS="${CPUS:-0-15}"
 # Memory caps (GB) per part; self-play at 512 games peaked at 20.9 GB.
 MEM_SELFPLAY="${MEM_SELFPLAY:-24G}"
 MEM_SHUFFLE="${MEM_SHUFFLE:-10G}"
-MEM_TRAIN="${MEM_TRAIN:-6G}"
+MEM_TRAIN="${MEM_TRAIN:-8G}"  # 6 GB was too little (2026-10-03: both killed at 5.9 GB)
 
 # As upstream: freeze the scripts, binary and config of this run.
 DATED_ARCHIVE="$BASEDIR"/scripts/dated/$(date "+%Y%m%d-%H%M%S")
