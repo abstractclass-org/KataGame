@@ -350,7 +350,7 @@ unit.** Before, c_score = 0 (owner, option (b), win/loss only).
   utility and the score values it reports read it (`searchhelpers.cpp`,
   `reportedsearchvalues.cpp`, `searchresults.cpp`); komi, handicap and old
   model versions keep sqrtBoardArea.
-- KataGo's values on top: self-play (`selfplay1.cfg`) static 0, dynamic 0.40,
+- KataGo's values on top: self-play (`selfplay_enclosure.cfg`, which v2a uses, and `selfplay1.cfg`) static 0, dynamic 0.40,
   centre zero weight 0.25, centre scale 0.50 (about 70 points); play and
   analysis (`analysis_example.cfg`, `match_example.cfg`) static 0.10, dynamic
   0.30 (centre zero weight 0.20, scale 0.75: about 105 points), as upstream's
