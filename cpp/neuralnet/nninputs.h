@@ -230,6 +230,19 @@ struct NNOutput {
   float* auxMap;
   float* auxValues;
 
+  //Export stage 2 (owner, 2026-10-04), with the aux outputs above (NULL without them):
+  //auxPolicy: NUM_AUX_POLICIES blocks of MAX_NN_POLICY_SIZE, policy outputs 1-4 of model_pytorch.PolicyHead (the
+  //opponent's reply, the soft policy, the soft opponent reply, the long-term optimistic policy) as raw logits with the
+  //output scale applied, laid out and mapped back like policyProbs; entries for illegal actions are 0.
+  //scoreBelief: scoreBeliefLen probabilities over the final margin from the player to move's view, bin i centred
+  //at (i - scoreBeliefLen/2 + 0.5) bins of the model's bin width (NNEvaluator::getScoreBinWidth).
+  //scoreBeliefRaw: the backend's part of the score belief (s2, then the mixture logits), consumed by NNEvaluator.
+  static constexpr int NUM_AUX_POLICIES = 4;
+  float* auxPolicy;
+  int scoreBeliefLen;
+  float* scoreBelief;
+  float* scoreBeliefRaw;
+
   NNOutput(); //Does NOT initialize values
   NNOutput(const NNOutput& other);
   ~NNOutput();

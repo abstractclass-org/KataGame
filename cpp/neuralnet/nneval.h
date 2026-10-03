@@ -137,6 +137,11 @@ class NNEvaluator {
   //Enclosure fork (owner, 2026-10-04): the model's exported training-only outputs (NNResultBuf::includeAuxOutputs)
   //and RGSC's heads (NNOutput::hasRegret).
   bool hasAuxOutputs() const { return modelHasAux; }
+  //Export stage 2: whether the aux outputs include policy outputs 1-4 and the score belief (NNOutput::auxPolicy,
+  //scoreBelief), and the score belief's bin width in points (0 without it).
+  bool hasAuxPolicy() const { return modelHasPolicyAux; }
+  bool hasScoreBelief() const { return scoreBeliefParams.len > 0; }
+  double getScoreBinWidth() const { return scoreBeliefParams.binWidth; }
   bool hasRegretHeads() const { return modelHasRegret; }
   // The build-time max batch size: backend buffers are allocated for this many rows, and
   // fixed-shape backends (NeuralNet::BatchPolicy::FixedShape) pad every inference up to exactly
@@ -295,6 +300,22 @@ class NNEvaluator {
   int numInputMetaChannels;
   //Enclosure fork (owner, 2026-10-04): whether the model has the exported training-only outputs, and RGSC's heads.
   bool modelHasAux;
+  //Export stage 2: policy outputs 1-4 in the model; the score belief's weights that NNEvaluator applies itself (the
+  //backend computes s2 and the mixture logits from the pooled features), unscaled, copied from the model at load.
+  bool modelHasPolicyAux;
+  struct ScoreBeliefParams {
+    int len = 0;
+    float binWidth = 0.0f;
+    float offsetScale = 0.0f;
+    int c2 = 0;                 //c_sv2
+    int k = 0;                  //the mixture's components
+    int activation = 0;         //the value head's v2 activation (model_pytorch's act2, applied to s2)
+    std::vector<float> offW;    //c2: s2off's weights
+    std::vector<float> s3W;     //c2 x k (in-channel major, as MatMulLayerDesc)
+    std::vector<float> s3B;     //k
+  };
+  ScoreBeliefParams scoreBeliefParams;
+  void finishScoreBelief(NNOutput& output) const;
   bool modelHasRegret;
 
   ModelPostProcessParams postProcessParams;

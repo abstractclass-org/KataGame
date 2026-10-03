@@ -2049,7 +2049,7 @@ void TrunkDesc::releaseWeights() {
 
 //-----------------------------------------------------------------------------
 
-PolicyHeadDesc::PolicyHeadDesc() : modelVersion(-1) {}
+PolicyHeadDesc::PolicyHeadDesc() : modelVersion(-1), auxVersion(0) {}
 
 PolicyHeadDesc::PolicyHeadDesc(istream& in, int vrsn, bool binaryFloats) {
   in >> name;
@@ -2073,10 +2073,13 @@ PolicyHeadDesc::PolicyHeadDesc(istream& in, int vrsn, bool binaryFloats) {
   else
     policyOutChannels = 1;
 
+  auxVersion = 0;
   if(modelVersion >= 17) {
     int unused = 0;
-    in >> unused;
-    if(unused != 0) throw StringError(name + ": unknown/unsupported policy option A: " + Global::intToString(unused));
+    //Enclosure fork (export stage 2): option A is the policy aux version (0: none; 1: outputs 1-4).
+    in >> auxVersion;
+    if(auxVersion < 0 || auxVersion > 1)
+      throw StringError(name + ": unknown/unsupported policy option A (aux version): " + Global::intToString(auxVersion));
     in >> unused;
     if(unused != 0) throw StringError(name + ": unknown/unsupported policy option B: " + Global::intToString(unused));
     in >> unused;
@@ -2104,9 +2107,19 @@ PolicyHeadDesc::PolicyHeadDesc(istream& in, int vrsn, bool binaryFloats) {
     passActivation = ActivationLayerDesc();
     gpoolToPassMul2 = MatMulLayerDesc();
   }
+  if(auxVersion >= 1) {
+    p2ConvAux = ConvLayerDesc(in,binaryFloats);
+    gpoolToPassMul2Aux = MatMulLayerDesc(in,binaryFloats);
+  }
 
   if(in.fail())
     throw StringError(name + ": policy head istream fail after parsing layers");
+  if(auxVersion >= 1) {
+    if(p2ConvAux.inChannels != p2Conv.inChannels || p2ConvAux.outChannels != NUM_AUX_POLICIES * NNPos::NUM_OFFSETS)
+      throw StringError(name + ": p2ConvAux must map p1's channels to the aux policies");
+    if(gpoolToPassMul2Aux.inChannels != gpoolToPassMul2.inChannels || gpoolToPassMul2Aux.outChannels != NUM_AUX_POLICIES)
+      throw StringError(name + ": gpoolToPassMul2Aux must map the pass features to the aux policies");
+  }
 
   if(p1Conv.outChannels != p1BN.numChannels)
     throw StringError(
@@ -2181,6 +2194,9 @@ PolicyHeadDesc& PolicyHeadDesc::operator=(PolicyHeadDesc&& other) {
   gpoolToPassBias = std::move(other.gpoolToPassBias);
   passActivation = std::move(other.passActivation);
   gpoolToPassMul2 = std::move(other.gpoolToPassMul2);
+  auxVersion = other.auxVersion;
+  p2ConvAux = std::move(other.p2ConvAux);
+  gpoolToPassMul2Aux = std::move(other.gpoolToPassMul2Aux);
   return *this;
 }
 
@@ -2188,6 +2204,8 @@ void PolicyHeadDesc::iterConvLayers(const std::function<void(const ConvLayerDesc
   f(p1Conv);
   f(g1Conv);
   f(p2Conv);
+  if(auxVersion >= 1)
+    f(p2ConvAux);
 }
 
 int64_t PolicyHeadDesc::getNumParameters() const {
@@ -2200,7 +2218,8 @@ int64_t PolicyHeadDesc::getNumParameters() const {
     p2Conv.getNumParameters() +
     gpoolToPassMul.getNumParameters() +
     gpoolToPassBias.getNumParameters() +
-    gpoolToPassMul2.getNumParameters();  // empty for older model versions
+    gpoolToPassMul2.getNumParameters() +  // empty for older model versions
+    (auxVersion >= 1 ? p2ConvAux.getNumParameters() + gpoolToPassMul2Aux.getNumParameters() : 0);
 }
 
 
@@ -2238,6 +2257,10 @@ void PolicyHeadDesc::releaseWeights() {
   gpoolToPassMul.releaseWeights();
   gpoolToPassBias.releaseWeights();
   gpoolToPassMul2.releaseWeights();
+  if(auxVersion >= 1) {
+    p2ConvAux.releaseWeights();
+    gpoolToPassMul2Aux.releaseWeights();
+  }
 }
 
 //-----------------------------------------------------------------------------
@@ -2309,7 +2332,7 @@ void RegretHeadDesc::releaseWeights() {
   bias3.releaseWeights();
 }
 
-ValueHeadDesc::ValueHeadDesc() : modelVersion(-1), auxVersion(0) {}
+ValueHeadDesc::ValueHeadDesc() : modelVersion(-1), auxVersion(0), scoreBeliefLen(0), scoreBinWidth(0.0f), scoreOffsetScale(0.0f) {}
 
 ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
   in >> name;
@@ -2323,7 +2346,7 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
     int unused = 0;
     //Enclosure fork: option A is the aux version (the exported training-only outputs; 0: none).
     in >> auxVersion;
-    if(auxVersion < 0 || auxVersion > 1)
+    if(auxVersion < 0 || auxVersion > 2)
       throw StringError(name + ": unknown/unsupported value option A (aux version): " + Global::intToString(auxVersion));
     in >> unused;
     if(unused != 0) throw StringError(name + ": unknown/unsupported value option B: " + Global::intToString(unused));
@@ -2358,6 +2381,23 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
     regretHeads.reserve(numRegretHeads);
     for(int i = 0; i < numRegretHeads; i++)
       regretHeads.push_back(RegretHeadDesc(in,modelVersion,binaryFloats));
+  }
+  scoreBeliefLen = 0;
+  scoreBinWidth = 0.0f;
+  scoreOffsetScale = 0.0f;
+  if(auxVersion >= 2) {
+    in >> scoreBeliefLen;
+    in >> scoreBinWidth;
+    in >> scoreOffsetScale;
+    if(in.fail() || scoreBeliefLen <= 0 || scoreBeliefLen % 2 != 0 || !(scoreBinWidth > 0.0f))
+      throw StringError(name + ": failed to parse the score belief's length and bin width");
+    sbS2Mul = MatMulLayerDesc(in,binaryFloats);
+    sbS2Bias = MatBiasLayerDesc(in,binaryFloats);
+    sbS2OffMul = MatMulLayerDesc(in,binaryFloats);
+    sbS3Mul = MatMulLayerDesc(in,binaryFloats);
+    sbS3Bias = MatBiasLayerDesc(in,binaryFloats);
+    sbMixMul = MatMulLayerDesc(in,binaryFloats);
+    sbMixBias = MatBiasLayerDesc(in,binaryFloats);
   }
 
   if(in.fail())
@@ -2436,6 +2476,18 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
       if(r.conv1.inChannels != v1Conv.inChannels)
         throw StringError(name + ": " + r.name + " must read the trunk's channels");
   }
+  if(auxVersion >= 2) {
+    const int c = sbS2Mul.outChannels;
+    const int k = sbS3Mul.outChannels;
+    if(sbS2Mul.inChannels != v2Mul.inChannels || sbS2Bias.numChannels != c)
+      throw StringError(name + ": sbS2Mul must map the pooled v1 features to c_sv2");
+    if(sbS2OffMul.inChannels != 1 || sbS2OffMul.outChannels != c)
+      throw StringError(name + ": sbS2OffMul must map 1 to c_sv2");
+    if(sbS3Mul.inChannels != c || sbS3Bias.numChannels != k)
+      throw StringError(name + ": sbS3Mul must map c_sv2 to the components");
+    if(sbMixMul.inChannels != v2Mul.inChannels || sbMixMul.outChannels != k || sbMixBias.numChannels != k)
+      throw StringError(name + ": sbMixMul must map the pooled v1 features to the components");
+  }
 }
 
 ValueHeadDesc::~ValueHeadDesc() {}
@@ -2464,6 +2516,16 @@ ValueHeadDesc& ValueHeadDesc::operator=(ValueHeadDesc&& other) {
   auxValueMul = std::move(other.auxValueMul);
   auxValueBias = std::move(other.auxValueBias);
   regretHeads = std::move(other.regretHeads);
+  scoreBeliefLen = other.scoreBeliefLen;
+  scoreBinWidth = other.scoreBinWidth;
+  scoreOffsetScale = other.scoreOffsetScale;
+  sbS2Mul = std::move(other.sbS2Mul);
+  sbS2Bias = std::move(other.sbS2Bias);
+  sbS2OffMul = std::move(other.sbS2OffMul);
+  sbS3Mul = std::move(other.sbS3Mul);
+  sbS3Bias = std::move(other.sbS3Bias);
+  sbMixMul = std::move(other.sbMixMul);
+  sbMixBias = std::move(other.sbMixBias);
   return *this;
 }
 
@@ -2499,7 +2561,10 @@ int64_t ValueHeadDesc::getNumParameters() const {
     (auxVersion >= 1 ?
      auxTrunkConv.getNumParameters() + auxScoringConv.getNumParameters() +
      auxValueMul.getNumParameters() + auxValueBias.getNumParameters() : 0) +
-    regretHeadsNumParameters(regretHeads);
+    regretHeadsNumParameters(regretHeads) +
+    (auxVersion >= 2 ?
+     sbS2Mul.getNumParameters() + sbS2Bias.getNumParameters() + sbS2OffMul.getNumParameters() +
+     sbS3Mul.getNumParameters() + sbS3Bias.getNumParameters() + sbMixMul.getNumParameters() + sbMixBias.getNumParameters() : 0);
 }
 
 void ValueHeadDesc::transformToReduceActivations() {
@@ -2523,6 +2588,13 @@ void ValueHeadDesc::applyScale8ToReduceActivations() {
     auxValueBias.applyScale8ToReduceActivations();
   for(RegretHeadDesc& r: regretHeads)
     r.applyScale8ToReduceActivations();
+  //Export stage 2: the backend's part of the score belief (s2 and the mixture logits) reads the pooled v1 features,
+  //scaled like the rest, so its biases scale too; NNEvaluator multiplies them back (outputScaleMultiplier) and does
+  //the rest with the unscaled weights it copied at load.
+  if(auxVersion >= 2) {
+    sbS2Bias.applyScale8ToReduceActivations();
+    sbMixBias.applyScale8ToReduceActivations();
+  }
 }
 
 void ValueHeadDesc::releaseWeights() {
@@ -2543,6 +2615,15 @@ void ValueHeadDesc::releaseWeights() {
   }
   for(RegretHeadDesc& r: regretHeads)
     r.releaseWeights();
+  if(auxVersion >= 2) {
+    sbS2Mul.releaseWeights();
+    sbS2Bias.releaseWeights();
+    sbS2OffMul.releaseWeights();
+    sbS3Mul.releaseWeights();
+    sbS3Bias.releaseWeights();
+    sbMixMul.releaseWeights();
+    sbMixBias.releaseWeights();
+  }
 }
 
 //-----------------------------------------------------------------------------

@@ -739,8 +739,9 @@ def main(args):
                 writeln(2) # we're going to write 2 policy output channels - regular and optimistic (see below)
             else:
                 writeln(4) # we're going to write 4 policy output channels - regular, optimistic, q winloss, q score (see below)
-            # Write some dummy placeholders for future features
-            writeln(0)
+            # Enclosure fork (owner, 2026-10-04): the first option is the policy aux version (1: policy outputs 1-4
+            # follow linear_pass2; PolicyHeadDesc::auxVersion); the other two stay placeholders.
+            writeln(1)
             writeln(0)
             writeln(0)
         write_conv(name+".conv1p", policyhead.conv1p)
@@ -797,6 +798,14 @@ def main(args):
             write_matmul(name+".linear_pass2", torch.stack((policyhead.linear_pass2.weight[0], policyhead.linear_pass2.weight[5], policyhead.linear_pass2.weight[6], policyhead.linear_pass2.weight[7]), dim=0))
             assert policyhead.linear_pass2.bias is None
 
+        if version >= 17:
+            # Enclosure fork (owner, 2026-10-04), export stage 2: the policy outputs not written above, raw: 1 the
+            # opponent's reply, 2 the soft policy, 3 the soft opponent reply, 4 the long-term optimistic policy
+            # (model_pytorch.PolicyHead), in NUM_OFFSETS blocks as conv2p, and their pass logits.
+            assert policyhead.linear_pass2 is not None and policyhead.linear_pass2.bias is None
+            write_conv_weight(name+".conv2p_aux", torch.stack((conv2p_w[1], conv2p_w[2], conv2p_w[3], conv2p_w[4]), dim=0).flatten(0, 1))
+            write_matmul(name+".linear_pass2_aux", policyhead.linear_pass2.weight[1:5])
+
         assert policyhead.conv2p.bias is None
 
 
@@ -804,8 +813,9 @@ def main(args):
         writeln(name)
         if version >= 17:
             # Enclosure fork (owner, 2026-10-04): the first option is the aux version (1: the training-only outputs
-            # and RGSC's heads follow the ownership conv); the other two stay placeholders.
-            writeln(1)
+            # and RGSC's heads follow the ownership conv; 2, export stage 2: then the score belief); the other two
+            # stay placeholders.
+            writeln(2)
             writeln(0)
             writeln(0)
         write_conv(name+".conv1", valuehead.conv1)
@@ -852,6 +862,20 @@ def main(args):
                 write_activation(name+"."+head_name+".act2", head.act2)
                 write_matmul(name+"."+head_name+".linear_out", head.linear_out.weight)
                 write_matbias(name+"."+head_name+".bias_out", head.linear_out.bias)
+            # Export stage 2 (aux version 2): the score belief (model_pytorch.ValueHead.forward): its length in
+            # bins, the bin width in points, the offset feature's scale (0.05 per bin from the middle), then the
+            # layers. The parity term is left out: its vector is zero in the Enclosure fork (no score parity).
+            writeln(valuehead.scorebelief_len)
+            writeln(float(valuehead.score_belief_offset_vector[1] - valuehead.score_belief_offset_vector[0]))
+            writeln(float(valuehead.score_belief_offset_bias_vector[1] - valuehead.score_belief_offset_bias_vector[0]))
+            assert float(valuehead.score_belief_parity_vector.abs().max()) == 0.0
+            write_matmul(name+".linear_s2", valuehead.linear_s2.weight)
+            write_matbias(name+".bias_s2", valuehead.linear_s2.bias)
+            write_matmul(name+".linear_s2off", valuehead.linear_s2off.weight)
+            write_matmul(name+".linear_s3", valuehead.linear_s3.weight)
+            write_matbias(name+".bias_s3", valuehead.linear_s3.bias)
+            write_matmul(name+".linear_smix", valuehead.linear_smix.weight)
+            write_matbias(name+".bias_smix", valuehead.linear_smix.bias)
 
     def write_model(model):
         write_trunk("model",model)

@@ -13,6 +13,9 @@
 //   regret <value> <ranking>
 //   auxvalues <12 values>
 //   auxmap <9 * x * y values>
+//   auxpolicy <count> <action>:<4 comma-separated logits> ...   (export stage 2: policy outputs 1-4 at the legal
+//                                                               actions and pass)
+//   scorebelief <len> <bin width> <len probabilities>            (export stage 2)
 // katago/python/enclosure_nn_outputs_check.py runs the PyTorch checkpoint on the same inputs and compares.
 
 #include <cstdio>
@@ -50,6 +53,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "the model has no aux outputs or no regret heads\n");
     return 1;
   }
+  const bool stage2 = nnEval->hasAuxPolicy() && nnEval->hasScoreBelief();
 
   ifstream in(argv[2]);
   ofstream out(argv[3]);
@@ -87,7 +91,8 @@ int main(int argc, char** argv) {
     buf.includeAuxOutputs = true;
     nnEval->evaluate(board, hist, pla, params, buf, true, true);
     const NNOutput& o = *buf.result;
-    if(o.auxMap == NULL || o.auxValues == NULL || o.whiteOwnerMap == NULL || !o.hasRegret) {
+    if(o.auxMap == NULL || o.auxValues == NULL || o.whiteOwnerMap == NULL || !o.hasRegret ||
+       (stage2 && (o.auxPolicy == NULL || o.scoreBelief == NULL))) {
       fprintf(stderr, "%s: missing outputs\n", label.c_str());
       return 1;
     }
@@ -115,10 +120,26 @@ int main(int argc, char** argv) {
     for(int i = 0; i < NNOutput::NUM_AUX_MAP_CHANNELS * S * S; i++)
       out << " " << o.auxMap[i];
     out << "\n";
+    if(stage2) {
+      vector<int> actions;
+      for(int i = 0; i <= enclosure::PASS; i++)
+        if(i == enclosure::PASS || board.legalActions()[i])
+          actions.push_back(i);
+      out << "auxpolicy " << actions.size();
+      for(int i : actions) {
+        out << " " << i << ":";
+        for(int a = 0; a < NNOutput::NUM_AUX_POLICIES; a++)
+          out << (a ? "," : "") << o.auxPolicy[(size_t)a * NNPos::MAX_NN_POLICY_SIZE + i];
+      }
+      out << "\nscorebelief " << o.scoreBeliefLen << " " << nnEval->getScoreBinWidth();
+      for(int i = 0; i < o.scoreBeliefLen; i++)
+        out << " " << o.scoreBelief[i];
+      out << "\n";
+    }
     positions++;
   }
-  fprintf(stderr, "wrote %d positions (fp16 %d, nhwc %d, fp16 used %d)\n", positions, (int)fp16, (int)nhwc,
-          (int)nnEval->isAnyThreadUsingFP16());
+  fprintf(stderr, "wrote %d positions (fp16 %d, nhwc %d, fp16 used %d, stage 2 %d)\n", positions, (int)fp16,
+          (int)nhwc, (int)nnEval->isAnyThreadUsingFP16(), (int)stage2);
   nnEval->killServerThreads();
   delete nnEval;
   NeuralNet::globalCleanup();

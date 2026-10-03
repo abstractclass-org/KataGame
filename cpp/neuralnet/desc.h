@@ -437,6 +437,15 @@ struct PolicyHeadDesc {
   ActivationLayerDesc passActivation;
   MatMulLayerDesc gpoolToPassMul2;
 
+  //Enclosure fork (owner, 2026-10-04), export stage 2: the policy outputs not used by the search, raw. Version 17's
+  //first policy option holds the aux version (0: none; 1: these follow gpoolToPassMul2). Outputs 1-4 of
+  //model_pytorch.PolicyHead: the opponent's reply, the soft policy, the soft opponent reply, the long-term optimistic
+  //policy, NUM_OFFSETS channels each (channel = output * NUM_OFFSETS + offset), and their pass logits.
+  static constexpr int NUM_AUX_POLICIES = 4;
+  int auxVersion;
+  ConvLayerDesc p2ConvAux;
+  MatMulLayerDesc gpoolToPassMul2Aux;
+
   PolicyHeadDesc();
   ~PolicyHeadDesc();
   PolicyHeadDesc(std::istream& in, int modelVersion, bool binaryFloats);
@@ -509,6 +518,19 @@ struct ValueHeadDesc {
   MatMulLayerDesc auxValueMul;   //v2 -> 12: the misc value outputs 4-9 and the more-misc 2-7 (TD values and scores)
   MatBiasLayerDesc auxValueBias;
   std::vector<RegretHeadDesc> regretHeads;  //none, or 2: the regret value, then the regret ranking
+  //Export stage 2 (aux version 2): the score belief (model_pytorch.ValueHead.forward), scoreBeliefLen bins of
+  //scoreBinWidth points, centred (bin i's centre is (i - len/2 + 0.5) bins). The backend computes sbS2 and sbMix
+  //from the pooled v1 features; NNEvaluator finishes the mixture (NNEvaluator::finishScoreBelief).
+  int scoreBeliefLen;
+  float scoreBinWidth;
+  float scoreOffsetScale;          //the offset feature: scoreOffsetScale * (i - len/2 + 0.5)
+  MatMulLayerDesc sbS2Mul;         //pooled v1 -> c_sv2
+  MatBiasLayerDesc sbS2Bias;
+  MatMulLayerDesc sbS2OffMul;      //the offset feature (1) -> c_sv2
+  MatMulLayerDesc sbS3Mul;         //c_sv2 -> the mixture's components
+  MatBiasLayerDesc sbS3Bias;
+  MatMulLayerDesc sbMixMul;        //pooled v1 -> the components' log weights
+  MatBiasLayerDesc sbMixBias;
 
   ValueHeadDesc();
   ~ValueHeadDesc();

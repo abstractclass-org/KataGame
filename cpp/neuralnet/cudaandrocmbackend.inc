@@ -4085,6 +4085,21 @@ static void fillMaskFloatBufAndMaskSumBuf(CudaHandles* cudaHandles, void* maskBu
 
 //------------------------------------------------------------------------------
 
+//Enclosure fork (owner, 2026-10-04): where the heads write the exported training-only outputs and RGSC's
+//heads (device pointers; NULL when the model has none). wantAux: some row of the batch asked for the aux outputs.
+struct ValueHeadExtraBufs {
+  bool wantAux;
+  float* auxTrunkBuf;    //N x 8 x XY, in the model's layout (NHWC or NCHW)
+  float* auxScoringBuf;  //N x XY
+  float* auxValueBuf;    //N x 12
+  float* regretBuf;      //2 x N: the regret value's raw output, then the ranking's
+  //Export stage 2 (NULL without them; the policy head writes the first two too):
+  float* policyAuxBuf;      //N x (4 x NUM_OFFSETS) x XY, in the model's layout, as policyBuf
+  float* policyPassAuxBuf;  //N x 4
+  float* sbS2Buf;           //N x c_sv2: the score belief's s2 before its offset term and activation
+  float* sbMixBuf;          //N x K: the mixture's logits
+};
+
 struct PolicyHead {
   const string name;
   const int modelVersion;
@@ -4138,7 +4153,16 @@ struct PolicyHead {
     gpoolToPassBias(cudaHandles,&desc->gpoolToPassBias,false,desc->passActivation.activation),
     gpoolToPassMul2(cudaHandles,&desc->gpoolToPassMul2,false)
   {
+    if(desc->auxVersion >= 1) {
+      p2ConvAux = std::make_unique<ConvLayer>(cudaHandles,manager,&desc->p2ConvAux,false,useNHWC);
+      gpoolToPassMul2Aux = std::make_unique<MatMulLayer>(cudaHandles,&desc->gpoolToPassMul2Aux,false);
+    }
   }
+
+  //Enclosure fork (owner, 2026-10-04), export stage 2: policy outputs 1-4 (NULL without them), from the same
+  //features as p2Conv and gpoolToPassMul2.
+  std::unique_ptr<ConvLayer> p2ConvAux;
+  std::unique_ptr<MatMulLayer> gpoolToPassMul2Aux;
 
   ~PolicyHead()
   {
@@ -4165,6 +4189,10 @@ struct PolicyHead {
     bytes = std::max(bytes,b);
     b = sizeof(float)*batchSize*g1Channels*nnXLen*nnYLen;
     bytes = std::max(bytes,b);
+    if(p2ConvAux != nullptr) {
+      bytes = std::max(bytes,p2ConvAux->requiredWorkspaceBytes(cudaHandles,batchSize));
+      bytes = std::max(bytes,gpoolToPassMul2Aux->requiredWorkspaceBytes(cudaHandles));
+    }
 
     return bytes;
   }
@@ -4179,6 +4207,7 @@ struct PolicyHead {
     void* trunkBuf,
     float* policyPassBuf,
     float* policyBuf,
+    const ValueHeadExtraBufs& extra,
     void* workspaceBuf,
     size_t workspaceBytes
   ) const {
@@ -4242,11 +4271,17 @@ struct PolicyHead {
 
     p1BN.apply(cudaHandles,batchSize,p1OutBufA,maskFloatBuf,p1OutBufB);
     p2Conv.apply(cudaHandles,scratch,batchSize,false,p1OutBufB,(float*)policyBuf,workspaceBuf,workspaceBytes);
+    //Enclosure fork (export stage 2): policy outputs 1-4, when a row asked for the aux outputs.
+    const bool wantPolicyAux = extra.wantAux && p2ConvAux != nullptr;
+    if(wantPolicyAux)
+      p2ConvAux->apply(cudaHandles,scratch,batchSize,false,p1OutBufB,extra.policyAuxBuf,workspaceBuf,workspaceBytes);
 
     if(modelVersion >= 15) {
       gpoolToPassMul.apply(cudaHandles,scratch,batchSize,g1Concat.buf,p1Pass.buf,workspaceBuf,workspaceBytes);
       gpoolToPassBias.apply(cudaHandles,batchSize,p1Pass.buf);
       gpoolToPassMul2.apply(cudaHandles,scratch,batchSize,p1Pass.buf,policyPassBuf,workspaceBuf,workspaceBytes);
+      if(wantPolicyAux)
+        gpoolToPassMul2Aux->apply(cudaHandles,scratch,batchSize,p1Pass.buf,extra.policyPassAuxBuf,workspaceBuf,workspaceBytes);
     }
     else {
       gpoolToPassMul.apply(cudaHandles,scratch,batchSize,g1Concat.buf,policyPassBuf,workspaceBuf,workspaceBytes);
@@ -4264,15 +4299,6 @@ struct PolicyHead {
 
 //------------------------------------------------------------------------------
 
-//Enclosure fork (owner, 2026-10-04): where the value head writes the exported training-only outputs and RGSC's
-//heads (device pointers; NULL when the model has none). wantAux: some row of the batch asked for the aux outputs.
-struct ValueHeadExtraBufs {
-  bool wantAux;
-  float* auxTrunkBuf;    //N x 8 x XY, in the model's layout (NHWC or NCHW)
-  float* auxScoringBuf;  //N x XY
-  float* auxValueBuf;    //N x 12
-  float* regretBuf;      //2 x N: the regret value's raw output, then the ranking's
-};
 
 //Enclosure fork (owner, 2026-10-04): one of RGSC's heads, the value head's layers in miniature.
 struct RegretHeadLayers {
@@ -4364,6 +4390,12 @@ struct ValueHead {
     }
     for(const RegretHeadDesc& r: desc->regretHeads)
       regretHeads.push_back(std::make_unique<RegretHeadLayers>(cudaHandles,manager,&r,nnX,nnY,useFP16,useNHWC));
+    if(desc->auxVersion >= 2) {
+      sbS2Mul = std::make_unique<MatMulLayer>(cudaHandles,&desc->sbS2Mul,false);
+      sbS2Bias = std::make_unique<MatBiasLayer>(cudaHandles,&desc->sbS2Bias,false,ACTIVATION_IDENTITY);
+      sbMixMul = std::make_unique<MatMulLayer>(cudaHandles,&desc->sbMixMul,false);
+      sbMixBias = std::make_unique<MatBiasLayer>(cudaHandles,&desc->sbMixBias,false,ACTIVATION_IDENTITY);
+    }
   }
 
   //Enclosure fork (owner, 2026-10-04): the exported training-only outputs (NULL without them) and RGSC's heads.
@@ -4372,6 +4404,12 @@ struct ValueHead {
   std::unique_ptr<MatMulLayer> auxValueMul;
   std::unique_ptr<MatBiasLayer> auxValueBias;
   std::vector<std::unique_ptr<RegretHeadLayers>> regretHeads;
+  //Export stage 2: the score belief's layers that read the pooled v1 features (NULL without them); NNEvaluator
+  //finishes the mixture.
+  std::unique_ptr<MatMulLayer> sbS2Mul;
+  std::unique_ptr<MatBiasLayer> sbS2Bias;
+  std::unique_ptr<MatMulLayer> sbMixMul;
+  std::unique_ptr<MatBiasLayer> sbMixBias;
 
   ~ValueHead()
   {
@@ -4404,6 +4442,10 @@ struct ValueHead {
       bytes = std::max(bytes,auxTrunkConv->requiredWorkspaceBytes(cudaHandles,batchSize));
       bytes = std::max(bytes,auxScoringConv->requiredWorkspaceBytes(cudaHandles,batchSize));
       bytes = std::max(bytes,auxValueMul->requiredWorkspaceBytes(cudaHandles));
+    }
+    if(sbS2Mul != nullptr) {
+      bytes = std::max(bytes,sbS2Mul->requiredWorkspaceBytes(cudaHandles));
+      bytes = std::max(bytes,sbMixMul->requiredWorkspaceBytes(cudaHandles));
     }
     for(const std::unique_ptr<RegretHeadLayers>& r: regretHeads) {
       bytes = std::max(bytes,r->conv1.requiredWorkspaceBytes(cudaHandles,batchSize));
@@ -4493,6 +4535,13 @@ struct ValueHead {
       convToFloat(*auxScoringConv,v1Out2.buf,extra.auxScoringBuf,1);
       auxValueMul->apply(cudaHandles,scratch,batchSize,v2Out.buf,extra.auxValueBuf,workspaceBuf,workspaceBytes);
       auxValueBias->apply(cudaHandles,batchSize,extra.auxValueBuf);
+    }
+    //Export stage 2: the score belief's s2 (before its offset term and activation) and mixture logits.
+    if(extra.wantAux && sbS2Mul != nullptr) {
+      sbS2Mul->apply(cudaHandles,scratch,batchSize,v1Mean.buf,extra.sbS2Buf,workspaceBuf,workspaceBytes);
+      sbS2Bias->apply(cudaHandles,batchSize,extra.sbS2Buf);
+      sbMixMul->apply(cudaHandles,scratch,batchSize,v1Mean.buf,extra.sbMixBuf,workspaceBuf,workspaceBytes);
+      sbMixBias->apply(cudaHandles,batchSize,extra.sbMixBuf);
     }
 
     //Enclosure fork (owner, 2026-10-04): RGSC's heads, at every evaluation (the search reads them), as the value
@@ -4733,6 +4782,7 @@ struct Model {
       trunkBuf.buf,
       policyPassBuf,
       policyBuf,
+      extra,
       workspaceBuf,
       workspaceBytes
     );
@@ -4818,6 +4868,11 @@ struct Buffers {
   float* auxScoringBuf;
   float* auxValueBuf;
   float* regretBuf;
+  //Export stage 2 (NULL without them).
+  float* policyAuxBuf;
+  float* policyPassAuxBuf;
+  float* sbS2Buf;
+  float* sbMixBuf;
 
   void* workspaceBuf;
   size_t workspaceBytes;
@@ -4890,6 +4945,18 @@ struct Buffers {
     }
     if(!m.valueHead->regretHeads.empty())
       CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&regretBuf), m.valueHead->regretHeads.size() * batchFloatBytes));
+    policyAuxBuf = NULL;
+    policyPassAuxBuf = NULL;
+    sbS2Buf = NULL;
+    sbMixBuf = NULL;
+    if(m.policyHead->p2ConvAux != nullptr) {
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&policyAuxBuf), PolicyHeadDesc::NUM_AUX_POLICIES * NNPos::NUM_OFFSETS * batchXYFloatBytes));
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&policyPassAuxBuf), PolicyHeadDesc::NUM_AUX_POLICIES * batchFloatBytes));
+    }
+    if(m.valueHead->sbS2Mul != nullptr) {
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&sbS2Buf), m.valueHead->sbS2Mul->outChannels * batchFloatBytes));
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&sbMixBuf), m.valueHead->sbMixMul->outChannels * batchFloatBytes));
+    }
 
     //In theory the requiredWorkspaceBytes calls could give us values non-monotone in batch size
     //such as if the convolution algorithm changes between batch size 1 and larger.
@@ -4929,6 +4996,14 @@ struct Buffers {
       (void)cudaFree(auxValueBuf);
     if(regretBuf != NULL)
       (void)cudaFree(regretBuf);
+    if(policyAuxBuf != NULL)
+      (void)cudaFree(policyAuxBuf);
+    if(policyPassAuxBuf != NULL)
+      (void)cudaFree(policyPassAuxBuf);
+    if(sbS2Buf != NULL)
+      (void)cudaFree(sbS2Buf);
+    if(sbMixBuf != NULL)
+      (void)cudaFree(sbMixBuf);
 
     (void)cudaFree(workspaceBuf);
   }
@@ -5502,6 +5577,14 @@ struct InputBuffers {
   float* auxScoringResults; //Host pointer
   float* auxValueResults; //Host pointer
   float* regretResults; //Host pointer
+  //Export stage 2: host copies (NULL without them).
+  bool hasPolicyAux;
+  int sbS2Channels;
+  int sbMixChannels;
+  float* policyAuxResults; //Host pointer
+  float* policyPassAuxResults; //Host pointer
+  float* sbS2Results; //Host pointer
+  float* sbMixResults; //Host pointer
 
   InputBuffers(const LoadedModel* loadedModel, int maxBatchSz, int nnXLen, int nnYLen) {
     const ModelDesc& m = loadedModel->modelDesc;
@@ -5556,6 +5639,13 @@ struct InputBuffers {
     auxScoringResults = NULL;
     auxValueResults = NULL;
     regretResults = NULL;
+    hasPolicyAux = m.policyHead.auxVersion >= 1;
+    sbS2Channels = m.valueHead.auxVersion >= 2 ? m.valueHead.sbS2Mul.outChannels : 0;
+    sbMixChannels = m.valueHead.auxVersion >= 2 ? m.valueHead.sbMixMul.outChannels : 0;
+    policyAuxResults = NULL;
+    policyPassAuxResults = NULL;
+    sbS2Results = NULL;
+    sbMixResults = NULL;
     try {
       userInputBuffer = mallocPinned((size_t)m.numInputChannels * maxBatchSize * nnXLen * nnYLen);
       userInputGlobalBuffer = mallocPinned((size_t)m.numInputGlobalChannels * maxBatchSize);
@@ -5575,6 +5665,14 @@ struct InputBuffers {
       }
       if(numRegretHeads > 0)
         regretResults = mallocPinned((size_t)maxBatchSize * numRegretHeads);
+      if(hasPolicyAux) {
+        policyAuxResults = mallocPinned((size_t)maxBatchSize * PolicyHeadDesc::NUM_AUX_POLICIES * NNPos::NUM_OFFSETS * nnXLen * nnYLen);
+        policyPassAuxResults = mallocPinned((size_t)maxBatchSize * PolicyHeadDesc::NUM_AUX_POLICIES);
+      }
+      if(sbS2Channels > 0) {
+        sbS2Results = mallocPinned((size_t)maxBatchSize * sbS2Channels);
+        sbMixResults = mallocPinned((size_t)maxBatchSize * sbMixChannels);
+      }
     }
     catch(...) {
       freeBuffers();
@@ -5762,6 +5860,10 @@ void NeuralNet::getOutput(
   extra.auxScoringBuf = buffers->auxScoringBuf;
   extra.auxValueBuf = buffers->auxValueBuf;
   extra.regretBuf = buffers->regretBuf;
+  extra.policyAuxBuf = buffers->policyAuxBuf;
+  extra.policyPassAuxBuf = buffers->policyPassAuxBuf;
+  extra.sbS2Buf = buffers->sbS2Buf;
+  extra.sbMixBuf = buffers->sbMixBuf;
 
   gpuHandle->model->apply(
     gpuHandle->cudaHandles.get(),
@@ -5796,6 +5898,14 @@ void NeuralNet::getOutput(
     CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->auxTrunkResults, buffers->auxTrunkBuf, sizeof(float)*8*nnXLen*nnYLen*batchSize, cudaMemcpyDeviceToHost, stream));
     CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->auxScoringResults, buffers->auxScoringBuf, sizeof(float)*nnXLen*nnYLen*batchSize, cudaMemcpyDeviceToHost, stream));
     CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->auxValueResults, buffers->auxValueBuf, sizeof(float)*12*batchSize, cudaMemcpyDeviceToHost, stream));
+    if(inputBuffers->hasPolicyAux) {
+      CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->policyAuxResults, buffers->policyAuxBuf, sizeof(float)*PolicyHeadDesc::NUM_AUX_POLICIES*NNPos::NUM_OFFSETS*nnXLen*nnYLen*batchSize, cudaMemcpyDeviceToHost, stream));
+      CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->policyPassAuxResults, buffers->policyPassAuxBuf, sizeof(float)*PolicyHeadDesc::NUM_AUX_POLICIES*batchSize, cudaMemcpyDeviceToHost, stream));
+    }
+    if(inputBuffers->sbS2Channels > 0) {
+      CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->sbS2Results, buffers->sbS2Buf, sizeof(float)*inputBuffers->sbS2Channels*batchSize, cudaMemcpyDeviceToHost, stream));
+      CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->sbMixResults, buffers->sbMixBuf, sizeof(float)*inputBuffers->sbMixChannels*batchSize, cudaMemcpyDeviceToHost, stream));
+    }
   }
   CUDA_ERR("getOutput",cudaStreamSynchronize(stream));
 
@@ -5862,6 +5972,26 @@ void NeuralNet::getOutput(
       std::copy(inputBuffers->auxScoringResults + (size_t)row * xy, inputBuffers->auxScoringResults + (size_t)(row + 1) * xy,
                 output->auxMap + 8 * xy);
       std::copy(inputBuffers->auxValueResults + row * 12, inputBuffers->auxValueResults + (row + 1) * 12, output->auxValues);
+    }
+    //Export stage 2: policy outputs 1-4 in policyProbs' layout (entry (y * nnXLen + x) * K + offset, pass last), and
+    //the score belief's backend part, raw (NNEvaluator maps, scales and finishes them).
+    if(output->auxPolicy != NULL && extra.wantAux && inputBuffers->hasPolicyAux) {
+      const int A = PolicyHeadDesc::NUM_AUX_POLICIES;
+      const float* auxSrc = inputBuffers->policyAuxResults + (size_t)row * A * K * xy;
+      for(int a = 0; a < A; a++) {
+        float* dst = output->auxPolicy + (size_t)a * NNPos::MAX_NN_POLICY_SIZE;
+        for(int pos = 0; pos < xy; pos++)
+          for(int k = 0; k < K; k++) {
+            int c = a * K + k;
+            dst[pos * K + k] = gpuHandle->usingNHWC ? auxSrc[pos * A * K + c] : auxSrc[c * xy + pos];
+          }
+        dst[xy * K] = inputBuffers->policyPassAuxResults[row * A + a];
+      }
+    }
+    if(output->scoreBeliefRaw != NULL && extra.wantAux && inputBuffers->sbS2Channels > 0) {
+      const int c2 = inputBuffers->sbS2Channels, cm = inputBuffers->sbMixChannels;
+      std::copy(inputBuffers->sbS2Results + (size_t)row * c2, inputBuffers->sbS2Results + (size_t)(row + 1) * c2, output->scoreBeliefRaw);
+      std::copy(inputBuffers->sbMixResults + (size_t)row * cm, inputBuffers->sbMixResults + (size_t)(row + 1) * cm, output->scoreBeliefRaw + c2);
     }
 
     //As above, these are NOT actually from white's perspective, but rather the player to move.

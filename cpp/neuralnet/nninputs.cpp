@@ -292,7 +292,7 @@ void NNInputs::fillScoring(
 
 NNOutput::NNOutput()
   :whiteOwnerMap(NULL),noisedPolicyProbs(NULL),hasRegret(false),regretValue(0.0f),regretRanking(0.0f),
-   auxMap(NULL),auxValues(NULL)
+   auxMap(NULL),auxValues(NULL),auxPolicy(NULL),scoreBeliefLen(0),scoreBelief(NULL),scoreBeliefRaw(NULL)
 {}
 
 //Enclosure fork: a copy of an optional array, or NULL.
@@ -339,6 +339,10 @@ NNOutput::NNOutput(const NNOutput& other) {
   regretRanking = other.regretRanking;
   auxMap = copyOrNull(other.auxMap, (size_t)NUM_AUX_MAP_CHANNELS * nnXLen * nnYLen);
   auxValues = copyOrNull(other.auxValues, NUM_AUX_VALUES);
+  auxPolicy = copyOrNull(other.auxPolicy, (size_t)NUM_AUX_POLICIES * NNPos::MAX_NN_POLICY_SIZE);
+  scoreBeliefLen = other.scoreBeliefLen;
+  scoreBelief = copyOrNull(other.scoreBelief, scoreBeliefLen);
+  scoreBeliefRaw = NULL;  //transient: only between the backend and NNEvaluator
 }
 
 NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
@@ -440,6 +444,10 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
   };
   auxMap = averageOf(&NNOutput::auxMap, (size_t)NUM_AUX_MAP_CHANNELS * nnXLen * nnYLen);
   auxValues = averageOf(&NNOutput::auxValues, NUM_AUX_VALUES);
+  auxPolicy = averageOf(&NNOutput::auxPolicy, (size_t)NUM_AUX_POLICIES * NNPos::MAX_NN_POLICY_SIZE);
+  scoreBeliefLen = others[0]->scoreBeliefLen;
+  scoreBelief = averageOf(&NNOutput::scoreBelief, scoreBeliefLen);  //a mixture of the symmetries' distributions
+  scoreBeliefRaw = NULL;
 
   //For technical correctness in case of impossibly rare hash collisions:
   //Just give up if they don't all match in move legality
@@ -528,6 +536,13 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
   auxMap = copyOrNull(other.auxMap, (size_t)NUM_AUX_MAP_CHANNELS * nnXLen * nnYLen);
   delete[] auxValues;
   auxValues = copyOrNull(other.auxValues, NUM_AUX_VALUES);
+  delete[] auxPolicy;
+  auxPolicy = copyOrNull(other.auxPolicy, (size_t)NUM_AUX_POLICIES * NNPos::MAX_NN_POLICY_SIZE);
+  scoreBeliefLen = other.scoreBeliefLen;
+  delete[] scoreBelief;
+  scoreBelief = copyOrNull(other.scoreBelief, scoreBeliefLen);
+  delete[] scoreBeliefRaw;
+  scoreBeliefRaw = NULL;
 
   return *this;
 }
@@ -546,6 +561,12 @@ NNOutput::~NNOutput() {
   auxMap = NULL;
   delete[] auxValues;
   auxValues = NULL;
+  delete[] auxPolicy;
+  auxPolicy = NULL;
+  delete[] scoreBelief;
+  scoreBelief = NULL;
+  delete[] scoreBeliefRaw;
+  scoreBeliefRaw = NULL;
 }
 
 

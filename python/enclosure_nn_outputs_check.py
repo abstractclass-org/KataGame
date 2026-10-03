@@ -7,8 +7,9 @@ Each DUMP comes from the fork's testnnoutputs (katago/cpp/tests/enclosure/testnn
 model exported from CHECKPOINT (export_model_pytorch.py, without -use-swa) on positions and wrote the input rows
 the network got with its outputs. This runs CHECKPOINT's model on the same rows and reports, per output, the
 largest difference: the value (win, loss, no result), the ownership, RGSC's regret value and ranking, and the
-exported training-only outputs (the aux values and the 9 aux maps). The C++ value and ownership are in white's
-view; the rest, like PyTorch's outputs, in the view of the player to move.
+exported training-only outputs (the aux values and the 9 aux maps; with export stage 2, policy outputs 1-4 at the
+legal actions and pass, and the score belief's probabilities). The C++ value and ownership are in white's view;
+the rest, like PyTorch's outputs, in the view of the player to move.
 """
 
 import sys
@@ -42,6 +43,12 @@ def read_dump(path):
                 positions.append(cur)
             elif word == "spatial":
                 cur["spatial"] = [(int(i), float(v)) for i, v in (e.split(":") for e in rest[1:])]
+            elif word == "auxpolicy":
+                cur["auxpolicy"] = {int(i): np.array([float(x) for x in v.split(",")])
+                                    for i, v in (e.split(":") for e in rest[1:])}
+            elif word == "scorebelief":
+                cur["scorebelief_bin"] = float(rest[1])
+                cur["scorebelief"] = np.array([float(x) for x in rest[2:]], dtype=np.float64)
             else:
                 cur[word] = np.array([float(x) for x in rest], dtype=np.float64)
     return positions
@@ -85,6 +92,13 @@ def main():
             for c, name in enumerate(["future pos 0", "future pos 1", "income mover", "income opponent",
                                       "cut edge 0", "cut edge 1", "cut edge 2", "cut edge 3", "occupancy"]):
                 note("aux map: " + name, aux_map[c] - cpp_map[c])
+            if "auxpolicy" in p:
+                # model_pytorch's policy logits are (output, action) with the pass last, the action index the
+                # fork's (cell * NUM_OFFSETS + offset; the C++ policy layout).
+                for a, name in enumerate(["opponent reply", "soft policy", "soft opponent", "long-term optimistic"]):
+                    diffs = [float(out_policy[n, a + 1, i]) - v[a] for i, v in p["auxpolicy"].items()]
+                    note("policy: " + name, np.array(diffs))
+                note("score belief", np.exp(out_scorebelief[n].numpy()) - p["scorebelief"])
         print(f"{dump}: {len(positions)} positions; largest differences:")
         for name, d in worst.items():
             print(f"  {name:22s} {d:.2e}")

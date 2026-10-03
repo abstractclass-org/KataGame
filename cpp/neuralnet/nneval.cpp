@@ -145,6 +145,22 @@ NNEvaluator::NNEvaluator(
     numInputMetaChannels = desc.numInputMetaChannels;
     modelHasAux = desc.valueHead.auxVersion >= 1;
     modelHasRegret = !desc.valueHead.regretHeads.empty();
+    //Export stage 2: copied before createComputeContext, which may scale the model's weights for its backend.
+    modelHasPolicyAux = modelHasAux && desc.policyHead.auxVersion >= 1;
+    if(modelHasAux && desc.valueHead.auxVersion >= 2) {
+      const ValueHeadDesc& v = desc.valueHead;
+      ScoreBeliefParams& sb = scoreBeliefParams;
+      sb.len = v.scoreBeliefLen;
+      sb.binWidth = v.scoreBinWidth;
+      sb.offsetScale = v.scoreOffsetScale;
+      sb.c2 = v.sbS2Mul.outChannels;
+      sb.k = v.sbS3Mul.outChannels;
+      sb.activation = v.v2Activation.activation;
+      sb.offW = v.sbS2OffMul.weights;
+      sb.s3W = v.sbS3Mul.weights;
+      sb.s3B = v.sbS3Bias.weights;
+      testAssert((int)sb.offW.size() == sb.c2 && (int)sb.s3W.size() == sb.c2 * sb.k && (int)sb.s3B.size() == sb.k);
+    }
     computeContext = NeuralNet::createComputeContext(
       gpuIdxs,logger,nnXLen,nnYLen,
       homeDataDirOverride,
@@ -159,6 +175,7 @@ NNEvaluator::NNEvaluator(
     internalModelName = "random";
     modelVersion = NNModelVersion::defaultModelVersion;
     modelHasAux = false;
+    modelHasPolicyAux = false;
     modelHasRegret = false;
     inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
   }
@@ -934,6 +951,10 @@ void NNEvaluator::serve(
         if(resultBufs[row]->includeAuxOutputs && modelHasAux) {
           emptyOutput->auxMap = new float[NNOutput::NUM_AUX_MAP_CHANNELS*nnXLen*nnYLen];
           emptyOutput->auxValues = new float[NNOutput::NUM_AUX_VALUES];
+          if(modelHasPolicyAux)
+            emptyOutput->auxPolicy = new float[(size_t)NNOutput::NUM_AUX_POLICIES*NNPos::MAX_NN_POLICY_SIZE];
+          if(scoreBeliefParams.len > 0)
+            emptyOutput->scoreBeliefRaw = new float[scoreBeliefParams.c2 + scoreBeliefParams.k];
         }
         outputBuf.push_back(emptyOutput);
       }
@@ -1095,6 +1116,85 @@ static void mapOutputBack(NNOutput& output, const Board& board, const Board& sym
       std::copy(buf.begin(), buf.end(), channel);
     }
   }
+  //Export stage 2: policy outputs 1-4 follow the actions, as policyProbs (the legal actions and pass).
+  if(output.auxPolicy != NULL) {
+    for(int a = 0; a < NNOutput::NUM_AUX_POLICIES; a++) {
+      float* policy = output.auxPolicy + (size_t)a * NNPos::MAX_NN_POLICY_SIZE;
+      buf.assign(policySize, 0.0f);
+      for(int i = 0; i < policySize; i++)
+        if(i == enclosure::PASS || board.legalActions()[i])
+          buf[i] = policy[SymmetryHelpers::getSymAction(i, symBoard, symmetry)];
+      std::copy(buf.begin(), buf.end(), policy);
+    }
+  }
+}
+
+//Enclosure fork (owner, 2026-10-04), export stage 2: the score belief from the backend's s2 and mixture logits, as
+//model_pytorch.ValueHead.forward: per bin i, h = act(s2 + offW * offsetScale * (i - len/2 + 0.5)), logits = s3 h + b;
+//each component a softmax over the bins; the mixture weighted by the softmax of the mixture logits. The parity term
+//is zero in the Enclosure fork. The backend's values carry the output scale (outputScaleMultiplier undoes it).
+void NNEvaluator::finishScoreBelief(NNOutput& output) const {
+  const ScoreBeliefParams& sb = scoreBeliefParams;
+  const float scale = (float)postProcessParams.outputScaleMultiplier;
+  std::vector<float> s2(sb.c2), mix(sb.k), h(sb.c2);
+  for(int j = 0; j < sb.c2; j++)
+    s2[j] = output.scoreBeliefRaw[j] * scale;
+  for(int a = 0; a < sb.k; a++)
+    mix[a] = output.scoreBeliefRaw[sb.c2 + a] * scale;
+  auto activate = [&](float x) -> float {
+    switch(sb.activation) {
+      case ACTIVATION_RELU: return x > 0.0f ? x : 0.0f;
+      case ACTIVATION_MISH: {
+        double softplus = x > 20.0f ? (double)x : log1p(exp((double)x));
+        return (float)(x * tanh(softplus));
+      }
+      case ACTIVATION_SILU: return (float)(x / (1.0 + exp(-(double)x)));
+      default: return x;
+    }
+  };
+  std::vector<double> logits((size_t)sb.len * sb.k);
+  const int mid = sb.len / 2;
+  for(int i = 0; i < sb.len; i++) {
+    const float offset = sb.offsetScale * ((float)(i - mid) + 0.5f);
+    for(int j = 0; j < sb.c2; j++)
+      h[j] = activate(s2[j] + sb.offW[j] * offset);
+    for(int a = 0; a < sb.k; a++) {
+      double v = sb.s3B[a];
+      for(int j = 0; j < sb.c2; j++)
+        v += (double)h[j] * sb.s3W[(size_t)j * sb.k + a];
+      logits[(size_t)i * sb.k + a] = v;
+    }
+  }
+  //log-softmax of each component over the bins, plus the log mixture weights, then the mixture's probabilities.
+  std::vector<double> logWeight(sb.k);
+  {
+    double m = *std::max_element(mix.begin(), mix.end()), sum = 0.0;
+    for(int a = 0; a < sb.k; a++)
+      sum += exp(mix[a] - m);
+    for(int a = 0; a < sb.k; a++)
+      logWeight[a] = mix[a] - m - log(sum);
+  }
+  for(int a = 0; a < sb.k; a++) {
+    double m = -1e300, sum = 0.0;
+    for(int i = 0; i < sb.len; i++)
+      m = std::max(m, logits[(size_t)i * sb.k + a]);
+    for(int i = 0; i < sb.len; i++)
+      sum += exp(logits[(size_t)i * sb.k + a] - m);
+    const double logNorm = m + log(sum);
+    for(int i = 0; i < sb.len; i++)
+      logits[(size_t)i * sb.k + a] += logWeight[a] - logNorm;
+  }
+  delete[] output.scoreBelief;
+  output.scoreBeliefLen = sb.len;
+  output.scoreBelief = new float[sb.len];
+  for(int i = 0; i < sb.len; i++) {
+    double p = 0.0;
+    for(int a = 0; a < sb.k; a++)
+      p += exp(logits[(size_t)i * sb.k + a]);
+    output.scoreBelief[i] = (float)p;
+  }
+  delete[] output.scoreBeliefRaw;
+  output.scoreBeliefRaw = NULL;
 }
 
 std::shared_ptr<NNOutput>* NNEvaluator::averageMultipleSymmetries(
@@ -1572,6 +1672,18 @@ void NNEvaluator::evaluate(
     for(int i = 0; i<NNOutput::NUM_AUX_VALUES; i++)
       buf.result->auxValues[i] *= (float)postProcessParams.outputScaleMultiplier;
   }
+  //Export stage 2: policy outputs 1-4 raw with the output scale, 0 at illegal actions (as mapOutputBack leaves them
+  //under a symmetry); the score belief finished here.
+  if(buf.result->auxPolicy != NULL) {
+    const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
+    for(int a = 0; a<NNOutput::NUM_AUX_POLICIES; a++) {
+      float* policy = buf.result->auxPolicy + (size_t)a * NNPos::MAX_NN_POLICY_SIZE;
+      for(int i = 0; i<policySize; i++)
+        policy[i] = (i == enclosure::PASS || legalBits.test(i)) ? policy[i] * (float)postProcessParams.outputScaleMultiplier : 0.0f;
+    }
+  }
+  if(buf.result->scoreBeliefRaw != NULL)
+    finishScoreBelief(*buf.result);
 
   // Postprocess ownermap
   if(buf.result->whiteOwnerMap != NULL) {
