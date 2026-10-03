@@ -2522,6 +2522,17 @@ void Play::maybeForkGame(
     Board copy = board;
     BoardHistory copyHist = hist;
     copyHist.makeBoardMoveAssumeLegal(copy,loc,pla,NULL);
+    //Enclosure fork: a move can end the game (the last edge; in Go no single move does), and the evaluator has no
+    //legal move to list for a finished position (testAssert(legalCount > 0) aborted self-play on 2026-10-02 and
+    //2026-10-04). Score it exactly, as the search scores a finished node (Search, terminal values).
+    if(copyHist.isGameFinished) {
+      double whiteScore = ScoreValue::whiteScoreDrawAdjust(copyHist.finalWhiteMinusBlackScore,drawEquivalentWinsForWhite,copyHist);
+      if(bestMove == Board::NULL_LOC || (pla == P_WHITE && whiteScore > bestScore) || (pla == P_BLACK && whiteScore < bestScore)) {
+        bestMove = loc;
+        bestScore = whiteScore;
+      }
+      continue;
+    }
     MiscNNInputParams nnInputParams;
     nnInputParams.drawEquivalentWinsForWhite = drawEquivalentWinsForWhite;
     //Featurize the way this bot's own searches would, even if the replayed game-level history differs.
