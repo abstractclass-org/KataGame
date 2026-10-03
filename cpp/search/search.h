@@ -24,6 +24,8 @@
 
 #include "../external/nlohmann_json/json.hpp"
 
+namespace Rgsc { class TreeTracker; }
+
 typedef int SearchNodeState; // See SearchNode::STATE_*
 
 struct SearchNode;
@@ -183,6 +185,9 @@ struct Search {
   Logger* logger;
   NNEvaluator* nnEvaluator;
   NNEvaluator* humanEvaluator;
+  //Enclosure fork (owner, 2026-10-04): when set (self-play with RGSC), every network evaluation of this search is
+  //offered to it, to find the game's highest-ranked state (program/rgsc.h). Not owned.
+  Rgsc::TreeTracker* rgscTracker;
   int nnXLen;
   int nnYLen;
   int policySize;

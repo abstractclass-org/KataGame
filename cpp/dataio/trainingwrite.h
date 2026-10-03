@@ -132,6 +132,14 @@ struct FinishedGameData {
   std::vector<double> valueSurpriseByTurn;
   std::vector<bool> wasCheapSearchByTurn;
 
+  //Enclosure fork (owner, 2026-10-04): RGSC (program/rgsc.h). Per turn, the search value (white's win minus loss)
+  //of the move played and the network's regret ranking of the position (NaN without the head); and, set after the
+  //game by the self-play loop, each turn's regret target (Eq. 2), written to the rows as C70 (flag C71). Empty when
+  //RGSC is off.
+  std::vector<float> selectedWhiteWinLossByTurn;
+  std::vector<float> regretRankingByTurn;
+  std::vector<float> regretByTurn;
+
   Color* finalFullArea;
   Color* finalOwnership;
   bool* finalSekiAreas;
@@ -264,7 +272,9 @@ struct TrainingWriteBuffers {
   //C68: Enclosure fork: 1 if valueTargetsNCHW C1 holds the cut-edge target (rows before 2026-10-03 have 0: no target).
   //C69: Enclosure fork: 1 if valueTargetsNCHW C5-6 hold the territory-income target (0 in rows written before it,
   //which the shuffle pads to 7 channels, and in rows with no turn end left).
-  //C70-79: Unused, zero-filled.
+  //C70: Enclosure fork (owner, 2026-10-04): RGSC's regret target (Eq. 2), if C71.
+  //C71: Enclosure fork: 1 if C70 holds the regret target (0 in side positions and when RGSC is off).
+  //C72-79: Unused, zero-filled.
 
   NumpyBuffer<float> globalTargetsNC;
 
@@ -310,6 +320,9 @@ struct TrainingWriteBuffers {
   TrainingWriteBuffers& operator=(const TrainingWriteBuffers&) = delete;
 
   void clear();
+
+  //Enclosure fork (owner, 2026-10-04): the regret target of the row just added (C70, flag C71).
+  void setLastRowRegret(float regret);
 
   void addRow(
     const Board& board, const BoardHistory& hist, Player nextPlayer,

@@ -583,7 +583,7 @@ void GameInitializer::createGameSharedUnsynchronized(
 
     otherGameProps.isSgfPos = hintLoc == Board::NULL_LOC;
     otherGameProps.isHintPos = hintLoc != Board::NULL_LOC;
-    otherGameProps.allowPolicyInit = hintLoc == Board::NULL_LOC; //On sgf positions, do allow extra moves at start
+    otherGameProps.allowPolicyInit = hintLoc == Board::NULL_LOC && !startPos.exactStart; //On sgf positions, do allow extra moves at start (Enclosure fork: not on exact starts)
     otherGameProps.isFork = false;
     otherGameProps.isHintFork = false;
     otherGameProps.hintLoc = hintLoc;
@@ -848,6 +848,25 @@ void Play::extractPolicyTarget(
     assert(value <= 30001.0);
     buf.emplace_back(locsBuf[moveIdx],(int16_t)round(value));
   }
+}
+
+//Enclosure fork (owner, 2026-10-04): RGSC's V_selected (program/rgsc.h): the search value of the move played, its
+//child's mean (white's win minus loss, as the search keeps it); the root's if that child has no visits.
+static float selectedChildWhiteWinLoss(const Search* bot, Loc loc) {
+  ReportedSearchValues values;
+  if(bot->rootNode != NULL) {
+    ConstSearchNodeChildrenReference children = bot->rootNode->getChildren();
+    const int capacity = children.getCapacity();
+    for(int i = 0; i<capacity; i++) {
+      const SearchNode* child = children[i].getIfAllocated();
+      if(child == NULL)
+        break;
+      if(children[i].getMoveLocRelaxed() == loc && bot->getNodeValues(child, values))
+        return (float)values.winLossValue;
+    }
+  }
+  values = bot->getRootValuesRequireSuccess();
+  return (float)values.winLossValue;
 }
 
 static void extractValueTargets(ValueTargets& buf, const Search* toMoveBot, const SearchNode* node) {
@@ -1853,6 +1872,14 @@ FinishedGameData* Play::runGame(
       gameData->targetWeightByTurn.push_back(limits.targetWeight);
       gameData->reanalysisByTurn.emplace_back();
       wasCheapSearchByTurn.push_back(limits.isCheapSearch);
+
+      //Enclosure fork (owner, 2026-10-04): RGSC's per-turn records (program/rgsc.h), for every move, full or cheap.
+      gameData->selectedWhiteWinLossByTurn.push_back(selectedChildWhiteWinLoss(toMoveBot, loc));
+      {
+        const NNOutput* rootOutput = toMoveBot->rootNode != NULL ? toMoveBot->rootNode->getNNOutput() : NULL;
+        gameData->regretRankingByTurn.push_back(
+          rootOutput != NULL && rootOutput->hasRegret ? rootOutput->regretRanking : std::numeric_limits<float>::quiet_NaN());
+      }
 
       //Occasionally fork off some positions to evaluate
       Loc sidePositionForkLoc = Board::NULL_LOC;

@@ -446,6 +446,13 @@ static void fillValueTDTargets(const vector<ValueTargets>& whiteValueTargetsByTu
   buf[3] = (float)score;
 }
 
+void TrainingWriteBuffers::setLastRowRegret(float regret) {
+  testAssert(curRows > 0);
+  float* rowGlobal = globalTargetsNC.data + (curRows - 1) * GLOBAL_TARGET_NUM_CHANNELS;
+  rowGlobal[70] = regret;
+  rowGlobal[71] = 1.0f;
+}
+
 void TrainingWriteBuffers::addRow(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const BoardHistory& startHist,
@@ -1359,6 +1366,9 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
             rand,
             reanalysisData
           );
+          //Enclosure fork (owner, 2026-10-04): RGSC's regret target, set by the self-play loop after the game.
+          if(turnAfterStart < (int)data.regretByTurn.size())
+            writeBuffers->setLastRowRegret(data.regretByTurn[turnAfterStart]);
           writeAndClearIfFull();
         }
         rowCount.fetch_add(1, std::memory_order_relaxed);

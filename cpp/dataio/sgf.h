@@ -121,6 +121,9 @@ struct Sgf {
     std::string metadata;
     //Scaling of training weight in the training data
     double trainingWeight = 1.0;
+    //Enclosure fork (owner, 2026-10-04): start exactly here, with no policy-initialized moves added at the start
+    //(RGSC's restarts from its buffer). Not part of the JSON form.
+    bool exactStart = false;
 
     static std::string toJsonLine(const PositionSample& sample);
     static PositionSample ofJsonLine(const std::string& s);

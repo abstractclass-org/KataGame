@@ -12,11 +12,13 @@
 #include "../program/setup.h"
 #include "../program/play.h"
 #include "../program/selfplaymanager.h"
+#include "../program/rgsc.h"
 #include "../command/commandline.h"
 #include "../core/test.h"
 #include "../main.h"
 
 #include <chrono>
+#include <cmath>
 #include <csignal>
 
 using namespace std;
@@ -33,6 +35,72 @@ static void signalHandler(int signal)
 
 //-----------------------------------------------------------------------------------------
 
+
+//Enclosure fork (owner, 2026-10-04): RGSC after a game (program/rgsc.h): each turn's regret target (Eq. 2); the
+//start state's EMA update after a restart, or, after a game from the normal start, its candidate offered to the
+//buffer (the highest regret ranking among the tracker's tree states and the played positions, later positions
+//first, as the authors' code). Returns whether to write the game: not when its start state left the buffer
+//meanwhile (the authors' code drops such games) nor during the warm-up.
+static bool rgscAfterGame(
+  Rgsc::Buffer& buffer, const Rgsc::Settings& settings, FinishedGameData* gameData,
+  bool restarted, uint64_t restartKey, const Rgsc::TreeTracker* tracker
+) {
+  const vector<float>& selected = gameData->selectedWhiteWinLossByTurn;
+  const bool hasRegret = !selected.empty();
+  if(hasRegret) {
+    const Player winner = gameData->endHist.winner;
+    const double whiteOutcome = winner == P_WHITE ? 1.0 : winner == P_BLACK ? -1.0 : 0.0;
+    gameData->regretByTurn = Rgsc::regretsOfGame(selected, whiteOutcome);
+  }
+  //A model exported before the heads were added gives no rankings: the game still gets its regret targets (so the
+  //heads train on them), but offers nothing and does not count toward the warm-up, which starts with the first
+  //model that has the heads.
+  const bool modelHasHeads = !gameData->regretRankingByTurn.empty() && !std::isnan(gameData->regretRankingByTurn[0]);
+  if(!modelHasHeads && !restarted)
+    return true;
+  bool keep = true;
+  if(restarted) {
+    if(!hasRegret || !buffer.updateAfterRestart(restartKey, gameData->regretByTurn[0])) {
+      keep = false;
+      buffer.countDroppedRestart();
+    }
+  }
+  else if(
+    tracker != NULL && hasRegret && gameData->usedInitialPosition == 0 && gameData->mode == FinishedGameData::MODE_NORMAL &&
+    gameData->regretRankingByTurn.size() == selected.size()
+  ) {
+    const vector<Move>& allMoves = gameData->endHist.moveHistory;
+    const size_t start = gameData->startHist.moveHistory.size();
+    testAssert(allMoves.size() >= start + selected.size());
+    bool found = tracker->found();
+    float best = tracker->ranking();
+    double regret = found ? std::max(buffer.floorRegret(), (double)tracker->regretValue()) : 0.0;
+    uint64_t key = tracker->key();
+    vector<Move> moves = found ? tracker->moves() : vector<Move>();
+    for(size_t k = selected.size(); k-- > 0; ) {
+      const size_t length = start + k;  //the position the move of turn k was searched in
+      const float ranking = gameData->regretRankingByTurn[k];
+      if(length == 0 || !(ranking > best))
+        continue;
+      const uint64_t positionKey = Rgsc::keyOf(allMoves, length);
+      if(buffer.contains(positionKey))
+        continue;
+      found = true;
+      best = ranking;
+      regret = gameData->regretByTurn[k];
+      key = positionKey;
+      moves.assign(allMoves.begin(), allMoves.begin() + length);
+    }
+    if(found)
+      buffer.offer(key, regret, moves);
+  }
+  const int64_t finishedBefore = buffer.countFinishedGame();
+  if(finishedBefore < settings.warmupGames)
+    keep = false;
+  if((finishedBefore + 1) % 50 == 0)
+    buffer.save();
+  return keep;
+}
 
 int MainCmds::selfplay(const vector<string>& args) {
   Board::initHash();
@@ -113,6 +181,14 @@ int MainCmds::selfplay(const vector<string>& args) {
   const bool isDistributed = false;
   PlaySettings playSettings = PlaySettings::loadForSelfplay(cfg, isDistributed);
   GameRunner* gameRunner = new GameRunner(cfg, playSettings, logger);
+  //Enclosure fork (owner, 2026-10-04): RGSC's buffer, shared by the game threads, kept across runs in its file.
+  const Rgsc::Settings rgscSettings = Rgsc::Settings::load(cfg);
+  Rgsc::Buffer* rgscBuffer = NULL;
+  if(rgscSettings.enabled) {
+    rgscBuffer = new Rgsc::Buffer(rgscSettings);
+    rgscBuffer->load();
+    logger.write("RGSC: buffer of " + Global::uint64ToString(rgscBuffer->size()) + " states loaded from " + rgscSettings.bufferFile);
+  }
   bool autoCleanupAllButLatestIfUnused = true;
   SelfplayManager* manager = new SelfplayManager(maxDataQueueSize, &logger, logGamesEvery, autoCleanupAllButLatestIfUnused);
 
@@ -251,7 +327,11 @@ int MainCmds::selfplay(const vector<string>& args) {
     &forkData,
     maxGamesTotal,
     &baseParams,
-    &gameSeedBase
+    &gameSeedBase,
+    rgscBuffer,
+    &rgscSettings,
+    maxBoardXSizeUsed,
+    maxBoardYSizeUsed
   ](int threadIdx) {
     auto shouldStopFunc = []() noexcept {
       return shouldStop.load();
@@ -300,14 +380,49 @@ int MainCmds::selfplay(const vector<string>& args) {
         MatchPairer::BotSpec botSpecW = botSpecB;
 
         string seed = gameSeedBase + ":" + Global::uint64ToHexString(thisLoopSeedRand.nextUInt64());
+        //Enclosure fork (owner, 2026-10-04): RGSC. With probability rgscStartProb the game starts exactly at a state
+        //drawn from the buffer (and takes no fork position); otherwise a tracker collects its searches' candidate.
+        Rgsc::Entry rgscEntry;
+        bool rgscRestarted = false;
+        Sgf::PositionSample rgscStart;
+        std::unique_ptr<Rgsc::TreeTracker> rgscTracker;
+        std::function<void(const MatchPairer::BotSpec&, Search*)> rgscAttach = nullptr;
+        if(rgscBuffer != NULL) {
+          if(rgscBuffer->maybeSample(thisLoopSeedRand, rgscEntry)) {
+            rgscRestarted = true;
+            rgscStart.board = Board(maxBoardXSizeUsed, maxBoardYSizeUsed);
+            rgscStart.nextPla = P_BLACK;
+            rgscStart.moves = rgscEntry.moves;
+            rgscStart.initialTurnNumber = 0;
+            rgscStart.hintLoc = Board::NULL_LOC;
+            rgscStart.weight = 1.0;
+            rgscStart.trainingWeight = 1.0;
+            rgscStart.exactStart = true;
+          }
+          else {
+            rgscTracker = std::make_unique<Rgsc::TreeTracker>(rgscBuffer);
+            Rgsc::TreeTracker* tracker = rgscTracker.get();
+            rgscAttach = [tracker](const MatchPairer::BotSpec&, Search* search) { search->rgscTracker = tracker; };
+          }
+        }
         gameData = gameRunner->runGame(
-          seed, botSpecB, botSpecW, forkData, NULL, logger,
+          seed, botSpecB, botSpecW, rgscRestarted ? NULL : forkData, rgscRestarted ? &rgscStart : NULL, logger,
           shouldStopFunc,
           shouldPause,
           (switchNetsMidGame ? checkForNewNNEval : nullptr),
-          nullptr,
+          rgscAttach,
           nullptr
         );
+        if(gameData != NULL && rgscBuffer != NULL) {
+          bool keep = rgscAfterGame(*rgscBuffer, rgscSettings, gameData, rgscRestarted, rgscEntry.key, rgscTracker.get());
+          if(!keep) {
+            delete gameData;
+            gameData = NULL;
+            //Not written, but the loop goes on (a NULL game otherwise means stop).
+            manager->release(nnEval);
+            continue;
+          }
+        }
       }
 
       //NULL gamedata will happen when the game is interrupted by shouldStop, which means we should also stop.
@@ -386,6 +501,13 @@ int MainCmds::selfplay(const vector<string>& args) {
   //Overall self-play totals (per-model NN/data/moves breakdowns are logged above by the manager).
   logger.write("Total games: " + Global::int64ToString(numGamesStarted.load(std::memory_order_relaxed)));
   logger.write("Total selfplay runtime (seconds): " + Global::doubleToString(selfplayTimer.getSeconds()));
+
+  //Enclosure fork (owner, 2026-10-04): RGSC's buffer, kept for the next run.
+  if(rgscBuffer != NULL) {
+    rgscBuffer->save();
+    logger.write(rgscBuffer->summary() + "; saved to " + rgscSettings.bufferFile);
+    delete rgscBuffer;
+  }
 
   //Delete and clean up everything else
   NeuralNet::globalCleanup();
