@@ -262,7 +262,9 @@ struct TrainingWriteBuffers {
   //probability of this position being selected for reanalysis, recorded for statistical purposes.
   //C67: If C64, the number of visits of the original cheap search (the reanalysis search's visits are in C60).
   //C68: Enclosure fork: 1 if valueTargetsNCHW C1 holds the cut-edge target (rows before 2026-10-03 have 0: no target).
-  //C69-79: Unused, zero-filled.
+  //C69: Enclosure fork: 1 if valueTargetsNCHW C5-6 hold the territory-income target (0 in rows written before it,
+  //which the shuffle pads to 7 channels, and in rows with no turn end left).
+  //C70-79: Unused, zero-filled.
 
   NumpyBuffer<float> globalTargetsNC;
 
@@ -280,6 +282,9 @@ struct TrainingWriteBuffers {
   //    Enclosure fork: edges that get cut (+1 the mover's, -1 the opponent's, 0 not cut, 2 no edge), if C68.
   //C2-3: Future board position a certain number of turns in the future. All 0 if C33 has weight 0.
   //C4: Final board area/territory [-120,120]. All 0 if C34 has weight 0. Unlike ownership, takes into account group tax and scoring rules.
+  //C5-6: Enclosure fork (owner, 2026-10-03; iviazovetskyi's ownership target): territory income of the player to move
+  //(C5) and of the opponent (C6). Per lattice point, its enclosed area inside the unit square around the point,
+  //averaged over the turn ends after this row's position, x 120 ([0,120]). All 0 unless C69.
   NumpyBuffer<int8_t> valueTargetsNCHW;
 
   //Spatial q-value targets, from the perspective of the player to move.

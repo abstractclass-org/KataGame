@@ -275,7 +275,7 @@ void FinishedGameData::printDebug(ostream& out) const {
 //And update the python code
 static const int POLICY_TARGET_NUM_CHANNELS = 2;
 static const int GLOBAL_TARGET_NUM_CHANNELS = 80;
-static const int VALUE_SPATIAL_TARGET_NUM_CHANNELS = 5;
+static const int VALUE_SPATIAL_TARGET_NUM_CHANNELS = 7;  //Enclosure fork: KataGo's 5, then the territory income (C5-6)
 static const int QVALUE_SPATIAL_TARGET_NUM_CHANNELS = 3;
 
 TrainingWriteBuffers::TrainingWriteBuffers(int iVersion, int maxRws, int numBChannels, int numFChannels, int xLen, int yLen, bool includeMetadata)
@@ -730,6 +730,10 @@ void TrainingWriteBuffers::addRow(
     rowGlobal[20] = 0.0f;
     for(int i = 0; i<posArea*2; i++)
       rowOwnership[i] = 0;
+    //Enclosure fork: no territory-income target either (C5-6, flag C69).
+    for(int i = 0; i<posArea*2; i++)
+      rowOwnership[i + posArea*5] = 0;
+    rowGlobal[69] = 0.0f;
     for(int i = 0; i<scoreDistrLen; i++)
       rowScoreDistr[i] = 0;
     //Dummy value, to make sure it still sums to 100
@@ -761,6 +765,9 @@ void TrainingWriteBuffers::addRow(
       testAssert(whiteValueTargetsIdx >= 0 && whiteValueTargetsIdx < (int)boards.size());
       const int mover = Board::indexOfPlayer(nextPlayer);
       vector<float> occupancySum(posArea, 0.0f);
+      //Territory income (C5-6, owner, 2026-10-03): the same turn ends, each player's enclosed area per unit square.
+      vector<float> incomeSum[2] = {vector<float>(posArea, 0.0f), vector<float>(posArea, 0.0f)};
+      float income[enclosure::N_POINTS];
       int turnEnds = 0;
       uint8_t inside[2][enclosure::N_POINTS];
       for(int j = whiteValueTargetsIdx + 1; j < (int)boards.size(); j++) {
@@ -769,8 +776,13 @@ void TrainingWriteBuffers::addRow(
         if(!p.placed.empty() || p.move_count <= boards[whiteValueTargetsIdx].pos.move_count)
           continue;
         turnEnds++;
-        for(int k = 0; k < 2; k++)
-          enclosure::enclosed_area(p.edges[k], inside[k]);
+        for(int k = 0; k < 2; k++) {
+          enclosure::enclosed_area(p.edges[k], inside[k], income);
+          vector<float>& sum = incomeSum[k == mover ? 0 : 1];
+          for(int x = 0; x < enclosure::SIZE; x++)
+            for(int y = 0; y < enclosure::SIZE; y++)
+              sum[NNPos::xyToPos(x,y,dataXLen)] += income[x * enclosure::SIZE + y];
+        }
         for(int x = 0; x < enclosure::SIZE; x++)
           for(int y = 0; y < enclosure::SIZE; y++) {
             int q = x * enclosure::SIZE + y;  //The engine's point order
@@ -780,6 +792,12 @@ void TrainingWriteBuffers::addRow(
       if(turnEnds > 0)
         for(int pos = 0; pos < posArea; pos++)
           rowOwnership[pos] = clampToRadius120(occupancySum[pos] / turnEnds * 120.0f, rand);
+      //C5-6: the territory income of the mover, then the opponent, x 120; C69 flags rows that carry it.
+      for(int c = 0; c < 2; c++)
+        for(int pos = 0; pos < posArea; pos++)
+          rowOwnership[(5 + c) * posArea + pos] =
+            turnEnds > 0 ? clampToRadius120(incomeSum[c][pos] / turnEnds * 120.0f, rand) : 0;
+      rowGlobal[69] = turnEnds > 0 ? 1.0f : 0.0f;
 
       //Enclosure fork (owner, 2026-10-03): edges that get cut, in C1 (Go's seki slot, the seki head's three sign
       //classes). Per lattice point on an edge on the board now (its ends and the points it passes through): +1 if

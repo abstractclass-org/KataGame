@@ -2873,7 +2873,9 @@ class ValueHead(torch.nn.Module):
         self.linear_moremiscvaluehead = torch.nn.Linear(c_v2, 8, bias=True)
         self.conv_ownership = torch.nn.Conv2d(c_v1, 1, kernel_size=1, padding="same", bias=False)
         self.conv_scoring = torch.nn.Conv2d(c_v1, 1, kernel_size=1, padding="same", bias=False)
-        self.conv_futurepos = torch.nn.Conv2d(c_in, 2, kernel_size=1, padding="same", bias=False)
+        # Enclosure fork (owner, 2026-10-03): 4 outputs, KataGo's 2 future positions, then the territory income
+        # logits (mover's, opponent's; metrics_pytorch). Training-only, like the future positions: not exported.
+        self.conv_futurepos = torch.nn.Conv2d(c_in, 4, kernel_size=1, padding="same", bias=False)
         self.conv_seki = torch.nn.Conv2d(c_in, 4, kernel_size=1, padding="same", bias=False)
 
         self.pos_len = pos_len

@@ -194,6 +194,21 @@ class Metrics:
         return 0.25 * global_weight * weight * loss
 
 
+    def loss_income_samplewise(self, pred_logits, target, weight, mask, mask_sum_hw, global_weight):
+        # Enclosure fork (owner, 2026-10-03; iviazovetskyi's ownership target): each player's territory income per
+        # point (its enclosed area in the unit square around the point, averaged over the remaining turn ends; the
+        # mover's, then the opponent's), as binary cross-entropy, averaged over the board's points and both planes,
+        # weighted as KataGo's ownership (1.5; iviazovetskyi's weight too).
+        n = pred_logits.shape[0]
+        assert pred_logits.shape == (n, 2, self.pos_len, self.pos_len)
+        assert target.shape == (n, 2, self.pos_len, self.pos_len)
+        assert mask.shape == (n, self.pos_len, self.pos_len)
+        assert mask_sum_hw.shape == (n,)
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(pred_logits, target, reduction="none") * mask.unsqueeze(1)
+        loss = torch.sum(loss, dim=(1, 2, 3)) / (2.0 * mask_sum_hw)
+        return 1.5 * global_weight * weight * loss
+
+
     def loss_edgecut_samplewise(self, pred_logits, target, weight, mask, mask_sum_hw, global_weight):
         # Enclosure fork (owner, 2026-10-03): edges that get cut, in the seki head's three sign logits. Per point
         # on an edge, cross-entropy over: not cut (0), the mover's cut (+1), the opponent's cut (-1), averaged over
@@ -650,6 +665,11 @@ class Metrics:
         target_seki = target_value_nchw[:, 1, :, :]
         target_futurepos = target_value_nchw[:, 2:4, :, :]
         target_scoring = target_value_nchw[:, 4, :, :] / 120.0
+        # Enclosure fork (owner, 2026-10-03): the territory income in C5-6 (x 120), on rows flagged in C69; its
+        # logits are the future-position head's channels 2-3 (model_pytorch).
+        target_income = target_value_nchw[:, 5:7, :, :] / 120.0
+        income_logits = futurepos_pretanh[:, 2:4]
+        futurepos_pretanh = futurepos_pretanh[:, 0:2]
 
         predict_q_values = False
         if raw_model.config["version"] <= 11:
@@ -852,6 +872,14 @@ class Metrics:
             global_weight,
         ).sum()
         seki_weight_scale = 1.0
+        loss_income = self.loss_income_samplewise(
+            income_logits,
+            target_income,
+            target_weight_ownership * target_global_nc[:, 69],
+            mask,
+            mask_sum_hw,
+            global_weight,
+        ).sum()
         loss_scoremean = self.loss_scoremean_samplewise(
             pred_scoremean,
             target_scoremean,
@@ -935,6 +963,7 @@ class Metrics:
             + loss_ownership
             + loss_scoring * 0.25
             + loss_futurepos
+            + loss_income
             + loss_seki * seki_loss_scale
             + loss_scoremean
             + loss_scorebelief_cdf
@@ -973,6 +1002,7 @@ class Metrics:
             "oloss_sum": loss_ownership,
             "sloss_sum": loss_scoring,
             "fploss_sum": loss_futurepos,
+            "iloss_sum": loss_income,
             "skloss_sum": loss_seki,
             "smloss_sum": loss_scoremean,
             "sbcdfloss_sum": loss_scorebelief_cdf,

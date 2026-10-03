@@ -158,6 +158,20 @@ def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     padded[:, :num_channels] = globalTargetsNC
     return padded
 
+# Enclosure fork (owner, 2026-10-03): valueTargetsNCHW gained C5-6 (the territory income); rows written before have 5
+# channels and are zero-padded (their C69 flag is 0, so the padding is never trained on).
+VALUE_TARGETS_NCHW_CHANNELS = 7
+
+def pad_value_targets_nchw(valueTargetsNCHW: np.ndarray) -> np.ndarray:
+    """Zero-pad older-format valueTargetsNCHW rows up to the current channel count."""
+    num_channels = valueTargetsNCHW.shape[1]
+    if num_channels == VALUE_TARGETS_NCHW_CHANNELS:
+        return valueTargetsNCHW
+    assert num_channels < VALUE_TARGETS_NCHW_CHANNELS, f"valueTargetsNCHW has {num_channels} channels, more than the expected {VALUE_TARGETS_NCHW_CHANNELS}"
+    padded = np.zeros((valueTargetsNCHW.shape[0], VALUE_TARGETS_NCHW_CHANNELS, *valueTargetsNCHW.shape[2:]), dtype=valueTargetsNCHW.dtype)
+    padded[:, :num_channels] = valueTargetsNCHW
+    return padded
+
 def load_and_accumulate_input_contents(
     input_file: str,
     binaryInputNCHWPackedList: list[np.ndarray],
@@ -179,7 +193,7 @@ def load_and_accumulate_input_contents(
         policyTargetsNCMoveList.append(npz["policyTargetsNCMove"])
         globalTargetsNCList.append(pad_global_targets_nc(npz["globalTargetsNC"]))
         scoreDistrNList.append(npz["scoreDistrN"])
-        valueTargetsNCHWList.append(npz["valueTargetsNCHW"])
+        valueTargetsNCHWList.append(pad_value_targets_nchw(npz["valueTargetsNCHW"]))
         if metadataInputNCList is not None:
             metadataInputNCList.append(npz["metadataInputNC"])
         if qValueTargetsNCMoveList is not None:

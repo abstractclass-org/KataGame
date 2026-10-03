@@ -138,13 +138,48 @@ inline void edge_points(const std::vector<Edge>& edges, uint8_t* on) {
   }
 }
 
+// Signed area of polygon (xs, ys) clipped to the box [x0, x1] x [y0, y1] (Sutherland-Hodgman: the polygon may be
+// concave, the box is convex; the clipped area keeps the polygon's orientation).
+inline double clipped_area(const std::vector<double>& xs, const std::vector<double>& ys,
+                           double x0, double x1, double y0, double y1) {
+  std::vector<double> ax(xs), ay(ys), bx, by;
+  const double bounds[4] = {x0, x1, y0, y1};
+  for (int side = 0; side < 4; ++side) {
+    const bool on_x = side < 2;
+    const double bound = bounds[side], sign = side % 2 == 0 ? 1.0 : -1.0;
+    bx.clear(); by.clear();
+    const size_t n = ax.size();
+    if (n == 0) return 0.0;
+    for (size_t i = 0; i < n; ++i) {
+      const size_t j = (i + 1) % n;
+      const double vp = sign * ((on_x ? ax[i] : ay[i]) - bound), vq = sign * ((on_x ? ax[j] : ay[j]) - bound);
+      if (vp >= 0) { bx.push_back(ax[i]); by.push_back(ay[i]); }
+      if ((vp >= 0) != (vq >= 0)) {
+        const double t = vp / (vp - vq);
+        bx.push_back(ax[i] + t * (ax[j] - ax[i]));
+        by.push_back(ay[i] + t * (ay[j] - ay[i]));
+      }
+    }
+    std::swap(ax, bx); std::swap(ay, by);
+  }
+  double area = 0.0;
+  for (size_t i = 0, n = ax.size(); i < n; ++i) {
+    const size_t j = (i + 1) % n;
+    area += ax[i] * ay[j] - ax[j] * ay[i];
+  }
+  return area / 2.0;
+}
+
 // With `inside` (x * SIZE + y), also marks the lattice points strictly inside
 // the enclosed regions (planes.enclosed_points): the union of regions is the
 // union of the positive face cycles taken as polygons, since a face's holes
 // are faces of the components nested in them.
-inline double enclosed_area(const std::vector<Edge>& edges, uint8_t* inside_points = nullptr) {
+// With `income` (x * SIZE + y; owner, 2026-10-03, the territory-income target): the enclosed area inside the unit
+// square centred on each lattice point (planes.income_points); the values sum to the enclosed area.
+inline double enclosed_area(const std::vector<Edge>& edges, uint8_t* inside_points = nullptr, float* income = nullptr) {
   const int n = int(edges.size());
   if (inside_points) std::fill(inside_points, inside_points + SIZE * SIZE, 0);
+  if (income) std::fill(income, income + SIZE * SIZE, 0.0f);
   if (n < 3) return 0.0;
   std::map<RPt, int> index;
   std::vector<double> vx, vy;
@@ -260,14 +295,31 @@ inline double enclosed_area(const std::vector<Edge>& edges, uint8_t* inside_poin
       }
   }
   double total = 0.0;
-  for (auto& c : cycles)
-    if (c.area > 0) total += c.area;
+  std::vector<int> counted;  // the cycles whose signed areas sum to the total: faces, and holes (nested outer cycles)
+  for (int i = 0; i < int(cycles.size()); ++i)
+    if (cycles[i].area > 0) { total += cycles[i].area; counted.push_back(i); }
   for (auto& [comp, oi] : outer) {
     const Cycle& o = cycles[oi];
     if (o.area >= 0) continue;
     double px = vx[o.verts[0]], py = vy[o.verts[0]];
     for (auto& c : cycles)
-      if (c.area > 0 && c.comp != comp && inside(px, py, c.verts)) { total += o.area; break; }
+      if (c.area > 0 && c.comp != comp && inside(px, py, c.verts)) { total += o.area; counted.push_back(oi); break; }
+  }
+  if (income) {
+    std::vector<double> xs, ys;
+    for (int i : counted) {
+      xs.clear(); ys.clear();
+      double lx = 1e9, hx = -1e9, ly = 1e9, hy = -1e9;
+      for (int v : cycles[i].verts) {
+        xs.push_back(vx[v]); ys.push_back(vy[v]);
+        lx = std::min(lx, vx[v]); hx = std::max(hx, vx[v]); ly = std::min(ly, vy[v]); hy = std::max(hy, vy[v]);
+      }
+      const int x_lo = std::max(0, int(std::ceil(lx - 0.5))), x_hi = std::min(SIZE - 1, int(std::floor(hx + 0.5)));
+      const int y_lo = std::max(0, int(std::ceil(ly - 0.5))), y_hi = std::min(SIZE - 1, int(std::floor(hy + 0.5)));
+      for (int x = x_lo; x <= x_hi; ++x)
+        for (int y = y_lo; y <= y_hi; ++y)
+          income[x * SIZE + y] += float(clipped_area(xs, ys, x - 0.5, x + 0.5, y - 0.5, y + 0.5));
+    }
   }
   return snap(total);
 }

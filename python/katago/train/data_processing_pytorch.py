@@ -26,6 +26,20 @@ def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     padded[:, :num_channels] = globalTargetsNC
     return padded
 
+# Enclosure fork (owner, 2026-10-03): valueTargetsNCHW gained C5-6 (the territory income); rows written before have 5
+# channels and are zero-padded (their C69 flag is 0, so the padding is never trained on).
+VALUE_TARGETS_NCHW_CHANNELS = 7
+
+def pad_value_targets_nchw(valueTargetsNCHW: np.ndarray) -> np.ndarray:
+    """Zero-pad older-format valueTargetsNCHW rows up to the current channel count."""
+    num_channels = valueTargetsNCHW.shape[1]
+    if num_channels == VALUE_TARGETS_NCHW_CHANNELS:
+        return valueTargetsNCHW
+    assert num_channels < VALUE_TARGETS_NCHW_CHANNELS, f"valueTargetsNCHW has {num_channels} channels, more than the expected {VALUE_TARGETS_NCHW_CHANNELS}"
+    padded = np.zeros((valueTargetsNCHW.shape[0], VALUE_TARGETS_NCHW_CHANNELS, *valueTargetsNCHW.shape[2:]), dtype=valueTargetsNCHW.dtype)
+    padded[:, :num_channels] = valueTargetsNCHW
+    return padded
+
 def read_npz_training_data(
     npz_files,
     batch_size: int,
@@ -76,7 +90,7 @@ def read_npz_training_data(
             policyTargetsNCMove = select_rank_rows(npz["policyTargetsNCMove"]).astype(np.float32)
             globalTargetsNC = pad_global_targets_nc(select_rank_rows(npz["globalTargetsNC"]))
             scoreDistrN = select_rank_rows(npz["scoreDistrN"]).astype(np.float32)
-            valueTargetsNCHW = select_rank_rows(npz["valueTargetsNCHW"]).astype(np.float32)
+            valueTargetsNCHW = pad_value_targets_nchw(select_rank_rows(npz["valueTargetsNCHW"])).astype(np.float32)
             if include_meta:
                 metadataInputNC = select_rank_rows(npz["metadataInputNC"]).astype(np.float32)
             else:
