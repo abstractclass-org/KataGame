@@ -194,6 +194,35 @@ class Metrics:
         return 0.25 * global_weight * weight * loss
 
 
+    def loss_regret_value_samplewise(self, pred_regret, target_regret, weight, global_weight):
+        # Enclosure fork (owner, 2026-10-04): RGSC's regret value head, squared error against Eq. 2's regret (the
+        # authors' code: mse_loss against the label, in [0, 4]).
+        return global_weight * weight * torch.square(pred_regret - target_regret)
+
+    def loss_regret_ranking(self, pred_ranking, target_regret, weight, global_weight, group_size: int = 32):
+        # Enclosure fork (owner, 2026-10-04): RGSC's ranking loss as the authors' code computes it
+        # (minizero/learner/train.py): rows sorted by regret, dealt by stride into groups, each group's loss
+        # -logsumexp(log_softmax(ranking) + w * regret) with w the group's min-max normalised regret squared; the
+        # mean over groups. Groups of 32 (owner: the code fixes 32 groups, which at batch 256 holds 8 each). Rows
+        # without a regret target take no part. Returned as that mean times the rows taking part, so that, like the
+        # other losses (sums over rows, divided by the weight later), it weighs as the authors' mean does.
+        rows = torch.nonzero((weight > 0) & (global_weight > 0), as_tuple=False).view(-1)
+        n = int(rows.shape[0])
+        if n < 2:
+            return pred_ranking.sum() * 0.0
+        num_groups = max(1, n // group_size)
+        regret = target_regret[rows]
+        ranking = pred_ranking[rows]
+        order = torch.argsort(regret, descending=True)
+        total = pred_ranking.new_zeros(())
+        for i in range(num_groups):
+            idx = order[i::num_groups]
+            r = regret[idx]
+            log_p = torch.log_softmax(ranking[idx], dim=0)
+            r_norm = (r - r.min()) / (r.max() - r.min() + 1e-8)
+            total = total - torch.logsumexp(log_p + r_norm.pow(2) * r, dim=0)
+        return total / num_groups * n
+
     def loss_income_samplewise(self, pred_logits, target, weight, mask, mask_sum_hw, global_weight):
         # Enclosure fork (owner, 2026-10-03; iviazovetskyi's ownership target): each player's territory income per
         # point (its enclosed area in the unit square around the point, averaged over the remaining turn ends; the
@@ -607,6 +636,8 @@ class Metrics:
             pred_shortterm_value_error,
             pred_shortterm_score_error,
             scorebelief_logits,
+            pred_regret,
+            pred_ranking,
         ) = model_output_postprocessed
 
         input_binary_nchw = batch["binaryInputNCHW"]
@@ -872,6 +903,13 @@ class Metrics:
             global_weight,
         ).sum()
         seki_weight_scale = 1.0
+        # Enclosure fork (owner, 2026-10-04): RGSC, on rows that carry a regret target (C71; C70 the regret).
+        target_regret = target_global_nc[:, 70]
+        target_weight_regret = target_global_nc[:, 71]
+        loss_regret_value = self.loss_regret_value_samplewise(
+            pred_regret, target_regret, target_weight_regret, global_weight,
+        ).sum()
+        loss_regret_ranking = self.loss_regret_ranking(pred_ranking, target_regret, target_weight_regret, global_weight)
         loss_income = self.loss_income_samplewise(
             income_logits,
             target_income,
@@ -964,6 +1002,8 @@ class Metrics:
             + loss_scoring * 0.25
             + loss_futurepos
             + loss_income
+            + loss_regret_value
+            + loss_regret_ranking
             + loss_seki * seki_loss_scale
             + loss_scoremean
             + loss_scorebelief_cdf
@@ -1003,6 +1043,9 @@ class Metrics:
             "sloss_sum": loss_scoring,
             "fploss_sum": loss_futurepos,
             "iloss_sum": loss_income,
+            "rgloss_sum": loss_regret_value,
+            "rkloss_sum": loss_regret_ranking,
+            "rgrows_sum": (target_weight_regret * global_weight).sum(),
             "skloss_sum": loss_seki,
             "smloss_sum": loss_scoremean,
             "sbcdfloss_sum": loss_scorebelief_cdf,

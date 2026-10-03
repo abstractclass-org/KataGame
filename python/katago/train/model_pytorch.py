@@ -2853,9 +2853,15 @@ class PolicyHead(torch.nn.Module):
 
 
 class ValueHead(torch.nn.Module):
-    def __init__(self, c_in, c_v1, c_v2, c_sv2, num_scorebeliefs, config, activation, pos_len):
+    def __init__(self, c_in, c_v1, c_v2, c_sv2, num_scorebeliefs, config, activation, pos_len, regret_heads=False):
         super(ValueHead, self).__init__()
         self.activation = activation
+        # Enclosure fork (owner, 2026-10-04): RGSC's regret value and regret ranking heads, when the config has
+        # regret_heads (enclosure_add_regret_heads.py adds them to a checkpoint).
+        self.regret_heads = regret_heads
+        if regret_heads:
+            self.regret_value = RegretHead(c_in, c_v1, c_v2, config, activation)
+            self.regret_ranking = RegretHead(c_in, c_v1, c_v2, config, activation)
         self.conv1 = torch.nn.Conv2d(c_in, c_v1, kernel_size=1, padding="same", bias=False)
         self.bias1 = BiasMask(
             c_v1,
@@ -2941,6 +2947,9 @@ class ValueHead(torch.nn.Module):
         init_weights(self.linear_s3.bias, "identity", scale=scorebelief_output_scale*bias_scale, fan_tensor=self.linear_s3.weight)
         init_weights(self.linear_smix.weight, "identity", scale=1.0)
         init_weights(self.linear_smix.bias, "identity", scale=bias_scale, fan_tensor=self.linear_smix.weight)
+        if self.regret_heads:
+            self.regret_value.initialize()
+            self.regret_ranking.initialize()
 
     def add_reg_dict(self, reg_dict:Dict[str,List]):
         reg_dict["output"].append(self.conv1.weight)
@@ -2965,6 +2974,9 @@ class ValueHead(torch.nn.Module):
         reg_dict["output"].append(self.linear_smix.weight)
         reg_dict["output_noreg"].append(self.linear_smix.bias)
         self.bias1.add_reg_dict(reg_dict)
+        if self.regret_heads:
+            self.regret_value.add_reg_dict(reg_dict)
+            self.regret_ranking.add_reg_dict(reg_dict)
 
     def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
         pass
@@ -3010,6 +3022,17 @@ class ValueHead(torch.nn.Module):
         # Take the mixture distribution weighted by outsmix_weights
         out_scorebelief_logprobs = torch.logsumexp(out_scorebelief_logprobs + outsmix_logweights.view(-1, 1, self.num_scorebeliefs), dim=2)
 
+        # RGSC: on the detached trunk, as the authors' heads (they never train the trunk). Raw outputs: the regret
+        # value before its sigmoid x 4, then the ranking score. Zeros without the heads, so the outputs keep one shape.
+        if self.regret_heads:
+            xd = x.detach()
+            out_regret = torch.cat((
+                self.regret_value(xd, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum),
+                self.regret_ranking(xd, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum),
+            ), dim=1)
+        else:
+            out_regret = torch.zeros((x.shape[0], 2), dtype=x.dtype, device=x.device)
+
         return (
             out_value,
             out_miscvalue,
@@ -3019,7 +3042,47 @@ class ValueHead(torch.nn.Module):
             out_futurepos,
             out_seki,
             out_scorebelief_logprobs,
+            out_regret,
         )
+
+class RegretHead(torch.nn.Module):
+    """Enclosure fork (owner, 2026-10-04): one of RGSC's two heads (Tsai et al., ICLR 2026: regret value, regret
+    ranking) in KataGo's value-head shape: 1x1 conv, bias, activation, KataGo's value-head pooling (mean, scaled mean,
+    max), a hidden layer, one output. The paper does not describe its heads; the authors' code copies its own value
+    head class for them, so V2 copies KataGo's (katago-fork.md, "RGSC: the authors' code read again")."""
+    def __init__(self, c_in, c_v1, c_v2, config, activation):
+        super(RegretHead, self).__init__()
+        self.activation = activation
+        self.conv1 = torch.nn.Conv2d(c_in, c_v1, kernel_size=1, padding="same", bias=False)
+        self.bias1 = BiasMask(c_v1, config=config, is_after_batchnorm=True)
+        self.act1 = act(activation)
+        self.gpool = KataValueHeadGPool()
+        self.linear2 = torch.nn.Linear(3 * c_v1, c_v2, bias=True)
+        self.act2 = act(activation)
+        self.linear_out = torch.nn.Linear(c_v2, 1, bias=True)
+
+    def initialize(self):
+        bias_scale = 0.2
+        init_weights(self.conv1.weight, self.activation, scale=1.0)
+        init_weights(self.linear2.weight, self.activation, scale=1.0)
+        init_weights(self.linear2.bias, self.activation, scale=bias_scale, fan_tensor=self.linear2.weight)
+        init_weights(self.linear_out.weight, "identity", scale=1.0)
+        init_weights(self.linear_out.bias, "identity", scale=bias_scale, fan_tensor=self.linear_out.weight)
+
+    def add_reg_dict(self, reg_dict:Dict[str,List]):
+        reg_dict["output"].append(self.conv1.weight)
+        reg_dict["output"].append(self.linear2.weight)
+        reg_dict["output_noreg"].append(self.linear2.bias)
+        reg_dict["output"].append(self.linear_out.weight)
+        reg_dict["output_noreg"].append(self.linear_out.bias)
+        self.bias1.add_reg_dict(reg_dict)
+
+    def forward(self, x, mask, mask_sum_hw, mask_sum:float):
+        out = self.act1(self.bias1(self.conv1(x), mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum))
+        out = self.gpool(out, mask=mask, mask_sum_hw=mask_sum_hw).squeeze(-1).squeeze(-1)
+        out = self.act2(self.linear2(out))
+        return self.linear_out(out)  # N, 1
+
 
 class MetadataEncoder(torch.nn.Module):
     def __init__(self, config: modelconfigs.ModelConfig):
@@ -3670,6 +3733,7 @@ class Model(torch.nn.Module):
             self.config,
             self.activation,
             self.pos_len,
+            regret_heads=bool(self.config.get("regret_heads", False)),
         )
         if self.has_intermediate_head:
             self.norm_intermediate_trunkfinal = NormMask(self.c_trunk, self.config, fixup_use_gamma=False, is_last_batchnorm=True)
@@ -4061,6 +4125,7 @@ class Model(torch.nn.Module):
                     iout_futurepos,
                     iout_seki,
                     iout_scorebelief_logprobs,
+                    iout_regret,
                 ) = self.intermediate_value_head(
                     iout_fp32,
                     mask=mask_fp32,
@@ -4173,6 +4238,7 @@ class Model(torch.nn.Module):
                 out_futurepos,
                 out_seki,
                 out_scorebelief_logprobs,
+                out_regret,
             ) = self.value_head(
                 out,
                 mask=mask_fp32,
@@ -4194,6 +4260,7 @@ class Model(torch.nn.Module):
                     out_futurepos,
                     out_seki,
                     out_scorebelief_logprobs,
+                    out_regret,
                 ),
                 (
                     iout_policy,
@@ -4205,6 +4272,7 @@ class Model(torch.nn.Module):
                     iout_futurepos,
                     iout_seki,
                     iout_scorebelief_logprobs,
+                    iout_regret,
                 ),
             )
         else:
@@ -4218,6 +4286,7 @@ class Model(torch.nn.Module):
                 out_futurepos,
                 out_seki,
                 out_scorebelief_logprobs,
+                out_regret,
             ),)
 
     # ---- Per-block compiled trunk (see compile_per_block_trunk) ---------------------------------
@@ -4332,6 +4401,7 @@ class Model(torch.nn.Module):
                 out_futurepos,
                 out_seki,
                 out_scorebelief_logprobs,
+                out_regret,
             ) = self.value_head(
                 out, mask=mask_fp32, mask_sum_hw=mask_sum_hw_fp32, mask_sum=mask_sum_fp32,
                 input_global=input_global_fp32, extra_outputs=None,
@@ -4346,6 +4416,7 @@ class Model(torch.nn.Module):
             out_futurepos,
             out_seki,
             out_scorebelief_logprobs,
+            out_regret,
         ),)
 
     def float32ify_output(self, outputs_byheads):
@@ -4362,6 +4433,7 @@ class Model(torch.nn.Module):
             out_futurepos,
             out_seki,
             out_scorebelief_logprobs,
+            out_regret,
         ) = outputs
         return (
             out_policy.to(torch.float32),
@@ -4373,6 +4445,7 @@ class Model(torch.nn.Module):
             out_futurepos.to(torch.float32),
             out_seki.to(torch.float32),
             out_scorebelief_logprobs.to(torch.float32),
+            out_regret.to(torch.float32),
         )
 
     def postprocess_output(self, outputs_byheads):
@@ -4389,6 +4462,7 @@ class Model(torch.nn.Module):
             out_futurepos,
             out_seki,
             out_scorebelief_logprobs,
+            out_regret,
         ) = outputs
 
         policy_logits = out_policy
@@ -4410,6 +4484,9 @@ class Model(torch.nn.Module):
             pred_shortterm_value_error = SoftPlusWithGradientFloorFunction.apply(out_moremiscvalue[:,0], 0.05, True) * self.shortterm_value_error_multiplier
             pred_shortterm_score_error = SoftPlusWithGradientFloorFunction.apply(out_moremiscvalue[:,1], 0.05, True) * self.shortterm_score_error_multiplier
         scorebelief_logits = out_scorebelief_logprobs
+        # RGSC: the regret value in [0, 4] (the authors' sigmoid x 4), the ranking score as is.
+        pred_regret = torch.sigmoid(out_regret[:, 0]) * 4.0
+        pred_ranking = out_regret[:, 1]
 
         return (
             policy_logits,      # N, num_policy_outputs, move
@@ -4427,4 +4504,6 @@ class Model(torch.nn.Module):
             pred_shortterm_value_error, # N
             pred_shortterm_score_error, # N
             scorebelief_logits, # N, 2 * (self.pos_len*self.pos_len + EXTRA_SCORE_DISTR_RADIUS)
+            pred_regret,        # N (2.0 without regret_heads: the sigmoid of 0, x 4)
+            pred_ranking,       # N
         )
