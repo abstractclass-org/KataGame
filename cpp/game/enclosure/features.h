@@ -33,15 +33,22 @@ inline void crossing_counts(const std::vector<Edge>& edges, std::vector<int16_t>
 
 // Hop distances from `player`'s nodes (heuristic.hops): a hop is a segment of
 // Chebyshev length <= 3 crossing at most one enemy edge. dist[x * SIZE + y].
-inline void hop_distances(const Position& p, int player, int* dist, const std::vector<int16_t>* enemy_hits = nullptr) {
+// With turn_reach (owner, 2026-10-03, the turn-safe plane): also the points `player` can start a cut from in its coming
+// turn of turn_edges edges, as a by-product of the first layer: its nodes, and with two edges the points one hop
+// reaches without crossing a guarded edge (guard_hits nonzero). See solid_flags and coming_turn.
+inline void hop_distances(const Position& p, int player, int* dist, const std::vector<int16_t>* enemy_hits = nullptr,
+                          uint8_t* turn_reach = nullptr, int turn_edges = 0, const std::vector<uint8_t>* guard_hits = nullptr) {
   std::vector<int16_t> own_counts;
   if (!enemy_hits) { crossing_counts(p.edges[1 - player], own_counts); enemy_hits = &own_counts; }
   const std::vector<int16_t>& hits = *enemy_hits;
   std::fill(dist, dist + N_POINTS, UNREACHED);
+  if (turn_reach) std::fill(turn_reach, turn_reach + N_POINTS, 0);
   std::vector<int> frontier, next;
   for (const Edge& e : p.edges[player])
     for (int q : {e.ax * SIZE + e.ay, e.bx * SIZE + e.by})
       if (dist[q]) { dist[q] = 0; frontier.push_back(q); }
+  if (turn_reach && turn_edges >= 1)
+    for (int q : frontier) turn_reach[q] = 1;
   for (int d = 1; !frontier.empty(); ++d) {
     next.clear();
     for (int q : frontier) {
@@ -49,8 +56,10 @@ inline void hop_distances(const Position& p, int player, int* dist, const std::v
       for (int k = 0; k < NOFF; ++k) {
         int bx = x + OFFS[k].dx, by = y + OFFS[k].dy;
         if (bx < 0 || bx >= SIZE || by < 0 || by >= SIZE) continue;
-        if (hits[((x + PAD) * GRID + y + PAD) * NOFF + k] > 1) continue;
+        const int idx = ((x + PAD) * GRID + y + PAD) * NOFF + k;
+        if (hits[idx] > 1) continue;
         int b = bx * SIZE + by;
+        if (d == 1 && turn_reach && turn_edges >= 2 && !(guard_hits && (*guard_hits)[idx])) turn_reach[b] = 1;
         if (dist[b] == UNREACHED) { dist[b] = d; next.push_back(b); }
       }
     }
@@ -61,15 +70,21 @@ inline void hop_distances(const Position& p, int player, int* dist, const std::v
 // Per edge of `player` (in p.edges order): can the opponent not cut it?
 // (planes.solid_edges) No on-board segment with an end the opponent reaches
 // crosses that edge and no other edge of the player.
+// With turn_safe (the turn-safe plane): also, per edge, whether the opponent cannot cut it in its coming turn: guarded
+// (turn_guarded) or no cutting segment with an end in opp_turn_reach. That reach lies within the full reach, so one
+// scan of the edge's cutters answers both questions; it stops once both are settled.
 inline void solid_flags(const Position& p, int player, const int* opp_dist, std::vector<uint8_t>& solid,
-                 const std::vector<int16_t>* own_hits = nullptr) {
+                 const std::vector<int16_t>* own_hits = nullptr, const uint8_t* opp_turn_reach = nullptr,
+                 const std::vector<Edge>* turn_guarded = nullptr, std::vector<uint8_t>* turn_safe = nullptr) {
   const auto& own = p.edges[player];
   std::vector<int16_t> own_counts;
   if (!own_hits) { crossing_counts(own, own_counts); own_hits = &own_counts; }
   const std::vector<int16_t>& hits = *own_hits;
   solid.assign(own.size(), 1);
+  if (turn_safe) turn_safe->assign(own.size(), 1);
   for (size_t i = 0; i < own.size(); ++i) {
     const Edge& e = own[i];
+    const bool settled_safe = !turn_safe || (turn_guarded && contains(*turn_guarded, e));
     int oe = OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
     int base = ((e.ax + PAD) * GRID + e.ay + PAD) * NOFF;
     for (int rel : CROSSINGS[oe]) {
@@ -82,8 +97,30 @@ inline void solid_flags(const Position& p, int player, const int* opp_dist, std:
         continue;
       if (opp_dist[sx * SIZE + sy] == UNREACHED && opp_dist[ex * SIZE + ey] == UNREACHED) continue;
       solid[i] = 0;
-      break;
+      if (!settled_safe && (opp_turn_reach[sx * SIZE + sy] || opp_turn_reach[ex * SIZE + ey])) (*turn_safe)[i] = 0;
+      if (settled_safe || !(*turn_safe)[i]) break;
     }
+  }
+}
+
+// The turn-safe plane's turn (owner, 2026-10-03; planes.turn_safe_edges is the Python reference): the opponent's coming
+// turn, against `player`'s edges. It is the current turn when the opponent is to move, else its next, after `player`
+// finishes this one (as many edges as remain, at most 2). Returns its edge count; `guarded` gets `player`'s edges the
+// opponent may not cut in it: its protected edges, or, when it is to move, its edges placed this turn.
+inline int coming_turn(const Position& p, int player, std::vector<Edge>& guarded) {
+  guarded.clear();
+  const std::vector<Edge>& marked = p.player == player ? p.placed : p.protected_;
+  for (const Edge& e : marked)
+    if (contains(p.edges[player], e)) guarded.push_back(e);
+  return p.player == player ? std::min(2, MAX_MOVES - p.move_count - p.moves_left) : p.moves_left;
+}
+
+// Sets to `value` the entries of the candidate segments crossing any of `edges`, in a crossing-count-shaped array.
+inline void mark_crossings(const std::vector<Edge>& edges, std::vector<uint8_t>& marks, uint8_t value) {
+  for (const Edge& e : edges) {
+    int oe = OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
+    int base = ((e.ax + PAD) * GRID + e.ay + PAD) * NOFF;
+    for (int rel : CROSSINGS[oe]) marks[base + rel] = value;
   }
 }
 
@@ -406,6 +443,15 @@ inline const bool EDGE_BOTH_ENDS = [] {
   return v != nullptr && *v != 0 && *v != '0';
 }();
 
+// ENCLOSURE_TURN_SAFE=1 (owner, 2026-10-03; V2): each player's plane 7 (held ground, empty under no_maxflow) holds
+// the points of its turn-safe edges instead: those the opponent cannot cut in its coming turn (coming_turn,
+// planes.turn_safe_edges). Held ground and its openings are not computed. Protection lasts one turn, which the
+// steady-state planes (Solid, the hops, Unreached) ignore; this plane states it for that turn only.
+inline const bool TURN_SAFE = [] {
+  const char* v = std::getenv("ENCLOSURE_TURN_SAFE");
+  return v != nullptr && *v != 0 && *v != '0';
+}();
+
 // Feature planes (planes.feature_planes) as 0/1 bytes, channels last:
 // out[(y * SIZE + x) * FEATURE_PLANES + f].
 inline void feature_planes(const Position& p, uint8_t* out) {
@@ -414,8 +460,19 @@ inline void feature_planes(const Position& p, uint8_t* out) {
   crossing_counts(p.edges[0], counts[0]);
   crossing_counts(p.edges[1], counts[1]);
   int dist[2][N_POINTS];
-  hop_distances(p, 0, dist[0], &counts[1]);
-  hop_distances(p, 1, dist[1], &counts[0]);
+  // ENCLOSURE_TURN_SAFE: guarded[k] are k's edges the opponent may not cut in its coming turn (turn_edges[1 - k]
+  // edges); turn_reach[k] the points k can start a cut from in its coming turn.
+  static thread_local std::vector<uint8_t> guard_marks(size_t(GRID) * GRID * NOFF, 0);
+  std::vector<Edge> guarded[2];
+  int turn_edges[2] = {0, 0};
+  uint8_t turn_reach[2][N_POINTS];
+  if (TURN_SAFE)
+    for (int k = 0; k < 2; ++k) turn_edges[1 - k] = coming_turn(p, k, guarded[k]);
+  for (int k = 0; k < 2; ++k) {
+    if (TURN_SAFE) mark_crossings(guarded[1 - k], guard_marks, 1);
+    hop_distances(p, k, dist[k], &counts[1 - k], TURN_SAFE ? turn_reach[k] : nullptr, turn_edges[k], &guard_marks);
+    if (TURN_SAFE) mark_crossings(guarded[1 - k], guard_marks, 0);
+  }
   std::fill(out, out + N_POINTS * FEATURE_PLANES, 0);
   auto set = [&](int q, int f) { out[((q % SIZE) * SIZE + q / SIZE) * FEATURE_PLANES + f] = 1; };
   uint8_t mask[N_POINTS];
@@ -432,14 +489,24 @@ inline void feature_planes(const Position& p, uint8_t* out) {
     enclosed_area(p.edges[k], mask);
     for (int q = 0; q < N_POINTS; ++q)
       if (mask[q]) set(q, base + 1);
-    solid_flags(p, k, dist[1 - k], solid, &counts[k]);
+    std::vector<uint8_t> turn_safe;
+    solid_flags(p, k, dist[1 - k], solid, &counts[k], TURN_SAFE ? turn_reach[1 - k] : nullptr, &guarded[k],
+                TURN_SAFE ? &turn_safe : nullptr);
     std::vector<Edge> solid_edges;
     for (size_t i = 0; i < solid.size(); ++i)
       if (solid[i]) solid_edges.push_back(p.edges[k][i]);
     edge_points(solid_edges, mask);
     for (int q = 0; q < N_POINTS; ++q)
       if (mask[q]) set(q, base + 2);
-    if (!NO_HELD_GROUND) {
+    if (TURN_SAFE) {
+      std::vector<Edge> safe_edges;
+      for (size_t i = 0; i < turn_safe.size(); ++i)
+        if (turn_safe[i]) safe_edges.push_back(p.edges[k][i]);
+      edge_points(safe_edges, mask);
+      for (int q = 0; q < N_POINTS; ++q)
+        if (mask[q]) set(q, base + 7);
+    }
+    else if (!NO_HELD_GROUND) {
       held_ground(p, k, d, dist[1 - k], mask, border, &counts[k]);
       for (int q = 0; q < N_POINTS; ++q)
         if (mask[q]) set(q, base + 7);

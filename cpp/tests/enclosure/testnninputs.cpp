@@ -13,6 +13,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <map>
 #include <sstream>
 
 #include "../../neuralnet/nninputs.h"
@@ -32,9 +33,31 @@ static int v8Channel(int plane) {
 }
 
 int main(int argc, char** argv) {
-  if(argc != 2) {
-    fprintf(stderr, "usage: testnninputs INPUTS_FILE\n");
+  if(argc != 2 && argc != 3) {
+    fprintf(stderr, "usage: testnninputs INPUTS_FILE [TURN_SAFE_FILE]\n");
     return 2;
+  }
+  //With ENCLOSURE_TURN_SAFE, plane 7 of each player holds its turn-safe points, from TURN_SAFE_FILE (the Python
+  //reference, tools/export_turn_safe_fixture.py): "turnsafe <label> <player> <count> <y * 19 + x> ...".
+  std::map<string, vector<int>> turnSafe[2];
+  if(enclosure::TURN_SAFE) {
+    if(argc != 3) {
+      fprintf(stderr, "ENCLOSURE_TURN_SAFE needs TURN_SAFE_FILE\n");
+      return 2;
+    }
+    ifstream ts(argv[2]);
+    string tsLine;
+    while(getline(ts, tsLine)) {
+      istringstream row(tsLine);
+      string word, label;
+      int player, count;
+      if(!(row >> word >> label >> player >> count) || word != "turnsafe")
+        continue;
+      vector<int> points(count);
+      for(int& q : points)
+        row >> q;
+      turnSafe[player][label] = points;
+    }
   }
   Board::initHash();
   ifstream in(argv[1]);
@@ -95,10 +118,11 @@ int main(int argc, char** argv) {
       int index;
       spatialRow >> index;
       const int plane = index % PY_PLANES;
-      //With ENCLOSURE_NO_HELD_GROUND, held ground and its openings (each player's planes 7 and 8) are zero.
+      //With ENCLOSURE_NO_HELD_GROUND or ENCLOSURE_TURN_SAFE, held ground and its openings (each player's planes 7 and
+      //8) are not computed.
       const int f = plane - PY_FEATURES_START;
-      if(enclosure::NO_HELD_GROUND && f >= 0 && (f % enclosure::PER_PLAYER == 7 || f % enclosure::PER_PLAYER == 8) &&
-         f < 2 * enclosure::PER_PLAYER)
+      if((enclosure::NO_HELD_GROUND || enclosure::TURN_SAFE) && f >= 0 &&
+         (f % enclosure::PER_PLAYER == 7 || f % enclosure::PER_PLAYER == 8) && f < 2 * enclosure::PER_PLAYER)
         continue;
       expected[(index / PY_PLANES) * C + v8Channel(plane)] = 1.0f;
       //With ENCLOSURE_EDGE_BOTH_ENDS, an edge plane's entry also at the edge's upper end, in the opposite offset.
@@ -109,6 +133,16 @@ int main(int argc, char** argv) {
         expected[upper * C + v8Channel(group * enclosure::NOFF + enclosure::OFF_INDEX[3 - dx][3 - dy])] = 1.0f;
       }
     }
+    if(enclosure::TURN_SAFE)
+      for(int player = 0; player < 2; player++) {
+        auto it = turnSafe[player].find(label);
+        if(it == turnSafe[player].end()) {
+          fail(label + ": no turn-safe reference");
+          continue;
+        }
+        for(int q : it->second)
+          expected[q * C + NNInputs::V8_FEATURE_PLANES_START + player * enclosure::PER_PLAYER + 7] = 1.0f;
+      }
 
     MiscNNInputParams params;
     Player pla = hist.presumedNextMovePla;

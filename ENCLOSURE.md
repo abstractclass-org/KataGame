@@ -246,7 +246,11 @@ way:
     `ENCLOSURE_EDGE_BOTH_ENDS=1` (v2a from 2026-10-03, cycle 31) also at
     its upper end in the opposite offset's plane.
   - 193-214: the 22 feature planes (`features.h`, `planes.feature_planes`):
-    9 per player, then 4 history planes.
+    9 per player, then 4 history planes. In v2a, plane 7 of each player
+    (held ground) is empty under `ENCLOSURE_NO_HELD_GROUND=1` (from
+    2026-10-03 10:06), and holds the turn-safe plane under
+    `ENCLOSURE_TURN_SAFE=1` (`planes.turn_safe_edges`; plane 8, openings,
+    stays empty).
 - **Global, 5** (`NUM_FEATURES_GLOBAL_V8`): the observation's scalars (player
   to move, edges left in the turn / 2, move count / 120, and both scores /
   (18 · 18 · 61)). The plan puts the scalars here, not in constant planes.
