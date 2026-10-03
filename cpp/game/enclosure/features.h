@@ -397,6 +397,15 @@ inline const bool NO_HELD_GROUND = [] {
   return v != nullptr && *v != 0 && *v != '0';
 }();
 
+// ENCLOSURE_EDGE_BOTH_ENDS=1 (owner, 2026-10-03): the network's edge planes mark each edge at both ends, at the
+// lower end in its offset's plane (as the observation) and at the upper end in the opposite offset's plane, so a
+// point sees every edge it ends; with one end only, half of the 48 offset planes were never set. Read in
+// NNInputs::fillRowV8; the Python observation (net1's inputs) is unchanged.
+inline const bool EDGE_BOTH_ENDS = [] {
+  const char* v = std::getenv("ENCLOSURE_EDGE_BOTH_ENDS");
+  return v != nullptr && *v != 0 && *v != '0';
+}();
+
 // Feature planes (planes.feature_planes) as 0/1 bytes, channels last:
 // out[(y * SIZE + x) * FEATURE_PLANES + f].
 inline void feature_planes(const Position& p, uint8_t* out) {

@@ -101,6 +101,13 @@ int main(int argc, char** argv) {
          f < 2 * enclosure::PER_PLAYER)
         continue;
       expected[(index / PY_PLANES) * C + v8Channel(plane)] = 1.0f;
+      //With ENCLOSURE_EDGE_BOTH_ENDS, an edge plane's entry also at the edge's upper end, in the opposite offset.
+      if(enclosure::EDGE_BOTH_ENDS && plane < 4 * enclosure::NOFF) {
+        const int pos = index / PY_PLANES, group = plane / enclosure::NOFF, k = plane % enclosure::NOFF;
+        const int dx = enclosure::OFFS[k].dx, dy = enclosure::OFFS[k].dy;
+        const int upper = (pos / S + dy) * S + pos % S + dx;
+        expected[upper * C + v8Channel(group * enclosure::NOFF + enclosure::OFF_INDEX[3 - dx][3 - dy])] = 1.0f;
+      }
     }
 
     MiscNNInputParams params;

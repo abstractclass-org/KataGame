@@ -2841,6 +2841,14 @@ void NNInputs::fillRowV8(
     const int plane = idx[i] % enclosure::PLANES;
     assert(plane < 4 * enclosure::NOFF);
     setRowBin(rowBin, pos, V8_EDGE_PLANES_START + plane, 1.0f, posStride, featureStride);
+    //ENCLOSURE_EDGE_BOTH_ENDS: also at the upper end, in the opposite offset's plane of the same group.
+    if(enclosure::EDGE_BOTH_ENDS) {
+      const int group = plane / enclosure::NOFF, k = plane % enclosure::NOFF;
+      const int dx = enclosure::OFFS[k].dx, dy = enclosure::OFFS[k].dy;
+      const int upper = (pos / enclosure::SIZE + dy) * enclosure::SIZE + pos % enclosure::SIZE + dx;
+      const int reverse = group * enclosure::NOFF + enclosure::OFF_INDEX[3 - dx][3 - dy];
+      setRowBin(rowBin, upper, V8_EDGE_PLANES_START + reverse, 1.0f, posStride, featureStride);
+    }
   }
   for(int i = 0; i < enclosure::SCALARS; i++)
     rowGlobal[i] = scalars[i];

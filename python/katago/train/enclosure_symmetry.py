@@ -5,6 +5,11 @@ canonical endpoint, lexicographic in (x, y)) in the plane of its offset, so unde
 to its other end and change offset: the edge planes and the policy are permuted as a whole, not pixel by
 pixel. Point planes (on board, feature planes, ownership and the other value targets) transform as pixels.
 
+Rows written with ENCLOSURE_EDGE_BOTH_ENDS (owner, 2026-10-03) also mark each edge at its upper end, in the
+opposite offset's plane. Their edge planes are a plain permutation (each entry to its source's image, as a
+move from the source), told apart row by row by any entry in a downward offset, which one-end rows never set:
+old and new rows share the training window.
+
 Symmetries are numbered as the C++ SymmetryHelpers: bit 0 flips y, bit 1 flips x, bit 2 transposes, applied
 in that order. The images agree with SymmetryHelpers::getSymPosition and getSymAction (checked by
 enclosure_symmetry_check.py against testsymmetry -dump).
@@ -91,13 +96,24 @@ def apply_symmetry_points(tensor, symmetry):
     return tensor
 
 
-def _permute_edges(values, symmetry):
-    """values (..., NUM_ACTIONS) indexed by canonical edge (lower end, offset): the images' entries."""
-    _, _, edge, _ = tables(symmetry, values.device)
+# Offsets toward a lexicographically lower point: only an edge's upper end is stored in them.
+DOWNWARD = torch.tensor([(dx, dy) < (0, 0) for dx, dy in OFFSETS])
+
+
+def _permute_edges(values, symmetry, both_ends=None):
+    """values (N, G, NUM_ACTIONS) indexed by (point, offset): the images' entries. One-end rows (an edge at its
+    lower end) move by canonical edge; rows with both_ends (N,) set move entry by entry (forward)."""
+    forward, _, edge, _ = tables(symmetry, values.device)
     flat = values.reshape(-1, NUM_ACTIONS)
     out = torch.zeros_like(flat)
     valid = edge >= 0
     out[:, edge[valid]] = flat[:, valid]
+    if both_ends is not None and bool(both_ends.any()):
+        rows = both_ends.repeat_interleave(values.shape[1])  # (N * G,)
+        moved = torch.zeros_like(flat[rows])
+        valid = forward >= 0
+        moved[:, forward[valid]] = flat[rows][:, valid]
+        out[rows] = moved
     return out.view(values.shape)
 
 
@@ -109,8 +125,10 @@ def apply_symmetry_inputs(binary_inputs, symmetry):
     out = apply_symmetry_points(binary_inputs, symmetry).clone()
     edges = binary_inputs[:, EDGE_PLANES_START:FEATURE_PLANES_START]  # N, groups * offsets, y, x
     # N, group, offset, y, x -> N, group, (y, x, offset): the action index layout.
-    edges = edges.reshape(n, NUM_EDGE_GROUPS, NUM_OFFSETS, SIZE * SIZE).permute(0, 1, 3, 2).reshape(n, NUM_EDGE_GROUPS, NUM_ACTIONS)
-    edges = _permute_edges(edges, symmetry)
+    edges = edges.reshape(n, NUM_EDGE_GROUPS, NUM_OFFSETS, SIZE * SIZE)
+    both_ends = (edges[:, :, DOWNWARD.to(edges.device)] != 0).flatten(1).any(dim=1)  # (N,)
+    edges = edges.permute(0, 1, 3, 2).reshape(n, NUM_EDGE_GROUPS, NUM_ACTIONS)
+    edges = _permute_edges(edges, symmetry, both_ends)
     edges = edges.reshape(n, NUM_EDGE_GROUPS, SIZE * SIZE, NUM_OFFSETS).permute(0, 1, 3, 2).reshape(n, NUM_EDGE_GROUPS * NUM_OFFSETS, SIZE, SIZE)
     out[:, EDGE_PLANES_START:FEATURE_PLANES_START] = edges
     return out

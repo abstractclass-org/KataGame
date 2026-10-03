@@ -242,7 +242,9 @@ way:
     board mask from channel 0, so it stays first.
   - 1-192: the observation's edge planes, `4 × 48`: each player's edges,
     then each player's protected or just-placed edges, set at the edge's
-    lower end (the canonical `Edge`'s a) in the offset's plane.
+    lower end (the canonical `Edge`'s a) in the offset's plane; with
+    `ENCLOSURE_EDGE_BOTH_ENDS=1` (v2a from 2026-10-03, cycle 31) also at
+    its upper end in the opposite offset's plane.
   - 193-214: the 22 feature planes (`features.h`, `planes.feature_planes`):
     9 per player, then 4 history planes.
 - **Global, 5** (`NUM_FEATURES_GLOBAL_V8`): the observation's scalars (player
