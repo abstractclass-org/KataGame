@@ -348,15 +348,17 @@ unit.** Before, c_score = 0 (owner, option (b), win/loss only).
   of 61 turn ends, so the unit is sqrt(18 x 18 x 61), about 141 points
   (`Board::scoreUnit`; iviazovetskyi's bot uses 150). Only the search's score
   utility and the score values it reports read it (`searchhelpers.cpp`,
-  `reportedsearchvalues.cpp`, `searchresults.cpp`); komi, handicap and old
+  `reportedsearchvalues.cpp`, `searchresults.cpp`, and since 2026-10-04 the
+  dynamic centre's cap in `search.cpp`, which the first change missed: the
+  cap was 9.5 points in self-play instead of 70); komi, handicap and old
   model versions keep sqrtBoardArea.
 - KataGo's values on top: self-play (`selfplay_enclosure.cfg`, which v2a uses, and `selfplay1.cfg`) static 0, dynamic 0.40,
   centre zero weight 0.25, centre scale 0.50 (about 70 points); play and
   analysis (`analysis_example.cfg`, `match_example.cfg`) static 0.10, dynamic
   0.30 (centre zero weight 0.20, scale 0.75: about 105 points), as upstream's
   defaults.
-- The gauntlet's `analysis_enclosure.cfg` keeps 0 for now, so its ratings
-  stay comparable across the run.
+- The gauntlet's `analysis_enclosure.cfg`: 0 until 2026-10-04, then KataGo's
+  0.10 and 0.30 in a fresh rating pool (owner).
 - The score value tables clamp scores beyond Go's range; with the unit, the
   scaled scores stay within them.
 
