@@ -479,6 +479,25 @@ policy 0.15, ownership 1.5/b², score pdf and cdf 0.02 each, L2 3e-5.
 
 ## Spatial targets (step 6; design for the owner, 2026-09-29)
 
+**Built (owner, 2026-10-03: "add all of our ideas and just run"), in KataGo's existing slots, so rows keep their
+format and old and new rows mix in the shuffle:**
+- **1. Future nodes** in C2-3: KataGo's future-position code as it is (`board.colors` marks each player's nodes;
+  boards are one edge apart), 8 and 32 edges later, its loss (tanh, squared error, [1, 0.25], ÷√area, 0.25),
+  weight C33 = 1.
+- **2. Edges that get cut** in C1 (the seki slot): +1 / -1 / 0 on points on edges, 2 on points on no edge; the
+  seki head's three sign logits, cross-entropy averaged over the points on edges (not the whole board: the
+  question exists only there), weight 1 times the ownership weight, on rows flagged in C68 (rows written
+  before have zeros, which would teach that nothing is ever cut). KataGo's adaptive seki scale and neutral
+  logit are not used.
+- **3. Region occupancy** in C4 (the scoring slot): one horizon, the 8th turn end later (4 rounds; the last if the
+  game ends sooner), x 120; KataGo's area loss (squared error with a square-root transform, 0.25), weight C34
+  = the value weight. The 1-round horizon is left out on its merits too: the current regions are an input,
+  the future nodes cover 8 edges ahead, and D2 the whole game.
+- Checked by `tools/check_katago_rows.py` (recomputes all three from the engine) and
+  `enclosure_rows_check.py` (KataGo's trainer, every loss finite).
+
+The design as written on 2026-09-29:
+
 **Decided (owner):**
 - KataGo's Go-only spatial targets (seki, future stone positions, final
   area/territory) get weight 0, with their heads kept.
