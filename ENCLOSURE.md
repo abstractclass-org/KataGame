@@ -336,14 +336,29 @@ mirror.
   too. It must re-anchor edge planes and remap policy channels the same
   way, and is tested against these helpers.
 
-## Score utility (step 4.3)
+## Score utility (step 4.3; revised 2026-10-03)
 
-c_score = 0 (owner, option (b)): `staticScoreUtilityFactor` and
-`dynamicScoreUtilityFactor` are 0 in `selfplay1.cfg`, `analysis_example.cfg`
-and `match_example.cfg`. Upstream's defaults (0.10 and 0.30) apply where a
-config leaves them unset, so every config the fork uses sets them. The score
-value tables clamp scores beyond Go's range, so Enclosure's large scores
-are safe there.
+**Since 2026-10-03 (owner): KataGo's score utility, with an Enclosure score
+unit.** Before, c_score = 0 (owner, option (b), win/loss only).
+
+- KataGo's utility: factor x (2/pi) atan((margin - centre) / (scale x unit)),
+  the margin being the signed final score difference. KataGo's unit is the
+  board's side (sqrtBoardArea, 19: the square root of Go's largest score).
+  Enclosure's largest total score is the largest area, 18 x 18, paid at each
+  of 61 turn ends, so the unit is sqrt(18 x 18 x 61), about 141 points
+  (`Board::scoreUnit`; iviazovetskyi's bot uses 150). Only the search's score
+  utility and the score values it reports read it (`searchhelpers.cpp`,
+  `reportedsearchvalues.cpp`, `searchresults.cpp`); komi, handicap and old
+  model versions keep sqrtBoardArea.
+- KataGo's values on top: self-play (`selfplay1.cfg`) static 0, dynamic 0.40,
+  centre zero weight 0.25, centre scale 0.50 (about 70 points); play and
+  analysis (`analysis_example.cfg`, `match_example.cfg`) static 0.10, dynamic
+  0.30 (centre zero weight 0.20, scale 0.75: about 105 points), as upstream's
+  defaults.
+- The gauntlet's `analysis_enclosure.cfg` keeps 0 for now, so its ratings
+  stay comparable across the run.
+- The score value tables clamp scores beyond Go's range; with the unit, the
+  scaled scores stay within them.
 
 ## Score distribution bins (D1, owner 2026-09-29)
 

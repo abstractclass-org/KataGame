@@ -23,9 +23,9 @@ ReportedSearchValues::ReportedSearchValues(
   double scoreMean = scoreMeanAvg;
   double scoreMeanSq = scoreMeanSqAvg;
   double scoreStdev = ScoreValue::getScoreStdev(scoreMean,scoreMeanSq);
-  double sqrtBoardArea = search.rootBoard.sqrtBoardArea();
-  staticScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,0.0,2.0, sqrtBoardArea);
-  dynamicScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,search.recentScoreCenter,search.searchParams.dynamicScoreCenterScale, sqrtBoardArea);
+  double scoreUnit = search.rootBoard.scoreUnit();  //Enclosure fork: in place of KataGo's sqrt(board area) (Board::scoreUnit)
+  staticScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,0.0,2.0, scoreUnit);
+  dynamicScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,search.recentScoreCenter,search.searchParams.dynamicScoreCenterScale, scoreUnit);
   expectedScore = scoreMean;
   expectedScoreStdev = scoreStdev;
   lead = leadAvg;

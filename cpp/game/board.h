@@ -198,6 +198,11 @@ struct Board
   //Functions------------------------------------
 
   double sqrtBoardArea() const;
+  //Enclosure fork (owner, 2026-10-03): the score utility's unit, in points, where KataGo uses sqrtBoardArea (19 on
+  //19x19, the square root of Go's largest score). Enclosure's largest total score is the largest area, 18 x 18,
+  //paid at each of a game's 61 turn ends: sqrt(18 * 18 * 61), about 141 points (iviazovetskyi's bot uses 150).
+  //Read by the search's score utility and the score values it reports; KataGo's factors and scales apply on top.
+  static double scoreUnit() { return 140.5845; }
 
   //Go stones (none in Enclosure): neutral answers.
   int getChainSize(Loc loc) const;

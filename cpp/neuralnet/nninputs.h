@@ -309,6 +309,8 @@ namespace ScoreValue {
   double whiteScoreDrawAdjust(double finalWhiteMinusBlackScore, double drawEquivalentWinsForWhite, const BoardHistory& hist);
 
   //The unscaled utility of achieving a certain score difference
+  //Enclosure fork: the search's score utility passes Board::scoreUnit() as sqrtBoardArea (the unit the scale multiplies;
+  //KataGo's is the board's side), owner 2026-10-03.
   double whiteScoreValueOfScoreSmooth(double finalWhiteMinusBlackScore, double center, double scale, double drawEquivalentWinsForWhite, double sqrtBoardArea, const BoardHistory& hist);
   double whiteScoreValueOfScoreSmoothNoDrawAdjust(double finalWhiteMinusBlackScore, double center, double scale, double sqrtBoardArea);
   //Approximately invert whiteScoreValueOfScoreSmooth

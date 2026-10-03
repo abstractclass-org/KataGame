@@ -487,9 +487,9 @@ bool Search::getNodeRawNNValues(const SearchNode& node, ReportedSearchValues& va
   double scoreMean = nnOutput->whiteScoreMean;
   double scoreMeanSq = nnOutput->whiteScoreMeanSq;
   double scoreStdev = ScoreValue::getScoreStdev(scoreMean,scoreMeanSq);
-  double sqrtBoardArea = rootBoard.sqrtBoardArea();
-  values.staticScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,0.0,2.0, sqrtBoardArea);
-  values.dynamicScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,recentScoreCenter,searchParams.dynamicScoreCenterScale, sqrtBoardArea);
+  double scoreUnit = rootBoard.scoreUnit();  //Enclosure fork: in place of KataGo's sqrt(board area) (Board::scoreUnit)
+  values.staticScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,0.0,2.0, scoreUnit);
+  values.dynamicScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,recentScoreCenter,searchParams.dynamicScoreCenterScale, scoreUnit);
   values.expectedScore = scoreMean;
   values.expectedScoreStdev = scoreStdev;
   values.lead = nnOutput->whiteLead;
