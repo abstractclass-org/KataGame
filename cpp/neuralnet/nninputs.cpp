@@ -531,6 +531,12 @@ void NNOutput::debugPrint(ostream& out, const Board& board) const {
 //-------------------------------------------------------------------------------------------------------------
 
 static void copyWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int cSize, bool useNHWC, int symmetry, bool reverse) {
+  //Enclosure fork: the identity is a plain copy (the fork applies symmetries to the position, so the backends
+  //always pass 0 here; element by element, this copy of 215 planes per row was about 7% of self-play's CPU).
+  if(symmetry == 0) {
+    std::copy(src, src + (size_t)nSize * hSize * wSize * cSize, dst);
+    return;
+  }
   bool transpose = (symmetry & 0x4) != 0 && hSize == wSize;
   bool flipX = (symmetry & 0x2) != 0;
   bool flipY = (symmetry & 0x1) != 0;

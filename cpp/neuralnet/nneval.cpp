@@ -1253,12 +1253,15 @@ void NNEvaluator::evaluate(
     bool isLegal[NNPos::MAX_NN_POLICY_SIZE];
     int legalCount = 0;
     testAssert(nextPlayer == history.presumedNextMovePla);
-    //Enclosure fork: list the legal moves once, so the checks below are lookups (on a board whose list is not yet
-    //built, Board::isLegal checks one move at a time, which suits the search's single checks, not 17,329 of them).
-    (void)board.legalActions();
-    for(int i = 0; i<policySize; i++) {
-      Loc loc = NNPos::posToLoc(i,xSize,ySize,nnXLen,nnYLen);
-      isLegal[i] = history.isLegal(board,loc,nextPlayer);
+    //Enclosure fork: the legal moves listed once, then read directly. Policy index i is move MOVE_LOC_BASE + i,
+    //the last one pass (NNPos::posToLoc), so history.isLegal(board, posToLoc(i), nextPlayer) is the game-state
+    //check (the same for every i) and bit i of the list; per entry it was 17,329 full calls per evaluation.
+    {
+      const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
+      const bool canMove = !history.isGameFinished && nextPlayer == board.nextPla() && !board.pos.terminal();
+      testAssert(policySize == enclosure::PASS + 1);
+      for(int i = 0; i<policySize; i++)
+        isLegal[i] = canMove && legalBits.test(i);
     }
 
     if(nnInputParams.avoidMYTDaggerHack && xSize >= 13 && ySize >= 13) {
@@ -1295,7 +1298,7 @@ void NNEvaluator::evaluate(
       float maxPassPolicySumFactor = 19.0f;
 
       for(int i = 0; i<policySize-1; i++) {
-        policy[i] = exp(policy[i] - maxPolicy);
+        policy[i] = isLegal[i] ? exp(policy[i] - maxPolicy) : 0.0f;  //Enclosure fork: as below, exactly 0 if illegal
         policySum += policy[i];
       }
       int passPos = NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen);
@@ -1305,8 +1308,10 @@ void NNEvaluator::evaluate(
       policySum += policy[i];
     }
     else {
+      //Enclosure fork: exp only for legal entries; an illegal one holds -1e30, whose exp here is exactly 0 (about
+      //440 legal moves against 17,329 entries).
       for(int i = 0; i<policySize; i++) {
-        policy[i] = exp(policy[i] - maxPolicy);
+        policy[i] = isLegal[i] ? exp(policy[i] - maxPolicy) : 0.0f;
         policySum += policy[i];
       }
     }
