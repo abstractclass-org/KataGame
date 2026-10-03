@@ -724,6 +724,7 @@ void TrainingWriteBuffers::addRow(
   int8_t* rowScoreDistr = scoreDistrN.data + curRows * scoreDistrLen;
   int8_t* rowOwnership = valueTargetsNCHW.data + curRows * VALUE_SPATIAL_TARGET_NUM_CHANNELS * posArea;
 
+  int occupancyTurn = -1;  //Enclosure fork: the board index of the occupancy target (C4), set below
   if(finalOwnership == NULL || (actualGameEndHist.isGameFinished && actualGameEndHist.isNoResult)) {
     rowGlobal[27] = 0.0f;
     rowGlobal[20] = 0.0f;
@@ -779,6 +780,54 @@ void TrainingWriteBuffers::addRow(
       if(turnEnds > 0)
         for(int pos = 0; pos < posArea; pos++)
           rowOwnership[pos] = clampToRadius120(occupancySum[pos] / turnEnds * 120.0f, rand);
+
+      //Enclosure fork (owner, 2026-10-03): edges that get cut, in C1 (Go's seki slot, the seki head's three sign
+      //classes). Per lattice point on an edge on the board now (its ends and the points it passes through): +1 if
+      //one of the mover's edges there is cut (removed) later in the game, -1 if one of the opponent's is (the
+      //mover's wins if both), 0 otherwise; 2 on points on no edge. An edge counts as cut when it is removed, even if an identical edge
+      //is placed again later. Design: ENCLOSURE.md, "Spatial targets", 2.
+      const enclosure::Position& now = boards[whiteValueTargetsIdx].pos;
+      rowGlobal[68] = 1.0f;  //C68: this row carries the cut-edge target (rows written before it have 0 there)
+      //Points on no edge hold 2 ("no question here"): the loss averages over the points on edges only.
+      for(int i = 0; i < posArea; i++)
+        rowOwnership[i + posArea] = 2;
+      for(int k = 0; k < 2; k++)
+        for(const enclosure::Edge& e : now.edges[k]) {
+          const int dx = e.bx - e.ax, dy = e.by - e.ay, g = enclosure::igcd(std::abs(dx), std::abs(dy));
+          for(int step = 0; step <= g; step++)
+            rowOwnership[NNPos::xyToPos(e.ax + dx * step / g, e.ay + dy * step / g, dataXLen) + posArea] = 0;
+        }
+      for(int k = 0; k < 2; k++) {
+        const int8_t sign = k == mover ? 1 : -1;
+        for(const enclosure::Edge& e : now.edges[k]) {
+          bool cut = false;
+          for(int j = whiteValueTargetsIdx + 1; j < (int)boards.size() && !cut; j++)
+            cut = !enclosure::contains(boards[j].pos.edges[k], e);
+          if(!cut)
+            continue;
+          const int dx = e.bx - e.ax, dy = e.by - e.ay, g = enclosure::igcd(std::abs(dx), std::abs(dy));
+          for(int step = 0; step <= g; step++) {
+            int pos = NNPos::xyToPos(e.ax + dx * step / g, e.ay + dy * step / g, dataXLen);
+            if(rowOwnership[pos + posArea] != 1)  //the mover's cut wins
+              rowOwnership[pos + posArea] = sign;
+          }
+        }
+      }
+
+      //Enclosure fork (owner, 2026-10-03): region occupancy 4 rounds later, in C4 (the scoring slot): at the 8th
+      //turn end after this row (the last if the game ends sooner), +1 inside the mover's regions, -1 inside the
+      //opponent's, 0 in neither or both, stored x 120. Design: ENCLOSURE.md, "Spatial targets", 3 (one horizon:
+      //the slot has one channel).
+      int target = -1, seen = 0;
+      for(int j = whiteValueTargetsIdx + 1; j < (int)boards.size(); j++) {
+        const enclosure::Position& p = boards[j].pos;
+        if(!p.placed.empty() || p.move_count <= now.move_count)
+          continue;
+        target = j;
+        if(++seen == 8)
+          break;
+      }
+      occupancyTurn = target;
     }
 
     //Fill score vector "onehot"-like
@@ -802,9 +851,10 @@ void TrainingWriteBuffers::addRow(
     }
   }
 
-  //Enclosure fork (owner): Go's future stone positions are not a target (weight 0; the head is kept). The
-  //Enclosure spatial targets that may take its place are designed in ENCLOSURE.md.
-  if(true) {
+  //Enclosure fork (owner, 2026-10-03): future nodes, KataGo's future-position target as it is: board.colors marks
+  //each player's nodes and the boards are one edge apart, so C2-3 hold the nodes 8 and 32 edges later (KataGo's
+  //19x19 numbers, kept as decisions: decisions/katago-fork.md, "Time constants split"). ENCLOSURE.md, 1.
+  if(posHistForFutureBoards == NULL) {
     rowGlobal[33] = 0.0f;
     for(int i = 0; i<posArea; i++) {
       rowOwnership[i+posArea*2] = 0;
@@ -843,11 +893,23 @@ void TrainingWriteBuffers::addRow(
   }
 
 
-  //Enclosure fork (owner): Go's final area/territory is not a target (weight 0; the head is kept).
+  //Enclosure fork (owner, 2026-10-03): C4 holds the region occupancy 4 rounds later (computed above with the
+  //ownership); Go's final area/territory below is not a target.
   if(true) {
-    rowGlobal[34] = 0.0f;
-    for(int i = 0; i<posArea; i++) {
+    rowGlobal[34] = occupancyTurn >= 0 ? valueTargetWeight : 0.0f;
+    for(int i = 0; i<posArea; i++)
       rowOwnership[i+posArea*4] = 0;
+    if(occupancyTurn >= 0) {
+      const enclosure::Position& p = (*posHistForFutureBoards)[occupancyTurn].pos;
+      const int mover = Board::indexOfPlayer(nextPlayer);
+      uint8_t inside[2][enclosure::N_POINTS];
+      for(int k = 0; k < 2; k++)
+        enclosure::enclosed_area(p.edges[k], inside[k]);
+      for(int x = 0; x < enclosure::SIZE; x++)
+        for(int y = 0; y < enclosure::SIZE; y++) {
+          int q = x * enclosure::SIZE + y;  //The engine's point order
+          rowOwnership[NNPos::xyToPos(x,y,dataXLen) + posArea*4] = (int8_t)(120 * ((int)inside[mover][q] - (int)inside[1-mover][q]));
+        }
     }
   }
   else {

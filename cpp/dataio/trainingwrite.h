@@ -261,7 +261,8 @@ struct TrainingWriteBuffers {
   //configured (see PlaySettings::useSearchValueSurprise). Both C65 and C66 are the stats that drove the
   //probability of this position being selected for reanalysis, recorded for statistical purposes.
   //C67: If C64, the number of visits of the original cheap search (the reanalysis search's visits are in C60).
-  //C68-79: Unused, zero-filled.
+  //C68: Enclosure fork: 1 if valueTargetsNCHW C1 holds the cut-edge target (rows before 2026-10-03 have 0: no target).
+  //C69-79: Unused, zero-filled.
 
   NumpyBuffer<float> globalTargetsNC;
 
@@ -276,6 +277,7 @@ struct TrainingWriteBuffers {
   //Spatial value-related targets
   //C0: Final board ownership [-1,1], from the perspective of the player to move. All 0 if C27 has weight 0.
   //C1: Difference between ownership and naive area (such as due to seki). All 0 if C27 has weight 0.
+  //    Enclosure fork: edges that get cut (+1 the mover's, -1 the opponent's, 0 not cut, 2 no edge), if C68.
   //C2-3: Future board position a certain number of turns in the future. All 0 if C33 has weight 0.
   //C4: Final board area/territory [-120,120]. All 0 if C34 has weight 0. Unlike ownership, takes into account group tax and scoring rules.
   NumpyBuffer<int8_t> valueTargetsNCHW;

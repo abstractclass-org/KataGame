@@ -194,6 +194,23 @@ class Metrics:
         return 0.25 * global_weight * weight * loss
 
 
+    def loss_edgecut_samplewise(self, pred_logits, target, weight, mask, mask_sum_hw, global_weight):
+        # Enclosure fork (owner, 2026-10-03): edges that get cut, in the seki head's three sign logits. Per point
+        # on an edge, cross-entropy over: not cut (0), the mover's cut (+1), the opponent's cut (-1), averaged over
+        # those points (2 marks points on no edge, where the question does not exist: averaging over the whole
+        # board would dilute it by the empty share), with a plain weight of 1: KataGo's adaptive seki scale and its
+        # "neutral" logit track how rare seki and unowned points are in Go and do not carry over (ENCLOSURE.md,
+        # "Spatial targets", 2).
+        n = pred_logits.shape[0]
+        assert pred_logits.shape == (n, self.num_seki_logits, self.pos_len, self.pos_len)
+        assert target.shape == (n, self.pos_len, self.pos_len)
+        on_edge = (target != 2).to(pred_logits.dtype) * mask
+        t = target * on_edge
+        sign_target = torch.stack((1.0 - torch.square(t), torch.nn.functional.relu(t), torch.nn.functional.relu(-t)), dim=1)
+        loss = torch.sum(cross_entropy(pred_logits[:, 0:3, :, :], sign_target, dim=1) * on_edge, dim=(1, 2))
+        loss = loss / torch.clamp(torch.sum(on_edge, dim=(1, 2)), min=1.0)
+        return global_weight * weight * loss
+
     def loss_seki_samplewise(self, pred_logits, target, target_ownership, weight, mask, mask_sum_hw, global_weight, is_training, skip_moving_update):
         assert self.num_seki_logits == 4
         n = pred_logits.shape[0]
@@ -823,20 +840,18 @@ class Metrics:
             mask_sum_hw,
             global_weight,
         ).sum()
-        # Enclosure fork (owner): Go's seki is not a target; weight 0, the head is kept.
-        (loss_seki,seki_weight_scale) = self.loss_seki_samplewise(
+        # Enclosure fork (owner, 2026-10-03): the seki slot holds edges that get cut (trainingwrite.cpp), with the
+        # ownership target's weight (both come from the finished game), on rows that carry it (C68; earlier rows
+        # have zeros there, which would teach that nothing is ever cut).
+        loss_seki = self.loss_edgecut_samplewise(
             seki_logits,
             target_seki,
-            target_ownership,
-            target_weight_ownership * 0.0,
+            target_weight_ownership * target_global_nc[:, 68],
             mask,
             mask_sum_hw,
             global_weight,
-            is_training,
-            skip_moving_update=is_intermediate,
-        )
-        loss_seki = loss_seki.sum()
-        seki_weight_scale = seki_weight_scale.sum() if not isinstance(seki_weight_scale,float) else seki_weight_scale
+        ).sum()
+        seki_weight_scale = 1.0
         loss_scoremean = self.loss_scoremean_samplewise(
             pred_scoremean,
             target_scoremean,
