@@ -481,8 +481,9 @@ static double getNaiveEvenKomiHelper(
 
     //If the last shift made stats go the WRONG way, and by a nontrivial amount, then revert half of it and stop immediately.
     if(i > 0) {
-      if((lastLead > 0 && lead > lastLead + 5 && winLoss < 0.75) ||
-         (lastLead < 0 && lead < lastLead - 5 && winLoss > -0.75) ||
+      //Enclosure fork (owner, 2026-10-04: upstream's procedure, its point quantities x SCORE_SCALE): 5 points -> 60.
+      if((lastLead > 0 && lead > lastLead + 5 * NNPos::SCORE_SCALE && winLoss < 0.75) ||
+         (lastLead < 0 && lead < lastLead - 5 * NNPos::SCORE_SCALE && winLoss > -0.75) ||
          (lastWinLoss > 0 && winLoss > lastWinLoss + 0.1) ||
          (lastWinLoss < 0 && winLoss < lastWinLoss - 0.1)
       ) {
@@ -516,7 +517,7 @@ static double getNaiveEvenKomiHelper(
     hist.setKomi(fairKomi);
 
     //After a small shift, break out to the binary search.
-    if(std::fabs(shift) < 16.0)
+    if(std::fabs(shift) < 16.0 * NNPos::SCORE_SCALE)  //Enclosure fork: 16 points x SCORE_SCALE
       break;
   }
 
@@ -642,19 +643,22 @@ float PlayUtils::computeLead(
   };
 
   //Smooth over area scoring 2-point granularity
+  //Enclosure fork (owner, 2026-10-04): upstream's procedure kept (this winrate check is what ties the lead to the
+  //even komi), its point quantities x SCORE_SCALE: the half-point grid and window become 6 points (0.5 x 12).
+  const double step = 0.5 * NNPos::SCORE_SCALE;
 
   //If komi is exactly an integer, then we're good.
-  if(naiveKomi == round(naiveKomi)) {
+  if(naiveKomi == round(naiveKomi / (2.0 * step)) * (2.0 * step)) {
     testAssert(hist.rules.komi == oldKomi);
     return (float)(oldKomi - naiveKomi);
   }
 
-  double lower = floor(naiveKomi * 2.0) * 0.5;
-  double upper = lower + 0.5;
+  double lower = floor(naiveKomi / step) * step;
+  double upper = lower + step;
 
   //Average out the oscillation
-  double lowerWinLoss = 0.5 * (evalWinLoss(upper) + evalWinLoss(lower-0.5));
-  double upperWinLoss = 0.5 * (evalWinLoss(upper + 0.5) + evalWinLoss(lower));
+  double lowerWinLoss = 0.5 * (evalWinLoss(upper) + evalWinLoss(lower-step));
+  double upperWinLoss = 0.5 * (evalWinLoss(upper + step) + evalWinLoss(lower));
 
   //If the winLoss are crossed, potentially due to noise, then just pick the average
   double result;
@@ -663,9 +667,9 @@ float PlayUtils::computeLead(
   else {
     //Interpolate
     result = lower + (upper - lower) * (0-lowerWinLoss) / (upperWinLoss-lowerWinLoss);
-    //Bound the result to be within lower-0.5 and upper+0.5
-    if(result < lower-0.5) result = lower-0.5;
-    if(result > upper+0.5) result = upper+0.5;
+    //Bound the result to be within lower-step and upper+step
+    if(result < lower-step) result = lower-step;
+    if(result > upper+step) result = upper+step;
   }
   testAssert(hist.rules.komi == oldKomi);
   return (float)(oldKomi - result);

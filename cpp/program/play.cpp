@@ -192,13 +192,13 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
     throw IOError("Must specify only one of komiMean=<komi value> or komiAuto=True in config");
 
   komiMean = cfg.contains("komiMean") ? cfg.getFloat("komiMean",Rules::MIN_USER_KOMI,Rules::MAX_USER_KOMI) : 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5)
-  komiStdev = cfg.contains("komiStdev") ? cfg.getFloat("komiStdev",0.0f,60.0f) : 0.0f;
+  komiStdev = cfg.contains("komiStdev") ? cfg.getFloat("komiStdev",0.0f,(float)(60.0 * NNPos::SCORE_SCALE)) : 0.0f;  //Enclosure fork: KataGo's bounds x SCORE_SCALE
   handicapProb = cfg.contains("handicapProb") ? cfg.getDouble("handicapProb",0.0,1.0) : 0.0;
   handicapCompensateKomiProb = cfg.contains("handicapCompensateKomiProb") ? cfg.getDouble("handicapCompensateKomiProb",0.0,1.0) : 0.0;
   komiBigStdevProb = cfg.contains("komiBigStdevProb") ? cfg.getDouble("komiBigStdevProb",0.0,1.0) : 0.0;
-  komiBigStdev = cfg.contains("komiBigStdev") ? cfg.getFloat("komiBigStdev",0.0f,60.0f) : 10.0f;
+  komiBigStdev = cfg.contains("komiBigStdev") ? cfg.getFloat("komiBigStdev",0.0f,(float)(60.0 * NNPos::SCORE_SCALE)) : 10.0f;  //Enclosure fork: x SCORE_SCALE
   komiBiggerStdevProb = cfg.contains("komiBiggerStdevProb") ? cfg.getDouble("komiBiggerStdevProb",0.0,1.0) : 0.0;
-  komiBiggerStdev = cfg.contains("komiBiggerStdev") ? cfg.getFloat("komiBiggerStdev",0.0f,120.0f) : 30.0f;
+  komiBiggerStdev = cfg.contains("komiBiggerStdev") ? cfg.getFloat("komiBiggerStdev",0.0f,(float)(120.0 * NNPos::SCORE_SCALE)) : 30.0f;  //Enclosure fork: x SCORE_SCALE
   handicapKomiInterpZeroProb = cfg.contains("handicapKomiInterpZeroProb") ? cfg.getDouble("handicapKomiInterpZeroProb",0.0,1.0) : 0.0;
   sgfKomiInterpZeroProb = cfg.contains("sgfKomiInterpZeroProb") ? cfg.getDouble("sgfKomiInterpZeroProb",0.0,1.0) : 0.0;
   komiAuto = cfg.contains("komiAuto") ? cfg.getBool("komiAuto") : false;
