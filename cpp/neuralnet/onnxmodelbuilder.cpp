@@ -985,7 +985,8 @@ BuildParams::BuildParams()
     nnYLen(0),
     requireExactNNLen(false),
     transformerNHWC(false),
-    scale8Applied(false)
+    scale8Applied(false),
+    includeAuxOutputs(false)
 {}
 
 LoadResult::LoadResult()
@@ -1237,10 +1238,12 @@ Result build(
     string p2 = b.buildConv(p1b, ph.p2Conv, false);
 
     string pass;
+    string passHidden;
     if(desc.modelVersion >= 15) {
       string pm = b.buildMatMul(gpool, ph.gpoolToPassMul);
       pm = b.buildMatBias(pm, ph.gpoolToPassBias);
       pm = b.buildActivation(pm, ph.passActivation);
+      passHidden = pm;
       pass = b.buildMatMul(pm, ph.gpoolToPassMul2);
     }
     else {
@@ -1266,7 +1269,15 @@ Result build(
       shape->add_dim()->set_dim_value(spatial ? nnXLen : 1);
     };
     markOutput(pass, "OutputPolicyPass", ph.policyOutChannels, false);
-    markOutput(p2, "OutputPolicy", ph.policyOutChannels, true);
+    //Enclosure fork: NUM_OFFSETS channels per policy output (channel = output * NUM_OFFSETS + offset).
+    markOutput(p2, "OutputPolicy", ph.p2Conv.outChannels, true);
+    //Enclosure fork (owner, 2026-10-04), export stage 2: policy outputs 1-4 from the same features, and their pass
+    //logits from the pass hidden layer (as the CUDA backend's PolicyHead).
+    if(buildParams.includeAuxOutputs && ph.auxVersion >= 1 && !passHidden.empty()) {
+      markOutput(b.buildConv(p1b, ph.p2ConvAux, false), "OutputPolicyAux", ph.p2ConvAux.outChannels, true);
+      markOutput(b.buildMatMul(passHidden, ph.gpoolToPassMul2Aux), "OutputPolicyPassAux",
+                 ph.gpoolToPassMul2Aux.outChannels, false);
+    }
   }
 
   // ================= Value head =================
@@ -1305,6 +1316,38 @@ Result build(
     markOutput(v3, "OutputValue", desc.numValueChannels, false);
     markOutput(sv3, "OutputScoreValue", desc.numScoreValueChannels, false);
     markOutput(ownership, "OutputOwnership", desc.numOwnershipChannels, true);
+
+    //Enclosure fork (owner, 2026-10-04): RGSC's heads (the regret value, then the regret ranking), at every
+    //evaluation: the value head's layers in miniature from the trunk tip (conv, norm and activation, the value
+    //head's pooling, a hidden layer, one output), as the CUDA backend's RegretHeadLayers.
+    for(size_t h = 0; h < vh.regretHeads.size(); h++) {
+      const RegretHeadDesc& r = vh.regretHeads[h];
+      string r1 = b.buildConv(trunkTip, r.conv1, false);
+      r1 = b.buildBatchNorm(r1, r.bn1, false);
+      r1 = b.buildActivation(r1, r.act1);
+      r1 = b.applyMask(r1, "InputMask", r.name + "/r1");
+      string rpool = b.applyGPool(r1, "InputMask", r.name + "/r", true);
+      string r2 = b.buildMatMul(rpool, r.mul2);
+      r2 = b.buildMatBias(r2, r.bias2);
+      r2 = b.buildActivation(r2, r.act2);
+      string r3 = b.buildMatMul(r2, r.mul3);
+      r3 = b.buildMatBias(r3, r.bias3);
+      markOutput(r3, h == 0 ? "OutputRegretValue" : "OutputRegretRanking", 1, false);
+    }
+
+    //Enclosure fork (owner, 2026-10-04): the exported training-only outputs, only when asked (BuildParams).
+    if(buildParams.includeAuxOutputs && vh.auxVersion >= 1) {
+      markOutput(b.buildConv(trunkTip, vh.auxTrunkConv, false), "OutputAuxTrunk", vh.auxTrunkConv.outChannels, true);
+      markOutput(b.buildConv(v1Masked, vh.auxScoringConv, false), "OutputAuxScoring", vh.auxScoringConv.outChannels, true);
+      string auxValue = b.buildMatBias(b.buildMatMul(v2, vh.auxValueMul), vh.auxValueBias);
+      markOutput(auxValue, "OutputAuxValue", vh.auxValueMul.outChannels, false);
+      if(vh.auxVersion >= 2) {
+        markOutput(b.buildMatBias(b.buildMatMul(gpool, vh.sbS2Mul), vh.sbS2Bias), "OutputScoreBeliefS2",
+                   vh.sbS2Mul.outChannels, false);
+        markOutput(b.buildMatBias(b.buildMatMul(gpool, vh.sbMixMul), vh.sbMixBias), "OutputScoreBeliefMix",
+                   vh.sbMixMul.outChannels, false);
+      }
+    }
   }
 
   b.recordNodesSince(trunkTipAndHeadStart, b.trunkTipAndHeadNodeNames);
@@ -1769,7 +1812,7 @@ LoadResult load(
 
     vector<ExpectedTensor> expectedOutputs;
     expectedOutputs.push_back({OUTPUT_POLICY_PASS, descBuf.numPolicyChannels, false});
-    expectedOutputs.push_back({OUTPUT_POLICY, descBuf.numPolicyChannels, true});
+    expectedOutputs.push_back({OUTPUT_POLICY, descBuf.numPolicyChannels * NNPos::NUM_OFFSETS, true});  //Enclosure fork
     expectedOutputs.push_back({OUTPUT_VALUE, descBuf.numValueChannels, false});
     expectedOutputs.push_back({OUTPUT_SCORE_VALUE, descBuf.numScoreValueChannels, false});
     expectedOutputs.push_back({OUTPUT_OWNERSHIP, descBuf.numOwnershipChannels, true});

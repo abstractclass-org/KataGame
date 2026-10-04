@@ -122,6 +122,9 @@ struct ComputeContext {
   bool useOnnx;          // build via the ONNX emitter (default true); false = hand-built ModelParser
   bool transformerNHWC;  // ONNX emitter: run transformer blocks channel-last (default true)
   string dumpDebugPlanToDir;  // if non-empty, dump emitted ONNX + built-engine layer info here (debug)
+  //Enclosure fork (owner, 2026-10-04): emit the exported training-only outputs (OnnxModelBuilder::BuildParams).
+  //Only checks ask for them (testnnoutputs); self-play leaves this off and the engine does not compute them.
+  bool includeAuxOutputs;
 };
 
 ComputeContext* NeuralNet::createComputeContext(
@@ -144,6 +147,11 @@ ComputeContext* NeuralNet::createComputeContext(
   // nvonnxparser (the default). trtDisableOnnx=true falls back to the hand-built ModelParser, which
   // supports convnets only (transformer models will error in createComputeHandle).
   context->useOnnx = !(cfg.contains("trtDisableOnnx") ? cfg.getBool("trtDisableOnnx") : false);
+  //Enclosure fork (owner, 2026-10-04): only the ONNX emitter knows the fork's heads (the policy's NUM_OFFSETS
+  //channels per output, RGSC's heads, the aux outputs); the hand-built ModelParser does not.
+  if(!context->useOnnx)
+    throw StringError("TensorRT backend (Enclosure fork): trtDisableOnnx is not supported, the ModelParser path lacks the fork's heads");
+  context->includeAuxOutputs = cfg.contains("trtIncludeAuxOutputs") ? cfg.getBool("trtIncludeAuxOutputs") : false;
   // ONNX transformer emitter layout. Default is NHWC (whole trunk channel-last with NCHW<->NHWC
   // conversions around it). Equal or very slightly better than NCHW in accuracy and in throughput
   // on TensorRT 10.9, but noticeably faster on many nvidia GPUs on TensorRT 10.16.
@@ -1300,6 +1308,7 @@ struct ComputeHandle {
         buildParams.requireExactNNLen = requireExactNNLen;
         buildParams.transformerNHWC = ctx->transformerNHWC;
         buildParams.scale8Applied = loadedModel->scale8Applied;
+        buildParams.includeAuxOutputs = ctx->includeAuxOutputs;  //Enclosure fork
         OnnxModelBuilder::Result onnxResult = OnnxModelBuilder::build(desc, buildParams, logger);
         emittedOnnxBytes = std::move(onnxResult.serializedModel);
         onnxBytesPtr = &emittedOnnxBytes;
@@ -1684,6 +1693,11 @@ struct ComputeHandle {
   ComputeHandle(const ComputeHandle&) = delete;
   ComputeHandle& operator=(const ComputeHandle&) = delete;
 
+  //Enclosure fork: whether the engine has this input or output (RGSC's heads and the aux outputs are optional).
+  bool hasBuffer(const char* name) const {
+    return buffers.find(name) != buffers.end();
+  }
+
   void* getBuffer(const char* name) {
     auto search = buffers.find(name);
     if(search != buffers.end()) {
@@ -1931,6 +1945,19 @@ struct InputBuffers {
   unique_ptr<float[]> scoreValueResults;    // Host pointer
   unique_ptr<float[]> ownershipResults;     // Host pointer
 
+  //Enclosure fork (owner, 2026-10-04): RGSC's heads (one value per row each), and the exported training-only
+  //outputs, filled only when the engine has them and some row asked (vectors sized on first use).
+  int numRegretHeads;
+  vector<float> regretValueResults;
+  vector<float> regretRankingResults;
+  vector<float> auxTrunkResults;      // 8 channels, NCHW
+  vector<float> auxScoringResults;    // 1 channel
+  vector<float> auxValueResults;      // 12 values
+  vector<float> policyAuxResults;     // NUM_AUX_POLICIES * NUM_OFFSETS channels, NCHW
+  vector<float> policyPassAuxResults; // NUM_AUX_POLICIES
+  vector<float> sbS2Results;
+  vector<float> sbMixResults;
+
   InputBuffers(const LoadedModel* loadedModel, int maxBatchSz, int nnXLen, int nnYLen) {
     const ModelDesc& m = loadedModel->modelDesc;
 
@@ -1952,7 +1979,7 @@ struct InputBuffers {
     singleInputMetaBytes = singleInputMetaElts * sizeof(float);
     singlePolicyPassResultElts = (size_t)m.numPolicyChannels;
     singlePolicyPassResultBytes = singlePolicyPassResultElts * sizeof(float);
-    singlePolicyResultElts = (size_t)m.numPolicyChannels * nnXLen * nnYLen;
+    singlePolicyResultElts = (size_t)m.numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen;  //Enclosure fork
     singlePolicyResultBytes = singlePolicyResultElts * sizeof(float);
     singleValueResultElts = m.numValueChannels;
     singleValueResultBytes = singleValueResultElts * sizeof(float);
@@ -1986,6 +2013,9 @@ struct InputBuffers {
     valueResults = make_unique<float[]>(maxBatchSize * singleValueResultElts);
     scoreValueResults = make_unique<float[]>(maxBatchSize * singleScoreValueResultElts);
     ownershipResults = make_unique<float[]>(maxBatchSize * singleOwnershipResultElts);
+    numRegretHeads = (int)m.valueHead.regretHeads.size();
+    regretValueResults.resize(maxBatchSize);
+    regretRankingResults.resize(maxBatchSize);
   }
 
   InputBuffers() = delete;
@@ -2041,6 +2071,8 @@ void NeuralNet::getOutput(
     else {
       testAssert(!hasRowMeta);
     }
+    //Enclosure fork: NNEvaluator applies symmetries to the position; planes are never transformed here.
+    testAssert(inputBufs[nIdx]->symmetry == 0);
     SymmetryHelpers::copyInputsWithSymmetry(
       rowSpatial, rowSpatialInput, 1, nnYLen, nnXLen, numSpatialFeatures, false, inputBufs[nIdx]->symmetry);
     copy(rowSpatialInput, rowSpatialInput + inputBuffers->singleMaskElts, rowMaskInput);
@@ -2069,7 +2101,7 @@ void NeuralNet::getOutput(
   assert(inputBuffers->ownershipResultBufferBytes == gpuHandle->getBufferBytes("OutputOwnership"));
 
   const int numPolicyChannels = inputBuffers->singlePolicyPassResultElts;
-  assert(inputBuffers->singlePolicyResultElts == numPolicyChannels * nnXLen * nnYLen);
+  assert(inputBuffers->singlePolicyResultElts == numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen);
 
   // Transfers from host memory to device memory are asynchronous with respect to the host
   CUDA_ERR(
@@ -2154,6 +2186,46 @@ void NeuralNet::getOutput(
       inputBuffers->singleOwnershipResultBytes * batchSize,
       cudaMemcpyDeviceToHost));
 
+  //Enclosure fork (owner, 2026-10-04): RGSC's heads at every evaluation, and the aux outputs when some row asked.
+  const int xy = nnXLen * nnYLen;
+  auto copyOut = [&](vector<float>& dst, const char* name, size_t perRow) {
+    if(dst.size() < perRow * inputBuffers->maxBatchSize)
+      dst.resize(perRow * inputBuffers->maxBatchSize);
+    CUDA_ERR("getOutput", cudaMemcpy(dst.data(), gpuHandle->getBuffer(name), sizeof(float) * perRow * batchSize,
+                                     cudaMemcpyDeviceToHost));
+  };
+  const bool hasRegret = inputBuffers->numRegretHeads == 2 && gpuHandle->hasBuffer("OutputRegretValue");
+  if(inputBuffers->numRegretHeads > 0)
+    testAssert(hasRegret);
+  if(hasRegret) {
+    copyOut(inputBuffers->regretValueResults, "OutputRegretValue", 1);
+    copyOut(inputBuffers->regretRankingResults, "OutputRegretRanking", 1);
+  }
+  bool wantAux = false;
+  for(int row = 0; row < batchSize; row++)
+    if(outputs[row]->auxMap != NULL)
+      wantAux = true;
+  const bool hasPolicyAux = gpuHandle->hasBuffer("OutputPolicyAux");
+  const bool hasScoreBelief = gpuHandle->hasBuffer("OutputScoreBeliefS2");
+  int sbS2Channels = 0, sbMixChannels = 0;
+  if(wantAux) {
+    if(!gpuHandle->hasBuffer("OutputAuxTrunk"))
+      throw StringError("TensorRT backend: the aux outputs were asked for but the engine was built without them (trtIncludeAuxOutputs=true)");
+    copyOut(inputBuffers->auxTrunkResults, "OutputAuxTrunk", 8 * xy);
+    copyOut(inputBuffers->auxScoringResults, "OutputAuxScoring", xy);
+    copyOut(inputBuffers->auxValueResults, "OutputAuxValue", 12);
+    if(hasPolicyAux) {
+      copyOut(inputBuffers->policyAuxResults, "OutputPolicyAux", (size_t)PolicyHeadDesc::NUM_AUX_POLICIES * NNPos::NUM_OFFSETS * xy);
+      copyOut(inputBuffers->policyPassAuxResults, "OutputPolicyPassAux", PolicyHeadDesc::NUM_AUX_POLICIES);
+    }
+    if(hasScoreBelief) {
+      sbS2Channels = (int)gpuHandle->getBufferRowElts("OutputScoreBeliefS2");
+      sbMixChannels = (int)gpuHandle->getBufferRowElts("OutputScoreBeliefMix");
+      copyOut(inputBuffers->sbS2Results, "OutputScoreBeliefS2", sbS2Channels);
+      copyOut(inputBuffers->sbMixResults, "OutputScoreBeliefMix", sbMixChannels);
+    }
+  }
+
   gpuHandle->printDebugOutput(batchSize);
   gpuHandle->trtErrorRecorder.clear();
 
@@ -2176,20 +2248,25 @@ void NeuralNet::getOutput(
     // policy probabilities and white game outcome probabilities
     // Also we don't fill in the nnHash here either
     // Handle version >= 12 policy optimism
+    //Enclosure fork: channel c = output * K + offset (TRT is all NCHW); policy entry (y * nnXLen + x) * K + offset.
+    //Symmetries are applied by NNEvaluator, so this copies straight through (as the CUDA backend).
+    (void)policyProbsTmp;
+    const int K = NNPos::NUM_OFFSETS;
+    auto src = [&](int out, int pos, int k) { return policySrcBuf[(out * K + k) * xy + pos]; };
     if(numPolicyChannels == 2 || (numPolicyChannels == 4 && modelVersion >= 16)) {
-      // TRT is all NCHW
-      for(int i = 0; i < nnXLen * nnYLen; i++) {
-        float p = policySrcBuf[i];
-        float pOpt = policySrcBuf[i + nnXLen * nnYLen];
-        policyProbsTmp[i] = p + (pOpt - p) * policyOptimism;
-      }
-      SymmetryHelpers::copyOutputsWithSymmetry(
-        policyProbsTmp, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-      policyProbs[nnXLen * nnYLen] = policyPassSrcBuf[0] + (policyPassSrcBuf[1] - policyPassSrcBuf[0]) * policyOptimism;
+      for(int pos = 0; pos < xy; pos++)
+        for(int k = 0; k < K; k++) {
+          float p = src(0, pos, k);
+          float pOpt = src(1, pos, k);
+          policyProbs[pos * K + k] = p + (pOpt - p) * policyOptimism;
+        }
+      policyProbs[xy * K] = policyPassSrcBuf[0] + (policyPassSrcBuf[1] - policyPassSrcBuf[0]) * policyOptimism;
     } else {
       assert(numPolicyChannels == 1);
-      SymmetryHelpers::copyOutputsWithSymmetry(policySrcBuf, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-      policyProbs[nnXLen * nnYLen] = policyPassSrcBuf[0];
+      for(int pos = 0; pos < xy; pos++)
+        for(int k = 0; k < K; k++)
+          policyProbs[pos * K + k] = src(0, pos, k);
+      policyProbs[xy * K] = policyPassSrcBuf[0];
     }
 
     int numValueChannels = inputBuffers->singleValueResultElts;
@@ -2197,6 +2274,39 @@ void NeuralNet::getOutput(
     output->whiteWinProb = inputBuffers->valueResults[row * numValueChannels];
     output->whiteLossProb = inputBuffers->valueResults[row * numValueChannels + 1];
     output->whiteNoResultProb = inputBuffers->valueResults[row * numValueChannels + 2];
+
+    //Enclosure fork (owner, 2026-10-04): RGSC's heads (raw; NNEvaluator applies the output scale and the sigmoid),
+    //and the aux outputs when asked for, channel-major, as the CUDA backend's getOutput.
+    if(hasRegret) {
+      output->hasRegret = true;
+      output->regretValue = inputBuffers->regretValueResults[row];
+      output->regretRanking = inputBuffers->regretRankingResults[row];
+    }
+    if(output->auxMap != NULL && wantAux) {
+      std::copy(inputBuffers->auxTrunkResults.begin() + (size_t)row * 8 * xy,
+                inputBuffers->auxTrunkResults.begin() + (size_t)(row + 1) * 8 * xy, output->auxMap);
+      std::copy(inputBuffers->auxScoringResults.begin() + (size_t)row * xy,
+                inputBuffers->auxScoringResults.begin() + (size_t)(row + 1) * xy, output->auxMap + 8 * xy);
+      std::copy(inputBuffers->auxValueResults.begin() + row * 12, inputBuffers->auxValueResults.begin() + (row + 1) * 12,
+                output->auxValues);
+    }
+    if(output->auxPolicy != NULL && wantAux && hasPolicyAux) {
+      const int A = PolicyHeadDesc::NUM_AUX_POLICIES;
+      const float* auxSrc = inputBuffers->policyAuxResults.data() + (size_t)row * A * K * xy;
+      for(int a = 0; a < A; a++) {
+        float* dst = output->auxPolicy + (size_t)a * NNPos::MAX_NN_POLICY_SIZE;
+        for(int pos = 0; pos < xy; pos++)
+          for(int k = 0; k < K; k++)
+            dst[pos * K + k] = auxSrc[(a * K + k) * xy + pos];
+        dst[xy * K] = inputBuffers->policyPassAuxResults[row * A + a];
+      }
+    }
+    if(output->scoreBeliefRaw != NULL && wantAux && hasScoreBelief) {
+      std::copy(inputBuffers->sbS2Results.begin() + (size_t)row * sbS2Channels,
+                inputBuffers->sbS2Results.begin() + (size_t)(row + 1) * sbS2Channels, output->scoreBeliefRaw);
+      std::copy(inputBuffers->sbMixResults.begin() + (size_t)row * sbMixChannels,
+                inputBuffers->sbMixResults.begin() + (size_t)(row + 1) * sbMixChannels, output->scoreBeliefRaw + sbS2Channels);
+    }
 
     // As above, these are NOT actually from white's perspective, but rather the player to move.
     // As usual the client does the postprocessing.

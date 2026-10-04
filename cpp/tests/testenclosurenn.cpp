@@ -29,7 +29,8 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
   NeuralNet::globalInitialize();
   Logger logger(nullptr, false, false, false);
   logger.addOStream(cerr);
-  NNEvaluator* nnEval = startNNEval(modelFile, logger, "", 19, 19, 0, true, useNHWC, useFP16, false, true);
+  //Enclosure fork: the inputs in the backend's layout (2026-10-04: TensorRT takes NCHW only; it was NHWC always).
+  NNEvaluator* nnEval = startNNEval(modelFile, logger, "", 19, 19, 0, useNHWC, useNHWC, useFP16, false, true);
 
   ifstream in(inputsFile);
   if(!in)

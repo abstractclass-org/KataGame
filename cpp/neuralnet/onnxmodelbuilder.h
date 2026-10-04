@@ -37,6 +37,11 @@ namespace OnnxModelBuilder {
     // The compensation for it lives in postProcessParams.outputScaleMultiplier, which is recorded
     // already transformed, so this is only reported, never re-applied.
     bool scale8Applied;
+    // Enclosure fork (owner, 2026-10-04): also emit the exported training-only outputs (OutputAux*, the policy
+    // outputs 1-4, the score belief's backend part). Only checks ask for them (NNResultBuf::includeAuxOutputs, set
+    // by testnnoutputs); self-play never does, so the default graph leaves them out and pays nothing for them.
+    // RGSC's heads (OutputRegret*) are always emitted when the model has them: the search reads them.
+    bool includeAuxOutputs;
 
     BuildParams();
   };

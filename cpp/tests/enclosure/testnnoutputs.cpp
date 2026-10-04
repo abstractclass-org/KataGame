@@ -41,7 +41,9 @@ int main(int argc, char** argv) {
   ScoreValue::initTables();
   NeuralNet::globalInitialize();
 
-  map<string, string> kvs = {{"cudaUseNHWC", nhwc ? "true" : "false"}};
+  //trtIncludeAuxOutputs: the TensorRT backend builds the aux outputs into its engine only when asked (2026-10-04);
+  //the CUDA backend ignores it. TensorRT is NCHW whatever cudaUseNHWC says: run it with NHWC 0.
+  map<string, string> kvs = {{"cudaUseNHWC", nhwc ? "true" : "false"}, {"trtIncludeAuxOutputs", "true"}};
   ConfigParser cfg(kvs);
   Logger logger(nullptr, false, true, false, false);
   const int S = enclosure::SIZE;
