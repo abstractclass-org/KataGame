@@ -1208,6 +1208,9 @@ struct ComputeHandle {
   unique_ptr<IRuntime> runtime;
   unique_ptr<ICudaEngine> engine;
   unique_ptr<IExecutionContext> exec;
+  //Enclosure fork (2026-10-04): each handle's own non-blocking stream, as the CUDA backend's OwnedComputeStream.
+  //cudaStreamPerThread and the legacy stream's cudaMemcpy synchronised every server thread with the others.
+  cudaStream_t stream = NULL;
 
   ComputeHandle(
     Logger* logger,
@@ -1678,8 +1681,9 @@ struct ComputeHandle {
       exec->setTensorAddress(name, buffer);
     }
 
-    exec->setOptimizationProfileAsync(0, cudaStreamPerThread);
-    cudaStreamSynchronize(cudaStreamPerThread);
+    CUDA_ERR("ComputeHandle", cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    exec->setOptimizationProfileAsync(0, stream);
+    cudaStreamSynchronize(stream);
     trtErrorRecorder.clear();
   }
 
@@ -1687,6 +1691,8 @@ struct ComputeHandle {
     for(auto ptr: buffers) {
       CUDA_ERR("~ComputeHandle", cudaFree(ptr.second));
     }
+    if(stream != NULL)
+      (void)cudaStreamDestroy(stream);
   }
 
   ComputeHandle() = delete;
@@ -1903,6 +1909,36 @@ int NeuralNet::getNumEffectiveDevices(ConfigParser& cfg, const std::vector<int>&
   return std::max(1, (int)distinctDevices.size());
 }
 
+//Enclosure fork (2026-10-04): pinned host memory for the transfers, as the CUDA backend's mallocPinned (pageable
+//memory when pinning fails), so the copies on the handle's stream are asynchronous.
+struct HostFloats {
+  float* ptr = NULL;
+  bool pinned = false;
+  HostFloats() = default;
+  HostFloats(const HostFloats&) = delete;
+  HostFloats& operator=(const HostFloats&) = delete;
+  void alloc(size_t numFloats) {
+    if(cudaHostAlloc((void**)&ptr, numFloats * sizeof(float), cudaHostAllocPortable) == cudaSuccess) {
+      pinned = true;
+      return;
+    }
+    (void)cudaGetLastError();
+    ptr = (float*)malloc(numFloats * sizeof(float));
+    if(ptr == NULL)
+      throw StringError("InputBuffers: out of host memory");
+  }
+  ~HostFloats() {
+    if(ptr == NULL)
+      return;
+    if(pinned)
+      (void)cudaFreeHost(ptr);
+    else
+      free(ptr);
+  }
+  float* get() const { return ptr; }
+  float& operator[](size_t i) const { return ptr[i]; }
+};
+
 struct InputBuffers {
   int maxBatchSize;
 
@@ -1935,15 +1971,15 @@ struct InputBuffers {
   size_t scoreValueResultBufferBytes;
   size_t ownershipResultBufferBytes;
 
-  unique_ptr<float[]> maskInputs;           // Host pointer
-  unique_ptr<float[]> spatialInputs;        // Host pointer
-  unique_ptr<float[]> globalInputs;  // Host pointer
-  unique_ptr<float[]> metaInputs;  // Host pointer
-  unique_ptr<float[]> policyPassResults;    // Host pointer
-  unique_ptr<float[]> policyResults;        // Host pointer
-  unique_ptr<float[]> valueResults;         // Host pointer
-  unique_ptr<float[]> scoreValueResults;    // Host pointer
-  unique_ptr<float[]> ownershipResults;     // Host pointer
+  HostFloats maskInputs;           // Host pointer
+  HostFloats spatialInputs;        // Host pointer
+  HostFloats globalInputs;  // Host pointer
+  HostFloats metaInputs;  // Host pointer
+  HostFloats policyPassResults;    // Host pointer
+  HostFloats policyResults;        // Host pointer
+  HostFloats valueResults;         // Host pointer
+  HostFloats scoreValueResults;    // Host pointer
+  HostFloats ownershipResults;     // Host pointer
 
   //Enclosure fork (owner, 2026-10-04): RGSC's heads (one value per row each), and the exported training-only
   //outputs, filled only when the engine has them and some row asked (vectors sized on first use).
@@ -2004,15 +2040,15 @@ struct InputBuffers {
     scoreValueResultBufferBytes = maxBatchSize * singleScoreValueResultBytes;
     ownershipResultBufferBytes = maxBatchSize * singleOwnershipResultBytes;
 
-    maskInputs = make_unique<float[]>(maxBatchSize * singleMaskElts);
-    spatialInputs = make_unique<float[]>(maxBatchSize * singleInputElts);
-    globalInputs = make_unique<float[]>(maxBatchSize * singleInputGlobalElts);
-    metaInputs = make_unique<float[]>(maxBatchSize * singleInputMetaElts);
-    policyPassResults = make_unique<float[]>(maxBatchSize * singlePolicyPassResultElts);
-    policyResults = make_unique<float[]>(maxBatchSize * singlePolicyResultElts);
-    valueResults = make_unique<float[]>(maxBatchSize * singleValueResultElts);
-    scoreValueResults = make_unique<float[]>(maxBatchSize * singleScoreValueResultElts);
-    ownershipResults = make_unique<float[]>(maxBatchSize * singleOwnershipResultElts);
+    maskInputs.alloc(maxBatchSize * singleMaskElts);
+    spatialInputs.alloc(maxBatchSize * singleInputElts);
+    globalInputs.alloc(maxBatchSize * singleInputGlobalElts);
+    metaInputs.alloc(std::max((size_t)1, maxBatchSize * singleInputMetaElts));
+    policyPassResults.alloc(maxBatchSize * singlePolicyPassResultElts);
+    policyResults.alloc(maxBatchSize * singlePolicyResultElts);
+    valueResults.alloc(maxBatchSize * singleValueResultElts);
+    scoreValueResults.alloc(maxBatchSize * singleScoreValueResultElts);
+    ownershipResults.alloc(maxBatchSize * singleOwnershipResultElts);
     numRegretHeads = (int)m.valueHead.regretHeads.size();
     regretValueResults.resize(maxBatchSize);
     regretRankingResults.resize(maxBatchSize);
@@ -2110,21 +2146,21 @@ void NeuralNet::getOutput(
       gpuHandle->getBuffer("InputMask"),
       inputBuffers->maskInputs.get(),
       inputBuffers->singleMaskBytes * batchSize,
-      cudaMemcpyHostToDevice));
+      cudaMemcpyHostToDevice, gpuHandle->stream));
   CUDA_ERR(
     "getOutput",
     cudaMemcpyAsync(
       gpuHandle->getBuffer("InputSpatial"),
       inputBuffers->spatialInputs.get(),
       inputBuffers->singleInputBytes * batchSize,
-      cudaMemcpyHostToDevice));
+      cudaMemcpyHostToDevice, gpuHandle->stream));
   CUDA_ERR(
     "getOutput",
     cudaMemcpyAsync(
       gpuHandle->getBuffer("InputGlobal"),
       inputBuffers->globalInputs.get(),
       inputBuffers->singleInputGlobalBytes * batchSize,
-      cudaMemcpyHostToDevice));
+      cudaMemcpyHostToDevice, gpuHandle->stream));
   if(numMetaFeatures > 0) {
     CUDA_ERR(
       "getOutput",
@@ -2132,7 +2168,7 @@ void NeuralNet::getOutput(
         gpuHandle->getBuffer("InputMeta"),
         inputBuffers->metaInputs.get(),
         inputBuffers->singleInputMetaBytes * batchSize,
-        cudaMemcpyHostToDevice));
+        cudaMemcpyHostToDevice, gpuHandle->stream));
   }
 
   auto maskInputDims = gpuHandle->getBufferDynamicShape("InputMask", batchSize);
@@ -2148,51 +2184,51 @@ void NeuralNet::getOutput(
     gpuHandle->exec->setInputShape("InputMeta", metaInputDims);
   }
 
-  gpuHandle->exec->enqueueV3(cudaStreamPerThread);
+  gpuHandle->exec->enqueueV3(gpuHandle->stream);
 
   CUDA_ERR(
     "getOutput",
-    cudaMemcpy(
+    cudaMemcpyAsync(
       inputBuffers->policyPassResults.get(),
       gpuHandle->getBuffer("OutputPolicyPass"),
       inputBuffers->singlePolicyPassResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
+      cudaMemcpyDeviceToHost, gpuHandle->stream));
   CUDA_ERR(
     "getOutput",
-    cudaMemcpy(
+    cudaMemcpyAsync(
       inputBuffers->policyResults.get(),
       gpuHandle->getBuffer("OutputPolicy"),
       inputBuffers->singlePolicyResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
+      cudaMemcpyDeviceToHost, gpuHandle->stream));
   CUDA_ERR(
     "getOutput",
-    cudaMemcpy(
+    cudaMemcpyAsync(
       inputBuffers->valueResults.get(),
       gpuHandle->getBuffer("OutputValue"),
       inputBuffers->singleValueResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
+      cudaMemcpyDeviceToHost, gpuHandle->stream));
   CUDA_ERR(
     "getOutput",
-    cudaMemcpy(
+    cudaMemcpyAsync(
       inputBuffers->scoreValueResults.get(),
       gpuHandle->getBuffer("OutputScoreValue"),
       inputBuffers->singleScoreValueResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
+      cudaMemcpyDeviceToHost, gpuHandle->stream));
   CUDA_ERR(
     "getOutput",
-    cudaMemcpy(
+    cudaMemcpyAsync(
       inputBuffers->ownershipResults.get(),
       gpuHandle->getBuffer("OutputOwnership"),
       inputBuffers->singleOwnershipResultBytes * batchSize,
-      cudaMemcpyDeviceToHost));
+      cudaMemcpyDeviceToHost, gpuHandle->stream));
 
   //Enclosure fork (owner, 2026-10-04): RGSC's heads at every evaluation, and the aux outputs when some row asked.
   const int xy = nnXLen * nnYLen;
   auto copyOut = [&](vector<float>& dst, const char* name, size_t perRow) {
     if(dst.size() < perRow * inputBuffers->maxBatchSize)
       dst.resize(perRow * inputBuffers->maxBatchSize);
-    CUDA_ERR("getOutput", cudaMemcpy(dst.data(), gpuHandle->getBuffer(name), sizeof(float) * perRow * batchSize,
-                                     cudaMemcpyDeviceToHost));
+    CUDA_ERR("getOutput", cudaMemcpyAsync(dst.data(), gpuHandle->getBuffer(name), sizeof(float) * perRow * batchSize,
+                                     cudaMemcpyDeviceToHost, gpuHandle->stream));
   };
   const bool hasRegret = inputBuffers->numRegretHeads == 2 && gpuHandle->hasBuffer("OutputRegretValue");
   if(inputBuffers->numRegretHeads > 0)
@@ -2225,6 +2261,7 @@ void NeuralNet::getOutput(
       copyOut(inputBuffers->sbMixResults, "OutputScoreBeliefMix", sbMixChannels);
     }
   }
+  CUDA_ERR("getOutput", cudaStreamSynchronize(gpuHandle->stream));
 
   gpuHandle->printDebugOutput(batchSize);
   gpuHandle->trtErrorRecorder.clear();
