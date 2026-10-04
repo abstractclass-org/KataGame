@@ -5037,6 +5037,9 @@ struct ComputeContext {
   // CUTLASS fused FFN (dual GEMM + SwiGLU epilogue). Auto = on when the build has CUTLASS and
   // the GPU and model are eligible (FP16, sm_80+).
   enabled_t useFusedFFNMode;
+  //Enclosure fork (2026-10-05): cudaBlockingSync = true makes the server threads sleep while they wait for the GPU
+  //(cudaDeviceScheduleBlockingSync) instead of the driver's default spin, which held a CPU each in self-play.
+  bool blockingSync;
 };
 #else  // KATAGO_GPU_HIP
 struct ComputeContext {
@@ -5092,6 +5095,8 @@ ComputeContext* NeuralNet::createComputeContext(
     cfg.contains("cudaCombineQKV") ? cfg.getBool("cudaCombineQKV") : true;
   context->useFusedFFNMode =
     cfg.contains("cudaUseFusedFFN") ? cfg.getEnabled("cudaUseFusedFFN") : enabled_t::Auto;
+  context->blockingSync =
+    cfg.contains("cudaBlockingSync") ? cfg.getBool("cudaBlockingSync") : false;
   return context;
 }
 #else  // KATAGO_GPU_HIP
@@ -5313,6 +5318,8 @@ ComputeHandle* NeuralNet::createComputeHandle(
     gpuIdxForThisThread = 0;
 
   CUDA_ERR("createComputeHandle",cudaSetDevice(gpuIdxForThisThread));
+  if(context->blockingSync)
+    CUDA_ERR("createComputeHandle",cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync));
 
   cudaDeviceProp prop;
   CUDA_ERR("createComputeHandle",cudaGetDeviceProperties(&prop,gpuIdxForThisThread));

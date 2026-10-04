@@ -125,6 +125,8 @@ struct ComputeContext {
   //Enclosure fork (owner, 2026-10-04): emit the exported training-only outputs (OnnxModelBuilder::BuildParams).
   //Only checks ask for them (testnnoutputs); self-play leaves this off and the engine does not compute them.
   bool includeAuxOutputs;
+  //Enclosure fork (2026-10-05): cudaBlockingSync, as the CUDA backend (sleep while waiting for the GPU, not spin).
+  bool blockingSync;
 };
 
 ComputeContext* NeuralNet::createComputeContext(
@@ -152,6 +154,7 @@ ComputeContext* NeuralNet::createComputeContext(
   if(!context->useOnnx)
     throw StringError("TensorRT backend (Enclosure fork): trtDisableOnnx is not supported, the ModelParser path lacks the fork's heads");
   context->includeAuxOutputs = cfg.contains("trtIncludeAuxOutputs") ? cfg.getBool("trtIncludeAuxOutputs") : false;
+  context->blockingSync = cfg.contains("cudaBlockingSync") ? cfg.getBool("cudaBlockingSync") : false;
   // ONNX transformer emitter layout. Default is NHWC (whole trunk channel-last with NCHW<->NHWC
   // conversions around it). Equal or very slightly better than NCHW in accuracy and in throughput
   // on TensorRT 10.9, but noticeably faster on many nvidia GPUs on TensorRT 10.16.
@@ -1840,6 +1843,8 @@ ComputeHandle* NeuralNet::createComputeHandle(
   if(gpuIdxForThisThread == -1)
     gpuIdxForThisThread = 0;
   CUDA_ERR("createComputeHandle", cudaSetDevice(gpuIdxForThisThread));
+  if(context->blockingSync)
+    CUDA_ERR("createComputeHandle", cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync));
 
   cudaDeviceProp prop;
   CUDA_ERR("createComputeHandle", cudaGetDeviceProperties(&prop, gpuIdxForThisThread));
