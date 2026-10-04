@@ -6,7 +6,7 @@
 For each model folder under SELFPLAY_DIR (selfplay/MODEL/tdata/*.npz), over a sample of its files and the rows
 that carry the cut-edge target (C68): the share of on-edge points whose edge ends up cut (valueTargetsNCHW C1:
 +1 the mover's cut, -1 the opponent's, 0 not cut, 2 no edge; trainingwrite.h), and the mover's share of them.
-The measure behind katago-fork.md, "Why the score and the new targets' losses rose" (self-play turned to cutting).
+The measure behind katago-fork/inputs-and-targets.md, "Why the score and the new targets' losses rose" (self-play turned to cutting).
 """
 
 import argparse

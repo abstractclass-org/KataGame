@@ -2,7 +2,7 @@
 #define PROGRAM_RGSC_H_
 
 //Enclosure fork (owner, 2026-10-04): Regret-Guided Search Control (Tsai et al., ICLR 2026; the authors' MiniZero code,
-//minizero/actor/zero_actor.cpp), in KataGo's self-play. See docs/decisions/katago-fork.md, "RGSC: the authors' code
+//minizero/actor/zero_actor.cpp), in KataGo's self-play. See docs/decisions/katago-fork/rgsc.md, "RGSC: the authors' code
 //read again", for the owner's decisions:
 // - a game's regret target (Eq. 2): at each of its positions, the mean over that position and every later one of
 //   (the search value of the move played - the game's outcome)^2, every move counting (full and cheap searches);

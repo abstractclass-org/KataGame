@@ -3,7 +3,7 @@
 
     python enclosure_add_regret_heads.py CHECKPOINT
 
-RGSC (owner, 2026-10-04; katago-fork.md) adds two heads to the value head (model_pytorch.RegretHead), present when
+RGSC (owner, 2026-10-04; katago-fork/rgsc.md) adds two heads to the value head (model_pytorch.RegretHead), present when
 the config has regret_heads. For a checkpoint trained before, this sets the flag and adds both heads with KataGo's
 initialization (Model.initialize), in the model and the SWA model. The heads read the detached trunk, so the rest
 of the network computes exactly what it did.
