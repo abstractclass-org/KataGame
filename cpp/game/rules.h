@@ -38,8 +38,10 @@ struct Rules {
 
   float komi;
   //Min and max acceptable komi in various places involving user input validation
-  static constexpr float MIN_USER_KOMI = -400.0f;
-  static constexpr float MAX_USER_KOMI = 400.0f;
+  //Enclosure fork (owner, 2026-10-04): komi up to the score target cap, (MAX_BOARD_AREA + EXTRA_SCORE_DISTR_RADIUS) *
+  //SCORE_SCALE = (361 + 60) * 12 points (checked in playutils.cpp), for handicaps of a few thousand points (KataGo: 400).
+  static constexpr float MIN_USER_KOMI = -5052.0f;
+  static constexpr float MAX_USER_KOMI = 5052.0f;
 
   Rules();
   Rules(

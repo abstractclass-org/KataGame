@@ -16,7 +16,7 @@ Rules::Rules() {
   hasButton = false;
   whiteHandicapBonusRule = WHB_ZERO;
   friendlyPassOk = false;
-  komi = 7.5f;
+  komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5f)
 }
 
 Rules::Rules(
@@ -91,7 +91,7 @@ Rules Rules::getTrompTaylorish() {
   rules.hasButton = false;
   rules.whiteHandicapBonusRule = WHB_ZERO;
   rules.friendlyPassOk = false;
-  rules.komi = 7.5f;
+  rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5f)
   return rules;
 }
 
@@ -104,7 +104,7 @@ Rules Rules::getSimpleTerritory() {
   rules.hasButton = false;
   rules.whiteHandicapBonusRule = WHB_ZERO;
   rules.friendlyPassOk = false;
-  rules.komi = 7.5f;
+  rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5f)
   return rules;
 }
 
@@ -281,7 +281,7 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     rules.hasButton = false;
     rules.whiteHandicapBonusRule = Rules::WHB_ZERO;
     rules.friendlyPassOk = false;
-    rules.komi = 6.5;
+    rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 6.5)
   }
   else if(lowercased == "chinese") {
     rules.scoringRule = Rules::SCORING_AREA;
@@ -291,7 +291,7 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     rules.hasButton = false;
     rules.whiteHandicapBonusRule = Rules::WHB_N;
     rules.friendlyPassOk = true;
-    rules.komi = 7.5;
+    rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5)
   }
   else if(
     lowercased == "chineseogs" || lowercased == "chinese_ogs" || lowercased == "chinese-ogs" ||
@@ -304,7 +304,7 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     rules.hasButton = false;
     rules.whiteHandicapBonusRule = Rules::WHB_N;
     rules.friendlyPassOk = true;
-    rules.komi = 7.5;
+    rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5)
   }
   else if(
     lowercased == "ancientarea" || lowercased == "ancient-area" || lowercased == "ancient_area" || lowercased == "ancient area" ||
@@ -317,7 +317,7 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     rules.hasButton = false;
     rules.whiteHandicapBonusRule = Rules::WHB_ZERO;
     rules.friendlyPassOk = true;
-    rules.komi = 7.5;
+    rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5)
   }
   else if(lowercased == "ancientterritory" || lowercased == "ancient-territory" || lowercased == "ancient_territory" || lowercased == "ancient territory") {
     rules.scoringRule = Rules::SCORING_TERRITORY;
@@ -327,7 +327,7 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     rules.hasButton = false;
     rules.whiteHandicapBonusRule = Rules::WHB_ZERO;
     rules.friendlyPassOk = false;
-    rules.komi = 6.5;
+    rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 6.5)
   }
   else if(lowercased == "agabutton" || lowercased == "aga-button" || lowercased == "aga_button" || lowercased == "aga button") {
     rules.scoringRule = Rules::SCORING_AREA;
@@ -337,7 +337,7 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     rules.hasButton = true;
     rules.whiteHandicapBonusRule = Rules::WHB_N_MINUS_ONE;
     rules.friendlyPassOk = true;
-    rules.komi = 7.0;
+    rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.0)
   }
   else if(lowercased == "aga" || lowercased == "bga" || lowercased == "french") {
     rules.scoringRule = Rules::SCORING_AREA;
@@ -347,7 +347,7 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     rules.hasButton = false;
     rules.whiteHandicapBonusRule = Rules::WHB_N_MINUS_ONE;
     rules.friendlyPassOk = true;
-    rules.komi = 7.5;
+    rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5)
   }
   else if(lowercased == "nz" || lowercased == "newzealand" || lowercased == "new zealand" || lowercased == "new-zealand" || lowercased == "new_zealand") {
     rules.scoringRule = Rules::SCORING_AREA;
@@ -357,7 +357,7 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     rules.hasButton = false;
     rules.whiteHandicapBonusRule = Rules::WHB_ZERO;
     rules.friendlyPassOk = true;
-    rules.komi = 7.0;
+    rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.0)
   }
   else if(lowercased == "tromp-taylor" || lowercased == "tromp_taylor" || lowercased == "tromp taylor" || lowercased == "tromptaylor") {
     rules.scoringRule = Rules::SCORING_AREA;
@@ -367,7 +367,7 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     rules.hasButton = false;
     rules.whiteHandicapBonusRule = Rules::WHB_ZERO;
     rules.friendlyPassOk = false;
-    rules.komi = 7.5;
+    rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5)
   }
   else if(lowercased == "goe" || lowercased == "ing") {
     rules.scoringRule = Rules::SCORING_AREA;
@@ -377,7 +377,7 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     rules.hasButton = false;
     rules.whiteHandicapBonusRule = Rules::WHB_ZERO;
     rules.friendlyPassOk = true;
-    rules.komi = 7.5;
+    rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5)
   }
   else if(sOrig.length() > 0 && sOrig[0] == '{') {
     //Default if not specified
@@ -426,9 +426,9 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     if(!komiSpecified) {
       //Drop default komi to 6.5 for territory rules, and to 7.0 for button
       if(rules.scoringRule == Rules::SCORING_TERRITORY)
-        rules.komi = 6.5f;
+        rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 6.5f)
       else if(rules.hasButton)
-        rules.komi = 7.0f;
+        rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.0f)
     }
   }
 
@@ -537,9 +537,9 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     if(!komiSpecified) {
       //Drop default komi to 6.5 for territory rules, and to 7.0 for button
       if(rules.scoringRule == Rules::SCORING_TERRITORY)
-        rules.komi = 6.5f;
+        rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 6.5f)
       else if(rules.hasButton)
-        rules.komi = 7.0f;
+        rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.0f)
     }
   }
 

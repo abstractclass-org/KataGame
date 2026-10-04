@@ -990,7 +990,7 @@ Rules Setup::loadSingleRules(
     string scoringRule = cfg.getString("scoringRule", Rules::scoringRuleStrings());
     bool multiStoneSuicideLegal = cfg.getBool("multiStoneSuicideLegal");
     bool hasButton = cfg.contains("hasButton") ? cfg.getBool("hasButton") : false;
-    float komi = 7.5f;
+    float komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5)
 
     rules.koRule = Rules::parseKoRule(koRule);
     rules.scoringRule = Rules::parseScoringRule(scoringRule);
@@ -1030,9 +1030,9 @@ Rules Setup::loadSingleRules(
 
     //Drop default komi to 6.5 for territory rules, and to 7.0 for button
     if(rules.scoringRule == Rules::SCORING_TERRITORY)
-      rules.komi = 6.5f;
+      rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 6.5)
     else if(rules.hasButton)
-      rules.komi = 7.0f;
+      rules.komi = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.0)
   }
 
   if(loadKomi) {

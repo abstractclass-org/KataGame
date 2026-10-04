@@ -45,7 +45,7 @@ struct ForkData {
 
 struct ExtraBlackAndKomi {
   int extraBlack = 0;
-  float komiMean = 7.5f;
+  float komiMean = 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5)
   float komiStdev = 7.5f;
   bool makeGameFair = false;
   bool makeGameFairForEmptyBoard = false;

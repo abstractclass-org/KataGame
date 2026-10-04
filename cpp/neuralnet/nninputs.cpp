@@ -2888,7 +2888,6 @@ void NNInputs::fillRowV8(
   const MiscNNInputParams& nnInputParams,
   int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
 ) {
-  (void)hist;
   assert(nnXLen == enclosure::SIZE && nnYLen == enclosure::SIZE);
   assert(board.x_size == enclosure::SIZE && board.y_size == enclosure::SIZE);
   //The inputs are the position's, whose player to move is fixed by the turn order.
@@ -2933,6 +2932,14 @@ void NNInputs::fillRowV8(
   }
   for(int i = 0; i < enclosure::SCALARS; i++)
     rowGlobal[i] = scalars[i];
+  //Komi as a starting score (owner, 2026-10-04): scores only add up and the winner is the sign of the final margin,
+  //so Red receiving komi K is exactly Red starting K points ahead. It enters the score input of the side it favours
+  //(scalars 3 and 4, Blue's and Red's scores, engine.h observation), keeping both nonnegative; nothing changes at 0.
+  const double komi = hist.rules.komi;
+  if(komi > 0)
+    rowGlobal[4] = float((board.pos.scores[1] + komi) / (18 * 18 * 61));
+  else if(komi < 0)
+    rowGlobal[3] = float((board.pos.scores[0] - komi) / (18 * 18 * 61));
 
   //Feature planes, channels last, (y * 19 + x) * FEATURE_PLANES + plane.
   static thread_local std::vector<uint8_t> planes(enclosure::N_POINTS * enclosure::FEATURE_PLANES);

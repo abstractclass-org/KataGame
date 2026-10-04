@@ -3,6 +3,7 @@
 // Enclosure fork: see boardhistory.h and ENCLOSURE.md.
 
 #include <algorithm>
+#include <cstring>
 
 using namespace std;
 
@@ -161,8 +162,10 @@ float BoardHistory::whiteKomiAdjustmentForDraws(double) const {
   return 0.0f;
 }
 
-float BoardHistory::currentSelfKomi(Player, double) const {
-  return 0.0f;
+//Enclosure fork (owner, 2026-10-04): komi is points added to Red's (White's) final score; positive favours Red,
+//negative Blue. The player's own view, as KataGo's.
+float BoardHistory::currentSelfKomi(Player pla, double) const {
+  return pla == P_WHITE ? rules.komi : -rules.komi;
 }
 
 const Board& BoardHistory::getRecentBoard(int numMovesAgo) const {
@@ -244,7 +247,8 @@ void BoardHistory::setFinalScoreAndWinner(float score) {
 void BoardHistory::endAndScoreGameNow(const Board& board) {
   //Red (White) minus Blue (Black). The engine's scores are exact to its 1e-9 rounding, so this sign is the
   //sign the engine's result uses.
-  double margin = board.getScore(P_WHITE) - board.getScore(P_BLACK);
+  //Komi (owner, 2026-10-04) is added to Red's final score: the winner is the sign of the margin with it.
+  double margin = board.getScore(P_WHITE) - board.getScore(P_BLACK) + rules.komi;
   setFinalScoreAndWinner(margin > 0 ? std::max((float)margin, 1e-9f) : margin < 0 ? std::min((float)margin, -1e-9f) : 0.0f);
   isScored = true;
   isNoResult = false;
@@ -331,8 +335,17 @@ Hash128 BoardHistory::getSituationRulesAndKoHash(const Board& board, const Board
   return getSituationRulesAndKoHash(board, hist, nextPlayer, drawEquivalentWinsForWhite, hist.modes);
 }
 
-Hash128 BoardHistory::getSituationRulesAndKoHash(const Board& board, const BoardHistory&, Player nextPlayer, double, const BoardHistoryModes&) {
-  return getSituationAndSimpleKoHash(board, nextPlayer) ^ historyHash(board.pos);
+Hash128 BoardHistory::getSituationRulesAndKoHash(const Board& board, const BoardHistory& hist, Player nextPlayer, double, const BoardHistoryModes&) {
+  Hash128 hash = getSituationAndSimpleKoHash(board, nextPlayer) ^ historyHash(board.pos);
+  //Komi changes the network's inputs and the result (owner, 2026-10-04), so evaluations at different komis must not
+  //share a cache entry. Folded in only when nonzero: every hash at komi 0 is as before.
+  if(hist.rules.komi != 0.0f) {
+    uint32_t bits;
+    float komi = hist.rules.komi;
+    std::memcpy(&bits, &komi, sizeof(bits));
+    hash ^= Hash128(Hash::murmurMix(0x6b6f6d6900000000ULL | bits), Hash::splitMix64(0x4b4f4d4900000000ULL | bits));
+  }
+  return hash;
 }
 
 //KO HASH TABLE: always empty (positions never repeat)---------------------------------------

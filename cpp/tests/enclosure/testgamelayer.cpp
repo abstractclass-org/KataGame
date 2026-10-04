@@ -207,8 +207,62 @@ int main(int argc, char** argv) {
     }
   }
 
+  //Komi (owner, 2026-10-04): points added to Red's final score. The result counts it; the network cache hash folds it
+  //in only when nonzero; and the inputs equal those of a position where the favoured side's score is higher by komi.
+  int komiChecks = 0;
+  {
+    Rand rand("testgamelayer komi");
+    const float komis[] = {0.0f, 0.5f, -0.5f, 12.0f, -37.5f, 144.0f, -900.0f, 2500.0f};
+    for(int g = 0; g < 60; g++) {
+      Board board;
+      BoardHistory hist(board, P_BLACK, Rules(), 0);
+      const float komi = komis[g % 8];
+      hist.setKomi(komi);
+      BoardHistory hist0(hist);
+      hist0.setKomi(0.0f);
+      MiscNNInputParams params;
+      float bin[NNInputs::NUM_FEATURES_SPATIAL_V8 * 19 * 19], glob[NNInputs::NUM_FEATURES_GLOBAL_V8];
+      float bin0[NNInputs::NUM_FEATURES_SPATIAL_V8 * 19 * 19], glob0[NNInputs::NUM_FEATURES_GLOBAL_V8];
+      int ply = 0;
+      while(!board.isGameOver()) {
+        if(ply % 7 == 0) {
+          Player pla = board.nextPla();
+          Hash128 h = BoardHistory::getSituationRulesAndKoHash(board, hist, pla, 0.0, hist.modes);
+          Hash128 h0 = BoardHistory::getSituationRulesAndKoHash(board, hist0, pla, 0.0, hist0.modes);
+          if((komi == 0.0f) != (h == h0))
+            fail("komi: the hash must change with a nonzero komi only");
+          //The same position with the favoured side's score raised by komi, at komi 0, gives the same inputs.
+          Board shifted(board);
+          if(komi > 0) shifted.pos.scores[1] += komi;
+          if(komi < 0) shifted.pos.scores[0] -= komi;
+          NNInputs::fillRowV8(board, hist, pla, params, 19, 19, true, bin, glob);
+          NNInputs::fillRowV8(shifted, hist0, pla, params, 19, 19, true, bin0, glob0);
+          for(int i = 0; i < NNInputs::NUM_FEATURES_SPATIAL_V8 * 19 * 19; i++)
+            if(bin[i] != bin0[i]) { fail("komi: the spatial inputs change with komi"); break; }
+          for(int i = 0; i < NNInputs::NUM_FEATURES_GLOBAL_V8; i++)
+            if(glob[i] != glob0[i]) { fail("komi: the inputs differ from the shifted score's"); break; }
+          if(hist.currentSelfKomi(P_WHITE, 0.0) != komi || hist.currentSelfKomi(P_BLACK, 0.0) != -komi)
+            fail("komi: currentSelfKomi is not Red's komi, from each side");
+          komiChecks++;
+        }
+        vector<Loc> legal;
+        board.getLegalMoveLocs(legal);
+        Loc loc = legal[rand.nextUInt((uint32_t)legal.size())];
+        Player pla = board.nextPla();
+        hist.makeBoardMoveAssumeLegal(board, loc, pla, NULL);
+        ply++;
+      }
+      double margin = board.getScore(P_WHITE) - board.getScore(P_BLACK) + komi;
+      Player expected = margin > 0 ? P_WHITE : margin < 0 ? P_BLACK : C_EMPTY;
+      if(!hist.isGameFinished || hist.winner != expected)
+        fail("komi: the winner does not count komi");
+      if(fabs(hist.finalWhiteMinusBlackScore - margin) > 1e-3 * (1.0 + fabs(margin)))
+        fail("komi: finalWhiteMinusBlackScore does not count komi");
+    }
+  }
+
   printf("%d games, %d moves, %d transpositions checked, %d positions with every action checked one by one, "
-         "%d timeout passes replayed, %d failures\n",
-         games, moves, transpositions, singleChecks, timeoutPasses, failures);
+         "%d timeout passes replayed, %d komi checks, %d failures\n",
+         games, moves, transpositions, singleChecks, timeoutPasses, komiChecks, failures);
   return failures == 0 ? 0 : 1;
 }

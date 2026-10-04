@@ -365,8 +365,11 @@ double PlayUtils::getHackedLCBForWinrate(const Search* search, const AnalysisDat
 }
 
 float PlayUtils::roundAndClipKomi(double unrounded, const Board& board) {
-  //Just in case, make sure komi is reasonable
-  float range = NNPos::KOMI_CLIP_RADIUS + board.x_size * board.y_size;
+  //Enclosure fork (owner, 2026-10-04): komi is clipped to the score target cap, the largest margin the score head
+  //represents (KataGo: KOMI_CLIP_RADIUS + board area, Go points). The rules' user range matches it.
+  static_assert(Rules::MAX_USER_KOMI == (float)NNPos::SCORE_TARGET_CAP, "komi range and score target cap differ");
+  (void)board;
+  float range = (float)NNPos::SCORE_TARGET_CAP;
   if(unrounded < -range)
     unrounded = -range;
   if(unrounded > range)
