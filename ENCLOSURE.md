@@ -500,6 +500,47 @@ policy 0.15, ownership 1.5/b², score pdf and cdf 0.02 each, L2 3e-5.
     libzip-dev`, the owner's, before step 8). The test uses the writer's
     text output instead.
 
+## KataGo's training and self-play knobs: what V2 uses (owner, 2026-10-05)
+
+The fork runs KataGo's trainer and self-play as published, so most of these are KataGo's defaults rather than
+decisions; this lists them so they are seen as choices. "On"/"off" is v2a as of 2026-10-05 (`train0.log`,
+`selfplay_enclosure.cfg`, `enclosure_loop.sh`, `shuffle.sh`). To change one, use KataGo's own flag or key.
+
+- **Training** (`python/train.py`, `python/shuffle.py`):
+  - **Learning-rate schedule: off**, the base rate held constant (`pslr_batch` 3e-5 a sample). Available:
+    `-lr-scale` (a multiplier), `-lr-schedule` (explicit steps by samples trained), `-lr-scale-auto`/`-auto2`
+    (KataGo's step schedules; their first cuts at 20M-550M samples), `-lr-cycle-*` (cyclic).
+  - **Rates by parameter group: on, defaults.** The output layers of all heads together run at half the trunk's
+    rate (`-head-lr-factor 0.5`); biases and norms have their own factors. There is no rate per head.
+  - **Head loss weights: on**, KataGo's (`metrics_pytorch.py`; the score-related ones scaled by `SCORE_SCALE`,
+    "Score scale" above). Under SGD a head's loss weight is in effect that head's learning rate on its own layers,
+    and sets how hard it pulls on the shared trunk: the lever for one head (owner, 2026-10-05: use KataGo's levers,
+    this or `-lr-schedule`, rather than new code).
+  - **Optimizer:** SGD with momentum 0.9 and lookahead (0.5, 6). `-use-muon`, `-use-adamw` exist, unused.
+  - **Exported weights averaged (SWA): on**, a sample every 80,000 positions (`-swa-period-samples`).
+  - **Weight-decay normalisation and gradient-norm clipping: on** (`wdnormal_batch`, `gnorm_cap_batch` 2,500).
+  - **Training window: on**, growing with the data (`-expand-window-per-row 0.4`, `-taper-window-exponent 0.65`);
+    2026-10-05 07:30: the last 477,000 rows, about 13 cycles.
+  - **Training passes per row: capped at 8** (`MAX_TRAIN_PER_DATA`); at the cap since the 200/40 change (about
+    8.3 a cycle; iviazovetskyi's trainer holds 5).
+  - **Validation: off**, as upstream's `synchronous_loop.sh` (`SKIP_VALIDATE=1` to `shuffle.sh`, which otherwise
+    holds out 1% of files): `metrics_val.json` is empty, so the loss curves are training losses only, and rise when
+    the data gets harder even while the network improves.
+  - **Batch** 256 (owner, 2026-10-03), FP16 training (2026-10-04).
+- **Self-play** (`selfplay_enclosure.cfg`):
+  - **Playout cap randomization: on**, 25% full searches at 200, the rest at 40 (`cheapSearchProb 0.75`,
+    `cheapSearchTargetWeight 0`: only full searches train the policy). 200/40 is iviazovetskyi's (owner,
+    2026-10-05), a named deviation from KataGo's 600/100 and 1000/200.
+  - **Surprise weighting: on**, `policySurpriseDataWeight 0.5`, `valueSurpriseDataWeight 0.1`.
+  - **Variety: on**, Go's values: early forks (`earlyForkGameProb 0.04`), root Dirichlet noise (total 10.83),
+    root policy temperature 1.25 early then 1.1, move temperature 0.75 early, decaying to 0.15 with a half-life of 19 (`chosenMoveTemperature*`).
+  - **Search:** `cpuctExploration 1.1`, `fpuReductionMax 0.2`, `valueWeightExponent 0.5`,
+    `subtreeValueBiasFactor 0.30` ("Subtree value bias" above).
+  - **Shortcuts: on**, `reduceVisits` at a 0.9 winrate held 3 turns; `switchNetsMidGame`.
+  - **Komi randomisation: on** (komi.md); **lead estimation: off** (`estimateLeadProb 0`, pending).
+  - **Gatekeeper: off** (none in the synchronous loop): no new network is tested before self-play takes it; the
+    gauntlet rates them afterwards.
+
 ## Spatial targets (step 6; design for the owner, 2026-09-29)
 
 **Built (owner, 2026-10-03: "add all of our ideas and just run"), in KataGo's existing slots, so rows keep their
