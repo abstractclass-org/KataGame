@@ -178,6 +178,11 @@ bool BoardHistory::isLegal(const Board& board, Loc moveLoc, Player movePla) cons
 }
 
 bool BoardHistory::isLegalTolerant(const Board& board, Loc moveLoc, Player movePla) const {
+  //Enclosure fork (owner, 2026-10-04): the site's pass forfeits the rest of the turn and is allowed at any time (its
+  //rules' pass_; online it comes from clock timeouts), so a replayed game (analysis queries, GTP, SGF and start
+  //positions) accepts it anywhere. The search and self-play still offer it only without a legal edge (isLegal).
+  if(moveLoc == Board::PASS_LOC && !isGameFinished && movePla == board.nextPla())
+    return true;
   return isLegal(board, moveLoc, movePla);
 }
 
@@ -218,7 +223,7 @@ bool BoardHistory::makeBoardMoveTolerant(Board& board, Loc moveLoc, Player moveP
 }
 
 bool BoardHistory::makeBoardMoveTolerant(Board& board, Loc moveLoc, Player movePla, bool preventEncore) {
-  if(!isLegal(board, moveLoc, movePla))
+  if(!isLegalTolerant(board, moveLoc, movePla))
     return false;
   makeBoardMoveAssumeLegal(board, moveLoc, movePla, NULL, preventEncore);
   return true;

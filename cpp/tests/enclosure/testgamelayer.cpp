@@ -169,7 +169,46 @@ int main(int argc, char** argv) {
     }
   }
 
-  printf("%d games, %d moves, %d transpositions checked, %d positions with every action checked one by one, %d failures\n",
-         games, moves, transpositions, singleChecks, failures);
+  //Timeout passes (owner, 2026-10-04): a replayed game accepts the site's pass anywhere (makeBoardMoveTolerant), as the
+  //engine's forfeit_turn; the search's legality (isLegal) still allows it only without a legal edge.
+  int timeoutPasses = 0;
+  {
+    Rand rand("testgamelayer timeout passes");
+    for(int g = 0; g < 200; g++) {
+      Board board;
+      BoardHistory hist(board, P_BLACK, Rules(), 0);
+      while(!board.isGameOver()) {
+        Player pla = board.nextPla();
+        vector<Loc> legal;
+        board.getLegalMoveLocs(legal);
+        bool stuck = legal.size() == 1 && legal[0] == Board::PASS_LOC;
+        if(!stuck && rand.nextBool(0.1)) {
+          if(board.isLegal(Board::PASS_LOC, pla, false) || hist.isLegal(board, Board::PASS_LOC, pla))
+            fail("timeout pass: isLegal allows a pass while edges are legal");
+          enclosure::Position expected = board.pos;
+          expected.forfeit_turn();
+          if(!hist.makeBoardMoveTolerant(board, Board::PASS_LOC, pla))
+            fail("timeout pass: makeBoardMoveTolerant refuses it");
+          const enclosure::Position& got = board.pos;
+          if(got.move_count != expected.move_count || got.player != expected.player || got.moves_left != expected.moves_left ||
+             got.scores[0] != expected.scores[0] || got.scores[1] != expected.scores[1] ||
+             got.edges[0].size() != expected.edges[0].size() || got.edges[1].size() != expected.edges[1].size())
+            fail("timeout pass: the replayed pass differs from forfeit_turn");
+          if(hist.presumedNextMovePla != board.nextPla())
+            fail("timeout pass: BoardHistory and Board disagree on the player to move");
+          board.checkConsistency();
+          timeoutPasses++;
+          continue;
+        }
+        hist.makeBoardMoveAssumeLegal(board, legal[rand.nextUInt((uint32_t)legal.size())], pla, NULL);
+      }
+      if(!hist.isGameFinished)
+        fail("timeout pass: a game with passes did not finish");
+    }
+  }
+
+  printf("%d games, %d moves, %d transpositions checked, %d positions with every action checked one by one, "
+         "%d timeout passes replayed, %d failures\n",
+         games, moves, transpositions, singleChecks, timeoutPasses, failures);
   return failures == 0 ? 0 : 1;
 }
