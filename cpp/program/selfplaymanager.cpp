@@ -1,6 +1,11 @@
 #include "../program/selfplaymanager.h"
 
 #include "../core/test.h"
+#include "../core/timer.h"
+
+#ifdef __GLIBC__
+#include <malloc.h>  //Enclosure fork: malloc_trim after unloading a network
+#endif
 
 using namespace std;
 
@@ -417,6 +422,20 @@ void SelfplayManager::runDataWriteLoopImpl(ModelData* modelData) {
   }
 
   delete modelData;
+
+  //Enclosure fork (owner, 2026-10-05): give the unloaded network's freed memory back to the system. glibc keeps freed
+  //chunks in its arenas, and here each network output holds a 69 KB policy (Go's: 1.5 KB), so an unloaded network's
+  //cache and buffers left about 3.3 GB per network switch that never came back; a trim returned it, in under a
+  //second (decisions/katago-fork/speed.md, "Async step 1"). Once per switch; upstream has no such call.
+#ifdef __GLIBC__
+  {
+    ClockTimer trimTimer;
+    malloc_trim(0);
+    if(logger != NULL)
+      logger->write("Returned freed memory to the system after unloading " + name + " (malloc_trim, " +
+                    Global::doubleToString(trimTimer.getSeconds()) + " s)");
+  }
+#endif
 
   if(logger != NULL) {
     logger->write("Data write loop cleaned up and terminating for " + name);
