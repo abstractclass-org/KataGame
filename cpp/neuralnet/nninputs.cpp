@@ -332,6 +332,7 @@ NNOutput::NNOutput(const NNOutput& other) {
     noisedPolicyProbs = NULL;
 
   std::copy(other.policyProbs, other.policyProbs+NNPos::MAX_NN_POLICY_SIZE, policyProbs);
+  legalPos = other.legalPos;  //Enclosure fork
   policyOptimismUsed = other.policyOptimismUsed;
 
   hasRegret = other.hasRegret;
@@ -527,6 +528,7 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
     noisedPolicyProbs = NULL;
 
   std::copy(other.policyProbs, other.policyProbs+NNPos::MAX_NN_POLICY_SIZE, policyProbs);
+  legalPos = other.legalPos;  //Enclosure fork
   policyOptimismUsed = other.policyOptimismUsed;
 
   hasRegret = other.hasRegret;

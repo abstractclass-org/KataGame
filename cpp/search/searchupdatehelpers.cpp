@@ -171,6 +171,8 @@ void Search::recomputeNodeStats(SearchNode& node, SearchThread& thread, int numV
 
   ConstSearchNodeChildrenReference children = node.getChildren();
   int childrenCapacity = children.getCapacity();
+  if((int)statsBuf.size() < childrenCapacity)  //Enclosure fork: grown on demand (search.h)
+    statsBuf.resize(childrenCapacity);
   double origTotalChildWeight = 0.0;
   int64_t thisNodeVisits = 1; // 1 = own visit
   for(int i = 0; i<childrenCapacity; i++) {

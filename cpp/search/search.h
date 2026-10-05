@@ -61,7 +61,13 @@ struct SearchThread {
   Rand rand;
 
   NNResultBuf nnResultBuf;
+  //Enclosure fork (2026-10-05): grown on demand to a node's children (recomputeNodeStats), not sized to the policy up
+  //front: 17,330 MoreNodeStats built for every search (every move) was a measurable cost; Go's is 362.
   std::vector<MoreNodeStats> statsBuf;
+  //Enclosure fork (2026-10-05): selectBestChildToDescend's "has a child" marks, as stamps: a position is marked when
+  //its entry equals the current stamp, so no 17,330-entry array is cleared at every descent step.
+  std::vector<uint32_t> posesWithChildStamp;
+  uint32_t posesWithChildGen;
   //Scratch space for choosing a root focus move by weight.
   std::vector<double> rootFocusCumWeightsBuf;
 

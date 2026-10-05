@@ -1363,6 +1363,7 @@ void NNEvaluator::evaluate(
     buf.result->shorttermWinlossError = resultWithoutOwnerMap->shorttermWinlossError;
     buf.result->shorttermScoreError = resultWithoutOwnerMap->shorttermScoreError;
     std::copy(resultWithoutOwnerMap->policyProbs, resultWithoutOwnerMap->policyProbs + NNPos::MAX_NN_POLICY_SIZE, buf.result->policyProbs);
+    buf.result->legalPos = resultWithoutOwnerMap->legalPos;  //Enclosure fork
     buf.result->policyOptimismUsed = (float)resultWithoutOwnerMap->policyOptimismUsed;
     buf.result->nnXLen = resultWithoutOwnerMap->nnXLen;
     buf.result->nnYLen = resultWithoutOwnerMap->nnYLen;
@@ -1472,6 +1473,13 @@ void NNEvaluator::evaluate(
     // Fill everything out-of-bounds too, for robustness.
     for(int i = policySize; i<NNPos::MAX_NN_POLICY_SIZE; i++)
       policy[i] = -1.0f;
+
+    //Enclosure fork (2026-10-05): the legal positions, ascending (exactly those left >= 0 above), for the search.
+    buf.result->legalPos.clear();
+    buf.result->legalPos.reserve(legalCount);
+    for(int i = 0; i<policySize; i++)
+      if(isLegal[i])
+        buf.result->legalPos.push_back((uint16_t)i);
 
     buf.result->policyOptimismUsed = (float)nnInputParams.policyOptimism;
 

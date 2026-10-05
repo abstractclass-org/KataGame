@@ -589,7 +589,15 @@ void Search::selectBestChildToDescend(
     parentUtility, parentWeightPerVisit, parentUtilityStdevFactor
   );
 
-  bool posesWithChildBuf[NNPos::MAX_NN_POLICY_SIZE] = { }; // Initialize all to false
+  //Enclosure fork (2026-10-05): stamps instead of a cleared 17,330-entry bool array (SearchThread::posesWithChildStamp).
+  std::vector<uint32_t>& posesWithChildStamp = thread.posesWithChildStamp;
+  if((int)posesWithChildStamp.size() < NNPos::MAX_NN_POLICY_SIZE)
+    posesWithChildStamp.assign(NNPos::MAX_NN_POLICY_SIZE, 0);
+  if(++thread.posesWithChildGen == 0) {  //wrapped: clear once, start again at 1
+    std::fill(posesWithChildStamp.begin(), posesWithChildStamp.end(), 0);
+    thread.posesWithChildGen = 1;
+  }
+  const uint32_t posesWithChildGen = thread.posesWithChildGen;
   bool antiMirror = searchParams.antiMirror && mirroringPla != C_EMPTY && isMirroringSinceSearchStart(thread.history,0);
 
   double exploreScaling;
@@ -635,7 +643,7 @@ void Search::selectBestChildToDescend(
       bestChildMoveLoc = moveLoc;
     }
 
-    posesWithChildBuf[getPos(moveLoc)] = true;
+    posesWithChildStamp[getPos(moveLoc)] = posesWithChildGen;
   }
 
   const std::vector<int>& avoidMoveUntilByLoc = thread.pla == P_BLACK ? avoidMoveUntilByLocBlack : avoidMoveUntilByLocWhite;
@@ -647,7 +655,7 @@ void Search::selectBestChildToDescend(
     for(const auto& pair: node.evalCacheEntry->firstExploreEvals) {
       Loc moveLoc = pair.first;
       int movePos = getPos(moveLoc);
-      bool alreadyTried = posesWithChildBuf[movePos];
+      bool alreadyTried = posesWithChildStamp[movePos] == posesWithChildGen;
       if(alreadyTried)
         continue;
 
@@ -696,8 +704,14 @@ void Search::selectBestChildToDescend(
   Loc bestNewMoveLoc = Board::NULL_LOC;
   float bestNewNNPolicyProb = -1.0f;
   bool focusTargetIsNewMove = false;
-  for(int movePos = 0; movePos<policySize; movePos++) {
-    bool alreadyTried = posesWithChildBuf[movePos];
+  //Enclosure fork (2026-10-05): only the legal positions (nnOutput->legalPos, ascending, so ties break as upstream's
+  //scan of every position); an output without the list is scanned in full, as upstream.
+  const std::vector<uint16_t>& legalPos = nnOutput->legalPos;
+  const bool scanLegalOnly = !legalPos.empty();
+  const int numPosesToScan = scanLegalOnly ? (int)legalPos.size() : policySize;
+  for(int scanIdx = 0; scanIdx<numPosesToScan; scanIdx++) {
+    const int movePos = scanLegalOnly ? (int)legalPos[scanIdx] : scanIdx;
+    bool alreadyTried = posesWithChildStamp[movePos] == posesWithChildGen;
     if(alreadyTried)
       continue;
 

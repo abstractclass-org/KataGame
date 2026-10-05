@@ -202,6 +202,11 @@ struct NNOutput {
   //Indexed by pos rather than loc
   //Values in here will be set to negative for illegal moves, including superko
   float policyProbs[NNPos::MAX_NN_POLICY_SIZE];
+  //Enclosure fork (2026-10-05): the positions with policyProbs >= 0 (the legal moves), ascending, as the evaluator set
+  //them; root noise and temperature keep the sign, so they hold for getPolicyProbsMaybeNoised too. Empty when not
+  //computed (averaged outputs, tests): the search then scans every position, as upstream. About 440 legal moves
+  //against 17,330 positions, so the search's new-child scan reads the list (selectBestChildToDescend).
+  std::vector<uint16_t> legalPos;
   //The optimism value used for this neural net evaluation.
   float policyOptimismUsed;
 

@@ -46,11 +46,13 @@ SearchThread::SearchThread(int tIdx, const Search& search)
    rand(makeSeed(search,tIdx)),
    nnResultBuf(),
    statsBuf(),
+   posesWithChildStamp(),
+   posesWithChildGen(0),
    upperBoundVisitsLeft(1e30),
    oldNNOutputsToCleanUp(),
    illegalMoveHashes()
 {
-  statsBuf.resize(NNPos::MAX_NN_POLICY_SIZE);
+  //Enclosure fork (2026-10-05): statsBuf grows on demand in recomputeNodeStats (see search.h).
   graphPath.reserve(256);
 
   //Reserving even this many is almost certainly overkill but should guarantee that we never have hit allocation here.
