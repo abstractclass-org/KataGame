@@ -744,6 +744,6 @@ exported by the Enclosure repository.
 
 ## Build and resources
 
-Built in `~/katago-build` with the Eigen CPU backend. While the Enclosure
+Built in `~/ws/game-ai/enclosure/katago-build` with the Eigen CPU backend. While the Enclosure
 bot YshanV1 is playing, builds and tests run only on CPUs 14-15 at nice 19,
 and nothing uses the GPU.

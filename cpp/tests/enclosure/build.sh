@@ -1,10 +1,10 @@
 #!/bin/bash
 # Builds the fork's standalone Enclosure tests (testgamelayer, testsymmetry, testnninputs, testlocalpattern,
 # testincome, testnnoutputs, testrgsc; or $TESTS) against a KataGo build's objects, swapping KataGo's main for each test's. In WSL:
-#   bash tests/enclosure/build.sh [BUILD_DIR (default ~/katago-build-debug)] [OUT_DIR (default ~/v2scratch/enctests)]
-# then e.g. ~/v2scratch/enctests/testnninputs tests/data/enclosure_inputs.txt (from katago/cpp).
+#   bash tests/enclosure/build.sh [BUILD_DIR (default ~/ws/game-ai/enclosure/katago-build-debug)] [OUT_DIR (default ~/ws/game-ai/enclosure/v2scratch/enctests)]
+# then e.g. ~/ws/game-ai/enclosure/v2scratch/enctests/testnninputs tests/data/enclosure_inputs.txt (from katago/cpp).
 set -e
-B=${1:-$HOME/katago-build-debug}; OUT=${2:-$HOME/v2scratch/enctests}
+B=${1:-$HOME/ws/game-ai/enclosure/katago-build-debug}; OUT=${2:-$HOME/ws/game-ai/enclosure/v2scratch/enctests}
 SRC=$(cd "$(dirname "$0")/../.." && pwd); mkdir -p "$OUT"
 cd "$B"
 flags=$(grep -E "^CXX_FLAGS" CMakeFiles/katago.dir/flags.make | cut -d= -f2-)

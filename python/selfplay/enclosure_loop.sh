@@ -2,7 +2,7 @@
 # Enclosure: KataGo's synchronous_loop.sh (self-play -> shuffle -> train -> export, no gating) for this
 # repository. Only these differ from upstream:
 #   - KataGo lives in katago/ of this repository (upstream assumes the repository root);
-#   - Python is the project's .venv-katago; the binary is ~/katago-build-cuda/katago (override KATAGO_BIN);
+#   - Python is the project's .venv-katago; the binary is ~/ws/game-ai/enclosure/katago-build-cuda/katago (override KATAGO_BIN);
 #   - the self-play config is configs/training/selfplay_enclosure.cfg;
 #   - the shuffle's row counts are upstream's scaled to the same bytes per worker: an Enclosure row is
 #     186,167 bytes uncompressed (measured: two 17,329-entry policy targets and three q-value targets)
@@ -16,7 +16,7 @@
 #     average loss caught up to the smaller size" (Wu 2019, section 2). The switch is made by hand.
 # Every other setting is upstream's; each can be overridden from the environment (e.g. for a smoke cycle).
 #   bash katago/python/selfplay/enclosure_loop.sh NAMEPREFIX BASEDIR TRAININGNAME MODELKIND [CYCLES]
-#   e.g. bash katago/python/selfplay/enclosure_loop.sh v2 ~/v2runs/v2a b6c96 b6c96
+#   e.g. bash katago/python/selfplay/enclosure_loop.sh v2 ~/ws/game-ai/enclosure/v2runs/v2a b6c96 b6c96
 set -eu  # upstream's shebang flags (ignored when run as "bash enclosure_loop.sh"); no pipefail, as upstream:
 # the shuffle exits 1 until -min-rows rows exist, and upstream relies on its pipe into tee to carry on
 {
@@ -33,7 +33,7 @@ CYCLES="${5:-0}"  # 0: until stopped
 
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 KATAGO="$REPO"/katago
-KATAGO_BIN="${KATAGO_BIN:-$HOME/katago-build-cuda/katago}"
+KATAGO_BIN="${KATAGO_BIN:-$HOME/ws/game-ai/enclosure/katago-build-cuda/katago}"
 export PATH="$REPO/.venv-katago/bin:$PATH"  # the scripts call python3
 
 LOGSDIR="$BASEDIR"/logs
