@@ -1,6 +1,7 @@
 #include "../neuralnet/nneval.h"
 #include "../neuralnet/modelversion.h"
 #include "../core/test.h"
+#include "../core/threadaffinity.h"
 
 #include <algorithm>
 #include <chrono>
@@ -407,6 +408,7 @@ static void serveEvals(
   int gpuIdxForThisThread,
   int serverThreadIdx
 ) {
+  ThreadAffinity::applyServer();  //Enclosure fork (owner, 2026-10-05): nnServerThreadCpus, if self-play set it
   Rand rand(randSeedThisThread);
 
   // We're in big trouble if this raises an exception (e.g. out of GPU memory) and causes possibly

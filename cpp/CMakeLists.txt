@@ -1006,6 +1006,7 @@ add_executable(katago
   core/makedir.cpp
   core/md5.cpp
   core/multithread.cpp
+  core/threadaffinity.cpp
   core/parallel.cpp
   core/rand.cpp
   core/rand_helpers.cpp

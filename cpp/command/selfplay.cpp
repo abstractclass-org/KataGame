@@ -4,6 +4,7 @@
 #include "../core/makedir.h"
 #include "../core/config_parser.h"
 #include "../core/timer.h"
+#include "../core/threadaffinity.h"
 #include "../dataio/sgf.h"
 #include "../dataio/trainingwrite.h"
 #include "../dataio/loadmodel.h"
@@ -159,6 +160,12 @@ int MainCmds::selfplay(const vector<string>& args) {
 
   //Load runner settings
   const int numGameThreads = cfg.getInt("numGameThreads",1,16384);
+  //Enclosure fork (owner, 2026-10-05): optional CPU lists for the NN server threads and the game threads, e.g.
+  //"12-15" and "0-11" (core/threadaffinity.h); set before any NNEvaluator spawns its server threads.
+  if(cfg.contains("nnServerThreadCpus"))
+    ThreadAffinity::setServerCpus(cfg.getString("nnServerThreadCpus"));
+  if(cfg.contains("gameThreadCpus"))
+    ThreadAffinity::setGameCpus(cfg.getString("gameThreadCpus"));
   const string gameSeedBase = Global::uint64ToHexString(seedRand.nextUInt64());
 
   //Width and height of the board to use when writing data, typically 19
@@ -441,6 +448,7 @@ int MainCmds::selfplay(const vector<string>& args) {
     logger.write("Game loop thread " + Global::intToString(threadIdx) + " terminating");
   };
   auto gameLoopProtected = [&logger,&gameLoop](int threadIdx) {
+    ThreadAffinity::applyGame();  //Enclosure fork: gameThreadCpus, if set
     Logger::logThreadUncaught("game loop", &logger, [&](){ gameLoop(threadIdx); });
   };
 
