@@ -22,7 +22,7 @@ MODELKIND="$4"
 
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 KATAGO="$REPO"/katago
-KATAGO_BIN="${KATAGO_BIN:-$HOME/katago-build-cuda/katago}"
+KATAGO_BIN="${KATAGO_BIN:-$HOME/ws/game-ai/enclosure/katago-build-cuda/katago}"
 export PATH="$REPO/.venv-katago/bin:$PATH"
 
 LOGSDIR="$BASEDIR"/logs
@@ -43,6 +43,11 @@ TAPER_WINDOW_SCALE="${TAPER_WINDOW_SCALE:-50000}"
 SHUFFLE_KEEPROWS="${SHUFFLE_KEEPROWS:-600000}"
 ROWS_PER_SHUFFLE_FILE="${ROWS_PER_SHUFFLE_FILE:-2900}"
 SHUFFLE_WORKER_GROUP_ROWS="${SHUFFLE_WORKER_GROUP_ROWS:-3300}"
+# As enclosure_loop.sh (2026-10-05): validation (VALIDATE=1: 1% of the self-play files held out, train.py reports
+# metrics_val.json) and extra train.py flags for both sizes (TRAIN_EXTRA_ARGS, e.g. -use-fp16).
+VALIDATE="${VALIDATE:-0}"
+if [[ "$VALIDATE" == 1 ]]; then SHUFFLE_ENV=""; else SHUFFLE_ENV="SKIP_VALIDATE=1"; fi
+TRAIN_EXTRA_ARGS="${TRAIN_EXTRA_ARGS:-}"
 SELFPLAY_CONFIG="${SELFPLAY_CONFIG:-$KATAGO/cpp/configs/training/selfplay_enclosure.cfg}"
 NEXT_TRAININGNAME="${NEXT_TRAININGNAME:-}"
 NEXT_MODELKIND="${NEXT_MODELKIND:-$NEXT_TRAININGNAME}"
@@ -53,6 +58,11 @@ CPUS="${CPUS:-0-15}"
 MEM_SELFPLAY="${MEM_SELFPLAY:-24G}"
 MEM_SHUFFLE="${MEM_SHUFFLE:-10G}"
 MEM_TRAIN="${MEM_TRAIN:-8G}"  # 6 GB was too little (2026-10-03: both killed at 5.9 GB)
+# CPU weights per part (systemd CPUWeight, default 100). Each part is its own scope, and the kernel shares the CPUs
+# between scopes by weight, not by nice: on 2026-10-03 the shuffle took its full share from self-play whenever it
+# ran. A lower weight for the other parts lets self-play keep the CPUs while they wait their turn.
+CPUW_SELFPLAY="${CPUW_SELFPLAY:-100}"
+CPUW_OTHER="${CPUW_OTHER:-100}"
 
 # As upstream: freeze the scripts, binary and config of this run.
 DATED_ARCHIVE="$BASEDIR"/scripts/dated/$(date "+%Y%m%d-%H%M%S")
@@ -63,35 +73,53 @@ cp -r "$KATAGO"/python/muon "$DATED_ARCHIVE"
 cp "$KATAGO_BIN" "$DATED_ARCHIVE"/bin/katago
 cp "$SELFPLAY_CONFIG" "$DATED_ARCHIVE"/selfplay.cfg
 git -C "$REPO" show --no-patch --no-color > "$DATED_ARCHIVE"/version.txt || true
+git -C "$REPO" diff --no-color > "$DATED_ARCHIVE"/diff.txt || true
 cd "$DATED_ARCHIVE"
+# As enclosure_loop.sh (owner, 2026-10-04): the archived binary must read what the archived export script writes;
+# stop before starting anything if it cannot.
+CHECKPOINT="$BASEDIR"/train/"$TRAININGNAME"/checkpoint.ckpt
+if [[ -f "$CHECKPOINT" ]]
+then
+    LOADCHECK="$BASEDIR"/loadcheck
+    rm -rf "$LOADCHECK"; mkdir -p "$LOADCHECK"
+    if python3 -W ignore ./export_model_pytorch.py -checkpoint "$CHECKPOINT" -export-dir "$LOADCHECK" -model-name loadcheck            -filename-prefix model -use-swa > "$LOADCHECK"/export.log 2>&1        && gzip "$LOADCHECK"/model.bin        && ./bin/katago analysis -model "$LOADCHECK"/model.bin.gz -config "$KATAGO"/cpp/configs/analysis_enclosure.cfg            < /dev/null > "$LOADCHECK"/load.log 2>&1
+    then
+        echo "Load check passed: the archived binary reads the archived export script's model"
+        rm -rf "$LOADCHECK"
+    else
+        echo "Load check FAILED: the archived binary cannot read the archived export script's model; stopping"
+        tail -n 5 "$LOADCHECK"/export.log "$LOADCHECK"/load.log
+        exit 1
+    fi
+fi
 
 ONLY="${ONLY:-}"  # e.g. ONLY=shuffle: start only these parts (one that stopped), leaving the others running
-part() {  # NAME MEMORY NICE COMMAND...: one part, detached, in its own memory cap, logging to logs/NAME.log
-    local name="$1" mem="$2" nice="$3"; shift 3
+part() {  # NAME MEMORY NICE CPUWEIGHT COMMAND...: one part, detached, in its own memory cap and CPU weight, logging to logs/NAME.log
+    local name="$1" mem="$2" nice="$3" weight="$4"; shift 4
     if [[ -n "$ONLY" && " $ONLY " != *" $name "* ]]; then return; fi
     systemctl --user reset-failed "${NAMEPREFIX}-$name.scope" 2>/dev/null || true
     echo "=== $(date '+%F %T') start $name ===" >> "$LOGSDIR/$name.log"
-    setsid nohup systemd-run --user --scope -q --unit="${NAMEPREFIX}-$name" -p MemoryMax="$mem" -p MemorySwapMax=0 \
+    setsid nohup systemd-run --user --scope -q --unit="${NAMEPREFIX}-$name" -p MemoryMax="$mem" -p MemorySwapMax=0 -p CPUWeight="$weight" \
         taskset -c "$CPUS" nice -n "$nice" "$@" >> "$LOGSDIR/$name.log" 2>&1 < /dev/null &
     disown
 }
 
-part selfplay "$MEM_SELFPLAY" 10 ./bin/katago selfplay -output-dir "$BASEDIR"/selfplay -models-dir "$BASEDIR"/models \
+part selfplay "$MEM_SELFPLAY" 10 "$CPUW_SELFPLAY" ./bin/katago selfplay -output-dir "$BASEDIR"/selfplay -models-dir "$BASEDIR"/models \
     -config "$DATED_ARCHIVE"/selfplay.cfg ${SELFPLAY_OVERRIDES:+-override-config "$SELFPLAY_OVERRIDES"}
 
-part shuffle "$MEM_SHUFFLE" 15 bash -c "while true; do SKIP_VALIDATE=1 ./shuffle.sh '$BASEDIR' '$SCRATCHDIR' $NUM_THREADS_FOR_SHUFFLING \
+part shuffle "$MEM_SHUFFLE" 15 "$CPUW_OTHER" bash -c "while true; do env $SHUFFLE_ENV ./shuffle.sh '$BASEDIR' '$SCRATCHDIR' $NUM_THREADS_FOR_SHUFFLING \
     -min-rows $SHUFFLE_MINROWS -keep-target-rows $SHUFFLE_KEEPROWS -taper-window-scale $TAPER_WINDOW_SCALE \
     -approx-rows-per-out-file $ROWS_PER_SHUFFLE_FILE -worker-group-size $SHUFFLE_WORKER_GROUP_ROWS \
     | tee -a '$BASEDIR'/logs/outshuffle.txt; sleep $SHUFFLE_EVERY; done"
 
-part export 4G 10 bash -c "while true; do ./export_model_for_selfplay.sh '$NAMEPREFIX' '$BASEDIR' 0 \
+part export 4G 10 "$CPUW_OTHER" bash -c "while true; do ./export_model_for_selfplay.sh '$NAMEPREFIX' '$BASEDIR' 0 \
     >> '$BASEDIR'/logs/outexport.txt 2>&1; sleep $EXPORT_EVERY; done"
 
 TRAIN_ARGS="-samples-per-epoch $NUM_TRAIN_SAMPLES_PER_EPOCH -swa-period-samples $NUM_TRAIN_SAMPLES_PER_SWA -no-repeat-files \
-    -max-train-bucket-per-new-data $MAX_TRAIN_PER_DATA -max-train-bucket-size $MAX_TRAIN_SAMPLES_PER_CYCLE"
-part train "$MEM_TRAIN" 10 ./train.sh "$BASEDIR" "$TRAININGNAME" "$MODELKIND" "$BATCHSIZE" main $TRAIN_ARGS
+    -max-train-bucket-per-new-data $MAX_TRAIN_PER_DATA -max-train-bucket-size $MAX_TRAIN_SAMPLES_PER_CYCLE $TRAIN_EXTRA_ARGS"
+part train "$MEM_TRAIN" 10 "$CPUW_OTHER" ./train.sh "$BASEDIR" "$TRAININGNAME" "$MODELKIND" "$BATCHSIZE" main $TRAIN_ARGS
 if [[ -n "$NEXT_TRAININGNAME" ]]; then
-    part train-next "$MEM_TRAIN" 10 ./train.sh "$BASEDIR" "$NEXT_TRAININGNAME" "$NEXT_MODELKIND" "$BATCHSIZE" extra $TRAIN_ARGS
+    part train-next "$MEM_TRAIN" 10 "$CPUW_OTHER" ./train.sh "$BASEDIR" "$NEXT_TRAININGNAME" "$NEXT_MODELKIND" "$BATCHSIZE" extra $TRAIN_ARGS
 fi
 sleep 2
 echo "started from $DATED_ARCHIVE; logs in $LOGSDIR (selfplay, shuffle, export, train, train-next)"
