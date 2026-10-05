@@ -60,6 +60,11 @@ SHUFFLE_KEEPROWS="${SHUFFLE_KEEPROWS:-600000}"
 # Enclosure's row size (see above).
 ROWS_PER_SHUFFLE_FILE="${ROWS_PER_SHUFFLE_FILE:-2900}"
 SHUFFLE_WORKER_GROUP_ROWS="${SHUFFLE_WORKER_GROUP_ROWS:-3300}"
+# Validation (owner, 2026-10-05): VALIDATE=1 runs shuffle.sh without SKIP_VALIDATE, so 1% of the self-play files
+# (by path hash) are held out and train.py reports metrics_val.json after each epoch. Off by default, as upstream's
+# synchronous_loop.sh.
+VALIDATE="${VALIDATE:-0}"
+if [[ "$VALIDATE" == 1 ]]; then SHUFFLE_ENV=""; else SHUFFLE_ENV="SKIP_VALIDATE=1"; fi
 SELFPLAY_CONFIG="${SELFPLAY_CONFIG:-$KATAGO/cpp/configs/training/selfplay_enclosure.cfg}"
 NEXT_TRAININGNAME="${NEXT_TRAININGNAME:-}"  # e.g. b10c128 beside a b6c96 run; empty: none
 NEXT_MODELKIND="${NEXT_MODELKIND:-$NEXT_TRAININGNAME}"
@@ -121,7 +126,7 @@ do
     MINROWS="$SHUFFLE_MINROWS"
     if [[ -z "$(ls -A "$BASEDIR"/models 2>/dev/null)" ]]; then MINROWS="$BOOTSTRAP_MINROWS"; echo "No model yet: -min-rows $MINROWS"; fi
     (
-        time SKIP_VALIDATE=1 ./shuffle.sh "$BASEDIR" "$SCRATCHDIR" "$NUM_THREADS_FOR_SHUFFLING" -min-rows "$MINROWS" -keep-target-rows "$SHUFFLE_KEEPROWS" -taper-window-scale "$TAPER_WINDOW_SCALE" -approx-rows-per-out-file "$ROWS_PER_SHUFFLE_FILE" -worker-group-size "$SHUFFLE_WORKER_GROUP_ROWS" | tee -a "$BASEDIR"/logs/outshuffle.txt
+        time env $SHUFFLE_ENV ./shuffle.sh "$BASEDIR" "$SCRATCHDIR" "$NUM_THREADS_FOR_SHUFFLING" -min-rows "$MINROWS" -keep-target-rows "$SHUFFLE_KEEPROWS" -taper-window-scale "$TAPER_WINDOW_SCALE" -approx-rows-per-out-file "$ROWS_PER_SHUFFLE_FILE" -worker-group-size "$SHUFFLE_WORKER_GROUP_ROWS" | tee -a "$BASEDIR"/logs/outshuffle.txt
     )
     echo "Train"
     time ./train.sh "$BASEDIR" "$TRAININGNAME" "$MODELKIND" "$BATCHSIZE" main -samples-per-epoch "$NUM_TRAIN_SAMPLES_PER_EPOCH" -swa-period-samples "$NUM_TRAIN_SAMPLES_PER_SWA" -quit-if-no-data -stop-when-train-bucket-limited -no-repeat-files -max-train-bucket-per-new-data "$MAX_TRAIN_PER_DATA" -max-train-bucket-size "$MAX_TRAIN_SAMPLES_PER_CYCLE" $TRAIN_EXTRA_ARGS
