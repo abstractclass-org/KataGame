@@ -72,6 +72,11 @@ int main(int argc, char** argv) {
   const int G = NNInputs::NUM_FEATURES_GLOBAL_V8;
   vector<float> nhwc(S * S * C), nchw(S * S * C), expected(S * S * C);
   vector<float> global(G), globalNchw(G);
+  //Rows refilled position after position, clearing only the entries the last fill set (fillRowV8's setEntries, as
+  //NNEvaluator::fillRowBufs does): each must equal the fresh fill.
+  vector<float> nhwcReused(S * S * C, 0.0f), nchwReused(S * S * C, 0.0f), globalReused(G);
+  vector<int> nhwcSet, nchwSet;
+  int reusedChecks = 0;
 
   string line;
   int positions = 0, failures = 0, historyChecks = 0;
@@ -161,6 +166,13 @@ int main(int argc, char** argv) {
       }
     if(wrong > 0)
       fail(label + ": " + Global::intToString(wrong) + " spatial entries differ, first at " + firstWrong);
+    NNInputs::fillRowV8(board, hist, pla, params, S, S, true, nhwcReused.data(), globalReused.data(), &nhwcSet);
+    if(nhwcReused != nhwc)
+      fail(label + ": the NHWC row refilled over the previous position's differs from a fresh fill");
+    NNInputs::fillRowV8(board, hist, pla, params, S, S, false, nchwReused.data(), globalReused.data(), &nchwSet);
+    if(nchwReused != nchw)
+      fail(label + ": the NCHW row refilled over the previous position's differs from a fresh fill");
+    reusedChecks++;
     for(int i = 0; i < G; i++)
       if(global[i] != expectedGlobal[i] || globalNchw[i] != expectedGlobal[i])
         fail(label + ": global " + Global::intToString(i) + " is " + Global::floatToString(global[i]) +
@@ -179,6 +191,6 @@ int main(int argc, char** argv) {
       historyChecks++;
     }
   }
-  printf("%d positions, %d with history, %d failures\n", positions, historyChecks, failures);
+  printf("%d positions, %d with history, %d refilled, %d failures\n", positions, historyChecks, reusedChecks, failures);
   return failures == 0 && positions > 0 ? 0 : 1;
 }

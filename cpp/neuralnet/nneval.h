@@ -55,6 +55,10 @@ struct NNResultBuf {
   int boardXSizeForServer;
   int boardYSizeForServer;
   std::vector<float> rowSpatialBuf;
+  //Enclosure fork (2026-10-05): the entries of rowSpatialBuf the last fillRowV8 set, so the next clears only those;
+  //valid only while fillRowV8 alone has written the buffer since it was last cleared whole (NNEvaluator::fillRowBufs).
+  std::vector<int> rowSpatialSet;
+  bool rowSpatialSetValid;
   std::vector<float> rowGlobalBuf;
   std::vector<float> rowMetaBuf;
   bool hasRowMeta;

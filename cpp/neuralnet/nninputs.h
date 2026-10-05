@@ -162,9 +162,14 @@ namespace NNInputs {
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
   );
+  //Enclosure fork (owner, 2026-10-05): with setEntries, rowBin must hold exactly 1.0 at the entries listed there and
+  //0 elsewhere (an empty list: all zeros), as this function leaves it; only those entries are cleared, not the whole
+  //row (77,615 floats, about 8% of self-play's CPU), and the list is replaced by the entries set now. Without it,
+  //the whole row is cleared.
   void fillRowV8(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
-    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal,
+    std::vector<int>* setEntries = NULL
   );
 
   //If groupTax is specified, for each color region of area, reduce weight on empty spaces equally to reduce the total sum by 2.

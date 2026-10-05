@@ -66,6 +66,9 @@ int main(int argc, char** argv) {
   out.precision(9);
   string line;
   int positions = 0;
+  //One buffer for every position, as a search thread keeps (2026-10-05: its input row is refilled by clearing only
+  //the entries the last position set, NNEvaluator::fillRowBufs).
+  NNResultBuf buf;
   while(getline(in, line)) {
     istringstream head(line);
     string word, label;
@@ -89,7 +92,6 @@ int main(int argc, char** argv) {
     const Player pla = hist.presumedNextMovePla;
     MiscNNInputParams params;
     params.symmetry = 0;
-    NNResultBuf buf;
     buf.includeAuxOutputs = true;
     nnEval->evaluate(board, hist, pla, params, buf, true, true);
     const NNOutput& o = *buf.result;

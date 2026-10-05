@@ -2888,7 +2888,7 @@ void NNInputs::fillRowV7(
 void NNInputs::fillRowV8(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams,
-  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
+  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries
 ) {
   assert(nnXLen == enclosure::SIZE && nnYLen == enclosure::SIZE);
   assert(board.x_size == enclosure::SIZE && board.y_size == enclosure::SIZE);
@@ -2896,7 +2896,14 @@ void NNInputs::fillRowV8(
   assert(nextPlayer == Board::playerOfIndex(board.pos.player));
   (void)nextPlayer;
   const int numPos = nnXLen * nnYLen;
-  std::fill(rowBin, rowBin + NUM_FEATURES_SPATIAL_V8 * numPos, 0.0f);
+  //The spatial planes are sparse 0/1: with setEntries, clear only the entries the last fill set (nninputs.h).
+  if(setEntries != NULL) {
+    for(int i : *setEntries)
+      rowBin[i] = 0.0f;
+    setEntries->clear();
+  }
+  else
+    std::fill(rowBin, rowBin + NUM_FEATURES_SPATIAL_V8 * numPos, 0.0f);
   std::fill(rowGlobal, rowGlobal + NUM_FEATURES_GLOBAL_V8, 0.0f);
 
   int featureStride;
@@ -2909,10 +2916,17 @@ void NNInputs::fillRowV8(
     featureStride = numPos;
     posStride = 1;
   }
+  //Every spatial entry this function sets is 1.0; each one set is recorded for the next fill's clearing.
+  auto setOne = [&](int pos, int feature) {
+    const int i = pos * posStride + feature * featureStride;
+    rowBin[i] = 1.0f;
+    if(setEntries != NULL)
+      setEntries->push_back(i);
+  };
 
   //Feature 0 - on board
   for(int pos = 0; pos < numPos; pos++)
-    setRowBin(rowBin, pos, 0, 1.0f, posStride, featureStride);
+    setOne(pos, 0);
 
   //Edge planes and scalars: the observation's set bits, channels last, (y * 19 + x) * PLANES + plane.
   int32_t idx[enclosure::MAX_OBS_IDX];
@@ -2922,14 +2936,14 @@ void NNInputs::fillRowV8(
     const int pos = idx[i] / enclosure::PLANES;
     const int plane = idx[i] % enclosure::PLANES;
     assert(plane < 4 * enclosure::NOFF);
-    setRowBin(rowBin, pos, V8_EDGE_PLANES_START + plane, 1.0f, posStride, featureStride);
+    setOne(pos, V8_EDGE_PLANES_START + plane);
     //ENCLOSURE_EDGE_BOTH_ENDS: also at the upper end, in the opposite offset's plane of the same group.
     if(enclosure::EDGE_BOTH_ENDS) {
       const int group = plane / enclosure::NOFF, k = plane % enclosure::NOFF;
       const int dx = enclosure::OFFS[k].dx, dy = enclosure::OFFS[k].dy;
       const int upper = (pos / enclosure::SIZE + dy) * enclosure::SIZE + pos % enclosure::SIZE + dx;
       const int reverse = group * enclosure::NOFF + enclosure::OFF_INDEX[3 - dx][3 - dy];
-      setRowBin(rowBin, upper, V8_EDGE_PLANES_START + reverse, 1.0f, posStride, featureStride);
+      setOne(upper, V8_EDGE_PLANES_START + reverse);
     }
   }
   for(int i = 0; i < enclosure::SCALARS; i++)
@@ -2953,6 +2967,6 @@ void NNInputs::fillRowV8(
     const uint8_t* p = planes.data() + pos * enclosure::FEATURE_PLANES;
     for(int f = 0; f < numFeaturePlanes; f++)
       if(p[f])
-        setRowBin(rowBin, pos, V8_FEATURE_PLANES_START + f, 1.0f, posStride, featureStride);
+        setOne(pos, V8_FEATURE_PLANES_START + f);
   }
 }
