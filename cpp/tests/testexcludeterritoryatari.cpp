@@ -292,7 +292,7 @@ o.xooxx
       if(a.whiteWinProb != b.whiteWinProb || a.whiteLossProb != b.whiteLossProb || a.whiteScoreMean != b.whiteScoreMean)
         return false;
       for(int i = 0; i<NNPos::MAX_NN_POLICY_SIZE; i++)
-        if(a.policyProbs[i] != b.policyProbs[i])
+        if(a.policy()[i] != b.policy()[i])
           return false;
       return true;
     };

@@ -1452,7 +1452,7 @@ int MainCmds::dataminesgfs(const vector<string>& args) {
       if(m < sgfMoves.size()) {
         moves.push_back(sgfMoves[m]);
         int pos = NNPos::locToPos(sgfMoves[m].loc,board.x_size,nnOutput->nnXLen,nnOutput->nnYLen);
-        policyPriors.push_back(nnOutput->policyProbs[pos]);
+        policyPriors.push_back(nnOutput->policy()[pos]);
       }
 
       if(m >= sgfMoves.size())
@@ -1725,7 +1725,7 @@ int MainCmds::dataminesgfs(const vector<string>& args) {
         nnEval->evaluate(board,hist,pla,nnInputParams,buf,skipCache,includeOwnerMap);
         shared_ptr<NNOutput>& nnOutput = buf.result;
         int pos = NNPos::locToPos(sample.hintLoc,board.x_size,nnOutput->nnXLen,nnOutput->nnYLen);
-        double prob = nnOutput->policyProbs[pos];
+        double prob = nnOutput->policy()[pos];
         testAssert(prob >= 0.0);
         acc += log(prob + 1e-30);
         count += 1;
@@ -2434,7 +2434,7 @@ int MainCmds::checksgfhintpolicy(const vector<string>& args) {
 
             shared_ptr<NNOutput> nnOutput = std::move(buf.result);
             int pos = NNPos::locToPos(posSample.moves[posSample.moves.size()-1].loc, board.x_size, nnOutput->nnXLen, nnOutput->nnYLen);
-            double policy = nnOutput->policyProbs[pos];
+            double policy = nnOutput->policy()[pos];
             logPolicySum += log(policy + 1e-30);
             logPolicyWeight += 1.0;
           }

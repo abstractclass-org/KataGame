@@ -194,6 +194,38 @@ namespace NNInputs {
   );
 }
 
+//Enclosure fork (owner, 2026-10-05/06: compact policy storage): a policy read by position, as upstream reads its dense
+//array: view[pos] is the probability of the move at pos, negative (-1) for an illegal move. Either dense
+//(MAX_NN_POLICY_SIZE entries: root noise) or compact, read through a rank bitmap: per point, mask has bit `offset` set
+//when that action is legal and start the slot of the point's first legal action, so action point * NUM_OFFSETS +
+//offset is at slot start[point] + popcount(mask[point] & ((1 << offset) - 1)) of prob; pass (the last position) at
+//passSlot, -1 when illegal. Both list the legal positions ascending in pos[0, n): legalPos(k), probAt(k) walk them.
+struct PolicyView {
+  const float* dense;
+  const uint64_t* mask;
+  const uint16_t* start;
+  const float* prob;
+  int passSlot;
+  const uint16_t* pos;
+  int n;
+
+  inline float operator[](int p) const {
+    if(dense != NULL)
+      return dense[p];
+    if(p == NNPos::MAX_NN_POLICY_SIZE - 1)
+      return passSlot >= 0 ? prob[passSlot] : -1.0f;
+    const int point = p / NNPos::NUM_OFFSETS, offset = p - point * NNPos::NUM_OFFSETS;
+    const uint64_t m = mask[point];
+    if(((m >> offset) & 1) == 0)
+      return -1.0f;
+    return prob[start[point] + __builtin_popcountll(m & ((uint64_t(1) << offset) - 1))];
+  }
+  inline int legalPos(int k) const { return pos[k]; }
+  inline float probAt(int k) const { return dense != NULL ? dense[pos[k]] : prob[k]; }
+  //MAX_NN_POLICY_SIZE entries into out, -1 for illegal moves (the dense array upstream holds).
+  void toDense(float* out) const;
+};
+
 struct NNOutput {
   Hash128 nnHash; //NNInputs - getHash
 
@@ -216,14 +248,21 @@ struct NNOutput {
   float shorttermWinlossError;
   float shorttermScoreError;
 
-  //Indexed by pos rather than loc
-  //Values in here will be set to negative for illegal moves, including superko
-  float policyProbs[NNPos::MAX_NN_POLICY_SIZE];
-  //Enclosure fork (2026-10-05): the positions with policyProbs >= 0 (the legal moves), ascending, as the evaluator set
-  //them; root noise and temperature keep the sign, so they hold for getPolicyProbsMaybeNoised too. Empty when not
-  //computed (averaged outputs, tests): the search then scans every position, as upstream. About 440 legal moves
-  //against 17,330 positions, so the search's new-child scan reads the list (selectBestChildToDescend).
+  //Enclosure fork (owner, 2026-10-05/06: compact policy storage): the policy, indexed by pos rather than loc, is kept
+  //for the legal moves only (upstream: a dense MAX_NN_POLICY_SIZE array, negative for illegal moves, 69 KB here for
+  //about 440 legal moves out of 17,330, held by every cached output and every expanded search node): legalPos the
+  //legal positions ascending, legalProbs their probabilities, and the rank bitmap (policyMask, policyStart,
+  //policyPassSlot; PolicyView) that finds a position's slot. Read it through policy() or getPolicyProbsMaybeNoised():
+  //view[pos] is the probability, -1 for an illegal move, as the dense array gave. Root noise and temperature keep the
+  //sign, so legalPos holds for the noised policy too; the search's new-child scan walks it.
   std::vector<uint16_t> legalPos;
+  std::vector<float> legalProbs;
+  uint64_t policyMask[NNPos::MAX_BOARD_AREA];
+  uint16_t policyStart[NNPos::MAX_BOARD_AREA];
+  int policyPassSlot;
+  //The dense policy while an evaluation is in flight: the backend writes it and the evaluator post-processes it (the
+  //requesting NNResultBuf's policyScratch), then compactPolicy() keeps the legal entries and sets this to NULL.
+  float* policyDense;
   //The optimism value used for this neural net evaluation.
   float policyOptimismUsed;
 
@@ -275,8 +314,18 @@ struct NNOutput {
 
   NNOutput& operator=(const NNOutput&);
 
-  inline float* getPolicyProbsMaybeNoised() { return noisedPolicyProbs != NULL ? noisedPolicyProbs : policyProbs; }
-  inline const float* getPolicyProbsMaybeNoised() const { return noisedPolicyProbs != NULL ? noisedPolicyProbs : policyProbs; }
+  inline PolicyView policy() const {
+    return PolicyView{NULL, policyMask, policyStart, legalProbs.data(), policyPassSlot, legalPos.data(), (int)legalPos.size()};
+  }
+  inline PolicyView getPolicyProbsMaybeNoised() const {
+    if(noisedPolicyProbs == NULL)
+      return policy();
+    return PolicyView{noisedPolicyProbs, NULL, NULL, NULL, -1, legalPos.data(), (int)legalPos.size()};
+  }
+  //Keeps the entries of dense (MAX_NN_POLICY_SIZE, negative for illegal moves) at or above 0 as the compact policy.
+  void setPolicyFromDense(const float* dense);
+  //The in-flight dense policy (policyDense) made compact; policyDense is NULL after.
+  void compactPolicy();
   void debugPrint(std::ostream& out, const Board& board) const;
   inline int getPos(Loc loc, const Board& board) const { return NNPos::locToPos(loc, board.x_size, nnXLen, nnYLen ); }
 };

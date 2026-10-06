@@ -224,7 +224,7 @@ void Search::recomputeNodeStats(SearchNode& node, SearchThread& thread, int numV
     {
       const NNOutput* nnOutput = node.getNNOutput();
       assert(nnOutput != NULL);
-      const float* policyProbs = nnOutput->getPolicyProbsMaybeNoised();
+      const PolicyView policyProbs = nnOutput->getPolicyProbsMaybeNoised();
       for(int i = 0; i<numGoodChildren; i++)
         policyProbsBuf[i] = std::max(1e-30, (double)policyProbs[getPos(statsBuf[i].prevMoveLoc)]);
     }

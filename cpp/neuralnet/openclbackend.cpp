@@ -4251,7 +4251,7 @@ void NeuralNet::getOutput(
 
     const float* policyPassSrcBuf = inputBuffers->policyPassResults + row * numPolicyChannels;
     const float* policySrcBuf = inputBuffers->policyResults + row * numPolicyChannels * nnXLen * nnYLen;
-    float* policyProbs = output->policyProbs;
+    float* policyProbs = output->policyDense;  //Enclosure fork: the in-flight dense policy (compact policy storage)
 
     // These are in logits, the client does the postprocessing to turn them into
     // policy probabilities and white game outcome probabilities

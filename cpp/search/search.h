@@ -535,7 +535,7 @@ private:
   void maybeApplyAntiMirrorPolicy(
     float& nnPolicyProb,
     const Loc moveLoc,
-    const float* policyProbs,
+    const PolicyView& policyProbs,
     const Player movePla,
     const SearchThread* thread
   ) const;
@@ -543,7 +543,7 @@ private:
     double& childUtility,
     const double parentUtility,
     const Loc moveLoc,
-    const float* policyProbs,
+    const PolicyView& policyProbs,
     const double thisChildWeight,
     const double totalChildWeight,
     const Player movePla,
@@ -626,7 +626,7 @@ private:
     Player pla
   ) const;
   double getExploreSelectionValueOfChild(
-    const SearchNode& parent, const float* parentPolicyProbs, const SearchNode* child,
+    const SearchNode& parent, const PolicyView& parentPolicyProbs, const SearchNode* child,
     Loc moveLoc,
     double exploreScaling,
     double totalChildWeight, int64_t childEdgeVisits, double fpuValue,
@@ -646,7 +646,7 @@ private:
     SearchThread* thread
   ) const;
   double getReducedPlaySelectionWeight(
-    const SearchNode& parent, const float* parentPolicyProbs, const SearchNode* child,
+    const SearchNode& parent, const PolicyView& parentPolicyProbs, const SearchNode* child,
     Loc moveLoc,
     double exploreScaling,
     int64_t childEdgeVisits,
@@ -660,7 +660,7 @@ private:
 
   void selectChildToMatchVisitCapSnapshot(
     const VisitCapSnapshot& snapshot, ConstSearchNodeChildrenReference children,
-    const float* policyProbs, double parentWeightPerVisit, bool countEdgeVisit,
+    const PolicyView& policyProbs, double parentWeightPerVisit, bool countEdgeVisit,
     bool focusPlayout, Loc focusTarget,
     int& numChildrenFound, int& bestChildIdx, Loc& bestChildMoveLoc
   ) const;

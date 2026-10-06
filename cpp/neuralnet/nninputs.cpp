@@ -291,9 +291,65 @@ void NNInputs::fillScoring(
 
 
 NNOutput::NNOutput()
-  :whiteOwnerMap(NULL),noisedPolicyProbs(NULL),hasRegret(false),regretValue(0.0f),regretRanking(0.0f),
-   auxMap(NULL),auxValues(NULL),auxPolicy(NULL),scoreBeliefLen(0),scoreBelief(NULL),scoreBeliefRaw(NULL)
-{}
+  :policyPassSlot(-1),policyDense(NULL),whiteOwnerMap(NULL),noisedPolicyProbs(NULL),hasRegret(false),regretValue(0.0f),
+   regretRanking(0.0f),auxMap(NULL),auxValues(NULL),auxPolicy(NULL),scoreBeliefLen(0),scoreBelief(NULL),scoreBeliefRaw(NULL)
+{
+  std::fill(policyMask, policyMask + NNPos::MAX_BOARD_AREA, uint64_t(0));
+}
+
+//Enclosure fork (owner, 2026-10-05/06: compact policy storage).
+void PolicyView::toDense(float* out) const {
+  if(dense != NULL) {
+    std::copy(dense, dense + NNPos::MAX_NN_POLICY_SIZE, out);
+    return;
+  }
+  std::fill(out, out + NNPos::MAX_NN_POLICY_SIZE, -1.0f);
+  for(int k = 0; k<n; k++)
+    out[pos[k]] = prob[k];
+}
+
+void NNOutput::setPolicyFromDense(const float* dense) {
+  static_assert(NNPos::NUM_OFFSETS <= 64, "a point's legal offsets fit in one mask word");
+  legalPos.clear();
+  legalProbs.clear();
+  std::fill(policyMask, policyMask + NNPos::MAX_BOARD_AREA, uint64_t(0));
+  policyPassSlot = -1;
+  const int passPos = NNPos::MAX_NN_POLICY_SIZE - 1;
+  for(int point = 0; point < NNPos::MAX_BOARD_AREA; point++) {
+    policyStart[point] = (uint16_t)legalPos.size();
+    for(int offset = 0; offset < NNPos::NUM_OFFSETS; offset++) {
+      const int p = point * NNPos::NUM_OFFSETS + offset;
+      if(dense[p] >= 0) {
+        policyMask[point] |= uint64_t(1) << offset;
+        legalPos.push_back((uint16_t)p);
+        legalProbs.push_back(dense[p]);
+      }
+    }
+  }
+  if(dense[passPos] >= 0) {
+    policyPassSlot = (int)legalPos.size();
+    legalPos.push_back((uint16_t)passPos);
+    legalProbs.push_back(dense[passPos]);
+  }
+  legalPos.shrink_to_fit();
+  legalProbs.shrink_to_fit();
+}
+
+void NNOutput::compactPolicy() {
+  testAssert(policyDense != NULL);
+  setPolicyFromDense(policyDense);
+  policyDense = NULL;
+}
+
+//The compact policy's fields, copied.
+static void copyCompactPolicy(NNOutput& to, const NNOutput& from) {
+  to.legalPos = from.legalPos;
+  to.legalProbs = from.legalProbs;
+  std::copy(from.policyMask, from.policyMask + NNPos::MAX_BOARD_AREA, to.policyMask);
+  std::copy(from.policyStart, from.policyStart + NNPos::MAX_BOARD_AREA, to.policyStart);
+  to.policyPassSlot = from.policyPassSlot;
+  to.policyDense = NULL;
+}
 
 //Enclosure fork: a copy of an optional array, or NULL.
 static float* copyOrNull(const float* src, size_t n) {
@@ -331,8 +387,7 @@ NNOutput::NNOutput(const NNOutput& other) {
   else
     noisedPolicyProbs = NULL;
 
-  std::copy(other.policyProbs, other.policyProbs+NNPos::MAX_NN_POLICY_SIZE, policyProbs);
-  legalPos = other.legalPos;  //Enclosure fork
+  copyCompactPolicy(*this, other);  //Enclosure fork: the compact policy
   policyOptimismUsed = other.policyOptimismUsed;
 
   hasRegret = other.hasRegret;
@@ -452,27 +507,32 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
 
   //For technical correctness in case of impossibly rare hash collisions:
   //Just give up if they don't all match in move legality
+  //Enclosure fork (compact policy): the same on dense copies, then kept compact.
   {
+    policyDense = NULL;
     bool mismatch = false;
-    std::fill(policyProbs, policyProbs + NNPos::MAX_NN_POLICY_SIZE, 0.0f);
+    std::vector<float> policyProbs(NNPos::MAX_NN_POLICY_SIZE, 0.0f);
+    std::vector<float> otherProbs(NNPos::MAX_NN_POLICY_SIZE);
     for(int i = 0; i<len; i++) {
       const NNOutput& other = *(others[i]);
+      other.policy().toDense(otherProbs.data());
       for(int pos = 0; pos<NNPos::MAX_NN_POLICY_SIZE; pos++) {
-        if(i > 0 && (policyProbs[pos] < 0) != (other.policyProbs[pos] < 0))
+        if(i > 0 && (policyProbs[pos] < 0) != (otherProbs[pos] < 0))
           mismatch = true;
-        policyProbs[pos] += other.policyProbs[pos];
+        policyProbs[pos] += otherProbs[pos];
       }
     }
     //In case of mismatch, just take the first one
     //This should basically never happen, only on true hash collisions
     if(mismatch) {
       const NNOutput& other = *(others[0]);
-      std::copy(other.policyProbs, other.policyProbs + NNPos::MAX_NN_POLICY_SIZE, policyProbs);
+      other.policy().toDense(policyProbs.data());
     }
     else {
       for(int pos = 0; pos<NNPos::MAX_NN_POLICY_SIZE; pos++)
         policyProbs[pos] /= floatLen;
     }
+    setPolicyFromDense(policyProbs.data());
   }
   {
     bool allOptimismsMatch = true;
@@ -527,8 +587,7 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
   else
     noisedPolicyProbs = NULL;
 
-  std::copy(other.policyProbs, other.policyProbs+NNPos::MAX_NN_POLICY_SIZE, policyProbs);
-  legalPos = other.legalPos;  //Enclosure fork
+  copyCompactPolicy(*this, other);  //Enclosure fork: the compact policy
   policyOptimismUsed = other.policyOptimismUsed;
 
   hasRegret = other.hasRegret;
@@ -585,6 +644,7 @@ void NNOutput::debugPrint(ostream& out, const Board& board) const {
   out << "OptimismUsed " << Global::strprintf("%.2f",policyOptimismUsed) << endl;
 
   out << "Policy" << endl;
+  const PolicyView policyProbs = policy();
   out << "Pass" << Global::strprintf("%4d ", (int)round(policyProbs[NNPos::getPassPos(nnXLen,nnYLen)] * 1000)) << endl;
   for(int y = 0; y<board.y_size; y++) {
     for(int x = 0; x<board.x_size; x++) {

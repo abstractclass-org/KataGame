@@ -74,7 +74,7 @@ bool Search::getPlaySelectionValues(
     retVisitCounts->clear();
 
   const NNOutput* nnOutput = node.getNNOutput();
-  const float* policyProbs = nnOutput != NULL ? nnOutput->getPolicyProbsMaybeNoised() : NULL;
+  const PolicyView policyProbs = nnOutput != NULL ? nnOutput->getPolicyProbsMaybeNoised() : PolicyView{};
 
   double totalChildWeight = 0.0;
   const bool suppressPass = shouldSuppressPass(&node);
@@ -333,8 +333,8 @@ bool Search::getPlaySelectionValues(
      searchParams.humanSLChosenMoveProp > 0.0
   ) {
     const NNOutput* humanOutput = node.getHumanOutput();
-    const float* humanProbs = humanOutput != NULL ? humanOutput->getPolicyProbsMaybeNoised() : NULL;
-    if(humanProbs != NULL) {
+    const PolicyView humanProbs = humanOutput != NULL ? humanOutput->getPolicyProbsMaybeNoised() : PolicyView{};
+    if(humanOutput != NULL) {
       // First, take a pass to just fill out all the legal/allowed moves into the play selection values, if allowed, and if at root.
       if(&node == rootNode && allowDirectPolicyMoves) {
         std::set<Loc> locsSet(locs.begin(),locs.end());
@@ -608,7 +608,7 @@ bool Search::getPolicy(const SearchNode* node, float policyProbs[NNPos::MAX_NN_P
   if(nnOutput == NULL)
     return false;
 
-  std::copy(nnOutput->policyProbs, nnOutput->policyProbs+NNPos::MAX_NN_POLICY_SIZE, policyProbs);
+  nnOutput->policy().toDense(policyProbs);  //Enclosure fork: compact policy storage
   return true;
 }
 
@@ -649,8 +649,7 @@ bool Search::getPolicySurpriseAndEntropy(double& surpriseRet, double& searchEntr
 
   float policyProbsFromNNBuf[NNPos::MAX_NN_POLICY_SIZE];
   {
-    const float* policyProbsFromNN = nnOutput->getPolicyProbsMaybeNoised();
-    std::copy(policyProbsFromNN, policyProbsFromNN+NNPos::MAX_NN_POLICY_SIZE, policyProbsFromNNBuf);
+    nnOutput->getPolicyProbsMaybeNoised().toDense(policyProbsFromNNBuf);  //Enclosure fork: compact policy storage
   }
 
   double sumPlaySelectionValues = 0.0;
@@ -723,7 +722,7 @@ void Search::printRootPolicyMap(ostream& out) const {
   if(nnOutput == NULL)
     return;
 
-  const float* policyProbs = nnOutput->getPolicyProbsMaybeNoised();
+  const PolicyView policyProbs = nnOutput->getPolicyProbsMaybeNoised();
   for(int y = 0; y<rootBoard.y_size; y++) {
     for(int x = 0; x<rootBoard.x_size; x++) {
       int pos = NNPos::xyToPos(x,y,nnOutput->nnXLen);
@@ -1033,9 +1032,7 @@ void Search::getAnalysisData(
     }
 
     const NNOutput* nnOutput = node.getNNOutput();
-    const float* policyProbsFromNN = nnOutput->getPolicyProbsMaybeNoised();
-    for(int i = 0; i<NNPos::MAX_NN_POLICY_SIZE; i++)
-      policyProbs[i] = policyProbsFromNN[i];
+    nnOutput->getPolicyProbsMaybeNoised().toDense(policyProbs);  //Enclosure fork: compact policy storage
   }
 
   //Copy to make sure we keep these values so we can reuse scratch later for PV
@@ -1498,7 +1495,7 @@ void Search::getShallowAverageShorttermWLAndScoreErrorHelper(
     for(int i = 0; i<numChildren; i++) {
       totalChildWeight += statsBuf[i].weightAdjusted;
     }
-    const float* policyProbs = nnOutput->getPolicyProbsMaybeNoised();
+    const PolicyView policyProbs = nnOutput->getPolicyProbsMaybeNoised();
     if(searchParams.useNoisePruning) {
       for(int i = 0; i<numChildren; i++)
         policyProbsBuf[i] = std::max(1e-30, (double)policyProbs[getPos(statsBuf[i].prevMoveLoc)]);
@@ -1703,7 +1700,7 @@ bool Search::getSharpScoreHelper(
     for(int i = 0; i<numChildren; i++) {
       totalChildWeight += statsBuf[i].weightAdjusted;
     }
-    const float* policyProbs = nnOutput->getPolicyProbsMaybeNoised();
+    const PolicyView policyProbs = nnOutput->getPolicyProbsMaybeNoised();
     if(searchParams.useNoisePruning) {
       for(int i = 0; i<numChildren; i++)
         policyProbsBuf[i] = std::max(1e-30, (double)policyProbs[getPos(statsBuf[i].prevMoveLoc)]);
@@ -2069,7 +2066,7 @@ bool Search::getAnalysisJson(
       moveInfo["noResultValue"] = Global::roundDynamic(data.noResultValue,OUTPUT_PRECISION);
     moveInfo["prior"] = Global::roundDynamic(data.policyPrior,OUTPUT_PRECISION);
     if(humanOutput != NULL)
-      moveInfo["humanPrior"] = Global::roundDynamic(std::max(0.0,(double)humanOutput->policyProbs[getPos(data.move)]),OUTPUT_PRECISION);
+      moveInfo["humanPrior"] = Global::roundDynamic(std::max(0.0,(double)humanOutput->policy()[getPos(data.move)]),OUTPUT_PRECISION);
     moveInfo["lcb"] = Global::roundDynamic(lcb,OUTPUT_PRECISION);
     moveInfo["utilityLcb"] = Global::roundDynamic(utilityLcb,OUTPUT_PRECISION);
     moveInfo["order"] = data.order;
@@ -2201,7 +2198,7 @@ bool Search::getAnalysisJson(
     }
 
     if(humanOutput != NULL) {
-      const float* policyProbs = humanOutput->getPolicyProbsMaybeNoised();
+      const PolicyView policyProbs = humanOutput->getPolicyProbsMaybeNoised();
       json policy = json::array();
       for(int y = 0; y < board.y_size; y++) {
         for(int x = 0; x < board.x_size; x++) {
@@ -2334,7 +2331,7 @@ void Search::debugPrintChildrenSummary(std::ostream& out, const SearchNode& node
   ConstSearchNodeChildrenReference children = node.getChildren(nodeState);
   int childrenCapacity = children.getCapacity();
   out << "childrenCapacity " << childrenCapacity << endl;
-  const float* policyProbs = nnOutput->getPolicyProbsMaybeNoised();
+  const PolicyView policyProbs = nnOutput->getPolicyProbsMaybeNoised();
   for(int i = 0; i<childrenCapacity; i++) {
     const SearchChildPointer& childPointer = children[i];
     const SearchNode* child = childPointer.getIfAllocated();

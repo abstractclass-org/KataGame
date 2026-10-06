@@ -1099,7 +1099,7 @@ void NeuralNet::getOutput(
     {
       const float* policyPassSrcBuf = policyPassData + row * numPolicyChannels;
       const float* policySrcBuf = policyData + row * numPolicyChannels * nnXLen * nnYLen;
-      float* policyProbs = output->policyProbs;
+      float* policyProbs = output->policyDense;  //Enclosure fork: the in-flight dense policy (compact policy storage)
 
       if(numPolicyChannels == 2 || (numPolicyChannels == 4 && modelVersion >= 16)) {
         // NCHW: channel 0 = base logits, channel 1 = optimism logits.

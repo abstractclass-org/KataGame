@@ -65,6 +65,9 @@ struct NNResultBuf {
   //before each query (empty: all). A backend may fill only these entries of NNOutput::policyProbs and leave the
   //others unset (the CUDA backend gathers them on the GPU); the evaluator then masks every other entry.
   std::vector<uint16_t> policyGather;
+  //Enclosure fork (owner, 2026-10-05/06: compact policy storage): the dense policy of this buffer's evaluation in
+  //flight (NNOutput::policyDense points here until the evaluator compacts it), MAX_NN_POLICY_SIZE entries, reused.
+  std::vector<float> policyScratch;
   std::vector<float> rowGlobalBuf;
   std::vector<float> rowMetaBuf;
   bool hasRowMeta;

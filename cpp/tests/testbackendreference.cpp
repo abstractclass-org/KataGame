@@ -368,7 +368,7 @@ bool Tests::runBackendReferenceTest(
 
     int numLegal = 0;
     for(int i = 0; i<NNPos::MAX_NN_POLICY_SIZE; i++) {
-      if(out->policyProbs[i] >= 0)
+      if(out->policy()[i] >= 0)
         numLegal += 1;
     }
     testAssert(numLegal > 0);
@@ -384,7 +384,7 @@ bool Tests::runBackendReferenceTest(
       const double eps = limits.mixtureSmoothing;
       double klSum = 0.0;
       for(int i = 0; i<NNPos::MAX_NN_POLICY_SIZE; i++) {
-        double c = out->policyProbs[i];
+        double c = out->policy()[i];
         if(c <= 1e-30)
           continue;
         Loc loc = NNPos::posToLoc(i, board.x_size, board.y_size, out->nnXLen, out->nnYLen);
@@ -402,7 +402,7 @@ bool Tests::runBackendReferenceTest(
       if(data.policyMixture[topIdx] >= limits.consensusTopProb) {
         Loc topLoc = (topIdx == mixtureLen-1) ? Board::PASS_LOC : Location::getLoc(topIdx % board.x_size, topIdx / board.x_size, board.x_size);
         int candPos = out->getPos(topLoc,board);
-        double candidateProb = out->policyProbs[candPos];
+        double candidateProb = out->policy()[candPos];
         if(candidateProb < 0)
           throw StringError("Backend reference test: consensus move is illegal on reference position " + Global::uint64ToString((uint64_t)posIdx));
         consensusProbs.push_back(candidateProb);
@@ -461,7 +461,7 @@ bool Tests::runBackendReferenceTest(
       //Full policy in the same layout as policyMixture: row-major y*xSize+x, pass last.
       std::vector<double> policy(mixtureLen, 0.0);
       for(int i = 0; i<NNPos::MAX_NN_POLICY_SIZE; i++) {
-        double c = out->policyProbs[i];
+        double c = out->policy()[i];
         if(c < 0)
           continue;
         Loc loc = NNPos::posToLoc(i, board.x_size, board.y_size, out->nnXLen, out->nnYLen);

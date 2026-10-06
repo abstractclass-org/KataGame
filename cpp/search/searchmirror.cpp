@@ -95,7 +95,7 @@ bool Search::isMirroringSinceSearchStart(const BoardHistory& threadHistory, int 
 void Search::maybeApplyAntiMirrorPolicy(
   float& nnPolicyProb,
   const Loc moveLoc,
-  const float* policyProbs,
+  const PolicyView& policyProbs,
   const Player movePla,
   const SearchThread* thread
 ) const {
@@ -157,7 +157,7 @@ void Search::maybeApplyAntiMirrorForcedExplore(
   double& childUtility,
   const double parentUtility,
   const Loc moveLoc,
-  const float* policyProbs,
+  const PolicyView& policyProbs,
   const double thisChildWeight,
   const double totalChildWeight,
   const Player movePla,

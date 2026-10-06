@@ -492,7 +492,7 @@ int MainCmds::evalsgf(const vector<string>& args) {
     }
 
     if(printPolicy) {
-      auto doPrintPolicy = [&](const float* policyProbs, int nnXLen, int nnYLen) {
+      auto doPrintPolicy = [&](const PolicyView& policyProbs, int nnXLen, int nnYLen) {
         for(int y = 0; y<board.y_size; y++) {
           for(int x = 0; x<board.x_size; x++) {
             int pos = NNPos::xyToPos(x,y,nnXLen);
@@ -510,19 +510,19 @@ int MainCmds::evalsgf(const vector<string>& args) {
 
       const NNOutput* nnOutput = search->rootNode->getNNOutput();
       if(nnOutput != NULL) {
-        const float* policyProbs = nnOutput->getPolicyProbsMaybeNoised();
+        const PolicyView policyProbs = nnOutput->getPolicyProbsMaybeNoised();
         cout << "Root policy: " << endl;
         doPrintPolicy(policyProbs, nnOutput->nnXLen, nnOutput->nnYLen);
       }
       const NNOutput* humanOutput = search->rootNode->getHumanOutput();
       if(humanOutput != NULL) {
-        const float* policyProbs = humanOutput->getPolicyProbsMaybeNoised();
+        const PolicyView policyProbs = humanOutput->getPolicyProbsMaybeNoised();
         cout << "Root human policy: " << endl;
         doPrintPolicy(policyProbs, humanOutput->nnXLen, humanOutput->nnYLen);
       }
     }
     if(printLogPolicy) {
-      auto doPrintLogPolicy = [&](const float* policyProbs, int nnXLen, int nnYLen) {
+      auto doPrintLogPolicy = [&](const PolicyView& policyProbs, int nnXLen, int nnYLen) {
         for(int y = 0; y<board.y_size; y++) {
           for(int x = 0; x<board.x_size; x++) {
             int pos = NNPos::xyToPos(x,y,nnXLen);
@@ -540,13 +540,13 @@ int MainCmds::evalsgf(const vector<string>& args) {
 
       const NNOutput* nnOutput = search->rootNode->getNNOutput();
       if(nnOutput != NULL) {
-        const float* policyProbs = nnOutput->getPolicyProbsMaybeNoised();
+        const PolicyView policyProbs = nnOutput->getPolicyProbsMaybeNoised();
         cout << "Root policy: " << endl;
         doPrintLogPolicy(policyProbs, nnOutput->nnXLen, nnOutput->nnYLen);
       }
       const NNOutput* humanOutput = search->rootNode->getHumanOutput();
       if(humanOutput != NULL) {
-        const float* policyProbs = humanOutput->getPolicyProbsMaybeNoised();
+        const PolicyView policyProbs = humanOutput->getPolicyProbsMaybeNoised();
         cout << "Root human policy: " << endl;
         doPrintLogPolicy(policyProbs, humanOutput->nnXLen, humanOutput->nnYLen);
       }
@@ -555,7 +555,8 @@ int MainCmds::evalsgf(const vector<string>& args) {
     if(printDirichletShape) {
       const NNOutput* nnOutput = search->rootNode->getNNOutput();
       if(nnOutput != NULL) {
-        const float* policyProbs = nnOutput->getPolicyProbsMaybeNoised();
+        static float policyProbs[NNPos::MAX_NN_POLICY_SIZE];  //Enclosure fork: compact policy storage, made dense
+        nnOutput->getPolicyProbsMaybeNoised().toDense(policyProbs);
         double alphaDistr[NNPos::MAX_NN_POLICY_SIZE];
         int policySize = nnOutput->nnXLen * nnOutput->nnYLen;
         Search::computeDirichletAlphaDistribution(policySize, policyProbs, alphaDistr);

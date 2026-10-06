@@ -170,7 +170,7 @@ std::shared_ptr<NNOutput>* Search::maybeAddPolicyNoiseAndTemp(SearchThread& thre
 
   float* noisedPolicyProbs = new float[NNPos::MAX_NN_POLICY_SIZE];
   newNNOutput->noisedPolicyProbs = noisedPolicyProbs;
-  std::copy(newNNOutput->policyProbs, newNNOutput->policyProbs + NNPos::MAX_NN_POLICY_SIZE, noisedPolicyProbs);
+  newNNOutput->policy().toDense(noisedPolicyProbs);  //Enclosure fork: compact policy storage (the noised policy stays dense)
 
   if(searchParams.rootPolicyTemperature != 1.0 || searchParams.rootPolicyTemperatureEarly != 1.0) {
     double rootPolicyTemperature = interpolateEarly(

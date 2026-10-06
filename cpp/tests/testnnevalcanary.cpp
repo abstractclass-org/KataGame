@@ -65,8 +65,8 @@ void Tests::runCanaryTests(NNEvaluator* nnEval, int symmetry, bool print) {
       buf.result->debugPrint(cout,board);
     }
 
-    testAssert(buf.result->policyProbs[buf.result->getPos(Location::ofString("E16",board),board)] >= 0.95);
-    testAssert(buf.result->policyProbs[buf.result->getPos(Location::ofString("Pass",board),board)] <= 0.005);
+    testAssert(buf.result->policy()[buf.result->getPos(Location::ofString("E16",board),board)] >= 0.95);
+    testAssert(buf.result->policy()[buf.result->getPos(Location::ofString("Pass",board),board)] <= 0.005);
     testAssert(buf.result->whiteWinProb > 0.30 - winrateLenience);
     testAssert(buf.result->whiteWinProb < 0.70 + winrateLenience);
     testAssert(buf.result->whiteNoResultProb < 0.03);
@@ -101,8 +101,8 @@ void Tests::runCanaryTests(NNEvaluator* nnEval, int symmetry, bool print) {
       buf.result->debugPrint(cout,board);
     }
 
-    testAssert(buf.result->policyProbs[buf.result->getPos(Location::ofString("P15",board),board)] >= 0.85 - policyLenience);
-    testAssert(buf.result->policyProbs[buf.result->getPos(Location::ofString("Pass",board),board)] <= 0.005);
+    testAssert(buf.result->policy()[buf.result->getPos(Location::ofString("P15",board),board)] >= 0.85 - policyLenience);
+    testAssert(buf.result->policy()[buf.result->getPos(Location::ofString("Pass",board),board)] <= 0.005);
     testAssert(buf.result->whiteWinProb > 0.30 - winrateLenience);
     testAssert(buf.result->whiteWinProb < 0.70 + winrateLenience);
     testAssert(buf.result->whiteNoResultProb < 0.03);
@@ -136,8 +136,8 @@ void Tests::runCanaryTests(NNEvaluator* nnEval, int symmetry, bool print) {
       buf.result->debugPrint(cout,board);
     }
 
-    testAssert(buf.result->policyProbs[buf.result->getPos(Location::ofString("Q2",board),board)] >= 0.95);
-    testAssert(buf.result->policyProbs[buf.result->getPos(Location::ofString("Pass",board),board)] <= 0.005);
+    testAssert(buf.result->policy()[buf.result->getPos(Location::ofString("Q2",board),board)] >= 0.95);
+    testAssert(buf.result->policy()[buf.result->getPos(Location::ofString("Pass",board),board)] <= 0.005);
     testAssert(buf.result->whiteWinProb > 0.30 - winrateLenience);
     testAssert(buf.result->whiteWinProb < 0.70 + winrateLenience);
     testAssert(buf.result->whiteNoResultProb < 0.03);
@@ -241,7 +241,7 @@ void Tests::runCanaryTests(NNEvaluator* nnEval, int symmetry, bool print) {
       buf.result->debugPrint(cout,board);
     }
 
-    testAssert(buf.result->policyProbs[buf.result->getPos(Location::ofString("N3",board),board)] >= 0.80 - policyLenience);
+    testAssert(buf.result->policy()[buf.result->getPos(Location::ofString("N3",board),board)] >= 0.80 - policyLenience);
     testAssert(buf.result->whiteWinProb > 0.20 - winrateLenience);
     testAssert(buf.result->whiteWinProb < 0.80 + winrateLenience);
     testAssert(buf.result->whiteNoResultProb < 0.06);
@@ -279,17 +279,17 @@ struct GpuErrorStats {
     int topPolicyIdx = 0;
     double topPolicyProb = -1;
     for(int i = 0; i<NNPos::MAX_NN_POLICY_SIZE; i++) {
-      if(base->policyProbs[i] > topPolicyProb) {
+      if(base->policy()[i] > topPolicyProb) {
         topPolicyIdx = i;
-        topPolicyProb = base->policyProbs[i];
+        topPolicyProb = base->policy()[i];
       }
     }
-    topPolicyDiff.push_back(std::abs(topPolicyProb - other->policyProbs[topPolicyIdx]));
+    topPolicyDiff.push_back(std::abs(topPolicyProb - other->policy()[topPolicyIdx]));
 
     double klDivSum = 0;
     for(int i = 0; i<NNPos::MAX_NN_POLICY_SIZE; i++) {
-      if(base->policyProbs[i] > 1e-30) {
-        klDivSum += base->policyProbs[i] * (log(base->policyProbs[i]) - log(other->policyProbs[i]));
+      if(base->policy()[i] > 1e-30) {
+        klDivSum += base->policy()[i] * (log(base->policy()[i]) - log(other->policy()[i]));
       }
     }
     policyKLDiv.push_back(klDivSum);
@@ -501,7 +501,7 @@ static std::string nnOutputToJson(const std::shared_ptr<NNOutput>& nnOutput) {
   ret["varTimeLeft"] = nnOutput->varTimeLeft;
   ret["shorttermWinlossError"] = nnOutput->shorttermWinlossError;
   ret["shorttermScoreError"] = nnOutput->shorttermScoreError;
-  ret["policyProbs"] = std::vector<float>(&(nnOutput->policyProbs[0]), &(nnOutput->policyProbs[0]) + NNPos::MAX_NN_POLICY_SIZE);
+  { std::vector<float> dense(NNPos::MAX_NN_POLICY_SIZE); nnOutput->policy().toDense(dense.data()); ret["policyProbs"] = dense; }  //Enclosure fork: compact policy storage
   ret["policyOptimismUsed"] = nnOutput->policyOptimismUsed;
   ret["nnXLen"] = nnOutput->nnXLen;
   ret["nnYLen"] = nnOutput->nnYLen;
@@ -525,7 +525,7 @@ static std::shared_ptr<NNOutput> nnOutputOfJson(const std::string& s) {
   nnOutput->shorttermScoreError = input["shorttermScoreError"].get<float>();
   std::vector<float> policyProbs = input["policyProbs"].get<std::vector<float>>();
   testAssert(policyProbs.size() == NNPos::MAX_NN_POLICY_SIZE);
-  std::copy(policyProbs.begin(),policyProbs.end(),nnOutput->policyProbs);
+  nnOutput->setPolicyFromDense(policyProbs.data());  //Enclosure fork: compact policy storage
   nnOutput->policyOptimismUsed = input["policyOptimismUsed"].get<float>();
   nnOutput->nnXLen = input["nnXLen"].get<int>();
   nnOutput->nnYLen = input["nnYLen"].get<int>();

@@ -22,6 +22,7 @@ NNResultBuf::NNResultBuf()
     rowSpatialBits(),
     rowSpatialPacked(false),
     policyGather(),
+    policyScratch(),
     rowGlobalBuf(),
     rowMetaBuf(),
     hasRowMeta(false),
@@ -632,6 +633,8 @@ void NNEvaluator::maybeWarmupComputeHandle(ComputeHandle* gpuHandle, int serverT
       out->nnXLen = nnXLen;
       out->nnYLen = nnYLen;
       out->whiteOwnerMap = NULL;
+      resultBufs[row]->policyScratch.resize(NNPos::MAX_NN_POLICY_SIZE);
+      out->policyDense = resultBufs[row]->policyScratch.data();  //Enclosure fork: compact policy
       outputs.push_back(out);
     }
     NeuralNet::getOutput(gpuHandle, inputBuffers, batchSize, resultBufs.data(), outputs);
@@ -769,6 +772,8 @@ NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
             out->nnXLen = nnXLen;
             out->nnYLen = nnYLen;
             out->whiteOwnerMap = NULL;
+            resultBufs[row]->policyScratch.resize(NNPos::MAX_NN_POLICY_SIZE);
+            out->policyDense = resultBufs[row]->policyScratch.data();  //Enclosure fork: compact policy
             outputs.push_back(out);
           }
 
@@ -907,8 +912,10 @@ void NNEvaluator::serve(
         unique_lock<std::mutex> resultLock(resultBuf->resultMutex);
         testAssert(resultBuf->hasResult == false);
         resultBuf->result = std::make_shared<NNOutput>();
+        resultBuf->policyScratch.resize(NNPos::MAX_NN_POLICY_SIZE);  //Enclosure fork: compact policy
+        resultBuf->result->policyDense = resultBuf->policyScratch.data();
 
-        float* policyProbs = resultBuf->result->policyProbs;
+        float* policyProbs = resultBuf->result->policyDense;
         for(int i = 0; i<NNPos::MAX_NN_POLICY_SIZE; i++)
           policyProbs[i] = 0;
 
@@ -967,6 +974,9 @@ void NNEvaluator::serve(
         testAssert(resultBufs[row] != NULL);
         emptyOutput->nnXLen = nnXLen;
         emptyOutput->nnYLen = nnYLen;
+        //Enclosure fork (compact policy): the backend writes the dense policy into the requester's scratch.
+        resultBufs[row]->policyScratch.resize(NNPos::MAX_NN_POLICY_SIZE);
+        emptyOutput->policyDense = resultBufs[row]->policyScratch.data();
         if(resultBufs[row]->includeOwnerMap)
           emptyOutput->whiteOwnerMap = new float[nnXLen*nnYLen];
         else
@@ -1113,8 +1123,8 @@ static void mapOutputBack(NNOutput& output, const Board& board, const Board& sym
   buf.assign(policySize, 0.0f);
   for(int i = 0; i < policySize; i++)
     if(i == enclosure::PASS || board.legalActions()[i])
-      buf[i] = output.policyProbs[SymmetryHelpers::getSymAction(i, symBoard, symmetry)];
-  std::copy(buf.begin(), buf.end(), output.policyProbs);
+      buf[i] = output.policyDense[SymmetryHelpers::getSymAction(i, symBoard, symmetry)];
+  std::copy(buf.begin(), buf.end(), output.policyDense);
   if(output.whiteOwnerMap != NULL) {
     const int nnXLen = output.nnXLen, nnYLen = output.nnYLen;
     buf.assign(nnXLen * nnYLen, 0.0f);
@@ -1395,8 +1405,13 @@ void NNEvaluator::evaluate(
     buf.result->varTimeLeft = resultWithoutOwnerMap->varTimeLeft;
     buf.result->shorttermWinlossError = resultWithoutOwnerMap->shorttermWinlossError;
     buf.result->shorttermScoreError = resultWithoutOwnerMap->shorttermScoreError;
-    std::copy(resultWithoutOwnerMap->policyProbs, resultWithoutOwnerMap->policyProbs + NNPos::MAX_NN_POLICY_SIZE, buf.result->policyProbs);
-    buf.result->legalPos = resultWithoutOwnerMap->legalPos;  //Enclosure fork
+    //Enclosure fork: the compact policy (the new output's dense scratch is left unread).
+    buf.result->legalPos = resultWithoutOwnerMap->legalPos;
+    buf.result->legalProbs = resultWithoutOwnerMap->legalProbs;
+    std::copy(resultWithoutOwnerMap->policyMask, resultWithoutOwnerMap->policyMask + NNPos::MAX_BOARD_AREA, buf.result->policyMask);
+    std::copy(resultWithoutOwnerMap->policyStart, resultWithoutOwnerMap->policyStart + NNPos::MAX_BOARD_AREA, buf.result->policyStart);
+    buf.result->policyPassSlot = resultWithoutOwnerMap->policyPassSlot;
+    buf.result->policyDense = NULL;
     buf.result->policyOptimismUsed = (float)resultWithoutOwnerMap->policyOptimismUsed;
     buf.result->nnXLen = resultWithoutOwnerMap->nnXLen;
     buf.result->nnYLen = resultWithoutOwnerMap->nnYLen;
@@ -1406,7 +1421,7 @@ void NNEvaluator::evaluate(
     testAssert(!includeOwnerMap || buf.result->whiteOwnerMap != NULL);
   }
   else {
-    float* policy = buf.result->policyProbs;
+    float* policy = buf.result->policyDense;
 
     float policyOutputScaling = postProcessParams.outputScaleMultiplier / nnInputParams.nnPolicyTemperature;
 
@@ -1507,12 +1522,10 @@ void NNEvaluator::evaluate(
     for(int i = policySize; i<NNPos::MAX_NN_POLICY_SIZE; i++)
       policy[i] = -1.0f;
 
-    //Enclosure fork (2026-10-05): the legal positions, ascending (exactly those left >= 0 above), for the search.
-    buf.result->legalPos.clear();
-    buf.result->legalPos.reserve(legalCount);
-    for(int i = 0; i<policySize; i++)
-      if(isLegal[i])
-        buf.result->legalPos.push_back((uint16_t)i);
+    //Enclosure fork (owner, 2026-10-05/06: compact policy storage): the legal entries (exactly those left >= 0 above)
+    //kept, the dense scratch released.
+    buf.result->compactPolicy();
+    testAssert((int)buf.result->legalPos.size() == legalCount);
 
     buf.result->policyOptimismUsed = (float)nnInputParams.policyOptimism;
 

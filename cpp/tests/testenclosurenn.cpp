@@ -77,7 +77,7 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
     out << " pol " << legal.size();
     for(Loc loc : legal) {
       int pos = NNPos::locToPos(loc, 19, 19, 19);
-      out << " " << Board::actionOfMoveLoc(loc) << " " << o.policyProbs[pos];
+      out << " " << Board::actionOfMoveLoc(loc) << " " << o.policy()[pos];
     }
     out << "\n";
     positions++;

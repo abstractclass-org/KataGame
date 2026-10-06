@@ -789,7 +789,7 @@ int MainCmds::genbook(const vector<string>& args) {
     // cout << "Calling full nn " << timer.getSeconds() << endl;
     std::shared_ptr<NNOutput> fullSymNNOutput = PlayUtils::getFullSymmetryNNOutput(board, hist, node.pla(), includeOwnerMap, &params.humanSLProfile, policyEvaluator);
     float policyProbs[NNPos::MAX_NN_POLICY_SIZE];
-    std::copy(fullSymNNOutput->policyProbs, fullSymNNOutput->policyProbs+NNPos::MAX_NN_POLICY_SIZE, policyProbs);
+    fullSymNNOutput->policy().toDense(policyProbs);  //Enclosure fork: compact policy storage
     // cout << "Done full nn " << timer.getSeconds() << endl;
 
     // Zero out all the policies for moves we already have, we want the max *remaining* policy
@@ -948,7 +948,7 @@ int MainCmds::genbook(const vector<string>& args) {
         // Average all 8 symmetries
         const bool includeOwnerMap = false;
         std::shared_ptr<NNOutput> result = PlayUtils::getFullSymmetryNNOutput(board, hist, pla, includeOwnerMap, &params.humanSLProfile, policyEvaluator);
-        const float* policyProbs = result->policyProbs;
+        const PolicyView policyProbs = result->policy();
         float moveLocPolicy = policyProbs[search->getPos(moveLoc)];
         testAssert(moveLocPolicy >= 0);
         vector<std::pair<Loc,float>> extraMoveLocsToExpand;
@@ -1059,7 +1059,7 @@ int MainCmds::genbook(const vector<string>& args) {
     // Use full symmetry for the policy for nodes we record for the book
     bool includeOwnerMap = false;
     std::shared_ptr<NNOutput> fullSymNNOutput = PlayUtils::getFullSymmetryNNOutput(board, hist, node.pla(), includeOwnerMap, &params.humanSLProfile, policyEvaluator);
-    const float* policyProbs = fullSymNNOutput->policyProbs;
+    const PolicyView policyProbs = fullSymNNOutput->policy();
 
     bool anyRecursion = false;
     bool anythingAdded = false;
@@ -2038,7 +2038,7 @@ int MainCmds::booktoposes(const vector<string>& args) {
 
         if(policySurpriseWeight > 0) {
           if(bestMove != Board::NULL_LOC) {
-            double policyProb = buf.result->policyProbs[NNPos::locToPos(bestMove,board.x_size,nnEval->getNNXLen(),nnEval->getNNYLen())];
+            double policyProb = buf.result->policy()[NNPos::locToPos(bestMove,board.x_size,nnEval->getNNXLen(),nnEval->getNNYLen())];
             testAssert(policyProb >= 0.0 && policyProb <= 1.0);
             policySurprise += -1.0 / (double)SymmetryHelpers::NUM_SYMMETRIES * log(policyProb + 1e-30);
           }

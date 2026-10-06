@@ -99,7 +99,7 @@ static void maybeApplyWideRootNoise(
 
 
 double Search::getExploreSelectionValueOfChild(
-  const SearchNode& parent, const float* parentPolicyProbs, const SearchNode* child,
+  const SearchNode& parent, const PolicyView& parentPolicyProbs, const SearchNode* child,
   Loc moveLoc,
   double exploreScaling,
   double totalChildWeight, int64_t childEdgeVisits, double fpuValue,
@@ -227,7 +227,7 @@ double Search::getNewExploreSelectionValue(
 }
 
 double Search::getReducedPlaySelectionWeight(
-  const SearchNode& parent, const float* parentPolicyProbs, const SearchNode* child,
+  const SearchNode& parent, const PolicyView& parentPolicyProbs, const SearchNode* child,
   Loc moveLoc,
   double exploreScaling,
   int64_t childEdgeVisits,
@@ -326,7 +326,7 @@ double Search::getFpuValueForChildrenAssumeVisited(
 //Sets bestChildIdx to -1 if no child has a positive share.
 void Search::selectChildToMatchVisitCapSnapshot(
   const VisitCapSnapshot& snapshot, ConstSearchNodeChildrenReference children,
-  const float* policyProbs, double parentWeightPerVisit, bool countEdgeVisit,
+  const PolicyView& policyProbs, double parentWeightPerVisit, bool countEdgeVisit,
   bool focusPlayout, Loc focusTarget,
   int& numChildrenFound, int& bestChildIdx, Loc& bestChildMoveLoc
 ) const {
@@ -466,7 +466,7 @@ void Search::selectBestChildToDescend(
   int64_t totalChildEdgeVisits = 0;
   const NNOutput* nnOutput = node.getNNOutput();
   assert(nnOutput != NULL);
-  const float* policyProbs = nnOutput->getPolicyProbsMaybeNoised();
+  PolicyView policyProbs = nnOutput->getPolicyProbsMaybeNoised();
 
   //Capped nodes with a snapshot match the snapshot distribution instead of following PUCT.
   if(getVisitCap(node.nextPla) > 0) {

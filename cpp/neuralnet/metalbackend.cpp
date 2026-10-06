@@ -998,7 +998,7 @@ void MetalProcess::processOptimism(
 
   const auto p = buffers.policyPassResults[row * buffers.policyResultChannels];
   const auto pOpt = buffers.policyPassResults[row * buffers.policyResultChannels + 1];
-  currentOutput->policyProbs[buffers.singlePolicyProbsElts - 1] = MetalProcess::policyOptimismCalc(policyOptimism, p, pOpt);
+  currentOutput->policyDense[buffers.singlePolicyProbsElts - 1] = MetalProcess::policyOptimismCalc(policyOptimism, p, pOpt);
 }
 
 void MetalProcess::processPolicy(
@@ -1012,7 +1012,7 @@ void MetalProcess::processPolicy(
   const auto policyOptimism = inputBuf->policyOptimism;
 
   if(buffers.policyResultChannels == 1) {
-    currentOutput->policyProbs[buffers.singlePolicyProbsElts - 1] =
+    currentOutput->policyDense[buffers.singlePolicyProbsElts - 1] =
       buffers.policyPassResults[row * buffers.policyResultChannels];
   } else {
     MetalProcess::processOptimism(inputBuffers, currentOutput, policyOptimism, row);
@@ -1020,7 +1020,7 @@ void MetalProcess::processPolicy(
   }
 
   SymmetryHelpers::copyOutputsWithSymmetry(
-    targetBuffer, currentOutput->policyProbs, 1, gpuHandle->nnYLen, gpuHandle->nnXLen, inputBuf->symmetry);
+    targetBuffer, currentOutput->policyDense, 1, gpuHandle->nnYLen, gpuHandle->nnXLen, inputBuf->symmetry);
 }
 
 void MetalProcess::processValue(

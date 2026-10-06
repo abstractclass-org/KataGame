@@ -163,7 +163,7 @@ NNEvaluator* TinyModelTest::runTinyModelTest(const string& baseDir, Logger& logg
         0,    0,    0,    0,    0,    0,    1,    1,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
       };
       for(int pos = 0; pos<361; pos++) {
-        double prob = nnOutput.policyProbs[pos];
+        double prob = nnOutput.policy()[pos];
         if(expectedPolicy[pos] >= 0) {
           EQ(prob*10000, expectedPolicy[pos], std::min(60.0, expectedPolicy[pos] * 0.1 + 2.0) + std::min(10.0, expectedPolicy[pos] * 0.1));
         }
@@ -323,7 +323,7 @@ NNEvaluator* TinyModelTest::runTinyModelTest(const string& baseDir, Logger& logg
         1,    8,    8,   11,    3,    4,    9,    7,    4,    4,    4,    4,    5,    6,    9,    6,    5,    6,    1,
       };
       for(int pos = 0; pos<361; pos++) {
-        double prob = nnOutput.policyProbs[pos];
+        double prob = nnOutput.policy()[pos];
         if(expectedPolicy[pos] >= 0) {
           EQ(prob*10000, expectedPolicy[pos], std::min(60.0, expectedPolicy[pos] * 0.15 + 2.0) + std::min(10.0, expectedPolicy[pos] * 0.15));
         }
@@ -458,7 +458,7 @@ NNEvaluator* TinyModelTest::runTinyModelTest(const string& baseDir, Logger& logg
       };
       for(int idx = 0; idx<78; idx++) {
         int pos = (idx % 13) + idx / 13 * NNPos::MAX_BOARD_LEN;
-        double prob = nnOutput.policyProbs[pos];
+        double prob = nnOutput.policy()[pos];
         if(expectedPolicy[idx] >= 0) {
           EQ(prob*10000, expectedPolicy[idx], std::min(120.0, expectedPolicy[idx] * 0.15 + 2.0) + std::min(10.0, expectedPolicy[idx] * 0.15));
         }

@@ -140,7 +140,7 @@ void Tests::runNNOnManyPoses(const string& modelFile, bool inputsNHWC, bool useN
     for(int y = 0; y<board.y_size; y++) {
       for(int x = 0; x<board.x_size; x++) {
         int pos = NNPos::xyToPos(x,y,nnEval->getNNXLen());
-        policyProbs.push_back(buf.result->policyProbs[pos]);
+        policyProbs.push_back(buf.result->policy()[pos]);
       }
     }
   }
@@ -266,7 +266,7 @@ void Tests::runNNBatchingTest(const string& modelFile, bool inputsNHWC, bool use
         for(int x = 0; x<board.x_size; x++) {
           int pos = NNPos::xyToPos(x,y,nnXLen);
           double ownership = nnOutput.whiteOwnerMap[pos];
-          double policy = nnOutput.policyProbs[pos];
+          double policy = nnOutput.policy()[pos];
           ownershipResults[i] += std::fabs(ownership);
           if(policy >= 0 && policy > maxPolicy)
             maxPolicy = policy;

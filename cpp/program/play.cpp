@@ -930,7 +930,7 @@ static NNRawStats computeNNRawStats(const Search* bot, const Board& board, const
     double entropy = 0.0;
     int policySize = NNPos::getPolicySize(nnOutput.nnXLen,nnOutput.nnYLen);
     for(int pos = 0; pos<policySize; pos++) {
-      double prob = nnOutput.policyProbs[pos];
+      double prob = nnOutput.policy()[pos];
       if(prob >= 1e-30)
         entropy += -prob * log(prob);
     }

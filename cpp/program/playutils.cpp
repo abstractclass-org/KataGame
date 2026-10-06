@@ -147,7 +147,7 @@ int PlayUtils::chooseRandomLegalMoves(const Board& board, const BoardHistory& hi
 Loc PlayUtils::chooseRandomPolicyMove(
   const NNOutput* nnOutput, const Board& board, const BoardHistory& hist, Player pla, Rand& gameRand, double temperature, bool allowPass, Loc banMove
 ) {
-  const float* policyProbs = nnOutput->policyProbs;
+  const PolicyView policyProbs = nnOutput->policy();
   int nnXLen = nnOutput->nnXLen;
   int nnYLen = nnOutput->nnYLen;
   int numLegalMoves = 0;
@@ -205,7 +205,7 @@ Loc PlayUtils::getGameInitializationMove(
   testAssert(pla == hist.presumedNextMovePla);
   for(int movePos = 0; movePos<policySize; movePos++) {
     Loc moveLoc = NNPos::posToLoc(movePos,board.x_size,board.y_size,nnXLen,nnYLen);
-    double policyProb = nnOutput->policyProbs[movePos];
+    double policyProb = nnOutput->policy()[movePos];
     if(!hist.isLegal(board,moveLoc,pla) || policyProb <= 0)
       continue;
     locs.push_back(moveLoc);
