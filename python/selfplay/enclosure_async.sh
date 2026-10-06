@@ -10,6 +10,10 @@
 # Usage: bash katago/python/selfplay/enclosure_async.sh NAMEPREFIX BASEDIR TRAININGNAME MODELKIND
 #   (environment as enclosure_loop.sh: SELFPLAY_OVERRIDES, NEXT_TRAININGNAME, NEXT_MODELKIND, ...)
 # Stop: bash katago/python/selfplay/enclosure_async_stop.sh NAMEPREFIX [PART...]
+# The body is one { ... } block (as runs/v2a_async.sh): bash reads all of it before running any, so an edit while
+# a copy starts cannot corrupt what it runs (2026-10-06 19:50: a restart read the file mid-edit, hit a syntax error
+# and left self-play down for 48 minutes).
+{
 set -eu
 if [[ $# -lt 4 ]]; then
     echo "Usage: $0 NAMEPREFIX BASEDIR TRAININGNAME MODELKIND"
@@ -126,3 +130,5 @@ if [[ -n "$NEXT_TRAININGNAME" ]]; then
 fi
 sleep 2
 echo "started from $DATED_ARCHIVE; logs in $LOGSDIR (selfplay, shuffle, export, train, train-next)"
+exit
+}
