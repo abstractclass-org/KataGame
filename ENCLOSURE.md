@@ -42,7 +42,11 @@ A `Move` is still `(Loc, Player)`.
   komi), and Enclosure reads none of it. Configurations set komi to 0.
 - **`Board` holds an `enclosure::Position`** (`game/enclosure/engine.h`,
   generated from the Enclosure repository's verified native engine by its
-  `tools/extract_katago_engine.py`).
+  `tools/extract_katago_engine.py`). Since 2026-10-03 the fork's copies are
+  edited here directly and are ahead of the native source: V2's input options
+  (no_maxflow, edges at both ends, the turn-safe plane), the income areas
+  (`clipped_area`), and the CPU work of 2026-10-06 (speed.md "CPU trick 4").
+  Re-extracting would drop them; port a native change by hand instead.
   - Callers outside `game/` use a few members (survey 2026-09-29): the size
     (`x_size`, `y_size` = 19), `colors` (74 uses), `pos_hash`, `ko_loc`,
     and Go stone logic (`getNumLiberties`, `isSimpleEye`, captures).
