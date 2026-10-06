@@ -43,7 +43,7 @@ A `Move` is still `(Loc, Player)`.
   komi), and Enclosure reads none of it. Configurations set komi to 0.
 - **`Board` holds an `enclosure::Position`** (`game/enclosure/engine.h`,
   generated from the Enclosure repository's verified native engine by its
-  `tools/extract_katago_engine.py`). Since 2026-10-03 the fork's copies are
+  `v2/tools/extract_katago_engine.py`). Since 2026-10-03 the fork's copies are
   edited here directly and are ahead of the native source: V2's input options
   (no_maxflow, edges at both ends, the turn-safe plane), the income areas
   (`clipped_area`), and the CPU work of 2026-10-06 (speed.md "CPU trick 4").
@@ -273,7 +273,7 @@ way:
   planes.
 - **Test:** `tests/enclosure/testnninputs.cpp` against
   `tests/data/enclosure_inputs.txt` (the Enclosure repository's
-  `tools/export_katago_inputs.py`: 336 positions from 40 archived and 40
+  `v2/tools/export_katago_inputs.py`: 336 positions from 40 archived and 40
   random games, with Python's reference inputs). Every spatial entry
   (NHWC and NCHW) and every global matches; a changed fixture entry fails.
 
@@ -491,7 +491,7 @@ policy 0.15, ownership 1.5/b², score pdf and cdf 0.02 each, L2 3e-5.
 - **Tests:**
   - `katago runenclosurerowtests OUT [SEED]` plays one self-play game with
     the no-network evaluator and writes its rows as text.
-  - The Enclosure repository's `tools/check_katago_rows.py` replays the
+  - The Enclosure repository's `v2/tools/check_katago_rows.py` replays the
     game in its engine and checks every row: inputs equal `input_planes`,
     policy targets on legal moves, D2 ownership within the storage
     rounding, result, score and the score distribution's mean, q-value
@@ -562,7 +562,7 @@ format and old and new rows mix in the shuffle:**
   game ends sooner), x 120; KataGo's area loss (squared error with a square-root transform, 0.25), weight C34
   = the value weight. The 1-round horizon is left out on its merits too: the current regions are an input,
   the future nodes cover 8 edges ahead, and D2 the whole game.
-- Checked by `tools/check_katago_rows.py` (recomputes all three from the engine) and
+- Checked by `v2/tools/check_katago_rows.py` (recomputes all three from the engine) and
   `enclosure_rows_check.py` (KataGo's trainer, every loss finite).
 
 The design as written on 2026-09-29:

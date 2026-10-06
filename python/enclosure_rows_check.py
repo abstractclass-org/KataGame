@@ -3,7 +3,7 @@
 
     python enclosure_rows_check.py CHECKPOINT ROWS_NPZ [ROWS_NPZ ...]
 
-The rows come from `katago runenclosurerowtests` via the Enclosure repository's tools/check_katago_rows.py
+The rows come from `katago runenclosurerowtests` via the Enclosure repository's v2/tools/check_katago_rows.py
 --npz (which also checks their values against the Enclosure engine). They are read by read_npz_training_data
 (random symmetries and history dropout on), run through the model, and scored by KataGo's metrics; then one
 backward pass. Nothing is trained: no optimizer step. Exit code 0 when every batch loads with the expected shapes

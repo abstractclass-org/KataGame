@@ -115,7 +115,7 @@ cycle=0
 while [[ "$CYCLES" -eq 0 || "$cycle" -lt "$CYCLES" ]]
 do
     cycle=$((cycle + 1))
-    # Enclosure (owner, 2026-10-03): refresh the start positions (our lost games, tools/export_start_poses.py) before
+    # Enclosure (owner, 2026-10-03): refresh the start positions (our lost games, v2/tools/export_start_poses.py) before
     # each cycle's self-play, which reads them at its start (hintPosesDir in SELFPLAY_OVERRIDES).
     if [[ -n "${START_POSES_CMD:-}" ]]; then
         (cd "$REPO" && eval "$START_POSES_CMD") || echo "start positions: export failed, the previous file stays"
