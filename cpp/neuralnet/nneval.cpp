@@ -1118,13 +1118,18 @@ static Rand& clientSymmetryRand(const string& randSeed) {
 //Enclosure fork: map an output computed on the image of board under symmetry back to board. Policy
 //entries follow the moves (only board's legal moves matter; the rest are masked afterwards), and
 //ownership follows the points.
-static void mapOutputBack(NNOutput& output, const Board& board, const Board& symBoard, int symmetry, int policySize) {
+//With mapPolicy false (owner, 2026-10-06: the request listed its policy entries already in the network's frame,
+//NNResultBuf::policyGather) the policy is read through that list instead and left as it is here.
+static void mapOutputBack(NNOutput& output, const Board& board, const Board& symBoard, int symmetry, int policySize,
+                          bool mapPolicy) {
   static thread_local std::vector<float> buf;
-  buf.assign(policySize, 0.0f);
-  for(int i = 0; i < policySize; i++)
-    if(i == enclosure::PASS || board.legalActions()[i])
-      buf[i] = output.policyDense[SymmetryHelpers::getSymAction(i, symBoard, symmetry)];
-  std::copy(buf.begin(), buf.end(), output.policyDense);
+  if(mapPolicy) {
+    buf.assign(policySize, 0.0f);
+    for(int i = 0; i < policySize; i++)
+      if(i == enclosure::PASS || board.legalActions()[i])
+        buf[i] = output.policyDense[SymmetryHelpers::getSymAction(i, symBoard, symmetry)];
+    std::copy(buf.begin(), buf.end(), output.policyDense);
+  }
   if(output.whiteOwnerMap != NULL) {
     const int nnXLen = output.nnXLen, nnYLen = output.nnYLen;
     buf.assign(nnXLen * nnYLen, 0.0f);
@@ -1387,8 +1392,12 @@ void NNEvaluator::evaluate(
     buf.clientWaitingForResult.wait(resultLock);
   resultLock.unlock();
 
+  //Enclosure fork (owner, 2026-10-06): with the policy entries listed (NNResultBuf::policyGather), the post-processing
+  //below reads those only (listedPolicy), already through the symmetry. Not with the dagger hack (Go's), which masks
+  //moves beyond the board's legality.
+  const bool listedPolicy = !buf.policyGather.empty() && !nnInputParams.avoidMYTDaggerHack;
   if(symmetry != 0)
-    mapOutputBack(*buf.result, board, *symBoard, symmetry, policySize);
+    mapOutputBack(*buf.result, board, *symBoard, symmetry, policySize, !listedPolicy);
 
   // Perform postprocessing on the result - turn the nn output into probabilities
   // As a hack though, if the only thing we were missing was the ownermap, just grab the old policy and values
@@ -1421,9 +1430,92 @@ void NNEvaluator::evaluate(
     testAssert(!includeOwnerMap || buf.result->whiteOwnerMap != NULL);
   }
   else {
-    float* policy = buf.result->policyDense;
-
     float policyOutputScaling = postProcessParams.outputScaleMultiplier / nnInputParams.nnPolicyTemperature;
+    if(listedPolicy) {
+    //Enclosure fork (owner, 2026-10-06; trick 2's follow-up): the listed entries only (the legal moves ascending, then
+    //pass, in the network's frame), through the same steps and float operations as the dense loops below and in the
+    //same order, so the results are identical: an entry not listed is illegal, and an illegal entry adds exactly 0
+    //to a sum and never wins the max (pass is always listed, as the passing hack reads it even when illegal).
+    const std::vector<uint16_t>& gather = buf.policyGather;
+    const float* dense = buf.result->policyDense;
+    const int n = (int)gather.size();
+    testAssert(n >= 1 && gather[n-1] == enclosure::PASS && policySize == enclosure::PASS + 1);
+    static thread_local std::vector<float> vals;
+    static thread_local std::vector<uint16_t> listedPos;
+    static thread_local std::vector<char> legal;
+    vals.resize(n);
+    listedPos.resize(n);
+    legal.resize(n);
+    testAssert(nextPlayer == history.presumedNextMovePla);
+    {
+      const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
+      const bool canMove = !history.isGameFinished && nextPlayer == board.nextPla() && !board.pos.terminal();
+      int j = 0;
+      for(size_t i = legalBits._Find_first(); i < (size_t)enclosure::PASS; i = legalBits._Find_next(i))
+        listedPos[j++] = (uint16_t)i;
+      listedPos[j++] = (uint16_t)enclosure::PASS;
+      testAssert(j == n);
+      for(j = 0; j < n; j++)
+        legal[j] = canMove && legalBits.test(listedPos[j]);
+    }
+    float maxPolicy = -1e25f;
+    int legalCount = 0;
+    for(int j = 0; j<n; j++) {
+      float policyValue;
+      if(legal[j]) {
+        legalCount += 1;
+        policyValue = dense[gather[j]] * policyOutputScaling;
+      }
+      else
+        policyValue = -1e30f;
+      vals[j] = policyValue;
+      if(policyValue > maxPolicy)
+        maxPolicy = policyValue;
+    }
+    testAssert(legalCount > 0);
+    float policySum = 0.0f;
+    if(nnInputParams.enablePassingHacks) {
+      float maxPassPolicySumFactor = 19.0f;
+      for(int j = 0; j<n-1; j++) {
+        vals[j] = legal[j] ? exp(vals[j] - maxPolicy) : 0.0f;
+        policySum += vals[j];
+      }
+      vals[n-1] = std::max(1e-20f, std::min(exp(vals[n-1] - maxPolicy), policySum * maxPassPolicySumFactor));
+      policySum += vals[n-1];
+    }
+    else {
+      for(int j = 0; j<n; j++) {
+        vals[j] = legal[j] ? exp(vals[j] - maxPolicy) : 0.0f;
+        policySum += vals[j];
+      }
+    }
+    if(!isfinite(policySum)) {
+      cout << "Got nonfinite for policy sum" << endl;
+      history.printDebugInfo(cout,board);
+      throw StringError("Got nonfinite for policy sum");
+    }
+    if(policySum <= 0.0) {
+      if(!buf.errorLogLockout && logger != NULL) {
+        buf.errorLogLockout = true;
+        logger->write("Warning: all legal moves rounded to 0 probability for " + string(modelFileName));
+      }
+      float uniform = 1.0f / legalCount;
+      for(int j = 0; j<n; j++)
+        if(legal[j])
+          vals[j] = uniform;
+    }
+    else {
+      for(int j = 0; j<n; j++)
+        if(legal[j])
+          vals[j] = vals[j] / policySum;
+    }
+    buf.result->setPolicyFromLegal(listedPos.data(), vals.data(), legal.data(), n);
+    buf.result->policyDense = NULL;
+    testAssert((int)buf.result->legalPos.size() == legalCount);
+    }
+    else {
+    //The dense path (no listed entries: the no-network test mode, the dagger hack), as upstream on 17,330 entries.
+    float* policy = buf.result->policyDense;
 
     int xSize = board.x_size;
     int ySize = board.y_size;
@@ -1526,6 +1618,7 @@ void NNEvaluator::evaluate(
     //kept, the dense scratch released.
     buf.result->compactPolicy();
     testAssert((int)buf.result->legalPos.size() == legalCount);
+    }
 
     buf.result->policyOptimismUsed = (float)nnInputParams.policyOptimism;
 

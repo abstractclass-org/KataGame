@@ -324,6 +324,9 @@ struct NNOutput {
   }
   //Keeps the entries of dense (MAX_NN_POLICY_SIZE, negative for illegal moves) at or above 0 as the compact policy.
   void setPolicyFromDense(const float* dense);
+  //The compact policy from n listed positions (ascending, pass last if listed) and their probabilities, keeping those
+  //with legal[j] set: the same result as setPolicyFromDense on a dense array holding exactly those.
+  void setPolicyFromLegal(const uint16_t* pos, const float* probs, const char* legal, int n);
   //The in-flight dense policy (policyDense) made compact; policyDense is NULL after.
   void compactPolicy();
   void debugPrint(std::ostream& out, const Board& board) const;

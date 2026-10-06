@@ -335,6 +335,41 @@ void NNOutput::setPolicyFromDense(const float* dense) {
   legalProbs.shrink_to_fit();
 }
 
+void NNOutput::setPolicyFromLegal(const uint16_t* pos, const float* probs, const char* legal, int n) {
+  const int passPos = NNPos::MAX_NN_POLICY_SIZE - 1;
+  int count = 0;
+  for(int j = 0; j<n; j++)
+    count += legal[j] ? 1 : 0;
+  legalPos.clear();
+  legalProbs.clear();
+  legalPos.reserve(count);
+  legalProbs.reserve(count);
+  std::fill(policyMask, policyMask + NNPos::MAX_BOARD_AREA, uint64_t(0));
+  policyPassSlot = -1;
+  //As setPolicyFromDense: a point's start is the number of legal entries before it, pass (last) after every point.
+  int point = 0;
+  for(int j = 0; j<n; j++) {
+    if(!legal[j])
+      continue;
+    const int p = pos[j];
+    if(p == passPos) {
+      while(point < NNPos::MAX_BOARD_AREA)
+        policyStart[point++] = (uint16_t)legalPos.size();
+      policyPassSlot = (int)legalPos.size();
+    }
+    else {
+      const int pt = p / NNPos::NUM_OFFSETS;
+      while(point <= pt)
+        policyStart[point++] = (uint16_t)legalPos.size();
+      policyMask[pt] |= uint64_t(1) << (p - pt * NNPos::NUM_OFFSETS);
+    }
+    legalPos.push_back((uint16_t)p);
+    legalProbs.push_back(probs[j]);
+  }
+  while(point < NNPos::MAX_BOARD_AREA)
+    policyStart[point++] = (uint16_t)legalPos.size();
+}
+
 void NNOutput::compactPolicy() {
   testAssert(policyDense != NULL);
   setPolicyFromDense(policyDense);
