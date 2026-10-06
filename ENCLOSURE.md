@@ -2,7 +2,7 @@
 
 `katago/` (upstream `d91ea85` plus our changes) turns KataGo into an
 Enclosure bot. The plan, its build order and the approved departures are in
-`docs/katago-fork-plan.md` of this repository. This file records the
+`v2/docs/katago-fork-plan.md` of this repository. This file records the
 design decisions inside the code. The network itself, drawn and set against
 KataGo's, is in [ENCLOSURE_NETWORK.md](ENCLOSURE_NETWORK.md).
 
@@ -295,7 +295,7 @@ also moved point by point.
 So the rules are symmetric under all 8, but only the identity and the
 mirror map real games to real games: under the other 6, Blue starts on the
 right or on a vertical line, which never happens. How many to use is the
-owner's decision (D5 assumed only the mirror; see `docs/decisions/katago-fork/build.md`).
+owner's decision (D5 assumed only the mirror; see `v2/docs/decisions/build.md`).
 **Decided (owner): all 8** (exact labels, KataGo's method, and reversible
 without new data; an arena A/B of 2 against 8 can revisit it).
 The code handles all 8. `SymmetryHelpers::NUM_SYMMETRIES` sets the count,
@@ -371,7 +371,7 @@ unit.** Before, c_score = 0 (owner, option (b), win/loss only).
 
 842 bins as KataGo, each 12 points wide, covering margins of ±5,052 (every
 margin in `net1`'s self-play, 99% of full-length human games; measurements
-in `docs/decisions/katago-fork/build.md`). Larger margins go to the end bins. Only the
+in `v2/docs/decisions/build.md`). Larger margins go to the end bins. Only the
 training rows and the Python head use the distribution (step 6).
 
 ## The network's policy head, export and CPU backend (step 5, 2026-09-29)

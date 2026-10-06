@@ -452,7 +452,7 @@ inline double held_ground(const Position& p, int player, const int* mine, const 
 
 // ENCLOSURE_NO_HELD_GROUND=1 (owner, 2026-10-03, "no_maxflow"): held ground and its openings (planes 7 and 8 of
 // each player) stay zero and their max flow is not computed, about 15% of self-play's CPU. Measured first: on
-// v2a's own data a network learned as well without them (decisions/katago-fork/inputs-and-targets.md). The input shape is unchanged.
+// v2a's own data a network learned as well without them (v2/docs/decisions/inputs-and-targets.md). The input shape is unchanged.
 inline const bool NO_HELD_GROUND = [] {
   const char* v = std::getenv("ENCLOSURE_NO_HELD_GROUND");
   return v != nullptr && *v != 0 && *v != '0';

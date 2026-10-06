@@ -3,7 +3,7 @@
 This describes the networks V2 trains (run `v2a`) and how they differ from KataGo's. Everything not listed as a
 difference is KataGo's, as described in [docs/NetworkArchitectures.md](docs/NetworkArchitectures.md): the trunk, its
 residual and global pooling blocks, the normalisation, the activation, and the shapes of the policy and value heads.
-The reasons for each change are in [ENCLOSURE.md](ENCLOSURE.md) and in `docs/decisions/katago-fork/` of the
+The reasons for each change are in [ENCLOSURE.md](ENCLOSURE.md) and in `v2/docs/decisions/` of the
 Enclosure repository; this file is the picture.
 
 * [Summary](#summary)
@@ -338,7 +338,7 @@ flowchart TD
 
 ### Regret heads (RGSC)
 
-Two heads added for Regret-Guided Search Control (owner, 2026-10-04; `docs/decisions/katago-fork/rgsc.md`). The
+Two heads added for Regret-Guided Search Control (owner, 2026-10-04; `v2/docs/decisions/rgsc.md`). The
 paper does not describe its heads, and the authors' code copies its own value head for them, so V2 copies KataGo's
 value-head shape (a named deviation). Both read the trunk **detached**, as the authors' do: their losses train the
 heads only, never the trunk.

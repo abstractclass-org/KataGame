@@ -426,7 +426,7 @@ void SelfplayManager::runDataWriteLoopImpl(ModelData* modelData) {
   //Enclosure fork (owner, 2026-10-05): give the unloaded network's freed memory back to the system. glibc keeps freed
   //chunks in its arenas, and here each network output holds a 69 KB policy (Go's: 1.5 KB), so an unloaded network's
   //cache and buffers left about 3.3 GB per network switch that never came back; a trim returned it, in under a
-  //second (decisions/katago-fork/speed.md, "Async step 1"). Once per switch; upstream has no such call.
+  //second (v2/docs/decisions/speed.md, "Async step 1"). Once per switch; upstream has no such call.
 #ifdef __GLIBC__
   {
     ClockTimer trimTimer;

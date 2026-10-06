@@ -1,6 +1,7 @@
 #!/bin/bash -eu
 # Enclosure: KataGo's synchronous_loop.sh (self-play -> shuffle -> train -> export, no gating) for this
-# repository. Only these differ from upstream:
+# repository. Retired for v2a on 2026-10-05 in favour of the asynchronous setup (enclosure_async.sh, run by
+# v2/scripts/start.sh); kept for a run that wants the loop. Only these differ from upstream:
 #   - KataGo lives in katago/ of this repository (upstream assumes the repository root);
 #   - Python is the project's .venv-katago; the binary is ~/ws/game-ai/enclosure/katago-build-cuda/katago (override KATAGO_BIN);
 #   - the self-play config is configs/training/selfplay_enclosure.cfg;

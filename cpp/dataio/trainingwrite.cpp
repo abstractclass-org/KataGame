@@ -878,7 +878,7 @@ void TrainingWriteBuffers::addRow(
 
   //Enclosure fork (owner, 2026-10-03): future nodes, KataGo's future-position target as it is: board.colors marks
   //each player's nodes and the boards are one edge apart, so C2-3 hold the nodes 8 and 32 edges later (KataGo's
-  //19x19 numbers, kept as decisions: decisions/katago-fork/build.md, "Time constants split"). ENCLOSURE.md, 1.
+  //19x19 numbers, kept as decisions: v2/docs/decisions/build.md, "Time constants split"). ENCLOSURE.md, 1.
   if(posHistForFutureBoards == NULL) {
     rowGlobal[33] = 0.0f;
     for(int i = 0; i<posArea; i++) {
