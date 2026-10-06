@@ -3047,8 +3047,8 @@ class ValueHead(torch.nn.Module):
 
 class RegretHead(torch.nn.Module):
     """Enclosure fork (owner, 2026-10-04): one of RGSC's two heads (Tsai et al., ICLR 2026: regret value, regret
-    ranking) in KataGo's value-head shape: 1x1 conv, bias, activation, KataGo's value-head pooling (mean, scaled mean,
-    max), a hidden layer, one output. The paper does not describe its heads; the authors' code copies its own value
+    ranking) in KataGo's value-head shape: 1x1 conv, bias, activation, KataGo's value-head pooling (the mean and two
+    board-size scalings of it; no max), a hidden layer, one output. The paper does not describe its heads; the authors' code copies its own value
     head class for them, so V2 copies KataGo's (katago-fork/rgsc.md, "RGSC: the authors' code read again")."""
     def __init__(self, c_in, c_v1, c_v2, config, activation):
         super(RegretHead, self).__init__()

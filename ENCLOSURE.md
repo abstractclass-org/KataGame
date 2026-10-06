@@ -3,7 +3,8 @@
 `katago/` (upstream `d91ea85` plus our changes) turns KataGo into an
 Enclosure bot. The plan, its build order and the approved departures are in
 `docs/katago-fork-plan.md` of this repository. This file records the
-design decisions inside the code.
+design decisions inside the code. The network itself, drawn and set against
+KataGo's, is in [ENCLOSURE_NETWORK.md](ENCLOSURE_NETWORK.md).
 
 ## Principle
 
