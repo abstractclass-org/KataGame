@@ -4850,6 +4850,9 @@ struct Buffers {
   size_t inputGlobalBufBytes;
   size_t inputMetaBufBytesFloat;
   size_t inputMetaBufBytes;
+  //Enclosure fork (owner, 2026-10-06): the packed spatial rows (NNResultBuf::rowSpatialBits), unpacked into inputBuf.
+  uint32_t* inputBitsBuf;
+  size_t inputBitsBufBytes;
 
   float* policyPassBuf;
   size_t policyPassBufBytes;
@@ -4905,6 +4908,12 @@ struct Buffers {
     else {
       inputMetaBufFloat = NULL;
       inputMetaBuf = NULL;
+    }
+    {
+      const size_t xySize = batchXYFloatBytes / batchFloatBytes;
+      const size_t wordsPerRow = ((size_t)m.numInputChannels * xySize + 31) / 32;
+      inputBitsBufBytes = (batchFloatBytes / sizeof(float)) * wordsPerRow * sizeof(uint32_t);
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&inputBitsBuf), inputBitsBufBytes));
     }
 
     //Enclosure fork: NUM_OFFSETS channels per policy output.
@@ -4981,6 +4990,7 @@ struct Buffers {
       (void)cudaFree(inputMetaBufFloat);
     if(inputMetaBuf != NULL)
       (void)cudaFree(inputMetaBuf);
+    (void)cudaFree(inputBitsBuf);
 
     (void)cudaFree(policyPassBuf);
     (void)cudaFree(policyBuf);
@@ -5548,6 +5558,9 @@ struct InputBuffers {
   size_t singleInputGlobalBytes;
   size_t singleInputMetaElts;
   size_t singleInputMetaBytes;
+  //Enclosure fork (owner, 2026-10-06): a packed spatial row, one bit per entry (NNResultBuf::rowSpatialBits).
+  size_t singleInputBitsWords;
+  size_t singleInputBitsBytes;
   size_t singlePolicyPassResultElts;
   size_t singlePolicyPassResultBytes;
   size_t singlePolicyResultElts;
@@ -5571,6 +5584,7 @@ struct InputBuffers {
   float* userInputBuffer; //Host pointer
   float* userInputGlobalBuffer; //Host pointer
   float* userInputMetaBuffer; //Host pointer
+  uint32_t* userInputBitsBuffer; //Host pointer
 
   float* policyPassResults; //Host pointer
   float* policyResults; //Host pointer
@@ -5603,6 +5617,8 @@ struct InputBuffers {
     singleInputGlobalBytes = (size_t)m.numInputGlobalChannels * sizeof(float);
     singleInputMetaElts = (size_t)m.numInputMetaChannels;
     singleInputMetaBytes = (size_t)m.numInputMetaChannels * sizeof(float);
+    singleInputBitsWords = (singleInputElts + 31) / 32;
+    singleInputBitsBytes = singleInputBitsWords * sizeof(uint32_t);
     singlePolicyPassResultElts = (size_t)(m.numPolicyChannels);
     singlePolicyPassResultBytes = (size_t)(m.numPolicyChannels) * sizeof(float);
     //Enclosure fork: NUM_OFFSETS policy channels per output (channel = output * NUM_OFFSETS + offset).
@@ -5635,6 +5651,7 @@ struct InputBuffers {
     userInputBuffer = NULL;
     userInputGlobalBuffer = NULL;
     userInputMetaBuffer = NULL;
+    userInputBitsBuffer = NULL;
     policyPassResults = NULL;
     policyResults = NULL;
     valueResults = NULL;
@@ -5658,6 +5675,8 @@ struct InputBuffers {
       userInputGlobalBuffer = mallocPinned((size_t)m.numInputGlobalChannels * maxBatchSize);
       if(m.numInputMetaChannels > 0)
         userInputMetaBuffer = mallocPinned((size_t)m.numInputMetaChannels * maxBatchSize);
+      static_assert(sizeof(uint32_t) == sizeof(float), "");
+      userInputBitsBuffer = reinterpret_cast<uint32_t*>(mallocPinned(singleInputBitsWords * maxBatchSize));
 
       policyPassResults = mallocPinned((size_t)maxBatchSize * m.numPolicyChannels);
       policyResults = mallocPinned((size_t)maxBatchSize * m.numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen);
@@ -5763,6 +5782,9 @@ void NeuralNet::getOutput(
   assert(numSpatialFeatures * nnXLen * nnYLen == inputBuffers->singleInputElts);
   assert(numGlobalFeatures == inputBuffers->singleInputGlobalElts);
   const int numPolicyChannels = gpuHandle->model->numPolicyChannels;
+  //Enclosure fork (owner, 2026-10-06): packed rows (NNResultBuf::rowSpatialBits) are sent as bits and unpacked on the
+  //GPU into the same 0/1 entries, in the same layout; every row of a batch comes from the same evaluator.
+  const bool packed = inputBufs[0]->rowSpatialPacked;
 
   for(int nIdx = 0; nIdx<batchSize; nIdx++) {
     float* rowSpatialInput = inputBuffers->userInputBuffer + (inputBuffers->singleInputElts * nIdx);
@@ -5772,7 +5794,6 @@ void NeuralNet::getOutput(
     float* rowMetaInput = numMetaFeatures > 0 ? inputBuffers->userInputMetaBuffer + (inputBuffers->singleInputMetaElts * nIdx) : NULL;
 
     const float* rowGlobal = inputBufs[nIdx]->rowGlobalBuf.data();
-    const float* rowSpatial = inputBufs[nIdx]->rowSpatialBuf.data();
     const float* rowMeta = inputBufs[nIdx]->rowMetaBuf.data();
     bool hasRowMeta = inputBufs[nIdx]->hasRowMeta;
     std::copy(rowGlobal,rowGlobal+numGlobalFeatures,rowGlobalInput);
@@ -5786,7 +5807,16 @@ void NeuralNet::getOutput(
     }
     //Enclosure fork: NNEvaluator applies symmetries to the position; planes are never transformed here.
     testAssert(inputBufs[nIdx]->symmetry == 0);
-    SymmetryHelpers::copyInputsWithSymmetry(rowSpatial, rowSpatialInput, 1, nnYLen, nnXLen, numSpatialFeatures, gpuHandle->inputsUseNHWC, inputBufs[nIdx]->symmetry);
+    testAssert(inputBufs[nIdx]->rowSpatialPacked == packed);
+    if(packed) {
+      testAssert(inputBufs[nIdx]->rowSpatialBits.size() >= inputBuffers->singleInputBitsWords);
+      const uint32_t* rowBits = inputBufs[nIdx]->rowSpatialBits.data();
+      std::copy(rowBits, rowBits + inputBuffers->singleInputBitsWords, inputBuffers->userInputBitsBuffer + (inputBuffers->singleInputBitsWords * nIdx));
+    }
+    else {
+      const float* rowSpatial = inputBufs[nIdx]->rowSpatialBuf.data();
+      SymmetryHelpers::copyInputsWithSymmetry(rowSpatial, rowSpatialInput, 1, nnYLen, nnXLen, numSpatialFeatures, gpuHandle->inputsUseNHWC, inputBufs[nIdx]->symmetry);
+    }
   }
 
   Buffers* buffers = gpuHandle->buffers.get();
@@ -5813,7 +5843,13 @@ void NeuralNet::getOutput(
     assert(inputBuffers->singleOwnershipResultElts == nnXLen*nnYLen);
     assert(inputBuffers->singleOwnershipResultBytes == nnXLen*nnYLen * sizeof(float));
 
-    CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->inputBuf, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, cudaMemcpyHostToDevice, stream));
+    if(packed) {
+      CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->inputBitsBuf, inputBuffers->userInputBitsBuffer, inputBuffers->singleInputBitsBytes*batchSize, cudaMemcpyHostToDevice, stream));
+      customCudaUnpackBits(buffers->inputBitsBuf,(float*)buffers->inputBuf,batchSize,(int)inputBuffers->singleInputElts,(int)inputBuffers->singleInputBitsWords,stream);
+      CUDA_ERR("getOutput",cudaPeekAtLastError());
+    }
+    else
+      CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->inputBuf, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, cudaMemcpyHostToDevice, stream));
     CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->inputGlobalBuf, inputBuffers->userInputGlobalBuffer, inputBuffers->singleInputGlobalBytes*batchSize, cudaMemcpyHostToDevice, stream));
     if(numMetaFeatures > 0) {
       CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->inputMetaBuf, inputBuffers->userInputMetaBuffer, inputBuffers->singleInputMetaBytes*batchSize, cudaMemcpyHostToDevice, stream));
@@ -5840,13 +5876,19 @@ void NeuralNet::getOutput(
     assert(inputBuffers->singleOwnershipResultElts == nnXLen*nnYLen);
     assert(inputBuffers->singleOwnershipResultBytes == nnXLen*nnYLen * sizeof(float));
 
-    CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->inputBufFloat, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, cudaMemcpyHostToDevice, stream));
+    if(!packed)
+      CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->inputBufFloat, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, cudaMemcpyHostToDevice, stream));
     CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->inputGlobalBufFloat, inputBuffers->userInputGlobalBuffer, inputBuffers->singleInputGlobalBytes*batchSize, cudaMemcpyHostToDevice, stream));
     if(numMetaFeatures > 0) {
       CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->inputMetaBufFloat, inputBuffers->userInputMetaBuffer, inputBuffers->singleInputMetaBytes*batchSize, cudaMemcpyHostToDevice, stream));
     }
 
-    customCudaCopyToHalf((const float*)buffers->inputBufFloat,(half*)buffers->inputBuf,inputBuffers->singleInputElts*batchSize,cudaHandles->stream);
+    if(packed) {
+      CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->inputBitsBuf, inputBuffers->userInputBitsBuffer, inputBuffers->singleInputBitsBytes*batchSize, cudaMemcpyHostToDevice, stream));
+      customCudaUnpackBits(buffers->inputBitsBuf,(half*)buffers->inputBuf,batchSize,(int)inputBuffers->singleInputElts,(int)inputBuffers->singleInputBitsWords,stream);
+    }
+    else
+      customCudaCopyToHalf((const float*)buffers->inputBufFloat,(half*)buffers->inputBuf,inputBuffers->singleInputElts*batchSize,cudaHandles->stream);
     CUDA_ERR("getOutput",cudaPeekAtLastError());
     customCudaCopyToHalf((const float*)buffers->inputGlobalBufFloat,(half*)buffers->inputGlobalBuf,inputBuffers->singleInputGlobalElts*batchSize,cudaHandles->stream);
     CUDA_ERR("getOutput",cudaPeekAtLastError());

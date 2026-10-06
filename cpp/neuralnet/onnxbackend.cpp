@@ -954,7 +954,7 @@ void NeuralNet::getOutput(
     float* rowGlobalInput = inputBuffers->globalInput.data() + inputBuffers->singleInputGlobalElts * nIdx;
 
     const float* rowGlobal = inputBufs[nIdx]->rowGlobalBuf.data();
-    const float* rowSpatial = inputBufs[nIdx]->rowSpatialBuf.data();
+    const float* rowSpatial = inputBufs[nIdx]->spatialRowFloats((int)inputBuffers->singleInputElts);
     std::copy(rowGlobal, rowGlobal + numGlobalFeatures, rowGlobalInput);
     SymmetryHelpers::copyInputsWithSymmetry(
       rowSpatial, rowSpatialInput, 1, nnYLen, nnXLen, numSpatialFeatures, false, inputBufs[nIdx]->symmetry);

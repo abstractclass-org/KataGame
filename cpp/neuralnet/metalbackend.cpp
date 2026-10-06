@@ -947,7 +947,7 @@ void MetalProcess::processRowData(size_t row, ComputeHandle* gpuHandle, InputBuf
   float* rowGlobalInput = &inputBuffers->userInputGlobalBuffer[inputBuffers->singleInputGlobalElts * row];
   float* rowMetaInput = &inputBuffers->userInputMetaBuffer[inputBuffers->singleInputMetaElts * row];
   const float* rowGlobal = inputBufs[row]->rowGlobalBuf.data();
-  const float* rowSpatial = inputBufs[row]->rowSpatialBuf.data();
+  const float* rowSpatial = inputBufs[row]->spatialRowFloats((int)inputBuffers->singleSpatialElts);
   const float* rowMeta = inputBufs[row]->rowMetaBuf.data();
 
   MetalProcess::copyRowData(rowGlobalInput, rowGlobal, inputBuffers->singleInputGlobalElts);

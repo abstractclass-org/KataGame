@@ -171,6 +171,18 @@ namespace NNInputs {
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal,
     std::vector<int>* setEntries = NULL
   );
+  //Enclosure fork (owner, 2026-10-06; iviazovetskyi's packed inputs): the same row as fillRowV8, one bit per entry,
+  //since every spatial entry is 0 or 1: bit i of the row (rowBits[i / 32] >> (i % 32) & 1) is fillRowV8's entry i, in
+  //the same layout (useNHWC). The row is NUM_SPATIAL_WORDS_V8 words, cleared whole here; padding bits stay 0.
+  //rowGlobal as fillRowV8. The GPU backends send these 9.7 KB instead of 310 KB of floats and unpack them there.
+  const int NUM_SPATIAL_ELTS_V8 = NUM_FEATURES_SPATIAL_V8 * enclosure::SIZE * enclosure::SIZE;
+  const int NUM_SPATIAL_WORDS_V8 = (NUM_SPATIAL_ELTS_V8 + 31) / 32;
+  void fillRowV8Packed(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal
+  );
+  //The packed row's first n entries as floats (0 or 1) into out.
+  void unpackSpatialBits(const uint32_t* rowBits, float* out, int n);
 
   //If groupTax is specified, for each color region of area, reduce weight on empty spaces equally to reduce the total sum by 2.
   //(but should handle seki correctly)

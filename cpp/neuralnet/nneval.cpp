@@ -19,8 +19,8 @@ NNResultBuf::NNResultBuf()
     boardXSizeForServer(0),
     boardYSizeForServer(0),
     rowSpatialBuf(),
-    rowSpatialSet(),
-    rowSpatialSetValid(false),
+    rowSpatialBits(),
+    rowSpatialPacked(false),
     rowGlobalBuf(),
     rowMetaBuf(),
     hasRowMeta(false),
@@ -32,6 +32,16 @@ NNResultBuf::NNResultBuf()
 {}
 
 NNResultBuf::~NNResultBuf() {
+}
+
+const float* NNResultBuf::spatialRowFloats(int n) {
+  if(rowSpatialPacked) {
+    testAssert(n <= (int)rowSpatialBits.size() * 32);
+    if((int)rowSpatialBuf.size() < n)
+      rowSpatialBuf.resize(n);
+    NNInputs::unpackSpatialBits(rowSpatialBits.data(), rowSpatialBuf.data(), n);
+  }
+  return rowSpatialBuf.data();
 }
 
 //-------------------------------------------------------------------------------------
@@ -504,7 +514,8 @@ void NNEvaluator::fillRowBufs(
   NNResultBuf& buf
 ) const {
   const int rowSpatialLen = NNModelVersion::getNumSpatialFeatures(modelVersion) * nnXLen * nnYLen;
-  if(buf.rowSpatialBuf.size() < rowSpatialLen)
+  //V8 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
+  if(inputsVersion != 8 && buf.rowSpatialBuf.size() < rowSpatialLen)
     buf.rowSpatialBuf.resize(rowSpatialLen);
   const int rowGlobalLen = NNModelVersion::getNumGlobalFeatures(modelVersion);
   if(buf.rowGlobalBuf.size() < rowGlobalLen)
@@ -514,17 +525,14 @@ void NNEvaluator::fillRowBufs(
     buf.rowMetaBuf.resize(rowMetaLen);
 
   static_assert(NNModelVersion::latestInputsVersionImplemented == 8, "");
-  //Enclosure fork (2026-10-05): fillRowV8 clears only the entries its last fill set (buf.rowSpatialSet); the row is
-  //cleared whole the first time, and again after any other writer.
-  if(inputsVersion != 8)
-    buf.rowSpatialSetValid = false;
+  //Enclosure fork (owner, 2026-10-06): V8 rows packed, one bit per entry (NNResultBuf::rowSpatialBits). This replaces
+  //the float row cleared by its last entries (2026-10-05): the packed row is 9.7 KB, cleared whole.
+  buf.rowSpatialPacked = inputsVersion == 8;
   if(inputsVersion == 8) {
-    if(!buf.rowSpatialSetValid) {
-      std::fill(buf.rowSpatialBuf.begin(), buf.rowSpatialBuf.end(), 0.0f);
-      buf.rowSpatialSet.clear();
-      buf.rowSpatialSetValid = true;
-    }
-    NNInputs::fillRowV8(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBuf.data(), buf.rowGlobalBuf.data(), &buf.rowSpatialSet);
+    testAssert(rowSpatialLen == NNInputs::NUM_SPATIAL_ELTS_V8);
+    if(buf.rowSpatialBits.size() < NNInputs::NUM_SPATIAL_WORDS_V8)
+      buf.rowSpatialBits.resize(NNInputs::NUM_SPATIAL_WORDS_V8);
+    NNInputs::fillRowV8Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data());
   }
   else if(inputsVersion == 3)
     NNInputs::fillRowV3(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBuf.data(), buf.rowGlobalBuf.data());

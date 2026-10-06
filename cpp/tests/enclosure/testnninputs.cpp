@@ -77,6 +77,13 @@ int main(int argc, char** argv) {
   vector<float> nhwcReused(S * S * C, 0.0f), nchwReused(S * S * C, 0.0f), globalReused(G);
   vector<int> nhwcSet, nchwSet;
   int reusedChecks = 0;
+  //Packed rows (fillRowV8Packed, as NNEvaluator::fillRowBufs fills them since 2026-10-06), refilled position after
+  //position: each must unpack to the float row exactly, with the padding bits 0.
+  const int W = NNInputs::NUM_SPATIAL_WORDS_V8;
+  static_assert(NNInputs::NUM_SPATIAL_ELTS_V8 == enclosure::SIZE * enclosure::SIZE * NNInputs::NUM_FEATURES_SPATIAL_V8, "");
+  vector<uint32_t> nhwcBits(W, 0xFFFFFFFFu), nchwBits(W, 0xFFFFFFFFu);
+  vector<float> unpacked(S * S * C), globalPacked(G);
+  int packedChecks = 0;
 
   string line;
   int positions = 0, failures = 0, historyChecks = 0;
@@ -173,6 +180,19 @@ int main(int argc, char** argv) {
     if(nchwReused != nchw)
       fail(label + ": the NCHW row refilled over the previous position's differs from a fresh fill");
     reusedChecks++;
+    for(int layout = 0; layout < 2; layout++) {
+      const bool useNHWC = layout == 0;
+      vector<uint32_t>& bits = useNHWC ? nhwcBits : nchwBits;
+      NNInputs::fillRowV8Packed(board, hist, pla, params, S, S, useNHWC, bits.data(), globalPacked.data());
+      NNInputs::unpackSpatialBits(bits.data(), unpacked.data(), S * S * C);
+      if(unpacked != (useNHWC ? nhwc : nchw))
+        fail(label + ": the packed " + (useNHWC ? "NHWC" : "NCHW") + " row differs from the float row");
+      if(globalPacked != (useNHWC ? global : globalNchw))
+        fail(label + ": the packed fill's global inputs differ");
+      if((bits[W - 1] >> ((S * S * C) % 32)) != 0 && (S * S * C) % 32 != 0)
+        fail(label + ": the packed row's padding bits are not 0");
+    }
+    packedChecks++;
     for(int i = 0; i < G; i++)
       if(global[i] != expectedGlobal[i] || globalNchw[i] != expectedGlobal[i])
         fail(label + ": global " + Global::intToString(i) + " is " + Global::floatToString(global[i]) +
@@ -191,6 +211,7 @@ int main(int argc, char** argv) {
       historyChecks++;
     }
   }
-  printf("%d positions, %d with history, %d refilled, %d failures\n", positions, historyChecks, reusedChecks, failures);
+  printf("%d positions, %d with history, %d refilled, %d packed, %d failures\n", positions, historyChecks, reusedChecks,
+         packedChecks, failures);
   return failures == 0 && positions > 0 ? 0 : 1;
 }

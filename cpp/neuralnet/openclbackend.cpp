@@ -3991,7 +3991,7 @@ void NeuralNet::getOutput(
     float* rowMetaInput = inputBuffers->userInputMetaBuffer + (inputBuffers->singleInputMetaElts * nIdx);
 
     const float* rowGlobal = inputBufs[nIdx]->rowGlobalBuf.data();
-    const float* rowSpatial = inputBufs[nIdx]->rowSpatialBuf.data();
+    const float* rowSpatial = inputBufs[nIdx]->spatialRowFloats((int)inputBuffers->singleInputElts);
     const float* rowMeta = inputBufs[nIdx]->rowMetaBuf.data();
     const bool hasRowMeta = inputBufs[nIdx]->hasRowMeta;
     std::copy(rowGlobal,rowGlobal+numGlobalFeatures,rowGlobalInput);

@@ -34,6 +34,11 @@ void customCudaPoolRowsGPoolNHWC(const half* in, half* out, int nSize, int xySiz
 void customCudaCopyToHalf(const float* in, half* out, int n, cudaStream_t stream);
 void customCudaCopyFromHalf(const half* in, float* out, int n, cudaStream_t stream);
 
+//Enclosure fork (owner, 2026-10-06): unpack nSize bit-packed rows (NNInputs::fillRowV8Packed) of wordsPerRow words
+//each into out [nSize, eltsPerRow]: entry i of row r is bit i % 32 of the row's word i / 32, as 0 or 1.
+void customCudaUnpackBits(const uint32_t* in, float* out, int nSize, int eltsPerRow, int wordsPerRow, cudaStream_t stream);
+void customCudaUnpackBits(const uint32_t* in, half* out, int nSize, int eltsPerRow, int wordsPerRow, cudaStream_t stream);
+
 //Given a tensor, add another tensor element-wise to it (same shape).
 void customCudaAddTensorInplace(float* buf, const float* biases, int n, cudaStream_t stream);
 void customCudaAddTensorInplace(half* buf, const half* biases, int n, cudaStream_t stream);

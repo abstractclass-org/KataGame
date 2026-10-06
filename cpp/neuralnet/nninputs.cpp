@@ -2885,10 +2885,13 @@ void NNInputs::fillRowV7(
 
 //The Enclosure repository's net.input_planes (engine.write_observation, then planes.feature_planes),
 //with the observation's scalars as global inputs. See NUM_FEATURES_SPATIAL_V8.
-void NNInputs::fillRowV8(
+//Fills rowGlobal and calls setEntry(i) for each spatial entry i that is 1 (the spatial row must start all 0); shared
+//by fillRowV8 (floats) and fillRowV8Packed (bits), so the two rows cannot differ.
+template<typename SetEntry>
+static void fillRowV8Entries(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams,
-  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries
+  int nnXLen, int nnYLen, bool useNHWC, float* rowGlobal, SetEntry setEntry
 ) {
   assert(nnXLen == enclosure::SIZE && nnYLen == enclosure::SIZE);
   assert(board.x_size == enclosure::SIZE && board.y_size == enclosure::SIZE);
@@ -2896,14 +2899,10 @@ void NNInputs::fillRowV8(
   assert(nextPlayer == Board::playerOfIndex(board.pos.player));
   (void)nextPlayer;
   const int numPos = nnXLen * nnYLen;
-  //The spatial planes are sparse 0/1: with setEntries, clear only the entries the last fill set (nninputs.h).
-  if(setEntries != NULL) {
-    for(int i : *setEntries)
-      rowBin[i] = 0.0f;
-    setEntries->clear();
-  }
-  else
-    std::fill(rowBin, rowBin + NUM_FEATURES_SPATIAL_V8 * numPos, 0.0f);
+  using NNInputs::NUM_FEATURES_SPATIAL_V8;
+  using NNInputs::NUM_FEATURES_GLOBAL_V8;
+  using NNInputs::V8_EDGE_PLANES_START;
+  using NNInputs::V8_FEATURE_PLANES_START;
   std::fill(rowGlobal, rowGlobal + NUM_FEATURES_GLOBAL_V8, 0.0f);
 
   int featureStride;
@@ -2916,12 +2915,9 @@ void NNInputs::fillRowV8(
     featureStride = numPos;
     posStride = 1;
   }
-  //Every spatial entry this function sets is 1.0; each one set is recorded for the next fill's clearing.
+  //Every spatial entry set is 1.
   auto setOne = [&](int pos, int feature) {
-    const int i = pos * posStride + feature * featureStride;
-    rowBin[i] = 1.0f;
-    if(setEntries != NULL)
-      setEntries->push_back(i);
+    setEntry(pos * posStride + feature * featureStride);
   };
 
   //Feature 0 - on board
@@ -2969,4 +2965,41 @@ void NNInputs::fillRowV8(
       if(p[f])
         setOne(pos, V8_FEATURE_PLANES_START + f);
   }
+}
+
+void NNInputs::fillRowV8(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries
+) {
+  //The spatial planes are sparse 0/1: with setEntries, clear only the entries the last fill set (nninputs.h).
+  if(setEntries != NULL) {
+    for(int i : *setEntries)
+      rowBin[i] = 0.0f;
+    setEntries->clear();
+  }
+  else
+    std::fill(rowBin, rowBin + NUM_FEATURES_SPATIAL_V8 * nnXLen * nnYLen, 0.0f);
+  //Each entry set is recorded for the next fill's clearing.
+  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, [&](int i) {
+    rowBin[i] = 1.0f;
+    if(setEntries != NULL)
+      setEntries->push_back(i);
+  });
+}
+
+void NNInputs::fillRowV8Packed(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal
+) {
+  std::fill(rowBits, rowBits + NUM_SPATIAL_WORDS_V8, 0u);
+  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, [&](int i) {
+    rowBits[i >> 5] |= 1u << (i & 31);
+  });
+}
+
+void NNInputs::unpackSpatialBits(const uint32_t* rowBits, float* out, int n) {
+  for(int i = 0; i < n; i++)
+    out[i] = (float)((rowBits[i >> 5] >> (i & 31)) & 1u);
 }

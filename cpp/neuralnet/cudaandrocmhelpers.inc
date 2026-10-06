@@ -1081,6 +1081,43 @@ void customCudaCopyFromHalf(const half* in, float* out, int n, cudaStream_t stre
 
 //--------------------------------------------------------------------------------------------------------------
 
+//Enclosure fork (owner, 2026-10-06): one thread per output entry.
+__global__
+void unpackBitsKernel(const uint32_t* in, float* out, int eltsPerRow, int wordsPerRow, int n)
+{
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if(idx < n) {
+    int row = idx / eltsPerRow;
+    int i = idx - row * eltsPerRow;
+    out[idx] = (float)((in[row * wordsPerRow + (i >> 5)] >> (i & 31)) & 1u);
+  }
+}
+__global__
+void unpackBitsHalfKernel(const uint32_t* in, half* out, int eltsPerRow, int wordsPerRow, int n)
+{
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if(idx < n) {
+    int row = idx / eltsPerRow;
+    int i = idx - row * eltsPerRow;
+    out[idx] = __float2half((float)((in[row * wordsPerRow + (i >> 5)] >> (i & 31)) & 1u));
+  }
+}
+
+void customCudaUnpackBits(const uint32_t* in, float* out, int nSize, int eltsPerRow, int wordsPerRow, cudaStream_t stream) {
+  int n = nSize * eltsPerRow;
+  int blockSize = targetNumThreads;
+  int numBlocks = (n+blockSize-1)/blockSize;
+  unpackBitsKernel<<<numBlocks, blockSize, 0, stream>>>(in,out,eltsPerRow,wordsPerRow,n);
+}
+void customCudaUnpackBits(const uint32_t* in, half* out, int nSize, int eltsPerRow, int wordsPerRow, cudaStream_t stream) {
+  int n = nSize * eltsPerRow;
+  int blockSize = targetNumThreads;
+  int numBlocks = (n+blockSize-1)/blockSize;
+  unpackBitsHalfKernel<<<numBlocks, blockSize, 0, stream>>>(in,out,eltsPerRow,wordsPerRow,n);
+}
+
+//--------------------------------------------------------------------------------------------------------------
+
 
 __global__
 void addTensorInplaceHalfKernel(half *buf, const half* biases, int nSize)

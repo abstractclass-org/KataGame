@@ -55,10 +55,11 @@ struct NNResultBuf {
   int boardXSizeForServer;
   int boardYSizeForServer;
   std::vector<float> rowSpatialBuf;
-  //Enclosure fork (2026-10-05): the entries of rowSpatialBuf the last fillRowV8 set, so the next clears only those;
-  //valid only while fillRowV8 alone has written the buffer since it was last cleared whole (NNEvaluator::fillRowBufs).
-  std::vector<int> rowSpatialSet;
-  bool rowSpatialSetValid;
+  //Enclosure fork (owner, 2026-10-06; iviazovetskyi's packed inputs): V8 rows are filled packed, one bit per entry
+  //(NNInputs::fillRowV8Packed), and rowSpatialPacked is set; rowSpatialBuf is then not filled. The CUDA and ROCm
+  //backends send the bits and unpack them on the GPU; the others read spatialRowFloats.
+  std::vector<uint32_t> rowSpatialBits;
+  bool rowSpatialPacked;
   std::vector<float> rowGlobalBuf;
   std::vector<float> rowMetaBuf;
   bool hasRowMeta;
@@ -69,6 +70,8 @@ struct NNResultBuf {
 
   NNResultBuf();
   ~NNResultBuf();
+  //The spatial row as n floats: rowSpatialBuf, unpacked into it first when the row is packed.
+  const float* spatialRowFloats(int n);
   NNResultBuf(const NNResultBuf& other) = delete;
   NNResultBuf& operator=(const NNResultBuf& other) = delete;
 };

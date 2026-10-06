@@ -66,8 +66,7 @@ int main(int argc, char** argv) {
   out.precision(9);
   string line;
   int positions = 0;
-  //One buffer for every position, as a search thread keeps (2026-10-05: its input row is refilled by clearing only
-  //the entries the last position set, NNEvaluator::fillRowBufs).
+  //One buffer for every position, as a search thread keeps (its input row refilled packed, NNEvaluator::fillRowBufs).
   NNResultBuf buf;
   while(getline(in, line)) {
     istringstream head(line);
@@ -103,9 +102,10 @@ int main(int argc, char** argv) {
 
     out << "position " << label << " " << (int)pla << " " << (nhwc ? "nhwc" : "nchw") << "\n";
     vector<pair<int, float>> nonzero;
-    for(size_t i = 0; i < buf.rowSpatialBuf.size(); i++)
-      if(buf.rowSpatialBuf[i] != 0.0f)
-        nonzero.push_back({(int)i, buf.rowSpatialBuf[i]});
+    const float* rowSpatial = buf.spatialRowFloats(NNInputs::NUM_SPATIAL_ELTS_V8);
+    for(int i = 0; i < NNInputs::NUM_SPATIAL_ELTS_V8; i++)
+      if(rowSpatial[i] != 0.0f)
+        nonzero.push_back({i, rowSpatial[i]});
     out << "spatial " << nonzero.size();
     for(auto& e : nonzero)
       out << " " << e.first << ":" << e.second;
