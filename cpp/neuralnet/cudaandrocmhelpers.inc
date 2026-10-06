@@ -1118,6 +1118,50 @@ void customCudaUnpackBits(const uint32_t* in, half* out, int nSize, int eltsPerR
 
 //--------------------------------------------------------------------------------------------------------------
 
+//Enclosure fork (owner, 2026-10-06): one thread per gathered entry. The mix is rounded step by step (no fused
+//multiply-add), so the values equal the host's.
+__global__
+void gatherPolicyKernel(const uint32_t* entries, int n, const float* policy, const float* pass, const float* optimism,
+                        float* out, int numPolicyChannels, int K, int xySize, bool nhwc, bool useOptimism)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if(t < n) {
+    uint32_t e = entries[t];
+    int row = (int)(e >> 15);
+    int action = (int)(e & 0x7FFFu);
+    float p, pOpt;
+    if(action == xySize * K) {
+      p = pass[row * numPolicyChannels];
+      pOpt = useOptimism ? pass[row * numPolicyChannels + 1] : p;
+    }
+    else {
+      int pos = action / K, k = action - pos * K;
+      const float* rowPolicy = policy + (size_t)row * numPolicyChannels * K * xySize;
+      if(nhwc) {
+        p = rowPolicy[pos * numPolicyChannels * K + k];
+        pOpt = useOptimism ? rowPolicy[pos * numPolicyChannels * K + K + k] : p;
+      }
+      else {
+        p = rowPolicy[k * xySize + pos];
+        pOpt = useOptimism ? rowPolicy[(K + k) * xySize + pos] : p;
+      }
+    }
+    out[t] = useOptimism ? __fadd_rn(p, __fmul_rn(__fsub_rn(pOpt, p), optimism[row])) : p;
+  }
+}
+
+void customCudaGatherPolicy(const uint32_t* entries, int n, const float* policy, const float* pass, const float* optimism,
+                            float* out, int numPolicyChannels, int K, int xySize, bool nhwc, bool useOptimism,
+                            cudaStream_t stream) {
+  if(n <= 0)
+    return;
+  int blockSize = targetNumThreads;
+  int numBlocks = (n+blockSize-1)/blockSize;
+  gatherPolicyKernel<<<numBlocks, blockSize, 0, stream>>>(entries,n,policy,pass,optimism,out,numPolicyChannels,K,xySize,nhwc,useOptimism);
+}
+
+//--------------------------------------------------------------------------------------------------------------
+
 
 __global__
 void addTensorInplaceHalfKernel(half *buf, const half* biases, int nSize)

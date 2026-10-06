@@ -4853,6 +4853,10 @@ struct Buffers {
   //Enclosure fork (owner, 2026-10-06): the packed spatial rows (NNResultBuf::rowSpatialBits), unpacked into inputBuf.
   uint32_t* inputBitsBuf;
   size_t inputBitsBufBytes;
+  //Enclosure fork (owner, 2026-10-06): the gathered policy's entries, each row's optimism and the gathered values.
+  uint32_t* policyGatherBuf;
+  float* policyOptimismBuf;
+  float* policyGatherOutBuf;
 
   float* policyPassBuf;
   size_t policyPassBufBytes;
@@ -4914,6 +4918,10 @@ struct Buffers {
       const size_t wordsPerRow = ((size_t)m.numInputChannels * xySize + 31) / 32;
       inputBitsBufBytes = (batchFloatBytes / sizeof(float)) * wordsPerRow * sizeof(uint32_t);
       CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&inputBitsBuf), inputBitsBufBytes));
+      const size_t maxGather = (batchFloatBytes / sizeof(float)) * NNPos::MAX_NN_POLICY_SIZE;
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&policyGatherBuf), maxGather * sizeof(uint32_t)));
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&policyOptimismBuf), batchFloatBytes));
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&policyGatherOutBuf), maxGather * sizeof(float)));
     }
 
     //Enclosure fork: NUM_OFFSETS channels per policy output.
@@ -4991,6 +4999,9 @@ struct Buffers {
     if(inputMetaBuf != NULL)
       (void)cudaFree(inputMetaBuf);
     (void)cudaFree(inputBitsBuf);
+    (void)cudaFree(policyGatherBuf);
+    (void)cudaFree(policyOptimismBuf);
+    (void)cudaFree(policyGatherOutBuf);
 
     (void)cudaFree(policyPassBuf);
     (void)cudaFree(policyBuf);
@@ -5585,6 +5596,12 @@ struct InputBuffers {
   float* userInputGlobalBuffer; //Host pointer
   float* userInputMetaBuffer; //Host pointer
   uint32_t* userInputBitsBuffer; //Host pointer
+  //Enclosure fork (owner, 2026-10-06): the gathered policy (NNResultBuf::policyGather): the batch's entries, each
+  //(row << 15) | action, up to every action of every row; each row's policy optimism; the gathered values.
+  size_t maxPolicyGather;
+  uint32_t* userPolicyGatherBuffer; //Host pointer
+  float* userPolicyOptimismBuffer; //Host pointer
+  float* policyGatherResults; //Host pointer
 
   float* policyPassResults; //Host pointer
   float* policyResults; //Host pointer
@@ -5652,6 +5669,10 @@ struct InputBuffers {
     userInputGlobalBuffer = NULL;
     userInputMetaBuffer = NULL;
     userInputBitsBuffer = NULL;
+    maxPolicyGather = (size_t)maxBatchSize * NNPos::MAX_NN_POLICY_SIZE;
+    userPolicyGatherBuffer = NULL;
+    userPolicyOptimismBuffer = NULL;
+    policyGatherResults = NULL;
     policyPassResults = NULL;
     policyResults = NULL;
     valueResults = NULL;
@@ -5677,6 +5698,9 @@ struct InputBuffers {
         userInputMetaBuffer = mallocPinned((size_t)m.numInputMetaChannels * maxBatchSize);
       static_assert(sizeof(uint32_t) == sizeof(float), "");
       userInputBitsBuffer = reinterpret_cast<uint32_t*>(mallocPinned(singleInputBitsWords * maxBatchSize));
+      userPolicyGatherBuffer = reinterpret_cast<uint32_t*>(mallocPinned(maxPolicyGather));
+      userPolicyOptimismBuffer = mallocPinned((size_t)maxBatchSize);
+      policyGatherResults = mallocPinned(maxPolicyGather);
 
       policyPassResults = mallocPinned((size_t)maxBatchSize * m.numPolicyChannels);
       policyResults = mallocPinned((size_t)maxBatchSize * m.numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen);
@@ -5785,6 +5809,25 @@ void NeuralNet::getOutput(
   //Enclosure fork (owner, 2026-10-06): packed rows (NNResultBuf::rowSpatialBits) are sent as bits and unpacked on the
   //GPU into the same 0/1 entries, in the same layout; every row of a batch comes from the same evaluator.
   const bool packed = inputBufs[0]->rowSpatialPacked;
+  //Enclosure fork (owner, 2026-10-06): when every row lists the policy entries it needs (NNResultBuf::policyGather),
+  //only those are gathered on the GPU and copied back; otherwise the whole policy is.
+  bool gatherPolicy = true;
+  for(int nIdx = 0; nIdx<batchSize; nIdx++)
+    if(inputBufs[nIdx]->policyGather.empty())
+      gatherPolicy = false;
+  size_t numGather = 0;
+  if(gatherPolicy) {
+    static_assert(enclosure::PASS < (1 << 15), "an action fits below the row in a gather entry");
+    for(int nIdx = 0; nIdx<batchSize; nIdx++) {
+      inputBuffers->userPolicyOptimismBuffer[nIdx] = (float)inputBufs[nIdx]->policyOptimism;
+      const std::vector<uint16_t>& entries = inputBufs[nIdx]->policyGather;
+      testAssert(numGather + entries.size() <= inputBuffers->maxPolicyGather);
+      for(uint16_t a : entries) {
+        testAssert(a <= enclosure::PASS);
+        inputBuffers->userPolicyGatherBuffer[numGather++] = ((uint32_t)nIdx << 15) | a;
+      }
+    }
+  }
 
   for(int nIdx = 0; nIdx<batchSize; nIdx++) {
     float* rowSpatialInput = inputBuffers->userInputBuffer + (inputBuffers->singleInputElts * nIdx);
@@ -5937,7 +5980,19 @@ void NeuralNet::getOutput(
   );
 
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->policyPassResults, buffers->policyPassBuf, inputBuffers->singlePolicyPassResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
-  CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->policyResults, buffers->policyBuf, inputBuffers->singlePolicyResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
+  const bool policyOptimismChannel = numPolicyChannels == 2 || (numPolicyChannels == 4 && modelVersion >= 16);
+  if(gatherPolicy) {
+    CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->policyGatherBuf, inputBuffers->userPolicyGatherBuffer, numGather*sizeof(uint32_t), cudaMemcpyHostToDevice, stream));
+    CUDA_ERR("getOutput",cudaMemcpyAsync(buffers->policyOptimismBuf, inputBuffers->userPolicyOptimismBuffer, batchSize*sizeof(float), cudaMemcpyHostToDevice, stream));
+    customCudaGatherPolicy(
+      buffers->policyGatherBuf, (int)numGather, buffers->policyBuf, buffers->policyPassBuf, buffers->policyOptimismBuf,
+      buffers->policyGatherOutBuf, numPolicyChannels, NNPos::NUM_OFFSETS, nnXLen * nnYLen, gpuHandle->usingNHWC,
+      policyOptimismChannel, stream);
+    CUDA_ERR("getOutput",cudaPeekAtLastError());
+    CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->policyGatherResults, buffers->policyGatherOutBuf, numGather*sizeof(float), cudaMemcpyDeviceToHost, stream));
+  }
+  else
+    CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->policyResults, buffers->policyBuf, inputBuffers->singlePolicyResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->valueResults, buffers->valueBuf, inputBuffers->singleValueResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->scoreValueResults, buffers->scoreValueBuf, inputBuffers->singleScoreValueResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->ownershipResults, buffers->ownershipBuf, inputBuffers->singleOwnershipResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
@@ -5962,6 +6017,7 @@ void NeuralNet::getOutput(
 
   const int K = NNPos::NUM_OFFSETS;
   const int xy = nnXLen * nnYLen;
+  size_t gathered = 0;  //the next row's first gathered value
 
   for(int row = 0; row < batchSize; row++) {
     NNOutput* output = outputs[row];
@@ -5983,7 +6039,12 @@ void NeuralNet::getOutput(
       int c = output * K + k;
       return gpuHandle->usingNHWC ? policySrcBuf[pos * numPolicyChannels * K + c] : policySrcBuf[c * xy + pos];
     };
-    if(numPolicyChannels == 2 || (numPolicyChannels == 4 && modelVersion >= 16)) {
+    if(gatherPolicy) {
+      //Only the listed entries, in their order; the rest of policyProbs is left unset (NNResultBuf::policyGather).
+      for(uint16_t a : inputBufs[row]->policyGather)
+        policyProbs[a] = inputBuffers->policyGatherResults[gathered++];
+    }
+    else if(policyOptimismChannel) {
       for(int pos = 0; pos < xy; pos++)
         for(int k = 0; k < K; k++) {
           float p = src(0, pos, k);

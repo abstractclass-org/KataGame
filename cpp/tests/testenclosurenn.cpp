@@ -1,7 +1,8 @@
 // Enclosure fork: a network's evaluation in C++ (plan step 5), for comparison with PyTorch.
 //
-//   katago runenclosurenntests MODEL_FILE INPUTS_FILE OUT_FILE [fp16] [nhwc]
+//   katago runenclosurenntests MODEL_FILE INPUTS_FILE OUT_FILE [fp16] [nhwc] [sym=N]
 //
+// sym=N evaluates at symmetry N instead of 0 (for comparing two builds byte for byte; PyTorch is compared at 0).
 // fp16 and nhwc select those backend modes (the CUDA backend's usual FP16 path uses NHWC).
 // Replays each position of INPUTS_FILE (tests/data/enclosure_inputs.txt), evaluates it with NNEvaluator
 // (symmetry 0) and writes one line per position to OUT_FILE:
@@ -25,7 +26,7 @@
 using namespace std;
 using namespace TestSearchCommon;
 
-void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFile, const string& outFile, bool useFP16, bool useNHWC) {
+void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFile, const string& outFile, bool useFP16, bool useNHWC, int symmetry) {
   NeuralNet::globalInitialize();
   Logger logger(nullptr, false, false, false);
   logger.addOStream(cerr);
@@ -58,7 +59,8 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
       continue;  //The network is not asked about finished games
     Player pla = hist.presumedNextMovePla;
     MiscNNInputParams params;
-    params.symmetry = 0;
+    //sym=N (2026-10-06): another symmetry, for comparing builds (the outputs mapped back; PyTorch is checked at 0).
+    params.symmetry = symmetry;
     NNResultBuf buf;
     nnEval->evaluate(board, hist, pla, params, buf, true, true);
     const NNOutput& o = *buf.result;

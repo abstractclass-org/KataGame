@@ -21,6 +21,7 @@ NNResultBuf::NNResultBuf()
     rowSpatialBuf(),
     rowSpatialBits(),
     rowSpatialPacked(false),
+    policyGather(),
     rowGlobalBuf(),
     rowMetaBuf(),
     hasRowMeta(false),
@@ -1347,6 +1348,18 @@ void NNEvaluator::evaluate(
 
   if(!debugSkipNeuralNet) {
     fillRowBufs(symmetry != 0 ? *symBoard : board, history, nextPlayer, sgfMeta, nnInputParams, buf);
+  }
+
+  //Enclosure fork (owner, 2026-10-06): the policy entries read below (mapOutputBack, then the masking): the legal
+  //moves, ascending, and pass, in the network's frame (NNResultBuf::policyGather).
+  buf.policyGather.clear();
+  //ENCLOSURE_NO_POLICY_GATHER=1 (tests only): no list, so the backends copy the whole policy as before the gather.
+  static const bool noPolicyGather = getenv("ENCLOSURE_NO_POLICY_GATHER") != NULL;
+  if(!debugSkipNeuralNet && !noPolicyGather && policySize == enclosure::PASS + 1) {
+    const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
+    for(size_t i = legalBits._Find_first(); i < (size_t)enclosure::PASS; i = legalBits._Find_next(i))
+      buf.policyGather.push_back((uint16_t)(symmetry != 0 ? SymmetryHelpers::getSymAction((int)i, *symBoard, symmetry) : (int)i));
+    buf.policyGather.push_back((uint16_t)enclosure::PASS);
   }
 
   buf.symmetry = 0;

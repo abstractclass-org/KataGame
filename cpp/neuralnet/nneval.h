@@ -60,6 +60,11 @@ struct NNResultBuf {
   //backends send the bits and unpack them on the GPU; the others read spatialRowFloats.
   std::vector<uint32_t> rowSpatialBits;
   bool rowSpatialPacked;
+  //Enclosure fork (owner, 2026-10-06; iviazovetskyi's gathered policy): the policy entries the evaluator reads
+  //afterwards, as indices in the network's frame (the board's legal moves through the symmetry, then pass), set
+  //before each query (empty: all). A backend may fill only these entries of NNOutput::policyProbs and leave the
+  //others unset (the CUDA backend gathers them on the GPU); the evaluator then masks every other entry.
+  std::vector<uint16_t> policyGather;
   std::vector<float> rowGlobalBuf;
   std::vector<float> rowMetaBuf;
   bool hasRowMeta;

@@ -812,18 +812,20 @@ int MainCmds::runenclosurerowtests(const vector<string>& args) {
 
 int MainCmds::runenclosurenntests(const vector<string>& args) {
   if(args.size() < 4) {
-    cerr << "usage: " << args[0] << " MODEL_FILE INPUTS_FILE OUT_FILE [fp16] [nhwc]" << endl;
+    cerr << "usage: " << args[0] << " MODEL_FILE INPUTS_FILE OUT_FILE [fp16] [nhwc] [sym=N]" << endl;
     return 1;
   }
   bool useFP16 = false, useNHWC = false;
+  int symmetry = 0;
   for(size_t i = 4; i < args.size(); i++) {
     if(args[i] == "fp16") useFP16 = true;
     else if(args[i] == "nhwc") useNHWC = true;
+    else if(args[i].rfind("sym=", 0) == 0) symmetry = Global::stringToInt(args[i].substr(4));
     else { cerr << "unknown option " << args[i] << endl; return 1; }
   }
   Board::initHash();
   ScoreValue::initTables();
-  Tests::runEnclosureNNTests(args[1], args[2], args[3], useFP16, useNHWC);
+  Tests::runEnclosureNNTests(args[1], args[2], args[3], useFP16, useNHWC, symmetry);
   ScoreValue::freeTables();
   return 0;
 }
