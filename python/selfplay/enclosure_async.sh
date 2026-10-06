@@ -48,6 +48,9 @@ SHUFFLE_WORKER_GROUP_ROWS="${SHUFFLE_WORKER_GROUP_ROWS:-3300}"
 VALIDATE="${VALIDATE:-0}"
 if [[ "$VALIDATE" == 1 ]]; then SHUFFLE_ENV=""; else SHUFFLE_ENV="SKIP_VALIDATE=1"; fi
 TRAIN_EXTRA_ARGS="${TRAIN_EXTRA_ARGS:-}"
+# Flags for the main (self-play) trainer only (owner, 2026-10-06: its learning-rate drop, -lr-scale, while the next
+# size trains alongside at the full rate).
+MAIN_TRAIN_EXTRA_ARGS="${MAIN_TRAIN_EXTRA_ARGS:-}"
 SELFPLAY_CONFIG="${SELFPLAY_CONFIG:-$KATAGO/cpp/configs/training/selfplay_enclosure.cfg}"
 NEXT_TRAININGNAME="${NEXT_TRAININGNAME:-}"
 NEXT_MODELKIND="${NEXT_MODELKIND:-$NEXT_TRAININGNAME}"
@@ -117,7 +120,7 @@ part export 4G 10 "$CPUW_OTHER" bash -c "while true; do ./export_model_for_selfp
 
 TRAIN_ARGS="-samples-per-epoch $NUM_TRAIN_SAMPLES_PER_EPOCH -swa-period-samples $NUM_TRAIN_SAMPLES_PER_SWA -no-repeat-files \
     -max-train-bucket-per-new-data $MAX_TRAIN_PER_DATA -max-train-bucket-size $MAX_TRAIN_SAMPLES_PER_CYCLE $TRAIN_EXTRA_ARGS"
-part train "$MEM_TRAIN" 10 "$CPUW_OTHER" ./train.sh "$BASEDIR" "$TRAININGNAME" "$MODELKIND" "$BATCHSIZE" main $TRAIN_ARGS
+part train "$MEM_TRAIN" 10 "$CPUW_OTHER" ./train.sh "$BASEDIR" "$TRAININGNAME" "$MODELKIND" "$BATCHSIZE" main $TRAIN_ARGS $MAIN_TRAIN_EXTRA_ARGS
 if [[ -n "$NEXT_TRAININGNAME" ]]; then
     part train-next "$MEM_TRAIN" 10 "$CPUW_OTHER" ./train.sh "$BASEDIR" "$NEXT_TRAININGNAME" "$NEXT_MODELKIND" "$BATCHSIZE" extra $TRAIN_ARGS
 fi

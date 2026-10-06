@@ -2097,10 +2097,87 @@ struct NormActConv {
 
 //---------------------------------------------------------------------------------
 
+#ifdef KATAGO_GPU_CUDA
+// Enclosure fork (owner, 2026-10-06; ENCLOSURE_FUSED_CONV=1, off by default): a residual block's first convolution
+// with the block's middle normalisation and ReLU fused into it, so the separate scale, bias and ReLU pass over the
+// middle activations (applyCScaleBias..., about 12% of GPU kernel time with all its uses, speed.md "GPU kernel time")
+// is not run for regular blocks. cudnnConvolutionBiasActivationForward computes relu(conv(x, w') + b) with
+// w' = w * scale per output channel and b the merged bias: the same function as conv, then scale and bias, then
+// ReLU, but not bit for bit in FP16 (the scale is folded into the FP16 weights, and scale and bias are applied to the
+// float accumulator before its single rounding instead of after a rounding to FP16). Built only for FP16, NHWC, 3x3
+// without dilation (the algorithm IMPLICIT_PRECOMP_GEMM, the one KataGo already uses there and the one cuDNN fuses
+// ReLU with) and a ReLU middle activation; used only without a mask (full boards, requireExactNNLen), else the
+// block runs as before.
+static bool enclosureFusedConvEnabled() {
+  static const bool enabled = [] { const char* e = std::getenv("ENCLOSURE_FUSED_CONV"); return e != NULL && e[0] == '1'; }();
+  return enabled;
+}
+
+struct FusedConvBiasRelu {
+  const string name;
+  const ConvLayer& conv;
+  OwnedDesc<cudnnTensorDescriptor_t, cudnnDestroyTensorDescriptor> biasDescriptor;
+  OwnedDesc<cudnnActivationDescriptor_t, cudnnDestroyActivationDescriptor> activationDescriptor;
+  OwnedDeviceBuf filterBuf;
+  OwnedDeviceBuf biasBuf;
+
+  FusedConvBiasRelu() = delete;
+  FusedConvBiasRelu(const FusedConvBiasRelu&) = delete;
+  FusedConvBiasRelu& operator=(const FusedConvBiasRelu&) = delete;
+
+  // Whether the block's first convolution and middle normalisation can be fused (see above).
+  static bool applicable(const ConvLayer& conv, const ConvLayerDesc* convDesc, const ActivationLayerDesc* midAct,
+                         bool useFP16, bool useNHWC) {
+    return enclosureFusedConvEnabled() && useFP16 && useNHWC && !conv.use1x1Matmul
+      && convDesc->convXSize == 3 && convDesc->convYSize == 3 && convDesc->dilationX == 1 && convDesc->dilationY == 1
+      && midAct->activation == ACTIVATION_RELU;
+  }
+
+  FusedConvBiasRelu(const ConvLayer& convLayer, const ConvLayerDesc* convDesc, const BatchNormLayerDesc* midBN)
+    : name(convDesc->name + ":fusedMidBN"), conv(convLayer)
+  {
+    const int oc = convDesc->outChannels, ic = convDesc->inChannels, ky = convDesc->convYSize, kx = convDesc->convXSize;
+    testAssert((int)midBN->mergedScale.size() == oc && (int)midBN->mergedBias.size() == oc);
+    // The scale folded into the weights, in the NHWC filter layout the convolution uses (ConvLayer's transpose).
+    vector<float> folded((size_t)oc * ic * ky * kx);
+    for(int o = 0; o < oc; o++)
+      for(int y = 0; y < ky; y++)
+        for(int x = 0; x < kx; x++)
+          for(int i = 0; i < ic; i++)
+            folded[((o*ky + y)*kx + x)*ic + i] = convDesc->weights[((o*ic + i)*ky + y)*kx + x] * midBN->mergedScale[o];
+    CudaUtils::mallocAndCopyToDevice(name, folded, filterBuf.buf, true);
+    CudaUtils::mallocAndCopyToDevice(name + ":bias", midBN->mergedBias, biasBuf.buf, true);
+    CUDNN_ERR(name.c_str(),cudnnCreateTensorDescriptor(&biasDescriptor.desc));
+    CUDNN_ERR(name.c_str(),cudnnSetTensor4dDescriptor(biasDescriptor, CUDNN_TENSOR_NHWC, CUDNN_DATA_HALF, 1, oc, 1, 1));
+    CUDNN_ERR(name.c_str(),cudnnCreateActivationDescriptor(&activationDescriptor.desc));
+    CUDNN_ERR(name.c_str(),cudnnSetActivationDescriptor(activationDescriptor, CUDNN_ACTIVATION_RELU, CUDNN_NOT_PROPAGATE_NAN, 0.0));
+  }
+
+  void apply(CudaHandles* cudaHandles, int batchSize, void* inputBuf, void* outputBuf, void* workspaceBuf,
+             size_t workspaceBytes) const {
+    const float alpha1 = 1.0f, alpha2 = 0.0f;  // alpha2 = 0: no residual input (z is the output, unread)
+    CUDNN_ERR(name.c_str(),cudnnConvolutionBiasActivationForward(
+      cudaHandles->cudnn,
+      &alpha1, conv.inputDescriptors[batchSize], inputBuf,
+      conv.filterDescriptor, filterBuf.buf,
+      conv.convolutionDescriptor, (*conv.convolutionAlgorithms)[batchSize].algo,
+      workspaceBuf, workspaceBytes,
+      &alpha2, conv.outputDescriptors[batchSize], outputBuf,
+      biasDescriptor, biasBuf.buf,
+      activationDescriptor,
+      conv.outputDescriptors[batchSize], outputBuf
+    ));
+  }
+};
+#endif
+
 struct ResidualBlock {
   const string name;
   const NormActConv normActConv1;
   const NormActConv normActConv2;
+#ifdef KATAGO_GPU_CUDA
+  std::unique_ptr<FusedConvBiasRelu> fusedConv1;  // normActConv1's conv with normActConv2's norm (ENCLOSURE_FUSED_CONV)
+#endif
 
   ResidualBlock() = delete;
   ResidualBlock(const ResidualBlock&) = delete;
@@ -2118,6 +2195,14 @@ struct ResidualBlock {
      normActConv1(cudaHandles,manager,&desc->preBN,&desc->preActivation,&desc->regularConv,nnX,nnY,useFP16,useNHWC),
      normActConv2(cudaHandles,manager,&desc->midBN,&desc->midActivation,&desc->finalConv,nnX,nnY,useFP16,useNHWC)
   {
+#ifdef KATAGO_GPU_CUDA
+    if(FusedConvBiasRelu::applicable(normActConv1.conv,&desc->regularConv,&desc->midActivation,useFP16,useNHWC)) {
+      fusedConv1 = std::make_unique<FusedConvBiasRelu>(normActConv1.conv,&desc->regularConv,&desc->midBN);
+      static std::atomic<bool> logged(false);
+      if(!logged.exchange(true) && cudaHandles->logger != NULL)
+        cudaHandles->logger->write(KATAGO_GPU_BACKEND_NAME " backend: residual blocks' middle normalisation fused into their first convolution (ENCLOSURE_FUSED_CONV)");
+    }
+#endif
   }
 
   ~ResidualBlock()
@@ -2147,6 +2232,16 @@ struct ResidualBlock {
     size_t workspaceBytes
   ) const {
     SizedBuf<void*> midIn(scratch->allocator, scratch->getBufSizeXY(normActConv1.outChannels));
+#ifdef KATAGO_GPU_CUDA
+    if(fusedConv1 != nullptr && maskBuf == NULL) {
+      // The trunk's normalisation as before; the first convolution writes the normalised, activated middle
+      // directly; the second convolution reads it and adds into the trunk as before.
+      normActConv1.norm.apply(cudaHandles,batchSize,trunkBuf,maskBuf,trunkScratchBuf);
+      fusedConv1->apply(cudaHandles,batchSize,trunkScratchBuf,midIn.buf,workspaceBuf,workspaceBytes);
+      normActConv2.conv.apply(cudaHandles,scratch,batchSize,true,midIn.buf,trunkBuf,workspaceBuf,workspaceBytes);
+      return;
+    }
+#endif
     SizedBuf<void*> midScratch(scratch->allocator, scratch->getBufSizeXY(normActConv1.outChannels));
     normActConv1.apply(cudaHandles,scratch,batchSize,false,trunkBuf,trunkScratchBuf,midIn.buf,maskBuf,workspaceBuf,workspaceBytes);
     normActConv2.apply(cudaHandles,scratch,batchSize,true,midIn.buf,midScratch.buf,trunkBuf,maskBuf,workspaceBuf,workspaceBytes);
