@@ -41,6 +41,11 @@ inline int OFF_INDEX[7][7];
 inline int INTERIOR_N[NOFF];
 inline Off INTERIOR[NOFF][2];
 inline std::vector<int> CROSSINGS[NOFF];  // Per enemy-edge offset: relative candidate indices.
+// Enclosure fork (owner, 2026-10-06; CPU trick 5a): the same candidates grouped by where they start, relative to the
+// enemy edge's anchor (dx, dy), each group the offsets oc of its candidates: legal_actions counts only the groups that
+// start at the mover's nodes, the only candidates it reads.
+struct CrossingGroup { int dx, dy; std::vector<int> ocs; };
+inline std::vector<CrossingGroup> CROSSING_GROUPS[NOFF];
 
 inline long long cross(long long ax, long long ay, long long bx, long long by, long long cx, long long cy) {
   return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
@@ -79,10 +84,15 @@ struct Tables {
     // Candidate 0 -> oc hits enemy edge r -> r + oe (translation invariance).
     for (int oe = 0; oe < NOFF; ++oe)
       for (int rx = -6; rx <= 6; ++rx)
-        for (int ry = -6; ry <= 6; ++ry)
+        for (int ry = -6; ry <= 6; ++ry) {
+          CrossingGroup group{-rx, -ry, {}};  // the candidate starts at the enemy anchor + (-rx, -ry)
           for (int oc = 0; oc < NOFF; ++oc)
-            if (intersects(0, 0, OFFS[oc].dx, OFFS[oc].dy, rx, ry, rx + OFFS[oe].dx, ry + OFFS[oe].dy))
+            if (intersects(0, 0, OFFS[oc].dx, OFFS[oc].dy, rx, ry, rx + OFFS[oe].dx, ry + OFFS[oe].dy)) {
               CROSSINGS[oe].push_back((-rx * GRID - ry) * NOFF + oc);
+              group.ocs.push_back(oc);
+            }
+          if (!group.ocs.empty()) CROSSING_GROUPS[oe].push_back(std::move(group));
+        }
   }
 };
 inline Tables tables;
@@ -395,15 +405,23 @@ struct Position {
     static thread_local std::vector<int> touched;
     if (hits.empty()) { hits.assign(GRID * GRID * NOFF, 0); blocked.assign(GRID * GRID * NOFF, 0); }
     touched.clear();
+    // Enclosure fork (owner, 2026-10-06; CPU trick 5a): the counts below are read only for candidates that start at
+    // the mover's nodes, so only those are counted (CROSSING_GROUPS: about 70 start points an enemy edge, against
+    // about 400 candidates); each count read is the same as counting them all. Nothing carries over between
+    // positions: each call counts for its own position's nodes and clears what it counted.
     for (const Edge& e : enemy) {
       int oe = OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
-      int base = ((e.ax + PAD) * GRID + e.ay + PAD) * NOFF;
       bool guarded = contains(protected_, e);
-      for (int rel : CROSSINGS[oe]) {
-        int idx = base + rel;
-        if (!hits[idx] && !blocked[idx]) touched.push_back(idx);
-        ++hits[idx];
-        if (guarded) ++blocked[idx];
+      for (const CrossingGroup& g : CROSSING_GROUPS[oe]) {
+        const int sx = e.ax + g.dx, sy = e.ay + g.dy;
+        if (sx < 0 || sx >= SIZE || sy < 0 || sy >= SIZE || !node[sx][sy]) continue;
+        const int start = ((sx + PAD) * GRID + sy + PAD) * NOFF;
+        for (int oc : g.ocs) {
+          int idx = start + oc;
+          if (!hits[idx] && !blocked[idx]) touched.push_back(idx);
+          ++hits[idx];
+          if (guarded) ++blocked[idx];
+        }
       }
     }
     for (int ax = 0; ax < SIZE; ++ax)
