@@ -513,9 +513,12 @@ void NNEvaluator::fillRowBufs(
   Player nextPlayer,
   const SGFMetadata* sgfMeta,
   const MiscNNInputParams& nnInputParams,
-  NNResultBuf& buf
+  NNResultBuf& buf,
+  int symmetry
 ) const {
   const int rowSpatialLen = NNModelVersion::getNumSpatialFeatures(modelVersion) * nnXLen * nnYLen;
+  //Enclosure fork (owner, 2026-10-06; trick 3): symmetry, the image's row written from board, for V8 only.
+  testAssert(symmetry == 0 || inputsVersion == 8);
   //V8 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
   if(inputsVersion != 8 && buf.rowSpatialBuf.size() < rowSpatialLen)
     buf.rowSpatialBuf.resize(rowSpatialLen);
@@ -534,7 +537,7 @@ void NNEvaluator::fillRowBufs(
     testAssert(rowSpatialLen == NNInputs::NUM_SPATIAL_ELTS_V8);
     if(buf.rowSpatialBits.size() < NNInputs::NUM_SPATIAL_WORDS_V8)
       buf.rowSpatialBits.resize(NNInputs::NUM_SPATIAL_WORDS_V8);
-    NNInputs::fillRowV8Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data());
+    NNInputs::fillRowV8Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
   }
   else if(inputsVersion == 3)
     NNInputs::fillRowV3(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBuf.data(), buf.rowGlobalBuf.data());
@@ -1120,14 +1123,14 @@ static Rand& clientSymmetryRand(const string& randSeed) {
 //ownership follows the points.
 //With mapPolicy false (owner, 2026-10-06: the request listed its policy entries already in the network's frame,
 //NNResultBuf::policyGather) the policy is read through that list instead and left as it is here.
-static void mapOutputBack(NNOutput& output, const Board& board, const Board& symBoard, int symmetry, int policySize,
-                          bool mapPolicy) {
+static void mapOutputBack(NNOutput& output, const Board& board, const SymmetryHelpers::SymActionMap& symAction,
+                          int symmetry, int policySize, bool mapPolicy) {
   static thread_local std::vector<float> buf;
   if(mapPolicy) {
     buf.assign(policySize, 0.0f);
     for(int i = 0; i < policySize; i++)
       if(i == enclosure::PASS || board.legalActions()[i])
-        buf[i] = output.policyDense[SymmetryHelpers::getSymAction(i, symBoard, symmetry)];
+        buf[i] = output.policyDense[symAction(i)];
     std::copy(buf.begin(), buf.end(), output.policyDense);
   }
   if(output.whiteOwnerMap != NULL) {
@@ -1161,7 +1164,7 @@ static void mapOutputBack(NNOutput& output, const Board& board, const Board& sym
       buf.assign(policySize, 0.0f);
       for(int i = 0; i < policySize; i++)
         if(i == enclosure::PASS || board.legalActions()[i])
-          buf[i] = policy[SymmetryHelpers::getSymAction(i, symBoard, symmetry)];
+          buf[i] = policy[symAction(i)];
       std::copy(buf.begin(), buf.end(), policy);
     }
   }
@@ -1357,12 +1360,12 @@ void NNEvaluator::evaluate(
       symmetry = currentDefaultSymmetry.load(std::memory_order_acquire);
   }
   testAssert(symmetry >= 0 && symmetry < SymmetryHelpers::NUM_SYMMETRIES);
-  std::unique_ptr<Board> symBoard;
-  if(symmetry != 0)
-    symBoard = std::make_unique<Board>(SymmetryHelpers::getSymBoard(board, symmetry));
+  //Enclosure fork (owner, 2026-10-06; trick 3): no image board: the inputs are the image's, written from board
+  //(fillRowBufs' symmetry), and moves map through symAction (SymmetryHelpers::SymActionMap).
+  const SymmetryHelpers::SymActionMap symAction(board, symmetry);
 
   if(!debugSkipNeuralNet) {
-    fillRowBufs(symmetry != 0 ? *symBoard : board, history, nextPlayer, sgfMeta, nnInputParams, buf);
+    fillRowBufs(board, history, nextPlayer, sgfMeta, nnInputParams, buf, symmetry);
   }
 
   //Enclosure fork (owner, 2026-10-06): the policy entries read below (mapOutputBack, then the masking): the legal
@@ -1373,7 +1376,7 @@ void NNEvaluator::evaluate(
   if(!debugSkipNeuralNet && !noPolicyGather && policySize == enclosure::PASS + 1) {
     const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
     for(size_t i = legalBits._Find_first(); i < (size_t)enclosure::PASS; i = legalBits._Find_next(i))
-      buf.policyGather.push_back((uint16_t)(symmetry != 0 ? SymmetryHelpers::getSymAction((int)i, *symBoard, symmetry) : (int)i));
+      buf.policyGather.push_back((uint16_t)symAction((int)i));
     buf.policyGather.push_back((uint16_t)enclosure::PASS);
   }
 
@@ -1397,7 +1400,7 @@ void NNEvaluator::evaluate(
   //moves beyond the board's legality.
   const bool listedPolicy = !buf.policyGather.empty() && !nnInputParams.avoidMYTDaggerHack;
   if(symmetry != 0)
-    mapOutputBack(*buf.result, board, *symBoard, symmetry, policySize, !listedPolicy);
+    mapOutputBack(*buf.result, board, symAction, symmetry, policySize, !listedPolicy);
 
   // Perform postprocessing on the result - turn the nn output into probabilities
   // As a hack though, if the only thing we were missing was the ownermap, just grab the old policy and values

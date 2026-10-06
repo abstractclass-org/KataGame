@@ -84,6 +84,8 @@ int main(int argc, char** argv) {
   vector<uint32_t> nhwcBits(W, 0xFFFFFFFFu), nchwBits(W, 0xFFFFFFFFu);
   vector<float> unpacked(S * S * C), globalPacked(G);
   int packedChecks = 0;
+  vector<float> symRow(S * S * C), symGlobal(G);
+  int symChecks = 0;
 
   string line;
   int positions = 0, failures = 0, historyChecks = 0;
@@ -193,6 +195,30 @@ int main(int argc, char** argv) {
         fail(label + ": the packed row's padding bits are not 0");
     }
     packedChecks++;
+    //Trick 3 (2026-10-06): the image's row written from board (fillRowV8Packed's symmetry) equals the row of the
+    //image board, at every symmetry and in both layouts; SymActionMap maps each legal move as getSymAction does on
+    //the image board.
+    for(int sym = 1; sym < SymmetryHelpers::NUM_SYMMETRIES; sym++) {
+      const Board symBoard = SymmetryHelpers::getSymBoard(board, sym);
+      for(int layout = 0; layout < 2; layout++) {
+        const bool useNHWC = layout == 0;
+        NNInputs::fillRowV8(symBoard, hist, pla, params, S, S, useNHWC, symRow.data(), symGlobal.data());
+        NNInputs::fillRowV8Packed(board, hist, pla, params, S, S, useNHWC, nhwcBits.data(), globalPacked.data(), sym);
+        NNInputs::unpackSpatialBits(nhwcBits.data(), unpacked.data(), S * S * C);
+        if(unpacked != symRow)
+          fail(label + ": symmetry " + Global::intToString(sym) + (useNHWC ? " NHWC" : " NCHW") +
+               ": the row written from the board differs from the image board's");
+        if(globalPacked != symGlobal)
+          fail(label + ": symmetry " + Global::intToString(sym) + ": the global inputs differ");
+      }
+      const SymmetryHelpers::SymActionMap symAction(board, sym);
+      const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
+      for(size_t a = legalBits._Find_first(); a < legalBits.size(); a = legalBits._Find_next(a))
+        if(symAction((int)a) != SymmetryHelpers::getSymAction((int)a, symBoard, sym))
+          fail(label + ": symmetry " + Global::intToString(sym) + ": action " + Global::intToString((int)a) +
+               " maps differently");
+      symChecks++;
+    }
     for(int i = 0; i < G; i++)
       if(global[i] != expectedGlobal[i] || globalNchw[i] != expectedGlobal[i])
         fail(label + ": global " + Global::intToString(i) + " is " + Global::floatToString(global[i]) +
@@ -211,7 +237,7 @@ int main(int argc, char** argv) {
       historyChecks++;
     }
   }
-  printf("%d positions, %d with history, %d refilled, %d packed, %d failures\n", positions, historyChecks, reusedChecks,
-         packedChecks, failures);
+  printf("%d positions, %d with history, %d refilled, %d packed, %d symmetric, %d failures\n", positions, historyChecks,
+         reusedChecks, packedChecks, symChecks, failures);
   return failures == 0 && positions > 0 ? 0 : 1;
 }

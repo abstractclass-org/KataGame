@@ -177,9 +177,13 @@ namespace NNInputs {
   //rowGlobal as fillRowV8. The GPU backends send these 9.7 KB instead of 310 KB of floats and unpack them there.
   const int NUM_SPATIAL_ELTS_V8 = NUM_FEATURES_SPATIAL_V8 * enclosure::SIZE * enclosure::SIZE;
   const int NUM_SPATIAL_WORDS_V8 = (NUM_SPATIAL_ELTS_V8 + 31) / 32;
+  //symmetry (owner, 2026-10-06; trick 3): the row of the image of board under that symmetry, written from board itself
+  //(each entry moved to its image: a point's to the image point, an edge's to the image edge's canonical anchor),
+  //equal to fillRowV8Packed(getSymBoard(board, symmetry), ...) without building the image board.
   void fillRowV8Packed(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
-    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
+    int symmetry = 0
   );
   //The packed row's first n entries as floats (0 or 1) into out.
   void unpackSpatialBits(const uint32_t* rowBits, float* out, int n);
@@ -364,6 +368,16 @@ namespace SymmetryHelpers {
   //board it is played on. Between two of the mover's nodes only one direction is listed, and the
   //image may be listed from its other end: then that one is returned.
   int getSymAction(int action, const Board& symBoard, int symmetry);
+  //Enclosure fork (owner, 2026-10-06; trick 3, iviazovetskyi's index remap): the same for board's legal moves and
+  //pass, from board itself, without building symBoard: (*this)(action) == getSymAction(action, getSymBoard(board,
+  //symmetry), symmetry). Which end the image is listed from depends only on whether the far end is one of the mover's
+  //nodes (getSymBoard), which board knows; the table is built once per board.
+  struct SymActionMap {
+    int symmetry;
+    bool node[enclosure::SIZE][enclosure::SIZE];
+    SymActionMap(const Board& board, int symmetry);
+    int operator()(int action) const;
+  };
   Loc getSymMoveLoc(Loc moveLoc, const Board& symBoard, int symmetry);
   //A sequence of moves from board (a principal variation) mapped move by move, on the image boards.
   std::vector<Loc> getSymMoveLocs(const Board& board, const std::vector<Loc>& moves, int symmetry);

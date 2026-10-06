@@ -912,6 +912,29 @@ int SymmetryHelpers::getSymAction(int action, const Board& symBoard, int symmetr
   return symBoard.legalActions()[reverse] ? reverse : forward;
 }
 
+//Enclosure fork (owner, 2026-10-06; trick 3): getSymBoard's image of a legal move, from board: the image is listed
+//from its far end exactly when that end is one of the mover's nodes and comes first (getSymBoard's fromB; a symmetry
+//maps the mover's nodes onto the image's).
+SymmetryHelpers::SymActionMap::SymActionMap(const Board& board, int sym) : symmetry(sym), node() {
+  for(const enclosure::Edge& e : board.pos.edges[board.pos.player])
+    node[e.ax][e.ay] = node[e.bx][e.by] = true;
+}
+
+int SymmetryHelpers::SymActionMap::operator()(int action) const {
+  if(action == enclosure::PASS || symmetry == 0)
+    return action;
+  const int cell = action / enclosure::NOFF, k = action % enclosure::NOFF;
+  int ax = cell % enclosure::SIZE, ay = cell / enclosure::SIZE;
+  int bx = ax + enclosure::OFFS[k].dx, by = ay + enclosure::OFFS[k].dy;
+  const bool farNode = node[bx][by];
+  getSymXY(ax, ay, symmetry);
+  getSymXY(bx, by, symmetry);
+  const bool fromB = farNode && (bx < ax || (bx == ax && by < ay));
+  if(fromB)
+    return (by * enclosure::SIZE + bx) * enclosure::NOFF + enclosure::OFF_INDEX[ax - bx + 3][ay - by + 3];
+  return (ay * enclosure::SIZE + ax) * enclosure::NOFF + enclosure::OFF_INDEX[bx - ax + 3][by - ay + 3];
+}
+
 Loc SymmetryHelpers::getSymMoveLoc(Loc moveLoc, const Board& symBoard, int symmetry) {
   if(moveLoc == Board::NULL_LOC || moveLoc == Board::PASS_LOC)
     return moveLoc;
@@ -2981,12 +3004,14 @@ void NNInputs::fillRowV7(
 //The Enclosure repository's net.input_planes (engine.write_observation, then planes.feature_planes),
 //with the observation's scalars as global inputs. See NUM_FEATURES_SPATIAL_V8.
 //Fills rowGlobal and calls setEntry(i) for each spatial entry i that is 1 (the spatial row must start all 0); shared
-//by fillRowV8 (floats) and fillRowV8Packed (bits), so the two rows cannot differ.
+//by fillRowV8 (floats) and fillRowV8Packed (bits), so the two rows cannot differ. symmetry (owner, 2026-10-06; trick
+//3): the row of board's image under it, each entry moved to its image (a point's to the image point, an edge's to
+//the image edge's canonical anchor as the image's observation lists it); the scalars do not change.
 template<typename SetEntry>
 static void fillRowV8Entries(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams,
-  int nnXLen, int nnYLen, bool useNHWC, float* rowGlobal, SetEntry setEntry
+  int nnXLen, int nnYLen, bool useNHWC, float* rowGlobal, int symmetry, SetEntry setEntry
 ) {
   assert(nnXLen == enclosure::SIZE && nnYLen == enclosure::SIZE);
   assert(board.x_size == enclosure::SIZE && board.y_size == enclosure::SIZE);
@@ -3014,6 +3039,14 @@ static void fillRowV8Entries(
   auto setOne = [&](int pos, int feature) {
     setEntry(pos * posStride + feature * featureStride);
   };
+  //A point's image (pos = y * 19 + x).
+  auto symPos = [&](int pos) {
+    if(symmetry == 0)
+      return pos;
+    int x = pos % enclosure::SIZE, y = pos / enclosure::SIZE;
+    getSymXY(x, y, symmetry);
+    return y * enclosure::SIZE + x;
+  };
 
   //Feature 0 - on board
   for(int pos = 0; pos < numPos; pos++)
@@ -3024,9 +3057,23 @@ static void fillRowV8Entries(
   float scalars[enclosure::SCALARS];
   const int n = board.pos.observation(idx, scalars);
   for(int i = 0; i < n; i++) {
-    const int pos = idx[i] / enclosure::PLANES;
-    const int plane = idx[i] % enclosure::PLANES;
+    int pos = idx[i] / enclosure::PLANES;
+    int plane = idx[i] % enclosure::PLANES;
     assert(plane < 4 * enclosure::NOFF);
+    //The image edge, anchored as make_edge anchors it (its lexicographically first end), in the same group.
+    if(symmetry != 0) {
+      const int group = plane / enclosure::NOFF, k = plane % enclosure::NOFF;
+      int ax = pos % enclosure::SIZE, ay = pos / enclosure::SIZE;
+      int bx = ax + enclosure::OFFS[k].dx, by = ay + enclosure::OFFS[k].dy;
+      getSymXY(ax, ay, symmetry);
+      getSymXY(bx, by, symmetry);
+      if(std::tie(bx, by) < std::tie(ax, ay)) {
+        std::swap(ax, bx);
+        std::swap(ay, by);
+      }
+      pos = ay * enclosure::SIZE + ax;
+      plane = group * enclosure::NOFF + enclosure::OFF_INDEX[bx - ax + 3][by - ay + 3];
+    }
     setOne(pos, V8_EDGE_PLANES_START + plane);
     //ENCLOSURE_EDGE_BOTH_ENDS: also at the upper end, in the opposite offset's plane of the same group.
     if(enclosure::EDGE_BOTH_ENDS) {
@@ -3056,9 +3103,10 @@ static void fillRowV8Entries(
     nnInputParams.maxHistory <= 0 ? 2 * enclosure::PER_PLAYER : enclosure::FEATURE_PLANES;
   for(int pos = 0; pos < numPos; pos++) {
     const uint8_t* p = planes.data() + pos * enclosure::FEATURE_PLANES;
+    const int image = symPos(pos);
     for(int f = 0; f < numFeaturePlanes; f++)
       if(p[f])
-        setOne(pos, V8_FEATURE_PLANES_START + f);
+        setOne(image, V8_FEATURE_PLANES_START + f);
   }
 }
 
@@ -3076,7 +3124,7 @@ void NNInputs::fillRowV8(
   else
     std::fill(rowBin, rowBin + NUM_FEATURES_SPATIAL_V8 * nnXLen * nnYLen, 0.0f);
   //Each entry set is recorded for the next fill's clearing.
-  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, [&](int i) {
+  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, 0, [&](int i) {
     rowBin[i] = 1.0f;
     if(setEntries != NULL)
       setEntries->push_back(i);
@@ -3086,10 +3134,10 @@ void NNInputs::fillRowV8(
 void NNInputs::fillRowV8Packed(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams,
-  int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal
+  int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry
 ) {
   std::fill(rowBits, rowBits + NUM_SPATIAL_WORDS_V8, 0u);
-  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, [&](int i) {
+  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, symmetry, [&](int i) {
     rowBits[i >> 5] |= 1u << (i & 31);
   });
 }

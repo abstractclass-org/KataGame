@@ -380,7 +380,8 @@ class NNEvaluator {
     Player nextPlayer,
     const SGFMetadata* sgfMeta,
     const MiscNNInputParams& nnInputParams,
-    NNResultBuf& buf
+    NNResultBuf& buf,
+    int symmetry = 0
   ) const;
 
   // Run a forward pass on this freshly-created handle for each batch size 1 to maxBatchSize, with an
