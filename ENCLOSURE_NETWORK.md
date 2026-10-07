@@ -341,7 +341,7 @@ flowchart TD
 
 ### Regret heads (RGSC)
 
-Two heads added for Regret-Guided Search Control (the owner's choice, see `v2/docs/decisions/rgsc.md`). The
+Two heads added for Regret-Guided Search Control (see `v2/docs/decisions/rgsc.md`). The
 paper does not describe its heads, and the authors' code copies its own value head for them, so V2 copies KataGo's
 value-head shape (a named deviation). Both read the trunk **detached**, as the authors' do: their losses train the
 heads only, never the trunk.
@@ -395,7 +395,7 @@ flowchart TD
 
 - **Targets.** A position's regret is the paper's Eq. 2: the mean, over the game's positions from it to the end, of
   (the selected move's search value - the outcome)². The ranking loss is the authors' grouped list-wise loss, in
-  groups of 32 rows (owner).
+  groups of 32 rows.
 - **Use.** Both are exported. The C++ search reads them at every self-play evaluation: the ranking picks each game's
   candidate start position for the regret buffer, and the value estimates its regret. They have no part in move
   choice or in the gauntlet.

@@ -23,7 +23,7 @@ branches on Enclosure.
 - **A move**: `NULL_LOC` (0), `PASS_LOC` (1), or `MOVE_LOC_BASE` (421, which is `Board::MAX_ARR_SIZE`) + our action
   index `(y * 19 + x) * 48 + offset`. The offsets follow the Enclosure engine's order: dx, then dy, each from -3 to 3,
   without (0, 0). So a move `Loc` goes from 421 to 17,748.
-  - Moves start after the points, so no value is both (the owner's choice, see "Moves where points are expected").
+  - Moves start after the points, so no value is both (see "Moves where points are expected").
   - Everything that stores, compares, hashes or passes moves (the search tree, histories, training rows) is
     unchanged.
   - `NNPos::locToPos` maps a move to its policy index, which is the action index. Pass is last, at 17,328.
@@ -122,7 +122,7 @@ exact results at the end of the game). Graph search and subtree value bias are o
 exact areas, so a final score is a point mass (mean square = score²). This agrees with the Enclosure score bins
 ("Score distribution bins").
 
-## Subtree value bias (the owner's design)
+## Subtree value bias
 
 KataGo puts search nodes into buckets by the mover, the last move, the move before it, and a 5×5 window of point
 colours and atari around the last move. The average error of the network against deeper search in each bucket then
@@ -145,7 +145,7 @@ At first, move `Loc`s were 2 + action, and they shared the values 2-420 with poi
 point then gives wrong answers with no error for those moves, and reads past the end of the array for the other
 moves. KataGo's `assert`s are compiled out in Release.
 
-- **The fix (the owner's choice): ranges that do not overlap.** Moves start at `MOVE_LOC_BASE = 421`, so a move used
+- **The fix: ranges that do not overlap.** Moves start at `MOVE_LOC_BASE = 421`, so a move used
   as a point is always out of range.
 - **Tests run in a Debug build** (asserts on, `-D_GLIBCXX_ASSERTIONS`), so a miss fails loudly.
 
@@ -205,7 +205,7 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
   the turn / 2, the move count / 120, and both scores / (18 · 18 · 61). The plan puts the scalars here, not in
   constant planes.
 - **Absolute colours,** as in the Enclosure network: plane k is Blue's for k = 0. The player to move is a global
-  input. (KataGo's Go inputs are relative to the mover. The owner chose "our feature planes, as KataGo uses its Go
+  input. (KataGo's Go inputs are relative to the mover. The choice was "our feature planes, as KataGo uses its Go
   features".)
 - **Model versions 8-17** keep their meanings for the architecture, but all of them read V8. The fork refuses Go
   networks (and versions 3-7). Go's `fillRowV3`-`V7` stay in the file, unreachable, to keep the diff from upstream
@@ -233,7 +233,7 @@ exact scores. The feature planes also moved point by point.
 
 So the rules are symmetric under all 8. But only the identity and the mirror map real games to real games. Under the
 other 6, Blue starts on the right or on a vertical line, which never happens. The plan expected only the mirror, so
-the number to use became the owner's decision (see `v2/docs/decisions/build.md`). **Decided (owner): all 8.** The
+the number to use became a decision (see `v2/docs/decisions/build.md`). **Decided: all 8.** The
 labels are exact, it is KataGo's method, and it can be reversed without new data. An arena A/B test of 2 against 8
 can look at it again. The code handles all 8. `SymmetryHelpers::NUM_SYMMETRIES` sets the count, and KataGo's
 numbering puts flipY at 1. So a count of 2 means the identity and the mirror.
@@ -268,7 +268,7 @@ numbering puts flipY at 1. So a count of 2 means the identity and the mirror.
 
 ## Score utility (step 4.3, revised later)
 
-**Now (owner): KataGo's score utility, with an Enclosure score unit.** At first, c_score was 0 (the owner's choice
+**Now: KataGo's score utility, with an Enclosure score unit.** At first, c_score was 0 (the choice
 then: win/loss only).
 
 - **KataGo's utility:** factor × (2/π) atan((margin − centre) / (scale × unit)). The margin is the signed final score
@@ -285,10 +285,10 @@ then: win/loss only).
     weight 0.25, centre scale 0.50 (about 70 points).
   - Play and analysis (`analysis_example.cfg`, `match_example.cfg`): static 0.10, dynamic 0.30 (centre zero weight
     0.20, scale 0.75: about 105 points), as upstream's defaults.
-- **The gauntlet's `analysis_enclosure.cfg`:** first 0, then KataGo's 0.10 and 0.30, in a new rating pool (owner).
+- **The gauntlet's `analysis_enclosure.cfg`:** first 0, then KataGo's 0.10 and 0.30, in a new rating pool.
 - The score value tables clamp scores beyond Go's range. With the unit, the scaled scores stay within them.
 
-## Score distribution bins (the owner's choice)
+## Score distribution bins
 
 842 bins, as in KataGo, each 12 points wide. They cover margins of ±5,052: every margin in `net1`'s self-play, and 99%
 of the full-length human games (the measurements are in `v2/docs/decisions/build.md`). Larger margins go to the end
@@ -340,12 +340,12 @@ bins. Only the training rows and the Python head use the distribution (step 6).
     the augmented inputs equal the C++ inputs of the image position, and every legal move lands on the image from
     `getSymAction`. Scrambled symmetry labels fail.
 
-## Score scale (step 6, the owner's choice)
+## Score scale (step 6)
 
 **Decided:** scores stay in raw points, and every constant that KataGo tuned to Go's point scale is scaled by
 `SCORE_SCALE` = 12 (C++ `NNPos::SCORE_SCALE`, Python `model_pytorch.SCORE_SCALE`). This is the width of the
 Enclosure score bins against KataGo's bins of 1 point, from the measured margins. Training then weighs every score
-term exactly as KataGo does on scores of Go's size (the owner: "scale-invariant retune"). The rule:
+term exactly as KataGo does on scores of Go's size ("scale-invariant retune"). The rule:
 
 - quantities in points: × s.
 - squared points: × s².
@@ -380,7 +380,7 @@ and cdf 0.02 each, L2 3e-5.
   - Go's seki, future-position and area targets are zero, with weight 0. (The seki loss is set to zero in Python,
     because its weight is the ownership weight.)
   - no-result never occurs.
-- **History dropout** (the owner: in KataGo's style), in `data_processing_pytorch.apply_history_dropout`:
+- **History dropout** (in KataGo's style), in `data_processing_pytorch.apply_history_dropout`:
   - KataGo's draws (each item stops with probability 0.02, older ones first) on the 4 history planes.
   - the edge planes of the current and previous turns carry protection, and they are never dropped.
   - measured on 200,000 rows: planes kept 98.0 / 96.0 / 94.1 / 92.3 %, against 0.98^k.
@@ -396,7 +396,7 @@ and cdf 0.02 each, L2 3e-5.
     `read_npz_training_data` (symmetries and history dropout on). Then it runs the forward pass, the metrics and one
     backward pass (no optimizer step). 21 batches: the shapes are as expected, and every loss and gradient is finite.
     The losses that only Go has are 0.
-  - Real `.npz` files need libzip (`libzip-dev`, which the owner installed before step 8). Before that, the test used
+  - Real `.npz` files need libzip (`libzip-dev`, installed before step 8). Before that, the test used
     the writer's text output.
 
 ## KataGo's training and self-play knobs: what V2 uses
@@ -414,7 +414,7 @@ This section lists them so that they are seen as choices. "On" and "off" describ
     rate (`-head-lr-factor 0.5`). Biases and norms have their own factors. There is no rate per head.
   - **Head loss weights: on**, KataGo's (`metrics_pytorch.py`, with the score weights scaled by `SCORE_SCALE`, see
     "Score scale"). Under SGD, a head's loss weight is in effect the learning rate of that head's own layers. It also
-    sets how hard the head pulls on the shared trunk. So it is the lever for one head. (The owner: use KataGo's
+    sets how hard the head pulls on the shared trunk. So it is the lever for one head. (Use KataGo's
     levers, this one or `-lr-schedule`, not new code.)
   - **Optimizer:** SGD with momentum 0.9 and lookahead (0.5, 6). `-use-muon` and `-use-adamw` exist, unused.
   - **Averaged exported weights (SWA): on**, a sample every 80,000 positions (`-swa-period-samples`).
@@ -425,11 +425,11 @@ This section lists them so that they are seen as choices. "On" and "off" describ
   - **Validation: on.** `shuffle.sh` keeps 1% of the files out of training (`VALIDATE=1`), and `metrics_val.json`
     holds their losses. (Upstream's `synchronous_loop.sh` turns validation off. Then the loss curves are training
     losses only, and they rise when the data gets harder, even while the network improves.)
-  - **Batch** 256 (the owner's choice), FP16 training.
+  - **Batch** 256, FP16 training.
 - **Self-play** (`selfplay_enclosure.cfg`):
   - **Playout cap randomization: on.** 25% of searches are full searches at 200 visits. The rest are at 40
     (`cheapSearchProb 0.75`, `cheapSearchTargetWeight 0`: only full searches train the policy). 200/40 matches
-    iviazovetskyi's self-play (the owner's choice). It is a named departure from KataGo's 600/100 and 1000/200.
+    iviazovetskyi's self-play. It is a named departure from KataGo's 600/100 and 1000/200.
   - **Surprise weighting: on**, `policySurpriseDataWeight 0.5`, `valueSurpriseDataWeight 0.1`.
   - **Variety: on**, with Go's values: early forks (`earlyForkGameProb 0.04`), root Dirichlet noise (total 10.83),
     root policy temperature 1.25 early and then 1.1, and move temperature 0.75 early, decaying to 0.15 with a
@@ -442,9 +442,9 @@ This section lists them so that they are seen as choices. "On" and "off" describ
   - **Gatekeeper: off.** v2a runs no gatekeeper, so no new network is tested before self-play takes it. The
     gauntlet rates the networks afterwards.
 
-## Spatial targets (step 6, the owner's design)
+## Spatial targets (step 6)
 
-**Built (the owner: "add all of our ideas and just run").** The targets use KataGo's existing slots, so the rows keep
+**Built ("add all of our ideas and just run").** The targets use KataGo's existing slots, so the rows keep
 their format, and old and new rows mix in the shuffle:
 
 - **1. Future nodes** in C2-3: KataGo's future-position code as it is (`board.colors` marks each player's nodes, and
@@ -466,13 +466,13 @@ their format, and old and new rows mix in the shuffle:
 
 The design as first written:
 
-**Decided (owner):**
+**Decided:**
 
 - KataGo's spatial targets that only Go has (seki, future stone positions, final area/territory) get weight 0. Their
   heads stay.
 - **The ownership target:** per point, the mean over the remaining turn ends of +1 inside the mover's regions, −1
   inside the opponent's, and 0 otherwise.
-- The owner asked for targets specific to Enclosure in place of Go's. The sections below work them out. They were to
+- Targets specific to Enclosure were wanted in place of Go's. The sections below work them out. They were to
   be added one at a time (weight 0 until the arena tested each one).
 
 KataGo's reasons, from its code comments: auxiliary spatial targets give the trunk dense gradients per point about
@@ -512,7 +512,7 @@ harder to predict.
 
 ### 3. Region occupancy at several horizons (both players together)
 
-- **The owner's point:** a target of next-turn region gain leans greedy. So the target takes both players together,
+- **Point:** a target of next-turn region gain leans greedy. So the target takes both players together,
   over horizons out to the end of the game.
 - **Target,** from the mover's side: per point, +1 inside the mover's regions, −1 inside the opponent's, and 0 in
   neither or both. It is taken at the turn end 1 round and 4 rounds later.
@@ -525,7 +525,7 @@ harder to predict.
 - **Why not "next turn's gain" alone:** a short horizon rewards whatever closes a region now. The 4-round horizon and
   the ownership target carry what the opponent does in return.
 
-**Time horizons: divided by what they measure (the owner's choice).**
+**Time horizons: divided by what they measure.**
 
 KataGo sets its time constants from the board area. In Go, the area sets both the length of the game and the reach of
 its tactics. Enclosure keeps the 19×19 board but has a shorter game.
@@ -549,8 +549,8 @@ Both purposes count decisions, not fractions of a game.
 - **The variance-time multiplier** keeps outputs near unit scale. It is scaled provisionally. It will be set from the
   measured size of its target when self-play data exists.
 
-An intermediate version scaled everything by the length of the game (2, 7 and 23 edges). The owner found 2 edges,
-about one turn, too short, and this led to the division.
+An intermediate version scaled everything by the length of the game (2, 7 and 23 edges). But 2 edges,
+about one turn, was too short, and this led to the division.
 
 Game-phase constants:
 
@@ -559,7 +559,7 @@ Game-phase constants:
   - Source: the kata1 training games on katagoarchive.org. A sample of 732 games: mean 328.7, median 329, 10th-90th
     percentile 294-363. A later sample of 51,094 games: mean 328.1, median 327, 292-366.
   - KataGo plays games to the end and does not resign, so its games are longer than human games.
-  - This measurement replaced an earlier guess of 250 moves (the owner: find the source of every number).
+  - This measurement replaced an earlier guess of 250 moves (find the source of every number).
 - `Board::GAME_LENGTH_AREA` = 361 × 0.366 ≈ 132 replaces the board area in the game-phase constants:
   - the earliest self-play resignation (A / 5).
   - the early-fork move (`earlyForkGameExpectedMoveProp` × A).
@@ -569,7 +569,7 @@ Game-phase constants:
 - The look-ahead formulas keep the board area. KataGo's code comment on the short-term constants says that they
   "used to be 'nicer' numbers 0.18, 0.06, 0.02" until a fix to the functional form, with values nudged to keep
   9×9-19×19 unchanged.
-- The owner: the specific numbers are what made sense in Go, not only their scale. They can need tuning for
+- The specific numbers are what made sense in Go, not only their scale. They can need tuning for
   Enclosure later.
 
 **Data:** all three targets come from the finished game. Self-play already keeps every position of the game. At the
