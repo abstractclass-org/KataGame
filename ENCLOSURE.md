@@ -257,7 +257,7 @@ numbering puts flipY at 1. So a count of 2 means the identity and the mirror.
   variations move by move on the image boards (`getSymMoveLocs`).
 - **`LocalPatternHasher::getHashWithSym`** hashes the window of the image board around the image move.
 - **Tests:**
-  - `testsymmetry`: the measurement above. It also does 153,600 round trips and compositions (the inverse maps back.
+  - `testsymmetry`: the measurement above. It also does 153,600 round trips and compositions (the inverse maps back,
     s1 then s2 is `compose(s1, s2)`). It checks root pruning at the start, where the valid symmetries are {0, 1} and
     69 legal moves become 36 (3 are on the axis).
   - `katago runenclosuretests`: the test of two edges by one mover, searched on its image under every symmetry, must
