@@ -51,6 +51,7 @@ def main():
     ap.add_argument("--npz", nargs="+", required=True)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--max-rows", type=int, default=60000)
+    ap.add_argument("--json", help="also write the report's figure data here")
     args = ap.parse_args()
     model = load(args.checkpoint, args.device)
     cols = {"regret": [], "flag": [], "turn": [], "start": [], "mode": [], "game": [], "pred": [], "rank": []}
@@ -98,6 +99,19 @@ def main():
         p = np.array(picks[k])
         print(f"  {k:13} mean {p.mean():.3f}  (median depth {int(np.median(depths[k]))})")
 
+    if args.json:
+        import json
+        corr = []
+        for lo in range(0, 120, 24):
+            sel = (c["turn"] >= lo) & (c["turn"] < lo + 24)
+            corr.append({"turns": f"{lo}-{lo + 23}", "ranking": rank_corr(c["rank"][sel], c["regret"][sel]),
+                         "regret value": rank_corr(c["pred"][sel], c["regret"][sel])})
+        with open(args.json, "w") as f:
+            json.dump({"games": used, "positions": int(keep.sum()),
+                       "picks": {k: float(np.mean(v)) for k, v in picks.items()},
+                       "pick_sd": {k: float(np.std(v) / np.sqrt(len(v))) for k, v in picks.items()},
+                       "depths": {k: float(np.median(v)) for k, v in depths.items()}, "corr_by_depth": corr}, f)
+        print(f"wrote {args.json}")
     print("\nrank correlation with the realized regret (Spearman):")
     print(f"  all positions:  ranking {rank_corr(c['rank'], c['regret']):+.3f}   regret value "
           f"{rank_corr(c['pred'], c['regret']):+.3f}   depth {rank_corr(-c['turn'], c['regret']):+.3f}")

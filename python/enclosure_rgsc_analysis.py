@@ -148,6 +148,9 @@ def depth_curriculum(run_dir, files_per_folder, rng, buckets=(0, 12, 24, 36, 48,
     step = max(1, len(table) // 20)
     for row, n, shares, reg in table[::step] + ([table[-1]] if (len(table) - 1) % step else []):
         print(f"  {row:>9,}  {n:>6}  " + "  ".join(f"{s:>7.0%}" for s in shares) + f"  {reg:.3f}")
+    return {"buckets": [f"{lo}-{hi - 1}" for lo, hi in zip(buckets[:-1], buckets[1:])],
+            "models": [{"row": row, "starts": n, "shares": [float(s) for s in shares], "regret": reg}
+                       for row, n, shares, reg in table]}
 
 
 def main():
@@ -156,13 +159,19 @@ def main():
     ap.add_argument("--folders", type=int, default=12, help="the newest self-play folders (one per network)")
     ap.add_argument("--files-per-folder", type=int, default=40)
     ap.add_argument("--metrics", nargs="*", default=[], help="trainer folders (train/NAME) for the heads' losses")
+    ap.add_argument("--json", help="also write the report's figure data (the restart depths by model) here")
     args = ap.parse_args()
     rng = np.random.default_rng(0)
     rows, n = load_rows(args.run_dir, args.folders, args.files_per_folder, rng)
     print(f"{n} self-play folders read")
     regrets = restart_premise(rows)
     heads_on_a_scale(regrets, args.metrics, rng)
-    depth_curriculum(args.run_dir, max(2, args.files_per_folder // 8), rng)
+    curriculum = depth_curriculum(args.run_dir, max(2, args.files_per_folder // 8), rng)
+    if args.json and curriculum:
+        import json
+        with open(args.json, "w") as f:
+            json.dump({"curriculum": curriculum}, f)
+        print(f"wrote {args.json}")
 
 
 if __name__ == "__main__":
