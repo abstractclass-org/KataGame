@@ -77,6 +77,15 @@ def main():
     print(f"rows read {n:,}; normal-game rows with a regret target {keep.sum():,}; games {len(np.unique(c['game'])):,}")
     print(f"regret value head: mean {c['pred'].mean():.3f} (realized {c['regret'].mean():.3f}); ranking scores "
           f"mean {c['rank'].mean():.3f}, spread {c['rank'].std():.3f}")
+    var = np.var(c["regret"])
+    print(f"regret value head R2 on these rows: {1 - np.mean((c['pred'] - c['regret']) ** 2) / var:+.3f}")
+    # The same against a predictor from the move number alone (the mean regret of each move, fitted on half the games).
+    tr = (c["game"] % 2) == 0
+    mean_by_move = {m: c["regret"][tr & (c["turn"] == m)].mean() for m in np.unique(c["turn"][tr])}
+    te = ~tr
+    pred_move = np.array([mean_by_move.get(m, c["regret"][tr].mean()) for m in c["turn"][te]])
+    print(f"on the test half: head R2 {1 - np.mean((c['pred'][te] - c['regret'][te]) ** 2) / np.var(c['regret'][te]):+.3f}, "
+          f"move-number predictor R2 {1 - np.mean((pred_move - c['regret'][te]) ** 2) / np.var(c['regret'][te]):+.3f}")
 
     rng = np.random.default_rng(0)
     picks = {"ranking": [], "regret value": [], "random": [], "shallowest": [], "best": []}
