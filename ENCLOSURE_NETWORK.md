@@ -23,6 +23,10 @@ Enclosure repository. This file is the picture.
 |---|---|---|---|---|
 | b10c128 | Convnet | 3,215,747 | 2,994,503 | Plays self-play (200/40 visits), with every exported model |
 | b15c192 | Convnet | 10,249,927 | 9,930,951 | Trained on the same data, next to play |
+| b6c96 | Convnet | (trainer: 1,178,765) | – | v2a's first network, until b10c128 took over (before the regret heads existed) |
+
+For comparison, V1's network (`net1`, `net1b`: 128 channels × 8 blocks, JAX) has about 2.8M parameters
+([v1/README.md](../v1/README.md)).
 
 Notes on the table:
 * "Num params (C++)" is the engine's count when it loads the model (`selfplay.log`, "convnet, N params"). The
