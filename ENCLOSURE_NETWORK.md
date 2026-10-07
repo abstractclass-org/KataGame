@@ -4,7 +4,7 @@ This describes the networks V2 trains (run `v2a`) and how they differ from KataG
 difference is KataGo's, as described in [docs/NetworkArchitectures.md](docs/NetworkArchitectures.md): the trunk, its
 residual and global pooling blocks, the normalisation, the activation, and the shapes of the policy and value heads.
 The reasons for each change are in [ENCLOSURE.md](ENCLOSURE.md) and in `v2/docs/decisions/` of the
-Enclosure repository; this file is the picture.
+Enclosure repository. This file is the picture.
 
 * [Summary](#summary)
 * [What differs from KataGo](#what-differs-from-katago)
@@ -19,17 +19,17 @@ Enclosure repository; this file is the picture.
 
 ## Summary
 
-| Size | Kind | Num params (C++) | KataGo's same size | Role in v2a (2026-10-06) |
+| Size | Kind | Num params (C++) | KataGo's same size | Role in v2a |
 |---|---|---|---|---|
-| b10c128 | Convnet | 3,215,747 | 2,994,503 | Plays self-play (200/40 visits); every exported model |
+| b10c128 | Convnet | 3,215,747 | 2,994,503 | Plays self-play (200/40 visits), with every exported model |
 | b15c192 | Convnet | 10,249,927 | 9,930,951 | Trained on the same data, next to play |
 
 Notes on the table:
 * "Num params (C++)" is the engine's count when it loads the model (`selfplay.log`, "convnet, N params"). The
   trainer counts 3,215,811 and 10,250,007.
 * Trained as model version 15 and exported as version 17, which carries the fork's extra outputs (below).
-* KataGo's counts are from its table: g170 networks at model version 8 with a 5x5 initial convolution. Built by
-  today's trainer at version 15 (3x3), KataGo's b10c128 would be about 2.96 M. See
+* KataGo's counts are from its table: g170 networks at model version 8 with a 5x5 initial convolution. If the
+  current trainer built KataGo's b10c128 at version 15 (3x3), it would have about 2.96 M. See
   [Where the parameters went](#where-the-parameters-went).
 * Both are version 15, Fixup, ReLU: KataGo's `b10c128` and `b15c192` configs as they stand, no nested bottleneck and
   no transformer.
@@ -40,7 +40,7 @@ In order of how much they change the network:
 
 1. **The policy is over edges, not points.** A move is an edge from a point to one of 48 offsets within Chebyshev
    distance 3. Each policy output has 48 channels per point, so the board's policy is 19 x 19 x 48 = 17,328 logits,
-   plus pass: 17,329 against Go's 362. Pass stays one logit per output. The head itself is KataGo's; only its last
+   plus pass: 17,329 against Go's 362. Pass stays one logit per output. The head itself is KataGo's. Only its last
    1x1 convolution is 48 times wider.
 2. **The inputs.** 215 spatial planes (Go: 22) and 5 global values (Go: 19), in absolute colours, with the player to
    move as a global input. 192 of the planes are edges, 48 offsets each for four kinds of edge. The initial
@@ -50,20 +50,20 @@ In order of how much they change the network:
 
    | KataGo's head | Go target | Enclosure target |
    |---|---|---|
-   | Ownership (V x 1) | final ownership | D2: mean region ownership over the remaining turn ends |
+   | Ownership (V x 1) | final ownership | mean region ownership over the remaining turn ends |
    | Future positions (C x 2) | stones 8 and 32 moves later | nodes 8 and 32 edges later |
    | Future positions, channels 3-4 (new) | none | each player's territory income per point |
    | Seki (C x 4) | seki / dead stones | which edges get cut before the game ends |
    | Scoring (V x 1) | final area | regions 8 turn ends later |
 
 4. **Two new heads, RGSC's regret value and regret ranking** (Tsai et al., ICLR 2026), in KataGo's value-head shape
-   on the detached trunk: they read the trunk and never train it.
+   on the detached trunk. They read the trunk and never train it.
 5. **Score constants scaled for Enclosure's scores.** Scores stay in points, but every constant KataGo tuned to Go's
    point scale is multiplied by 12 (output multipliers 20 to 240, Huber deltas). The score distribution keeps 842
    bins, each 12 points wide (Go: 1). Go's score-parity term is a no-op (its vector is zero).
 
 The following are **not** differences, though they could look like them:
-- **The board size is fixed at 19 x 19.** The board-size scalings in KataGo's pooling become constants. The value
+- **The board size is always 19 x 19.** The board-size scalings in KataGo's pooling become constants. The value
   head's three pools are then the mean, 0.5 x the mean and 0.15 x the mean. The trunk's and policy head's pools are
   the mean, 0.5 x the mean and the max. The mask (input channel 0) is all ones.
 - **Symmetries act on positions, not on the backend's pixels.** An edge's image re-anchors at its lower end, so a
@@ -127,7 +127,7 @@ flowchart TD
 
 ### Inputs
 
-Input version V8 (`NNInputs::fillRowV8`; the Python reference is the Enclosure repository's `net.input_planes`).
+Input version V8 (`NNInputs::fillRowV8`, and the Python reference is the Enclosure repository's `net.input_planes`).
 
 ```mermaid
 flowchart TD
@@ -148,17 +148,17 @@ flowchart TD
     classDef io fill:#e3f4e3,stroke:#3a7d3a,color:#000
 ```
 
-- **Edge planes.** An edge is set at its lower end (the canonical edge's first point) in its offset's plane. Since
-  2026-10-03 v2a sets it at both ends (`ENCLOSURE_EDGE_BOTH_ENDS=1`), so the upper end has it in the opposite
-  offset's plane.
+- **Edge planes.** An edge is set at its lower end (the canonical edge's first point), in the plane of its offset.
+  v2a sets it at both ends (`ENCLOSURE_EDGE_BOTH_ENDS=1`), so the upper end also has it, in the plane of the opposite
+  offset.
 - **Feature planes, per player:**
-  - 0, the player's nodes;
-  - 1, points inside its enclosed regions;
-  - 2, points on its edges the opponent cannot cut;
-  - 3-5, points it reaches in exactly 1, 2 or 3 hops;
-  - 6, points it cannot reach;
-  - 7, held ground, which v2a replaces with the turn-safe plane (edges the opponent cannot cut in its coming turn);
-  - 8, openings, empty in v2a.
+  - 0: the player's nodes.
+  - 1: points inside its enclosed regions.
+  - 2: points on its edges that the opponent cannot cut.
+  - 3-5: points that it reaches in exactly 1, 2 or 3 hops.
+  - 6: points that it cannot reach.
+  - 7: held ground. v2a replaces it with the turn-safe plane (edges that the opponent cannot cut in its next turn).
+  - 8: openings, empty in v2a.
 
   The 4 history planes mark the edges placed 2 to 5 turns ago. The observation's edge planes already carry the
   current and the previous turn.
@@ -174,7 +174,7 @@ ReLU, and one norm at the end of the trunk.
 
 ### Policy head: one logit per edge
 
-KataGo's policy head, with the last convolution producing 48 channels per policy output instead of one. Version 15
+KataGo's policy head, with a last convolution that produces 48 channels per policy output instead of one. Version 15
 trains 6 policy outputs (K = 6: policy, opponent's policy, soft policies, optimistic and the like), and the export
 keeps 2, as upstream.
 
@@ -226,8 +226,9 @@ flowchart TD
     classDef blk fill:#ffffff,stroke:#333333,color:#000
 ```
 
-The move's index is the policy entry: `(y x 19 + x) x 48 + offset`, pass last at 17,328. The point (x, y) is the
-edge's source: the mover's node it is drawn from, or for an edge between two of the mover's nodes, its lower end.
+The move's index is the policy entry: `(y x 19 + x) x 48 + offset`, with pass last at 17,328. The point (x, y) is the
+edge's source: the mover's node that it is drawn from, or, for an edge between two of the mover's nodes, its lower
+end.
 Offsets run dx, then dy, each from -3 to 3, skipping (0, 0):
 
 ```
@@ -243,16 +244,18 @@ Offsets run dx, then dy, each from -3 to 3, skipping (0, 0):
 
 In C++ the NHWC output is read in place: channel k x 48 + offset at a point is entry k's logit for that edge. The
 CUDA backend's buffers and decode hold 48 channels per output, and the Eigen backend decodes the blocks the same way.
-Since 2026-10-06 the policy is gathered on the GPU for the legal moves only (speed.md, "CPU trick 2"), which changes
-the backend, not the network.
+The policy is now gathered on the GPU for the legal moves only ([speed.md](../v2/docs/decisions/speed.md), "The
+policy gathered on the GPU"). This changes the backend, not the network.
 
 ### Value head and spatial targets
 
 KataGo's value head with its outputs in Enclosure units. The pooled trunk feeds the outcome, the score values and
-the score distribution, and per-point heads give the spatial targets. Dashed parts are outputs the search does not
-read: the score distribution, training-only and not exported, as in KataGo; and three auxiliary heads, the future
-positions and income, the cut edges, and the regions, which the export has written since 2026-10-04 as raw outputs
-(model version 17, aux version 1).
+the score distribution, and per-point heads give the spatial targets. Dashed parts are outputs that the search does not
+read:
+
+- the score distribution, which is for training only and not exported, as in KataGo.
+- three auxiliary heads (the future positions and income, the cut edges, and the regions). The export writes them as
+  raw outputs (model version 17, aux version 1).
 
 ```mermaid
 flowchart TD
@@ -272,7 +275,7 @@ flowchart TD
     VO["Win / loss logits<br/>(no result never occurs)"]
     SO["Score mean, stdev, lead, variance time,<br/>short-term values and errors<br/>(score multipliers x 12)"]
     SBO["Score distribution<br/>842 bins of 12 points"]
-    OO["Ownership: D2"]
+    OO["Ownership: over the remaining turn ends"]
     SCOO["Regions 8 turn ends later"]
     FPO["Nodes 8 and 32 edges later,<br/>each player's territory income"]
     SKO["Which edges get cut"]
@@ -317,28 +320,28 @@ flowchart TD
     classDef blk fill:#ffffff,stroke:#333333,color:#000
 ```
 
-- **Outcome.** Win, loss and no-result logits as KataGo's. The fork never sets no-result: its rules take KataGo's
-  area-scoring branch, which zeroes that output, so win and loss share the probability.
+- **Outcome.** Win, loss and no-result logits as KataGo's. The fork never sets no-result. Its rules take KataGo's
+  area-scoring branch, which sets that output to zero, so win and loss share the probability.
 - **Scores** are in points of the final margin (red minus blue, as `finalWhiteMinusBlackScore`). The multipliers that
   keep outputs near unit scale are 12 times KataGo's (240 for score mean, stdev and lead). The variance-time
   multiplier is scaled by game length (x 0.366, provisional). Loss weights and Huber deltas follow the same rule
   (ENCLOSURE.md, "Score scale").
 - **Score distribution.** KataGo's 842 bins (2 x (361 + 60)), each 12 points wide, centred at 12 x (bin - 421 + 0.5):
   margins up to ±5,052. The parity term (Go's komi parity) is kept as a no-op.
-- **Ownership (exported)** is D2: per point, the mean over the remaining turn ends of +1 inside the mover's regions,
+- **Ownership (exported)** is the Enclosure ownership target: per point, the mean over the remaining turn ends of +1 inside the mover's regions,
   -1 inside the opponent's, 0 otherwise.
-- **Auxiliary heads** (KataGo's slots; ENCLOSURE.md, "Spatial targets"):
+- **Auxiliary heads** (in KataGo's slots, see ENCLOSURE.md, "Spatial targets"):
   - Future positions, channels 1-2: the mover's and opponent's nodes 8 and 32 edges later, KataGo's loss.
-  - Future positions, channels 3-4 (added 2026-10-03): each player's territory income per point (its enclosed area
+  - Future positions, channels 3-4 (added later): each player's territory income per point (its enclosed area
     in the unit square around the point, averaged over the remaining turn ends). Binary cross-entropy, weighted as
-    ownership. This is iviazovetskyi's ownership target.
+    ownership. The idea comes from the ownership target of iviazovetskyi's public bot.
   - Seki slot: per point on an edge, whether no edge there, one of the mover's or one of the opponent's is cut
     before the game ends. Cross-entropy over the points on edges.
   - Scoring slot: region occupancy at the 8th turn end later (both players), KataGo's area loss.
 
 ### Regret heads (RGSC)
 
-Two heads added for Regret-Guided Search Control (owner, 2026-10-04; `v2/docs/decisions/rgsc.md`). The
+Two heads added for Regret-Guided Search Control (the owner's choice, see `v2/docs/decisions/rgsc.md`). The
 paper does not describe its heads, and the authors' code copies its own value head for them, so V2 copies KataGo's
 value-head shape (a named deviation). Both read the trunk **detached**, as the authors' do: their losses train the
 heads only, never the trunk.
@@ -398,20 +401,20 @@ flowchart TD
   choice or in the gauntlet.
 - **Pooling.** The heads use KataGo's value-head pooling (`KataValueHeadGPool`): a mean and two board-size scalings
   of it. On the 19 x 19 board these are 0.5 x and 0.15 x the mean, so there is no max. The class's docstring and
-  rgsc.md say "mean, scaled mean, max"; the code is as drawn here.
+  rgsc.md say "mean, scaled mean, max". The code is as drawn here.
 
 ## Layout
 
-The columns are KataGo's ([Layout](docs/NetworkArchitectures.md#layout)). Heads P / G / V / W are the head
-diagrams' widths; SB / S are the score distribution's hidden width and mixture count.
+The columns are KataGo's ([Layout](docs/NetworkArchitectures.md#layout)). Heads P / G / V / W are the widths in the head
+diagrams. SB / S are the hidden width and the mixture count of the score distribution.
 
 | Size | Model version | Initial conv | Blocks | Global pooling blocks | Trunk C | Pooling G in trunk | Heads P / G / V / W | SB / S | Policy outputs (training) | Activation, norm |
 |---|---|---|---|---|---|---|---|---|---|---|
 | b10c128 | 15 (exported as 17) | 3x3, 215 x 128 | 10 regular | 2 (blocks 5, 8) | 128 | 32 | 32 / 32 / 32 / 80 | 64 / 6 | 6 x 48 channels | ReLU, Fixup |
 | b15c192 | 15 (exported as 17) | 3x3, 215 x 192 | 15 regular | 2 (blocks 7, 12) | 192 | 64 | 32 / 32 / 32 / 96 | 80 / 8 | 6 x 48 channels | ReLU, Fixup |
 
-The block counts and widths are KataGo's configs of the same names. The 3x3 initial convolution is KataGo's current
-trainer; its g170 networks of these sizes used 5x5.
+The block counts and widths are KataGo's configs of the same names. The 3x3 initial convolution is that of KataGo's current
+trainer. Its g170 networks of these sizes used 5x5.
 
 ## Where the parameters went
 
