@@ -71,8 +71,8 @@ The following are **not** differences, though they could look like them:
   head's three pools are then the mean, 0.5 x the mean and 0.15 x the mean. The trunk's and policy head's pools are
   the mean, 0.5 x the mean and the max. The mask (input channel 0) is all ones.
 - **Symmetries act on positions, not on the backend's pixels.** An edge's image re-anchors at its lower end, so a
-  symmetry is not a permutation of pixels and channels. The inputs are filled from the image position, and the
-  backend always runs the identity. The network is unchanged by this.
+  symmetry is not a permutation of pixels and channels. The evaluator fills the inputs from the image position, and the
+  backend always runs the identity. This does not change the network.
 
 ## Common structure
 

@@ -58,7 +58,7 @@ the last mover. In `search/`, every `getOpp` on the sequence of moves (29 places
 
 ## Turn order in the search (step 3)
 
-KataGo already fits two-edge turns. Each `SearchNode` stores its own `nextPla`. Statistics are kept from White's side
+KataGo already fits two-edge turns. Each `SearchNode` stores its own `nextPla`. The search keeps statistics from White's side
 and read with the sign of the player who chooses, so nothing negates per ply. Only the places that *derive* the next
 player from the last mover break. A survey of the 29 `getOpp` calls in `search/` found three kinds:
 
@@ -101,7 +101,7 @@ exact results at the end of the game). Graph search and subtree value bias are o
 - **Two edges, one mover.**
   - Red plays edges 118-119 as one turn. Blue's single edge 120 ends the game.
   - Red holds two sides of a 3×3 square. Only the other two sides together win. An exhaustive check on the Python
-    engine confirmed this: 2 of Red's 45,601 two-edge turns win, and all others lose.
+    engine showed this: 2 of Red's 45,601 two-edge turns win, and all others lose.
   - The search runs 100,000 visits with c_score = 0 and flattened random priors (`nnPolicyTemperature` 100). The root
     considers 20 first edges (KataGo's allowMoves): both winners and 18 losers. Red's second edge, the node under
     test, keeps every legal move. With raw random priors, first-play urgency leaves a second edge with a low prior
@@ -323,9 +323,9 @@ bins. Only the training rows and the Python head use the distribution (step 6).
 - **Score-belief bin centres** are in points: 12 × (bin − 421 + 0.5) (the Enclosure score bins).
 - **No result:** the fork never sets `isNoResult`. Its rules (area scoring, positional ko) take KataGo's branch that
   sets the no-result output to zero. So win and loss share the probability, as under Go's area rules.
-- **Test:** `katago/python/enclosure_nn_check.py` with `katago runenclosurenntests`. A b6c96 is initialised at random.
-  Then every parameter and statistic is perturbed, so that no layer is an identity. The model is exported and
-  evaluated in C++ (Eigen, `NNEvaluator`) and in PyTorch on the 332 unfinished positions of
+- **Test:** `katago/python/enclosure_nn_check.py` with `katago runenclosurenntests`. The test initialises a b6c96 at random.
+  Then it perturbs every parameter and statistic, so that no layer is an identity. It exports the model and
+  evaluates it in C++ (Eigen, `NNEvaluator`) and in PyTorch on the 332 unfinished positions of
   `tests/data/enclosure_inputs.txt`.
   - The largest differences: policy 6e-6 (relative), value 6e-7, score 4e-6 (in units of the model's score
     multiplier, 240 points after the score scale below), ownership 7e-6. The tolerance is 1e-3.
@@ -402,7 +402,7 @@ and cdf 0.02 each, L2 3e-5.
 ## KataGo's training and self-play knobs: what V2 uses
 
 The fork runs KataGo's trainer and self-play as published. So most of these are KataGo's defaults, not decisions.
-This section lists them so that they are seen as choices. "On" and "off" describe v2a (`v2/runs/v2a.env`,
+This section lists them so that a reader sees them as choices. "On" and "off" describe v2a (`v2/runs/v2a.env`,
 `selfplay_enclosure.cfg`, `train.log`). To change one, use KataGo's own flag or key.
 
 - **Training** (`python/train.py`, `python/shuffle.py`):
@@ -472,7 +472,7 @@ The design as first written:
   heads stay.
 - **The ownership target:** per point, the mean over the remaining turn ends of +1 inside the mover's regions, −1
   inside the opponent's, and 0 otherwise.
-- Targets specific to Enclosure were wanted in place of Go's. The sections below work them out. They were to
+- We wanted targets specific to Enclosure in place of Go's. The sections below work them out. They were to
   be added one at a time (weight 0 until the arena tested each one).
 
 KataGo's reasons, from its code comments: auxiliary spatial targets give the trunk dense gradients per point about
@@ -482,8 +482,8 @@ harder to predict.
 
 ### 1. Future nodes (KataGo's future positions, for nodes)
 
-- **Target,** from the side of the row's mover: per point, +1 if it is one of the mover's nodes, −1 if it is one of
-  the opponent's, 0 otherwise. It is taken at two horizons, near and far. Past the end of the game, the final position
+- **Target,** from the side of the row's mover, per point: +1 for one of the mover's nodes, −1 for one of the
+  opponent's, 0 otherwise. The target uses two horizons, near and far. Past the end of the game, the final position
   is used.
   - KataGo takes the board 8 and 32 moves later (`trainingwrite.cpp`), which is 4 and 16 rounds of Go. An Enclosure
     round is 2 turns, 4 edges.
@@ -515,7 +515,7 @@ harder to predict.
 - **Point:** a target of next-turn region gain leans greedy. So the target takes both players together,
   over horizons out to the end of the game.
 - **Target,** from the mover's side: per point, +1 inside the mover's regions, −1 inside the opponent's, and 0 in
-  neither or both. It is taken at the turn end 1 round and 4 rounds later.
+  neither or both. The target uses the turn end 1 round and 4 rounds later.
   - The change from now needs no separate target. The current regions are an input (the enclosed feature planes), so
     to predict the future occupancy is to predict the gain and loss of both players at once.
   - The ownership target (the mean over all remaining turn ends) is the end-of-game member of the same ladder. So the
@@ -573,7 +573,7 @@ Game-phase constants:
   Enclosure later.
 
 **Data:** all three targets come from the finished game. Self-play already keeps every position of the game. At the
-end, the targets of each row are read from the positions h rounds later: the nodes, the region masks from the
+end, the writer reads the targets of each row from the positions h rounds later: the nodes, the region masks from the
 engine's `enclosed_area`, and which edges survive.
 
 ## Sizes at 17,329 actions (steps 4-6)
