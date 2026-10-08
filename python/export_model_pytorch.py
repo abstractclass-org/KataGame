@@ -192,6 +192,7 @@ parser.add_argument('-export-15-or-16-as-17', help='Export model version 15 or 1
 parser.add_argument('-attn-logit-bound-limit', help='Refuse to export if the data-free attention logit bound of any layer exceeds this (inference backends mask off-board keys with -3e4 in fp16, so genuine logits must stay well below that)', type=float, default=2.5e4, required=False)
 parser.add_argument('-ignore-attn-logit-bound', help='Export anyway when the attention logit bound limit is exceeded', action="store_true", required=False)
 parser.add_argument('-prune-dead-ffn-channels', help='Leave out transformer FFN hidden channels whose weights are all zero, to improve performance', action="store_true", required=False)
+parser.add_argument('-float16', help='Enclosure fork: write every weight block in 16-bit floats ("@BIN16@", which neuralnet/desc.cpp reads), for the WebAssembly build\'s size limit (v2/wasm)', action="store_true", required=False)
 parser.add_argument('-prune-ffn-scratch-factor', help='With -prune-dead-ffn-channels, the sum of the distinct FFN widths in use may be at most this multiple of the original width. Inference backends keep scratch memory for each distinct width, so this bounds the growth of that memory (default 2.0)', type=float, default=2.0, required=False)
 args = vars(parser.parse_args())
 
@@ -381,8 +382,13 @@ def main(args):
         # Little endian
         reshaped = np.reshape(weights.detach().numpy(),[-1])
         num_weights = len(reshaped)
-        writestr("@BIN@")
-        f.write(struct.pack(f'<{num_weights}f',*reshaped))
+        if args["float16"]:
+            # Enclosure fork: 16-bit floats, read by neuralnet/desc.cpp as "@BIN16@" blocks.
+            writestr("@BIN16@")
+            f.write(np.asarray(reshaped, dtype="<f2").tobytes())
+        else:
+            writestr("@BIN@")
+            f.write(struct.pack(f'<{num_weights}f',*reshaped))
         writestr("\n")
 
     def write_conv_weight(name,convweight):

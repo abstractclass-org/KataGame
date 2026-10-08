@@ -394,6 +394,17 @@ class NNEvaluator {
  public:
   // Helper, for internal use only
   void serve(Rand& rand, int gpuIdxForThisThread, int serverThreadIdx);
+
+#ifdef NNEVAL_SYNCHRONOUS
+  // Enclosure fork (the WebAssembly build, v2/wasm): one thread and no server threads. spawnServerThreads creates one
+  // compute handle, and evaluate() runs the network on its own request, in the calling thread, with the server's
+  // code for one row. Native builds do not define NNEVAL_SYNCHRONOUS.
+ private:
+  ComputeHandle* syncHandle = NULL;
+  NNServerBuf* syncServerBuf = NULL;
+  Rand* syncRand = NULL;
+  void evaluateSynchronously(NNResultBuf* resultBuf);
+#endif
 };
 
 #endif  // NEURALNET_NNEVAL_H_

@@ -43,6 +43,8 @@ def read_dump(path):
                 positions.append(cur)
             elif word == "spatial":
                 cur["spatial"] = [(int(i), float(v)) for i, v in (e.split(":") for e in rest[1:])]
+            elif word == "policy":  # the move policy's probabilities at the legal actions and pass
+                cur["policy"] = {int(i): float(v) for i, v in (e.split(":") for e in rest[1:])}
             elif word == "auxpolicy":
                 cur["auxpolicy"] = {int(i): np.array([float(x) for x in v.split(",")])
                                     for i, v in (e.split(":") for e in rest[1:])}

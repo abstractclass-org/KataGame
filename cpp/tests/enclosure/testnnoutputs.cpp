@@ -124,11 +124,18 @@ int main(int argc, char** argv) {
     for(int i = 0; i < NNOutput::NUM_AUX_MAP_CHANNELS * S * S; i++)
       out << " " << o.auxMap[i];
     out << "\n";
+    vector<int> actions;
+    for(int i = 0; i <= enclosure::PASS; i++)
+      if(i == enclosure::PASS || board.legalActions()[i])
+        actions.push_back(i);
+    //The move policy (output 0) at the legal actions and pass: a build compared with another (2026-10-08, the
+    //WebAssembly bot against the CUDA build, v2/wasm).
+    const PolicyView policy = o.policy();
+    out << "policy " << actions.size();
+    for(int i : actions)
+      out << " " << i << ":" << policy[i];
+    out << "\n";
     if(stage2) {
-      vector<int> actions;
-      for(int i = 0; i <= enclosure::PASS; i++)
-        if(i == enclosure::PASS || board.legalActions()[i])
-          actions.push_back(i);
       out << "auxpolicy " << actions.size();
       for(int i : actions) {
         out << " " << i << ":";

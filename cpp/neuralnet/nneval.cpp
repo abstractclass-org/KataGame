@@ -2,6 +2,7 @@
 #include "../neuralnet/modelversion.h"
 #include "../core/test.h"
 #include "../core/threadaffinity.h"
+#include "../game/enclosure/bitscan.h"
 
 #include <algorithm>
 #include <chrono>
@@ -461,6 +462,23 @@ void NNEvaluator::spawnServerThreads() {
   if(serverThreads.size() != 0)
     throw StringError("NNEvaluator::spawnServerThreads called when threads were already running!");
 
+#ifdef NNEVAL_SYNCHRONOUS
+  //Enclosure fork (v2/wasm): no threads; one compute handle for evaluate() to use in the calling thread.
+  if(syncServerBuf != NULL)
+    throw StringError("NNEvaluator::spawnServerThreads called twice in synchronous mode");
+  serverThreadsIsUsingFP16.assign(1,0);
+  syncRand = new Rand(randSeed + ":NNEvalSynchronous");
+  if(loadedModel != NULL) {
+    syncHandle = NeuralNet::createComputeHandle(
+      computeContext, loadedModel, logger, maxBatchSize, requireExactNNLen, inputsUseNHWC,
+      gpuIdxByServerThread.empty() ? 0 : gpuIdxByServerThread[0], 0
+    );
+    serverThreadsIsUsingFP16[0] = NeuralNet::isUsingFP16(syncHandle) ? 1 : 0;
+  }
+  syncServerBuf = new NNServerBuf(*this, loadedModel);
+  return;
+#endif
+
   {
     lock_guard<std::mutex> lock(bufferMutex);
     serverThreadsIsUsingFP16.resize(numThreads,0);
@@ -485,6 +503,17 @@ void NNEvaluator::spawnServerThreads() {
 }
 
 void NNEvaluator::killServerThreads() {
+#ifdef NNEVAL_SYNCHRONOUS
+  if(syncHandle != NULL)
+    NeuralNet::freeComputeHandle(syncHandle);
+  delete syncServerBuf;
+  delete syncRand;
+  syncHandle = NULL;
+  syncServerBuf = NULL;
+  syncRand = NULL;
+  serverThreadsIsUsingFP16.clear();
+  return;
+#endif
   unique_lock<std::mutex> lock(bufferMutex);
   isKilled = true;
   lock.unlock();
@@ -1051,6 +1080,45 @@ void NNEvaluator::serve(
   }
 }
 
+#ifdef NNEVAL_SYNCHRONOUS
+//Enclosure fork (v2/wasm): serve()'s code for one row (no batching), in the calling thread.
+void NNEvaluator::evaluateSynchronously(NNResultBuf* resultBuf) {
+  if(syncServerBuf == NULL || syncHandle == NULL)
+    throw StringError("NNEvaluator: synchronous evaluation needs a model and spawnServerThreads first");
+  NNOutput* emptyOutput = new NNOutput();
+  emptyOutput->nnXLen = nnXLen;
+  emptyOutput->nnYLen = nnYLen;
+  resultBuf->policyScratch.resize(NNPos::MAX_NN_POLICY_SIZE);
+  emptyOutput->policyDense = resultBuf->policyScratch.data();
+  if(resultBuf->includeOwnerMap)
+    emptyOutput->whiteOwnerMap = new float[nnXLen*nnYLen];
+  else
+    emptyOutput->whiteOwnerMap = NULL;
+  if(resultBuf->includeAuxOutputs && modelHasAux) {
+    emptyOutput->auxMap = new float[NNOutput::NUM_AUX_MAP_CHANNELS*nnXLen*nnYLen];
+    emptyOutput->auxValues = new float[NNOutput::NUM_AUX_VALUES];
+    if(modelHasPolicyAux)
+      emptyOutput->auxPolicy = new float[(size_t)NNOutput::NUM_AUX_POLICIES*NNPos::MAX_NN_POLICY_SIZE];
+    if(scoreBeliefParams.len > 0)
+      emptyOutput->scoreBeliefRaw = new float[scoreBeliefParams.c2 + scoreBeliefParams.k];
+  }
+  if(resultBuf->symmetry == NNInputs::SYMMETRY_NOTSPECIFIED) {
+    if(currentDoRandomize.load(std::memory_order_acquire))
+      resultBuf->symmetry = syncRand->nextUInt(SymmetryHelpers::NUM_SYMMETRIES);
+    else
+      resultBuf->symmetry = currentDefaultSymmetry.load(std::memory_order_acquire);
+  }
+  vector<NNOutput*> outputBuf(1, emptyOutput);
+  NeuralNet::getOutput(syncHandle, syncServerBuf->inputBuffers, 1, &resultBuf, outputBuf);
+  testAssert(outputBuf.size() == 1);
+  m_numRowsProcessed.fetch_add(1, std::memory_order_relaxed);
+  m_numBatchesProcessed.fetch_add(1, std::memory_order_relaxed);
+  resultBuf->result = std::shared_ptr<NNOutput>(outputBuf[0]);
+  resultBuf->hasResult = true;
+  numOngoingEvals -= 1;
+}
+#endif
+
 void NNEvaluator::waitForNextNNEvalIfAny() {
   unique_lock<std::mutex> lock(bufferMutex);
   if(numOngoingEvals <= 0)
@@ -1375,7 +1443,7 @@ void NNEvaluator::evaluate(
   static const bool noPolicyGather = getenv("ENCLOSURE_NO_POLICY_GATHER") != NULL;
   if(!debugSkipNeuralNet && !noPolicyGather && policySize == enclosure::PASS + 1) {
     const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
-    for(size_t i = legalBits._Find_first(); i < (size_t)enclosure::PASS; i = legalBits._Find_next(i))
+    for(size_t i = enclosure::bitsFirst(legalBits); i < (size_t)enclosure::PASS; i = enclosure::bitsNext(legalBits, i))
       buf.policyGather.push_back((uint16_t)symAction((int)i));
     buf.policyGather.push_back((uint16_t)enclosure::PASS);
   }
@@ -1387,6 +1455,9 @@ void NNEvaluator::evaluate(
   numOngoingEvals += 1;
   lock.unlock();
 
+#ifdef NNEVAL_SYNCHRONOUS
+  evaluateSynchronously(&buf);
+#else
   bool suc = queryQueue.forcePush(&buf);
   testAssert(suc);
 
@@ -1394,6 +1465,7 @@ void NNEvaluator::evaluate(
   while(!buf.hasResult)
     buf.clientWaitingForResult.wait(resultLock);
   resultLock.unlock();
+#endif
 
   //Enclosure fork (owner, 2026-10-06): with the policy entries listed (NNResultBuf::policyGather), the post-processing
   //below reads those only (listedPolicy), already through the symmetry. Not with the dagger hack (Go's), which masks
@@ -1454,7 +1526,7 @@ void NNEvaluator::evaluate(
       const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
       const bool canMove = !history.isGameFinished && nextPlayer == board.nextPla() && !board.pos.terminal();
       int j = 0;
-      for(size_t i = legalBits._Find_first(); i < (size_t)enclosure::PASS; i = legalBits._Find_next(i))
+      for(size_t i = enclosure::bitsFirst(legalBits); i < (size_t)enclosure::PASS; i = enclosure::bitsNext(legalBits, i))
         listedPos[j++] = (uint16_t)i;
       listedPos[j++] = (uint16_t)enclosure::PASS;
       testAssert(j == n);

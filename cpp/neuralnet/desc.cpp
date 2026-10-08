@@ -1,7 +1,9 @@
 #include "../neuralnet/desc.h"
 
 #include <cmath>
+#include <cstring>
 #include <fstream>
+#include <map>
 #include <zlib.h>
 
 #include "../core/global.h"
@@ -50,6 +52,7 @@ static void readFloats(istream& in, size_t numFloats, bool binaryFloats, const s
   else {
     //KataGo hacky model format - "@BIN@" followed by the expected number of 32 bit floats, in little-endian binary
     testAssert(sizeof(float) == 4);
+    bool halfFloats = false;
     {
       string s;
       int numCharsBeforeAt = 0;
@@ -64,9 +67,43 @@ static void readFloats(istream& in, size_t numFloats, bool binaryFloats, const s
       s += (char)in.get();
       s += (char)in.get();
       s += (char)in.get();
-      if(s != "BIN@")
+      //Enclosure fork: "@BIN16@" is the same block in 16-bit floats (export_model_pytorch.py -float16), for the
+      //WebAssembly build's size limit (v2/wasm).
+      if(s == "BIN1") {
+        s += (char)in.get();
+        s += (char)in.get();
+        if(s != "BIN16@")
+          throw StringError(name + ": did not find expected header for binary float16 block");
+        halfFloats = true;
+      }
+      else if(s != "BIN@")
         throw StringError(name + ": did not find expected header for binary float block");
     }
+    if(halfFloats) {
+      vector<uint16_t> halves(numFloats);
+      in.read((char*)halves.data(), numFloats*sizeof(uint16_t));
+      if(in.fail())
+        throw StringError(name + ": did not find the expected number of floats in binary float16 block");
+      for(size_t i = 0; i<numFloats; i++) {
+        uint16_t h = halves[i];
+#if BYTE_ORDER == BIG_ENDIAN
+        h = (uint16_t)((h << 8) | (h >> 8));
+#endif
+        //IEEE half to float: sign, 5-bit exponent (bias 15), 10-bit mantissa; subnormal halves are flushed to zero below.
+        const uint32_t sign = (uint32_t)(h & 0x8000) << 16;
+        const uint32_t exponent = (h >> 10) & 0x1F;
+        const uint32_t mantissa = h & 0x3FF;
+        uint32_t bits;
+        if(exponent == 0)
+          bits = sign;
+        else if(exponent == 31)
+          bits = sign | 0x7F800000 | (mantissa << 13);
+        else
+          bits = sign | ((exponent + 112) << 23) | (mantissa << 13);
+        std::memcpy(&buf[i], &bits, sizeof(float));
+      }
+    }
+    else {
     float* data = buf.data();
     char* bytes = (char*)data;
     in.read(bytes, numFloats*sizeof(float));
@@ -81,6 +118,7 @@ static void readFloats(istream& in, size_t numFloats, bool binaryFloats, const s
       std::swap(bytes[i*4 + 1], bytes[i*4 + 2]);
     }
 #endif
+    }
   }
 
   //Flush fp32 subnormals to zero. Some model files have such values, which is negligible for behavior
@@ -3012,7 +3050,30 @@ struct NonCopyingStreamBuf : public std::streambuf
   }
 };
 
+#ifdef MODEL_FROM_MEMORY
+//Enclosure fork (the WebAssembly build, v2/wasm): models embedded in the module, opened by the name "memory:NAME".
+static std::map<string, std::pair<const char*, size_t>>& inMemoryModels() {
+  static std::map<string, std::pair<const char*, size_t>> models;
+  return models;
+}
+void ModelDesc::registerInMemoryModel(const string& name, const char* data, size_t len) {
+  inMemoryModels()[name] = std::make_pair(data, len);
+}
+#endif
+
 void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& descBuf, const string& expectedSha256) {
+#ifdef MODEL_FROM_MEMORY
+  if(Global::isPrefix(fileName, "memory:")) {
+    auto it = inMemoryModels().find(fileName.substr(7));
+    if(it == inMemoryModels().end())
+      throw StringError("No in-memory model named " + fileName);
+    string bytes(it->second.first, it->second.second);  //an uncompressed binary model (.bin)
+    NonCopyingStreamBuf streamBuf(bytes);
+    std::istream in(&streamBuf);
+    descBuf = ModelDesc(in, "in-memory:" + fileName.substr(7), true);
+    return;
+  }
+#endif
   try {
     string lower = Global::toLower(fileName);
     if(Global::isSuffix(lower,".onnx") || Global::isSuffix(lower,".onnx.gz"))

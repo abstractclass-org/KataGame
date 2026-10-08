@@ -1,6 +1,7 @@
 #include "../neuralnet/nninputs.h"
 
 #include "../core/test.h"
+#include "../game/enclosure/bitscan.h"
 
 using namespace std;
 
@@ -852,7 +853,7 @@ Board SymmetryHelpers::getSymBoard(const Board& board, int symmetry) {
   bool node[enclosure::SIZE][enclosure::SIZE] = {};
   for(const enclosure::Edge& e : symBoard.pos.edges[symBoard.pos.player])
     node[e.ax][e.ay] = node[e.bx][e.by] = true;
-  for(size_t a = bits._Find_first(); a < (size_t)enclosure::PASS; a = bits._Find_next(a)) {
+  for(size_t a = enclosure::bitsFirst(bits); a < (size_t)enclosure::PASS; a = enclosure::bitsNext(bits, a)) {
     const int cell = (int)a / enclosure::NOFF, k = (int)a % enclosure::NOFF;
     int ax = cell % enclosure::SIZE, ay = cell / enclosure::SIZE;
     int bx = ax + enclosure::OFFS[k].dx, by = ay + enclosure::OFFS[k].dy;
