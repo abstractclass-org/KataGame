@@ -450,6 +450,15 @@ inline double held_ground(const Position& p, int player, const int* mine, const 
   return best;
 }
 
+#ifdef ENCLOSURE_INPUTS_FIXED
+// A build with no environment (the WebAssembly bot, v2/wasm/build.sh) fixes the three input options at compile time
+// (ENCLOSURE_INPUT_NO_HELD_GROUND, ENCLOSURE_INPUT_EDGE_BOTH_ENDS, ENCLOSURE_INPUT_TURN_SAFE: 0 or 1), as the run's
+// markers give them for the model. With the environment's defaults (all off) a model trained with them on plays on
+// inputs it never saw (2026-10-08: the first upload lost every game).
+inline const bool NO_HELD_GROUND = ENCLOSURE_INPUT_NO_HELD_GROUND;
+inline const bool EDGE_BOTH_ENDS = ENCLOSURE_INPUT_EDGE_BOTH_ENDS;
+inline const bool TURN_SAFE = ENCLOSURE_INPUT_TURN_SAFE;
+#else
 // ENCLOSURE_NO_HELD_GROUND=1 (owner, 2026-10-03, "no_maxflow"): held ground and its openings (planes 7 and 8 of
 // each player) stay zero and their max flow is not computed, about 15% of self-play's CPU. Measured first: on
 // v2a's own data a network learned as well without them (v2/docs/decisions/inputs-and-targets.md). The input shape is unchanged.
@@ -475,6 +484,7 @@ inline const bool TURN_SAFE = [] {
   const char* v = std::getenv("ENCLOSURE_TURN_SAFE");
   return v != nullptr && *v != 0 && *v != '0';
 }();
+#endif
 
 // Feature planes (planes.feature_planes) as 0/1 bytes, channels last:
 // out[(y * SIZE + x) * FEATURE_PLANES + f].
