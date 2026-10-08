@@ -1,26 +1,33 @@
-// Enclosure fork (owner, 2026-10-04): the exported training-only outputs and RGSC's heads, against PyTorch.
+// Enclosure fork (owner, 2026-10-04): a model's outputs on fixed positions, for two checks:
+//   - the export against PyTorch, every output: katago/python/enclosure_nn_outputs_check.py runs the checkpoint on the
+//     same inputs and compares (OUTPUTS search,ownership,training);
+//   - one build against another (backends, precisions, the WebAssembly bot against the CUDA build), on the outputs
+//     that both compute: v2/wasm/compare_dumps.py compares two dumps (OUTPUTS search,ownership).
 //
-//   testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC
+//   testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC OUTPUTS
 //
 // Replays each position of INPUTS_FILE (tests/data/enclosure_inputs.txt, the positions of testnninputs), evaluates
-// it at symmetry 0 with the ownership and the aux outputs (FP16, NHWC: 0 or 1, the CUDA backend's modes; the Eigen
-// backend needs NHWC 1), and writes per position the input rows the network got and its outputs:
+// it at symmetry 0 (FP16, NHWC: 0 or 1, the CUDA backend's modes; the Eigen backend needs NHWC 1), and writes per
+// position the input rows the network got and the outputs of the groups that OUTPUTS names (comma-separated):
 //   position <label> <player to move: 1 black, 2 white> <input layout: nchw or nhwc>
 //   spatial <count> <index in that layout>:<value> ...
 //   global <values>
+// search: what the search reads (the value, the score utility, the uncertainty weighting, the policy with its
+// optimism blend):
 //   value <win> <loss> <noresult>          (white's view, as NNEvaluator reports them)
 //   score <mean> <mean sq> <lead> <var time left> <short-term winloss error> <short-term score error>
-//                                          (white's view where it has one, as NNEvaluator reports them)
-//   owner <x * y values>                   (white's view, after tanh)
+//                                          (white's view where it has one, as NNEvaluator reports them; the lead
+//                                          and the time-left variance are only reported)
 //   policy <count> <action>:<probability> ...   (the move policy at the legal actions and pass)
-//   The training-only outputs below are absent with the Eigen backend, which computes only what the search uses:
+// ownership: computed at the search's root, reported, and not used to choose a move in Enclosure:
+//   owner <x * y values>                   (white's view, after tanh)
+// training: the training-only outputs, which the Eigen backend does not compute:
 //   regret <value> <ranking>
 //   auxvalues <12 values>
 //   auxmap <9 * x * y values>
 //   auxpolicy <count> <action>:<4 comma-separated logits> ...   (export stage 2: policy outputs 1-4 at the legal
 //                                                               actions and pass)
 //   scorebelief <len> <bin width> <len probabilities>            (export stage 2)
-// katago/python/enclosure_nn_outputs_check.py runs the PyTorch checkpoint on the same inputs and compares.
 
 #include <cstdio>
 #include <fstream>
@@ -34,13 +41,36 @@
 using namespace std;
 
 int main(int argc, char** argv) {
-  if(argc != 6) {
-    fprintf(stderr, "usage: testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC\n");
+  if(argc != 7) {
+    fprintf(stderr, "usage: testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC OUTPUTS (search,ownership,training)\n");
     return 2;
   }
   const string modelFile = argv[1];
   const bool fp16 = string(argv[4]) == "1";
   const bool nhwc = string(argv[5]) == "1";
+  bool search = false, ownership = false, training = false;
+  {
+    istringstream groups(argv[6]);
+    string group;
+    while(getline(groups, group, ',')) {
+      if(group == "search")
+        search = true;
+      else if(group == "ownership")
+        ownership = true;
+      else if(group == "training")
+        training = true;
+      else {
+        fprintf(stderr, "unknown output group %s (search, ownership, training)\n", group.c_str());
+        return 2;
+      }
+    }
+  }
+#ifdef USE_EIGEN_BACKEND
+  if(training) {
+    fprintf(stderr, "the Eigen backend does not compute the training-only outputs\n");
+    return 2;
+  }
+#endif
   Board::initHash();
   ScoreValue::initTables();
   NeuralNet::globalInitialize();
@@ -55,17 +85,10 @@ int main(int argc, char** argv) {
     "test", modelFile, "", &logger, 8, S, S, true, nhwc, 10, 4, false, "",
     fp16 ? enabled_t::True : enabled_t::False, 1, {0}, "testnnoutputs", false, 0, cfg);
   nnEval->spawnServerThreads();
-#ifdef USE_EIGEN_BACKEND
-  //The Eigen backend (the WebAssembly bot, v2/wasm) computes only what the search uses: no aux outputs and no regret
-  //heads. Write the search's outputs only.
-  const bool training = false;
-#else
-  const bool training = true;
-  if(!nnEval->hasAuxOutputs() || !nnEval->hasRegretHeads()) {
+  if(training && (!nnEval->hasAuxOutputs() || !nnEval->hasRegretHeads())) {
     fprintf(stderr, "the model has no aux outputs or no regret heads\n");
     return 1;
   }
-#endif
   const bool stage2 = training && nnEval->hasAuxPolicy() && nnEval->hasScoreBelief();
 
   ifstream in(argv[2]);
@@ -103,9 +126,10 @@ int main(int argc, char** argv) {
     MiscNNInputParams params;
     params.symmetry = 0;
     buf.includeAuxOutputs = training;
-    nnEval->evaluate(board, hist, pla, params, buf, true, true);
+    nnEval->evaluate(board, hist, pla, params, buf, true, ownership);
     const NNOutput& o = *buf.result;
-    if(o.whiteOwnerMap == NULL || (training && (o.auxMap == NULL || o.auxValues == NULL || !o.hasRegret)) ||
+    if((ownership && o.whiteOwnerMap == NULL) ||
+       (training && (o.auxMap == NULL || o.auxValues == NULL || !o.hasRegret)) ||
        (stage2 && (o.auxPolicy == NULL || o.scoreBelief == NULL))) {
       fprintf(stderr, "%s: missing outputs\n", label.c_str());
       return 1;
@@ -123,13 +147,27 @@ int main(int argc, char** argv) {
     out << "\nglobal";
     for(float g : buf.rowGlobalBuf)
       out << " " << g;
-    out << "\nvalue " << o.whiteWinProb << " " << o.whiteLossProb << " " << o.whiteNoResultProb;
-    out << "\nscore " << o.whiteScoreMean << " " << o.whiteScoreMeanSq << " " << o.whiteLead << " " << o.varTimeLeft
-        << " " << o.shorttermWinlossError << " " << o.shorttermScoreError;
-    out << "\nowner";
-    for(int i = 0; i < S * S; i++)
-      out << " " << o.whiteOwnerMap[i];
     out << "\n";
+    vector<int> actions;
+    for(int i = 0; i <= enclosure::PASS; i++)
+      if(i == enclosure::PASS || board.legalActions()[i])
+        actions.push_back(i);
+    if(search) {
+      out << "value " << o.whiteWinProb << " " << o.whiteLossProb << " " << o.whiteNoResultProb;
+      out << "\nscore " << o.whiteScoreMean << " " << o.whiteScoreMeanSq << " " << o.whiteLead << " " << o.varTimeLeft
+          << " " << o.shorttermWinlossError << " " << o.shorttermScoreError;
+      const PolicyView policy = o.policy();
+      out << "\npolicy " << actions.size();
+      for(int i : actions)
+        out << " " << i << ":" << policy[i];
+      out << "\n";
+    }
+    if(ownership) {
+      out << "owner";
+      for(int i = 0; i < S * S; i++)
+        out << " " << o.whiteOwnerMap[i];
+      out << "\n";
+    }
     if(training) {
       out << "regret " << o.regretValue << " " << o.regretRanking;
       out << "\nauxvalues";
@@ -140,17 +178,6 @@ int main(int argc, char** argv) {
         out << " " << o.auxMap[i];
       out << "\n";
     }
-    vector<int> actions;
-    for(int i = 0; i <= enclosure::PASS; i++)
-      if(i == enclosure::PASS || board.legalActions()[i])
-        actions.push_back(i);
-    //The move policy (output 0) at the legal actions and pass: a build compared with another (2026-10-08, the
-    //WebAssembly bot against the CUDA build, v2/wasm).
-    const PolicyView policy = o.policy();
-    out << "policy " << actions.size();
-    for(int i : actions)
-      out << " " << i << ":" << policy[i];
-    out << "\n";
     if(stage2) {
       out << "auxpolicy " << actions.size();
       for(int i : actions) {
@@ -165,8 +192,8 @@ int main(int argc, char** argv) {
     }
     positions++;
   }
-  fprintf(stderr, "wrote %d positions (fp16 %d, nhwc %d, fp16 used %d, stage 2 %d)\n", positions, (int)fp16,
-          (int)nhwc, (int)nnEval->isAnyThreadUsingFP16(), (int)stage2);
+  fprintf(stderr, "wrote %d positions (fp16 %d, nhwc %d, fp16 used %d, outputs %s, stage 2 %d)\n", positions,
+          (int)fp16, (int)nhwc, (int)nnEval->isAnyThreadUsingFP16(), argv[6], (int)stage2);
   nnEval->killServerThreads();
   delete nnEval;
   NeuralNet::globalCleanup();

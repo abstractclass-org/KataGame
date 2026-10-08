@@ -368,7 +368,7 @@ double Search::getPatternBonus(Hash128 patternBonusHash, Player prevMovePla) con
 
 double Search::getEndingWhiteScoreBonus(const SearchNode& parent, Loc moveLoc) const {
   //Enclosure fork: Go's dame-filling bonus reads ownership at the move's point; an edge has none.
-  //Neutral: the bonus only shifts the score, and score utility is 0 (ENCLOSURE.md).
+  //Neutral: it returns 0 (ENCLOSURE.md "Go only, kept neutral").
   (void)parent; (void)moveLoc;
   return 0.0;
   if(&parent != rootNode || moveLoc == Board::NULL_LOC)

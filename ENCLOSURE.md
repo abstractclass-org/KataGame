@@ -75,7 +75,9 @@ player from the last mover break. A survey of the 29 `getOpp` calls in `search/`
 - **Go only, kept neutral:**
   - the pattern bonus table (`avoidRepeatedPatternUtility`, default 0) and anti-mirror (`antiMirror`, default off).
   - pass-alive pruning in `rootPruneUselessMoves` (passes never occur in a search).
-  - `getEndingWhiteScoreBonus`, which only moves the score (and the score utility was 0 then).
+  - `getEndingWhiteScoreBonus`: it returns 0. Go's bonus reads the ownership at the move's point, and an edge has no
+    point. With anti-mirror off and pass suppression for territory scoring only, the search computes the ownership
+    at its root but uses it to choose no move.
 
 Outside `search/`, the self-play game loop (`program/play.cpp`, `playutils.cpp`) and the analysis engine
 (`command/analysis.cpp`) get the same change. GTP, SGF, the book and the start-position tools are not on our path,
