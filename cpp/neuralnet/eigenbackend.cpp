@@ -289,6 +289,110 @@ struct ScratchBuffers {
 
 // Layers --------------------------------------------------------------------------------------------------------------
 
+#ifdef ENCLOSURE_EIGEN_SIMD
+//Enclosure fork (the WebAssembly bot, v2/wasm): the hot loops in 4-wide vectors (GCC/Clang vector types: v128 in
+//WebAssembly). Eigen 3.4 has no WebAssembly SIMD, so its products and tensor expressions run one float at a time.
+typedef float SimdF4 __attribute__((vector_size(16)));
+static inline SimdF4 simdLoad(const float* p) { SimdF4 v; std::memcpy(&v, p, sizeof(v)); return v; }
+static inline void simdStore(float* p, SimdF4 v) { std::memcpy(p, &v, sizeof(v)); }
+//A true splat (v128.load32_splat). SimdF4{} + v would add 0.0 first, which the compiler must keep (-0 + 0 is +0).
+static inline SimdF4 simdSplat(const float* p) { const float v = *p; return SimdF4{v, v, v, v}; }
+
+//One block of a Winograd sub-tile's product: NV vectors of output channels (4 * NV channels from oc0) of NT tiles from
+//t0 stay in registers through the sum over ic, which runs in order.
+template <int NV, int NT>
+static inline void winogradBlock(const float* w, const float* in, float* out, int inC, int outC, int oc0, int t0) {
+  SimdF4 acc[NT][NV] = {};
+  const float* wr = w + oc0;
+  const float* x = in + (size_t)t0 * inC;
+  for(int ic = 0; ic < inC; ic++, wr += outC) {
+    SimdF4 wv[NV];
+    for(int q = 0; q < NV; q++)
+      wv[q] = simdLoad(wr + 4 * q);
+    for(int t = 0; t < NT; t++) {
+      const SimdF4 s = simdSplat(x + (size_t)t * inC + ic);
+      for(int q = 0; q < NV; q++)
+        acc[t][q] += wv[q] * s;
+    }
+  }
+  for(int t = 0; t < NT; t++)
+    for(int q = 0; q < NV; q++)
+      simdStore(out + (size_t)(t0 + t) * outC + oc0 + 4 * q, acc[t][q]);
+}
+
+#ifndef ENCLOSURE_WINOGRAD_NV
+#define ENCLOSURE_WINOGRAD_NV 4
+#endif
+#ifndef ENCLOSURE_WINOGRAD_NT
+#define ENCLOSURE_WINOGRAD_NT 2
+#endif
+//One Winograd sub-tile's product: out[t][oc] = sum over ic of w[ic][oc] * in[t][ic], for nT tiles. outC is a multiple
+//of 4 * ENCLOSURE_WINOGRAD_NV.
+__attribute__((noinline)) static void winogradSubTileProduct(const float* w, const float* in, float* out, int inC, int outC, int nT) {
+  constexpr int NV = ENCLOSURE_WINOGRAD_NV, NT = ENCLOSURE_WINOGRAD_NT;
+  for(int oc0 = 0; oc0 < outC; oc0 += 4 * NV) {
+    int t = 0;
+    for(; t + NT <= nT; t += NT)
+      winogradBlock<NV, NT>(w, in, out, inC, outC, oc0, t);
+    for(; t < nT; t++)
+      winogradBlock<NV, 1>(w, in, out, inC, outC, oc0, t);
+  }
+}
+
+//A direct k x k convolution ("SAME" padding) that skips zero inputs, as V1's Lite (native/wasm/lite.cpp
+//convolve_blocked): each point's nonzero input channels are listed once, and 4 * NV output channels stay in registers
+//through the whole window sum. in is [point][ic], out [point][oc], w [tap][ic][oc] (tap = dy * k + dx). outC is a
+//multiple of 4 * NV.
+template <int NV>
+static void directConvSparse(
+  const float* in, float* out, const float* w, int inC, int outC, int xLen, int yLen, int k, bool accumulate,
+  int16_t* nzIdx, float* nzVal, int* nzN
+) {
+  const int r = k / 2, numPoints = xLen * yLen;
+  for(int p = 0; p < numPoints; p++) {
+    const float* src = in + (size_t)p * inC;
+    int m = 0;
+    for(int ic = 0; ic < inC; ic++)
+      if(src[ic] != 0.0f) { nzIdx[(size_t)p * inC + m] = (int16_t)ic; nzVal[(size_t)p * inC + m] = src[ic]; m++; }
+    nzN[p] = m;
+  }
+  for(int p = 0; p < numPoints; p++) {
+    const int y = p / xLen, x = p % xLen;
+    float* o = out + (size_t)p * outC;
+    for(int oc0 = 0; oc0 < outC; oc0 += 4 * NV) {
+      SimdF4 acc[NV];
+      for(int q = 0; q < NV; q++)
+        acc[q] = accumulate ? simdLoad(o + oc0 + 4 * q) : SimdF4{};
+      for(int dy = 0; dy < k; dy++) {
+        const int yy = y + dy - r;
+        if(yy < 0 || yy >= yLen) continue;
+        for(int dx = 0; dx < k; dx++) {
+          const int xx = x + dx - r;
+          if(xx < 0 || xx >= xLen) continue;
+          const int nb = yy * xLen + xx, m = nzN[nb];
+          const int16_t* idx = nzIdx + (size_t)nb * inC;
+          const float* val = nzVal + (size_t)nb * inC;
+          const float* wk = w + (size_t)(dy * k + dx) * inC * outC + oc0;
+          for(int t = 0; t < m; t++) {
+            const SimdF4 s = simdSplat(val + t);
+            const float* wr = wk + (size_t)idx[t] * outC;
+            for(int q = 0; q < NV; q++)
+              acc[q] += simdLoad(wr + 4 * q) * s;
+          }
+        }
+      }
+      for(int q = 0; q < NV; q++)
+        simdStore(o + oc0 + 4 * q, acc[q]);
+    }
+  }
+}
+
+//Which 3x3 convolutions run directConvSparse: 0 none, 1 the trunk's input convolution (sparse binary planes), 2 all.
+#ifndef ENCLOSURE_DIRECT_CONV
+#define ENCLOSURE_DIRECT_CONV 0
+#endif
+#endif
+
 // Convolution layer with zero-padding.
 struct ConvLayer {
   const string name;
@@ -301,6 +405,15 @@ struct ConvLayer {
 
   TENSOR2 imagePatchKernel;
   TENSOR3 winogradKernel;
+#ifdef ENCLOSURE_EIGEN_SIMD
+  //A 1x1 convolution's weights as [ic][oc], for winogradSubTileProduct over the points; empty if not used.
+  vector<float> pointwiseWeights;
+  //The weights as [tap][ic][oc] when directConvSparse runs this convolution, else empty; its lists of nonzero inputs.
+  vector<float> directWeights;
+  mutable vector<int16_t> nzIdx;
+  mutable vector<float> nzVal;
+  mutable vector<int> nzN;
+#endif
 
   int imagePatchSize;
 
@@ -313,7 +426,8 @@ struct ConvLayer {
   ConvLayer(const ConvLayer&) = delete;
   ConvLayer& operator=(const ConvLayer&) = delete;
 
-  ConvLayer(const ConvLayerDesc& desc, int nnX, int nnY)
+  //sparseInput: the input is the network's input planes (the trunk's first convolution).
+  ConvLayer(const ConvLayerDesc& desc, int nnX, int nnY, bool sparseInput = false)
     : name(desc.name),
       convYSize(desc.convYSize),
       convXSize(desc.convXSize),
@@ -331,6 +445,24 @@ struct ConvLayer {
 
     testAssert(convXSize % 2 == 1);
     testAssert(convYSize % 2 == 1);
+
+#ifdef ENCLOSURE_EIGEN_SIMD
+    if(convXSize == 3 && convYSize == 3 && outChannels % 32 == 0 &&
+       (ENCLOSURE_DIRECT_CONV == 2 || (ENCLOSURE_DIRECT_CONV == 1 && sparseInput))) {
+      const int k = 3;
+      directWeights.resize((size_t)k * k * inChannels * outChannels);
+      for(int oc = 0; oc < outChannels; oc++)
+        for(int ic = 0; ic < inChannels; ic++)
+          for(int t = 0; t < k * k; t++)
+            directWeights[((size_t)t * inChannels + ic) * outChannels + oc] =
+              desc.weights[((size_t)oc * inChannels + ic) * k * k + t];
+      nzIdx.resize((size_t)nnXLen * nnYLen * inChannels);
+      nzVal.resize((size_t)nnXLen * nnYLen * inChannels);
+      nzN.resize((size_t)nnXLen * nnYLen);
+    }
+#else
+    (void)sparseInput;
+#endif
 
     if((convXSize == 3 && convYSize == 3) || (convXSize == 5 && convYSize == 5)) {
       imagePatchSize = 0; //not used in this branch
@@ -422,6 +554,14 @@ struct ConvLayer {
       Eigen::array<Eigen::Index, 4> dimensionPermutatation = {3, 2, 0, 1};
       Eigen::array<Eigen::Index, 2> newShape = {outChannels, imagePatchSize};
       imagePatchKernel = kernel.shuffle(dimensionPermutatation).reshape(newShape);
+#ifdef ENCLOSURE_EIGEN_SIMD
+      if(convXSize == 1 && convYSize == 1 && outChannels % (4 * ENCLOSURE_WINOGRAD_NV) == 0) {
+        pointwiseWeights.resize((size_t)inChannels * outChannels);
+        for(int oc = 0; oc < outChannels; oc++)
+          for(int ic = 0; ic < inChannels; ic++)
+            pointwiseWeights[(size_t)ic * outChannels + oc] = desc.weights[(size_t)oc * inChannels + ic];
+      }
+#endif
     }
   }
 
@@ -445,6 +585,17 @@ struct ConvLayer {
     assert(input->dimension(2) == nnYLen);
     const int batchSize = input->dimension(3);
 
+#ifdef ENCLOSURE_EIGEN_SIMD
+    if(!directWeights.empty()) {
+      const size_t inPerBatch = (size_t)nnXLen * nnYLen * inChannels;
+      const size_t outPerBatch = (size_t)nnXLen * nnYLen * outChannels;
+      for(int n = 0; n < batchSize; n++)
+        directConvSparse<8>(input->data() + n * inPerBatch, output->data() + n * outPerBatch, directWeights.data(),
+                            inChannels, outChannels, nnXLen, nnYLen, 3, accumulate,
+                            nzIdx.data(), nzVal.data(), nzN.data());
+      return;
+    }
+#endif
     if((convXSize == 3 && convYSize == 3) || (convXSize == 5 && convYSize == 5)) {
       constexpr int inTileXSize = 6;
       constexpr int inTileYSize = 6;
@@ -471,10 +622,8 @@ struct ConvLayer {
                   std::fill(tile + subTileIdx * inChannels, tile + (subTileIdx+1) * inChannels, 0.0f);
                 }
                 else {
-                  for(int ic = 0; ic < inChannels; ic++) {
-                    float z = (*input)(ic,x,y,n);
-                    tile[subTileIdx * inChannels + ic] = z;
-                  }
+                  //Enclosure fork: the point's channels are contiguous, (*input)(ic,x,y,n) for every ic.
+                  std::memcpy(tile + subTileIdx * inChannels, &(*input)(0,x,y,n), sizeof(float) * inChannels);
                 }
               }
             }
@@ -526,16 +675,29 @@ struct ConvLayer {
             int batchTileXTileY = n * numTilesY * numTilesX + yTile * numTilesX + xTile;
             for(int dy = 0; dy < inTileYSize; dy++) {
               for(int dx = 0; dx < inTileXSize; dx++) {
-                for(int ic = 0; ic < inChannels; ic++) {
-                  int subTileIdx = dy * inTileXSize + dx;
-                  transformedInput(ic, batchTileXTileY, subTileIdx) = tile[subTileIdx*inChannels+ic];
-                }
+                int subTileIdx = dy * inTileXSize + dx;
+                std::memcpy(&transformedInput(0, batchTileXTileY, subTileIdx), &tile[subTileIdx*inChannels],
+                            sizeof(float) * inChannels);
               }
             }
           }
         }
       }
 
+#ifdef ENCLOSURE_EIGEN_SIMD
+      //winogradKernel is (oc, ic, subTile) and the transformed tensors (c, tile, subTile), all column major: each
+      //sub-tile's weights are [ic][oc] and its tiles [tile][c], the layouts winogradSubTileProduct reads and writes.
+      if(outChannels % (4 * ENCLOSURE_WINOGRAD_NV) == 0) {
+        const int nT = batchSize * numTilesY * numTilesX;
+        for(int subTileIdx = 0; subTileIdx < inTileYSize * inTileXSize; subTileIdx++)
+          winogradSubTileProduct(
+            winogradKernel.data() + (size_t)subTileIdx * outChannels * inChannels,
+            transformedInput.data() + (size_t)subTileIdx * nT * inChannels,
+            transformedOutput.data() + (size_t)subTileIdx * nT * outChannels,
+            inChannels, outChannels, nT);
+      }
+      else
+#endif
       //TODO someday: Does eigen have a fast batched matrix multiply?
       //Here we just manually iterate over the 36 matrices that need to get multiplied.
       //Also, if eigen were to support *interleaved* matrices (viewing it as a matrix whose element is
@@ -569,9 +731,8 @@ struct ConvLayer {
             for(int dy = 0; dy < inTileYSize; dy++) {
               for(int dx = 0; dx < inTileXSize; dx++) {
                 int subTileIdx = dy * inTileXSize + dx;
-                for(int oc = 0; oc < outChannels; oc++) {
-                  tile[subTileIdx*outChannels+oc] = transformedOutput(oc, batchTileXTileY, subTileIdx);
-                }
+                std::memcpy(&tile[subTileIdx*outChannels], &transformedOutput(0, batchTileXTileY, subTileIdx),
+                            sizeof(float) * outChannels);
               }
             }
 
@@ -663,8 +824,10 @@ struct ConvLayer {
                   int y = yTile*outTileYSize+dy;
                   if(!(x < 0 || y < 0 || x >= nnXLen || y >= nnYLen)) {
                     int subTileIdx = dy * inTileXSize + dx;
+                    float* __restrict dst = &(*output)(0,x,y,n);
+                    const float* __restrict src = &tile[subTileIdx*outChannels];
                     for(int oc = 0; oc < outChannels; oc++) {
-                      (*output)(oc,x,y,n) += tile[subTileIdx*outChannels+oc];
+                      dst[oc] += src[oc];
                     }
                   }
                 }
@@ -677,9 +840,7 @@ struct ConvLayer {
                   int y = yTile*outTileYSize+dy;
                   if(!(x < 0 || y < 0 || x >= nnXLen || y >= nnYLen)) {
                     int subTileIdx = dy * inTileXSize + dx;
-                    for(int oc = 0; oc < outChannels; oc++) {
-                      (*output)(oc,x,y,n) = tile[subTileIdx*outChannels+oc];
-                    }
+                    std::memcpy(&(*output)(0,x,y,n), &tile[subTileIdx*outChannels], sizeof(float) * outChannels);
                   }
                 }
               }
@@ -688,6 +849,13 @@ struct ConvLayer {
         }
       }
     }
+#ifdef ENCLOSURE_EIGEN_SIMD
+    else if(!pointwiseWeights.empty() && !accumulate) {
+      //The points are the tiles of one product: input [point][ic], output [point][oc].
+      winogradSubTileProduct(pointwiseWeights.data(), input->data(), output->data(), inChannels, outChannels,
+                             nnXLen * nnYLen * batchSize);
+    }
+#endif
     else {
       Eigen::array<Eigen::Index, 2> imagePatchColVectorShape = {imagePatchSize, nnXLen*nnYLen*batchSize};
       Eigen::array<Eigen::IndexPair<int>, 1> contractionDims = {Eigen::IndexPair<int>(1, 0)};
@@ -741,6 +909,35 @@ struct BatchNormLayer {
     TENSORMAP4* output,
     CONSTTENSORMAP3* mask
   ) const {
+#ifdef ENCLOSURE_EIGEN_SIMD
+    //One pass over the points, the channels contiguous (the chips below walk one channel with a stride). The same
+    //arithmetic per value; input and output may be the same tensor.
+    if(activation == ACTIVATION_IDENTITY || activation == ACTIVATION_RELU) {
+      const int numC = input->dimension(0);
+      const int64_t numPoints = input->size() / numC;
+      const float* in = input->data();
+      float* out = output->data();
+      const float* m = mask->data();
+      const float* scale = mergedScale.data();
+      const float* bias = mergedBias.data();
+      const bool relu = activation == ACTIVATION_RELU;
+      for(int64_t p = 0; p < numPoints; p++) {
+        const float* x = in + p * numC;
+        float* o = out + p * numC;
+        if(m[p] != 1.0f)
+          std::fill(o, o + numC, 0.0f);
+        else if(relu)
+          for(int c = 0; c < numC; c++) {
+            const float v = x[c] * scale[c] + bias[c];
+            o[c] = v < 0.0f ? 0.0f : v;  //std::max(v, 0.0f), as cwiseMax
+          }
+        else
+          for(int c = 0; c < numC; c++)
+            o[c] = x[c] * scale[c] + bias[c];
+      }
+      return;
+    }
+#endif
     for(int c = 0; c < input->dimension(0); c++) {
       auto inC = input->chip(c, 0);
       auto x = inC * mergedScale[c] + mergedBias[c];
@@ -1880,7 +2077,7 @@ struct Trunk {
     : name(desc.name),
       modelVersion(desc.modelVersion),
       trunkNormKind(desc.trunkNormKind),
-      initialConv(desc.initialConv,nnX,nnY),
+      initialConv(desc.initialConv,nnX,nnY,true),
       initialMatMul(desc.initialMatMul),
       blocks(desc.blocks,desc.numBlocks,nnX,nnY)
   {
