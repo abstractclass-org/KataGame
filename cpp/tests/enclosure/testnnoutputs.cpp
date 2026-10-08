@@ -3,13 +3,17 @@
 //   testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC
 //
 // Replays each position of INPUTS_FILE (tests/data/enclosure_inputs.txt, the positions of testnninputs), evaluates
-// it at symmetry 0 with the ownership and the aux outputs (FP16, NHWC: 0 or 1, the CUDA backend's modes), and
-// writes per position the input rows the network got and its outputs:
+// it at symmetry 0 with the ownership and the aux outputs (FP16, NHWC: 0 or 1, the CUDA backend's modes; the Eigen
+// backend needs NHWC 1), and writes per position the input rows the network got and its outputs:
 //   position <label> <player to move: 1 black, 2 white> <input layout: nchw or nhwc>
 //   spatial <count> <index in that layout>:<value> ...
 //   global <values>
 //   value <win> <loss> <noresult>          (white's view, as NNEvaluator reports them)
+//   score <mean> <mean sq> <lead> <var time left> <short-term winloss error> <short-term score error>
+//                                          (white's view where it has one, as NNEvaluator reports them)
 //   owner <x * y values>                   (white's view, after tanh)
+//   policy <count> <action>:<probability> ...   (the move policy at the legal actions and pass)
+//   The training-only outputs below are absent with the Eigen backend, which computes only what the search uses:
 //   regret <value> <ranking>
 //   auxvalues <12 values>
 //   auxmap <9 * x * y values>
@@ -51,11 +55,18 @@ int main(int argc, char** argv) {
     "test", modelFile, "", &logger, 8, S, S, true, nhwc, 10, 4, false, "",
     fp16 ? enabled_t::True : enabled_t::False, 1, {0}, "testnnoutputs", false, 0, cfg);
   nnEval->spawnServerThreads();
+#ifdef USE_EIGEN_BACKEND
+  //The Eigen backend (the WebAssembly bot, v2/wasm) computes only what the search uses: no aux outputs and no regret
+  //heads. Write the search's outputs only.
+  const bool training = false;
+#else
+  const bool training = true;
   if(!nnEval->hasAuxOutputs() || !nnEval->hasRegretHeads()) {
     fprintf(stderr, "the model has no aux outputs or no regret heads\n");
     return 1;
   }
-  const bool stage2 = nnEval->hasAuxPolicy() && nnEval->hasScoreBelief();
+#endif
+  const bool stage2 = training && nnEval->hasAuxPolicy() && nnEval->hasScoreBelief();
 
   ifstream in(argv[2]);
   ofstream out(argv[3]);
@@ -91,10 +102,10 @@ int main(int argc, char** argv) {
     const Player pla = hist.presumedNextMovePla;
     MiscNNInputParams params;
     params.symmetry = 0;
-    buf.includeAuxOutputs = true;
+    buf.includeAuxOutputs = training;
     nnEval->evaluate(board, hist, pla, params, buf, true, true);
     const NNOutput& o = *buf.result;
-    if(o.auxMap == NULL || o.auxValues == NULL || o.whiteOwnerMap == NULL || !o.hasRegret ||
+    if(o.whiteOwnerMap == NULL || (training && (o.auxMap == NULL || o.auxValues == NULL || !o.hasRegret)) ||
        (stage2 && (o.auxPolicy == NULL || o.scoreBelief == NULL))) {
       fprintf(stderr, "%s: missing outputs\n", label.c_str());
       return 1;
@@ -113,17 +124,22 @@ int main(int argc, char** argv) {
     for(float g : buf.rowGlobalBuf)
       out << " " << g;
     out << "\nvalue " << o.whiteWinProb << " " << o.whiteLossProb << " " << o.whiteNoResultProb;
+    out << "\nscore " << o.whiteScoreMean << " " << o.whiteScoreMeanSq << " " << o.whiteLead << " " << o.varTimeLeft
+        << " " << o.shorttermWinlossError << " " << o.shorttermScoreError;
     out << "\nowner";
     for(int i = 0; i < S * S; i++)
       out << " " << o.whiteOwnerMap[i];
-    out << "\nregret " << o.regretValue << " " << o.regretRanking;
-    out << "\nauxvalues";
-    for(int i = 0; i < NNOutput::NUM_AUX_VALUES; i++)
-      out << " " << o.auxValues[i];
-    out << "\nauxmap";
-    for(int i = 0; i < NNOutput::NUM_AUX_MAP_CHANNELS * S * S; i++)
-      out << " " << o.auxMap[i];
     out << "\n";
+    if(training) {
+      out << "regret " << o.regretValue << " " << o.regretRanking;
+      out << "\nauxvalues";
+      for(int i = 0; i < NNOutput::NUM_AUX_VALUES; i++)
+        out << " " << o.auxValues[i];
+      out << "\nauxmap";
+      for(int i = 0; i < NNOutput::NUM_AUX_MAP_CHANNELS * S * S; i++)
+        out << " " << o.auxMap[i];
+      out << "\n";
+    }
     vector<int> actions;
     for(int i = 0; i <= enclosure::PASS; i++)
       if(i == enclosure::PASS || board.legalActions()[i])
