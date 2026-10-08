@@ -141,6 +141,23 @@ corrects new nodes in the same bucket (`docs/KataGoMethods.md`).
 - **`getHashWithSym`** (the pattern bonus table, off by default) refused to run until edge symmetries existed
   (step 4).
 
+## Starting from a position (the analysis engine)
+
+A query of the analysis engine can start from a position instead of the standard start: the field
+`enclosurePosition` (`command/analysis.cpp`) carries `engine.Position`'s fields. These are the edges of each player,
+the protected and placed edges, the scores, the player to move, the edges left in the turn, the move count, and the
+history planes' turns. `Board::setPosition` sets the board from them, and the query's `moves` are played after it.
+meaf.us gives a board and not its moves, so the move server (`enclosure/v2/katagobot.py`) uses this field.
+
+- **The same network inputs:** the history planes come from `Position::history`, not from KataGo's move history, and
+  the cache hash includes them (`historyHash`). At symmetry 0, a position gives the same policy and value as its
+  move list, bit for bit (`tests/test_position_query.py`).
+- **One difference in the search:** the subtree value bias keys a node on the move before it (see "Subtree value
+  bias"). A position has no move before the root, so the root's children get no bias entry. With
+  `subtreeValueBiasFactor = 0`, the two searches are identical, visit for visit.
+- **A bad position is refused** with an error on the field: an edge off the board or longer than 3, a player other
+  than 0 or 1, more than 2 edges left, or more history turns than `HISTORY_TURNS`.
+
 ## Moves where points are expected (this blocked step 3)
 
 At first, move `Loc`s were 2 + action, and they shared the values 2-420 with points. Code that treats a move as a

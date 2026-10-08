@@ -231,6 +231,7 @@ int MainCmds::analysis(const vector<string>& args) {
     "boardXSize",
     "boardYSize",
     "initialStones",
+    "enclosurePosition",
     "moves",
     "initialPlayer",
     "analyzeTurns",
@@ -950,6 +951,86 @@ int MainCmds::analysis(const vector<string>& args) {
         if(!parseBoardMoves(input, "initialStones", placements, false))
           continue;
       }
+      //Enclosure fork: the start position itself, with engine.Position's fields, for a game whose move list is not
+      //known (a meaf.us game: the site's page gives a board, not its moves). The moves, if any, are played after it.
+      //{"edges": [[blue edges], [red edges]], "protected": [...], "placed": [...], "scores": [blue, red],
+      // "player": 0 (Blue) or 1, "movesLeft": 0-2, "moveCount": 0-MAX_MOVES, "history": [[edges of a turn], ...]},
+      //an edge as [ax, ay, bx, by]; "history" newest first (Position::history), at most HISTORY_TURNS turns of 2 edges.
+      bool haveEnclosurePosition = false;
+      enclosure::Position enclosurePosition;
+      if(input.find("enclosurePosition") != input.end()) {
+        string why;
+        try {
+          const json& p = input["enclosurePosition"];
+          auto edgesOf = [&why](const json& list, vector<enclosure::Edge>& out) {
+            out.clear();
+            for(const json& q : list) {
+              const vector<int> v = q.get<vector<int>>();
+              const int dx = v.size() == 4 ? v[2] - v[0] : 0, dy = v.size() == 4 ? v[3] - v[1] : 0;
+              if(v.size() != 4 || std::abs(dx) > 3 || std::abs(dy) > 3 || (dx == 0 && dy == 0)) {
+                why = "an edge must be [ax, ay, bx, by] with both ends at most 3 apart: " + q.dump();
+                return false;
+              }
+              for(int c : v)
+                if(c < 0 || c >= enclosure::SIZE) {
+                  why = "an edge is off the board: " + q.dump();
+                  return false;
+                }
+              out.push_back(enclosure::make_edge(v[0], v[1], v[2], v[3]));
+            }
+            return true;
+          };
+          const json& edges = p.at("edges");
+          bool ok = edges.size() == 2 && edgesOf(edges[0], enclosurePosition.edges[0]) &&
+                    edgesOf(edges[1], enclosurePosition.edges[1]) &&
+                    edgesOf(p.at("protected"), enclosurePosition.protected_) &&
+                    edgesOf(p.at("placed"), enclosurePosition.placed);
+          const vector<double> scores = p.at("scores").get<vector<double>>();
+          enclosurePosition.player = p.at("player").get<int>();
+          enclosurePosition.moves_left = p.at("movesLeft").get<int>();
+          enclosurePosition.move_count = p.at("moveCount").get<int>();
+          if(ok && (scores.size() != 2 || (enclosurePosition.player != 0 && enclosurePosition.player != 1) ||
+                    enclosurePosition.moves_left < 0 || enclosurePosition.moves_left > 2 ||
+                    enclosurePosition.move_count < 0 || enclosurePosition.move_count > enclosure::MAX_MOVES)) {
+            why = "scores must have 2 numbers, player 0 or 1, movesLeft 0-2, moveCount 0-" +
+                  Global::intToString(enclosure::MAX_MOVES);
+            ok = false;
+          }
+          if(ok) {
+            enclosurePosition.scores[0] = scores[0];
+            enclosurePosition.scores[1] = scores[1];
+            enclosurePosition.area_ok[0] = enclosurePosition.area_ok[1] = false;
+            const json empty = json::array();
+            const json& history = p.contains("history") ? p["history"] : empty;
+            if(history.size() > enclosure::HISTORY_TURNS) {
+              why = "history has at most " + Global::intToString(enclosure::HISTORY_TURNS) + " turns";
+              ok = false;
+            }
+            for(int h = 0; ok && h < (int)history.size(); h++) {
+              vector<enclosure::Edge> turn;
+              ok = edgesOf(history[h], turn);
+              if(ok && turn.size() > 2) {
+                why = "a history turn has at most 2 edges";
+                ok = false;
+              }
+              for(int i = 0; ok && i < (int)turn.size(); i++)
+                enclosurePosition.history[h][i] = turn[i];
+              if(ok)
+                enclosurePosition.history_n[h] = (uint8_t)turn.size();
+            }
+          }
+          if(!ok) {
+            reportErrorForId(rbase.id, "enclosurePosition", why);
+            continue;
+          }
+        }
+        catch(nlohmann::detail::exception& e) {
+          reportErrorForId(rbase.id, "enclosurePosition", string("Could not read the position: ") + e.what());
+          continue;
+        }
+        haveEnclosurePosition = true;
+      }
+
       vector<Move> moveHistory;
       if(input.find("moves") != input.end()) {
         if(!parseBoardMoves(input, "moves", moveHistory, true))
@@ -1302,6 +1383,15 @@ int MainCmds::analysis(const vector<string>& args) {
       Board board(boardXSize,boardYSize);
       for(int i = 0; i<placements.size(); i++) {
         board.setStone(placements[i].loc,placements[i].pla);
+      }
+      if(haveEnclosurePosition) {
+        const Player positionPla = enclosurePosition.player == 0 ? P_BLACK : P_WHITE;  //Blue is Black
+        if(initialPlayer != C_EMPTY && initialPlayer != positionPla) {
+          reportErrorForId(rbase.id, "initialPlayer", "Not the player to move in enclosurePosition");
+          continue;
+        }
+        board.setPosition(enclosurePosition);
+        initialPlayer = positionPla;
       }
 
       if(initialPlayer == C_EMPTY) {
