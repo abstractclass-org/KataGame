@@ -82,9 +82,10 @@ def fig_curriculum(a, out):
     return save(fig, out, "curriculum.png")
 
 
-def snapshot_history(snap_dir):
-    """Each buffer state over the snapshots: its regret when first seen and when last seen, and its restarts."""
-    files = sorted(glob.glob(os.path.join(snap_dir, "*.txt")))
+def snapshot_history(snap_dir, since=None):
+    """Each buffer state over the snapshots: its regret when first seen and when last seen, and its restarts. With
+    since (YYYYMMDD-HHMM), only the snapshots taken from then on (their names are the time they were taken)."""
+    files = sorted(f for f in glob.glob(os.path.join(snap_dir, "*.txt")) if since is None or os.path.basename(f) >= since)
     seen = {}
     for k, f in enumerate(files):
         for line in open(f):
@@ -99,8 +100,8 @@ def snapshot_history(snap_dir):
     return files, seen
 
 
-def fig_entry_vs_last(snap_dir, out):
-    files, seen = snapshot_history(snap_dir)
+def fig_entry_vs_last(snap_dir, out, since=None):
+    files, seen = snapshot_history(snap_dir, since)
     if len(files) < 2:
         return None, "fewer than two snapshots"
     # States seen to enter after the first snapshot (their entry regret is known), and updated by a restart since.
@@ -121,13 +122,13 @@ def fig_entry_vs_last(snap_dir, out):
     ax1.set_xlabel("regret")
     ax1.set_ylabel("states")
     ax1.legend(fontsize=8)
-    ax1.set_title("Buffer regret, first against last (Figure 8)")
+    ax1.set_title("Buffer regret, first against last (Figure 8)" + (f", from {since}" if since else ""))
     d = r1 - r0
     ax2.hist(d, bins=30, color=BLUE)
     ax2.axvline(0, color=GREY, ls="--")
     ax2.set_xlabel("ΔR = last − first")
     ax2.set_title(f"ΔR (mean {d.mean():+.3f}, median {np.median(d):+.3f})")
-    return save(fig, out, "entry_vs_last.png"), note
+    return save(fig, out, f"entry_vs_last_since_{since}.png" if since else "entry_vs_last.png"), note
 
 
 def fig_definitions(v, out):
@@ -200,10 +201,18 @@ def main():
     ap.add_argument("--analysis", required=True)
     ap.add_argument("--snapshots", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--since", action="append", default=[], metavar="YYYYMMDD-HHMM[=LABEL]",
+                    help="also draw Figure 8 from the snapshots taken from this time on (repeatable), e.g. after a change")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     v, s, a = (json.load(open(p)) for p in (args.variants, args.selectors, args.analysis))
     entry_png, entry_note = fig_entry_vs_last(args.snapshots, args.out)
+    since_figs = []
+    for spec in args.since:
+        when, _, label = spec.partition("=")
+        png, note = fig_entry_vs_last(args.snapshots, args.out, when)
+        since_figs.append((f"Figure 8 again, from {when}" + (f": {label}" if label else ""), png,
+                           f"Only the snapshots taken from {when} on. {note}."))
     figs = [
         ("The paper's Figure 7 / the thesis's Figure 4.1: one state picked per game",
          fig_selectors(s, args.out),
@@ -215,14 +224,15 @@ def main():
         ("The paper's Figures 16-18: restart states by opening length", fig_curriculum(a, args.out),
          "The share of restart states by their move number, for each self-play model (from the training rows)."),
         ("The paper's Figure 8 / the thesis's Figures 4.5-4.6: buffer regret, first against last", entry_png,
-         f"Preliminary. {entry_note}. A shift to the left means restarts teach the network those states."),
+         f"{entry_note}. A shift to the left means restarts teach the network those states."),
+        *since_figs,
         ("Why vanilla regret picks the first moves: the value along a game", fig_accuracy(v, args.out),
          "Early, the search value is near 0 (uncertain), so (v − z)² is near 1 at every early state. Eq. 2 averages "
          "the error from a state to the end, and the error falls as the value converges on the outcome, so the "
          "average is largest at the start. Not a bug: the definition rewards uncertainty, not mistakes."),
         ("Regret's definitions by move", fig_definitions(v, args.out),
          "Vanilla (Eq. 2), step-discounted (the thesis), and value swing: Σ γ^k (v_{t+k+1} − v_{t+k})² / Σ γ^k, the "
-         "TD error of prioritized experience replay. The discount makes the depth bias stronger here."),
+         "TD error of prioritized experience replay. The discount moves the picks only a few moves later."),
         ("Where each definition picks a game's state", fig_pick_depths(v, args.out),
          "Vanilla and discounted pick the first moves; vanilla's percentile within its depth picks late upsets; swing "
          "spreads its picks over the whole game."),
