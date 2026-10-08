@@ -197,12 +197,13 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
 - **Spatial, 215 planes** (`NUM_FEATURES_SPATIAL_V8`):
   - 0: on board, all ones. KataGo's backends and PyTorch model take the board mask from channel 0, so it stays first.
   - 1-192: the observation's edge planes, `4 × 48`: each player's edges, then each player's protected or just-placed
-    edges. An edge is set at its lower end (the canonical `Edge`'s a), in the plane of its offset. With
-    `ENCLOSURE_EDGE_BOTH_ENDS=1` (in v2a from cycle 31), it is also set at its upper end, in the plane of the
-    opposite offset.
-  - 193-214: the 22 feature planes (`features.h`, `planes.feature_planes`): 9 per player, then 4 history planes. In
-    v2a, plane 7 of each player (held ground) is empty under `ENCLOSURE_NO_HELD_GROUND=1`. It holds the turn-safe
-    plane under `ENCLOSURE_TURN_SAFE=1` (`planes.turn_safe_edges`). Plane 8, openings, stays empty.
+    edges. An edge is set at its lower end (the canonical `Edge`'s a), in the plane of its offset, and at its upper
+    end, in the plane of the opposite offset.
+  - 193-214: the 22 feature planes (`features.h`, `planes.feature_planes`): 9 per player, then 4 history planes.
+    Plane 7 of each player holds the turn-safe plane (`planes.turn_safe_edges`), where V1 had held ground. Plane 8,
+    V1's openings, stays empty.
+  - Until 2026-10-08 these three were environment options (`ENCLOSURE_EDGE_BOTH_ENDS`, `ENCLOSURE_TURN_SAFE`,
+    `ENCLOSURE_NO_HELD_GROUND`), on in v2a since 2026-10-03 (v2/docs/design/03-network-inputs.md).
 - **Global, 5** (`NUM_FEATURES_GLOBAL_V8`): the observation's scalars. These are the player to move, the edges left in
   the turn / 2, the move count / 120, and both scores / (18 · 18 · 61). The plan puts the scalars here, not in
   constant planes.

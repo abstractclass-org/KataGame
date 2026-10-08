@@ -7,7 +7,7 @@
 // on every one, ROUNDS times (default 200), printing microseconds per call. Header-only (game/enclosure), so it builds
 // alone; for attribution build it without inlining, e.g.
 //   g++ -O2 -g -fno-inline -fno-omit-frame-pointer -std=c++17 -I. tests/enclosure/benchfeatures.cpp -o benchfeatures
-// and run it under `perf record -g` with the input options of self-play set (ENCLOSURE_TURN_SAFE=1 ...).
+// and run it under `perf record -g`.
 
 #include <chrono>
 #include <cstdio>

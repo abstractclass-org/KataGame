@@ -1,7 +1,7 @@
 // Enclosure fork: the network inputs (NNInputs::fillRowV8) against the
 // Enclosure repository's net.input_planes, position by position.
 //
-//   testnninputs tests/data/enclosure_inputs.txt
+//   testnninputs tests/data/enclosure_inputs.txt TURN_SAFE_FILE
 //
 // The file comes from the Enclosure repository's tools/export_katago_inputs.py
 // (positions from archived and random games, with the input its Python
@@ -33,18 +33,14 @@ static int v8Channel(int plane) {
 }
 
 int main(int argc, char** argv) {
-  if(argc != 2 && argc != 3) {
-    fprintf(stderr, "usage: testnninputs INPUTS_FILE [TURN_SAFE_FILE]\n");
+  if(argc != 3) {
+    fprintf(stderr, "usage: testnninputs INPUTS_FILE TURN_SAFE_FILE\n");
     return 2;
   }
-  //With ENCLOSURE_TURN_SAFE, plane 7 of each player holds its turn-safe points, from TURN_SAFE_FILE (the Python
-  //reference, tools/export_turn_safe_fixture.py): "turnsafe <label> <player> <count> <y * 19 + x> ...".
+  //Plane 7 of each player holds its turn-safe points, from TURN_SAFE_FILE (the Python reference,
+  //tools/export_turn_safe_fixture.py): "turnsafe <label> <player> <count> <y * 19 + x> ...".
   std::map<string, vector<int>> turnSafe[2];
-  if(enclosure::TURN_SAFE) {
-    if(argc != 3) {
-      fprintf(stderr, "ENCLOSURE_TURN_SAFE needs TURN_SAFE_FILE\n");
-      return 2;
-    }
+  {
     ifstream ts(argv[2]);
     string tsLine;
     while(getline(ts, tsLine)) {
@@ -132,31 +128,29 @@ int main(int argc, char** argv) {
       int index;
       spatialRow >> index;
       const int plane = index % PY_PLANES;
-      //With ENCLOSURE_NO_HELD_GROUND or ENCLOSURE_TURN_SAFE, held ground and its openings (each player's planes 7 and
-      //8) are not computed.
+      //Held ground and its openings (Python's planes 7 and 8 of each player) are not computed: plane 7 holds the
+      //turn-safe points (below) and plane 8 stays zero.
       const int f = plane - PY_FEATURES_START;
-      if((enclosure::NO_HELD_GROUND || enclosure::TURN_SAFE) && f >= 0 &&
-         (f % enclosure::PER_PLAYER == 7 || f % enclosure::PER_PLAYER == 8) && f < 2 * enclosure::PER_PLAYER)
+      if(f >= 0 && (f % enclosure::PER_PLAYER == 7 || f % enclosure::PER_PLAYER == 8) && f < 2 * enclosure::PER_PLAYER)
         continue;
       expected[(index / PY_PLANES) * C + v8Channel(plane)] = 1.0f;
-      //With ENCLOSURE_EDGE_BOTH_ENDS, an edge plane's entry also at the edge's upper end, in the opposite offset.
-      if(enclosure::EDGE_BOTH_ENDS && plane < 4 * enclosure::NOFF) {
+      //An edge plane's entry also at the edge's upper end, in the opposite offset.
+      if(plane < 4 * enclosure::NOFF) {
         const int pos = index / PY_PLANES, group = plane / enclosure::NOFF, k = plane % enclosure::NOFF;
         const int dx = enclosure::OFFS[k].dx, dy = enclosure::OFFS[k].dy;
         const int upper = (pos / S + dy) * S + pos % S + dx;
         expected[upper * C + v8Channel(group * enclosure::NOFF + enclosure::OFF_INDEX[3 - dx][3 - dy])] = 1.0f;
       }
     }
-    if(enclosure::TURN_SAFE)
-      for(int player = 0; player < 2; player++) {
-        auto it = turnSafe[player].find(label);
-        if(it == turnSafe[player].end()) {
-          fail(label + ": no turn-safe reference");
-          continue;
-        }
-        for(int q : it->second)
-          expected[q * C + NNInputs::V8_FEATURE_PLANES_START + player * enclosure::PER_PLAYER + 7] = 1.0f;
+    for(int player = 0; player < 2; player++) {
+      auto it = turnSafe[player].find(label);
+      if(it == turnSafe[player].end()) {
+        fail(label + ": no turn-safe reference");
+        continue;
       }
+      for(int q : it->second)
+        expected[q * C + NNInputs::V8_FEATURE_PLANES_START + player * enclosure::PER_PLAYER + 7] = 1.0f;
+    }
 
     MiscNNInputParams params;
     Player pla = hist.presumedNextMovePla;

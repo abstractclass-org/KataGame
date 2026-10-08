@@ -3076,8 +3076,10 @@ static void fillRowV8Entries(
       plane = group * enclosure::NOFF + enclosure::OFF_INDEX[bx - ax + 3][by - ay + 3];
     }
     setOne(pos, V8_EDGE_PLANES_START + plane);
-    //ENCLOSURE_EDGE_BOTH_ENDS: also at the upper end, in the opposite offset's plane of the same group.
-    if(enclosure::EDGE_BOTH_ENDS) {
+    //Also at the upper end, in the opposite offset's plane of the same group, so a point sees every edge it ends (with
+    //one end only, half of the 48 offset planes were never set). The input option ENCLOSURE_EDGE_BOTH_ENDS until
+    //2026-10-08, then the only way.
+    {
       const int group = plane / enclosure::NOFF, k = plane % enclosure::NOFF;
       const int dx = enclosure::OFFS[k].dx, dy = enclosure::OFFS[k].dy;
       const int upper = (pos / enclosure::SIZE + dy) * enclosure::SIZE + pos % enclosure::SIZE + dx;

@@ -148,370 +148,35 @@ inline void mark_crossings(const std::vector<Edge>& edges, std::vector<uint8_t>&
   }
 }
 
-// Unit steps between neighbouring points (heuristic.STEP_U/STEP_V/STEP_INDEX order).
-struct Steps {
-  std::vector<int> u, v, idx;
-  Steps() {
-    int kx = OFF_INDEX[1 + 3][0 + 3], ky = OFF_INDEX[0 + 3][1 + 3];
-    auto add = [&](int a, int b, int k) {
-      u.push_back(a); v.push_back(b);
-      idx.push_back(((a / SIZE + PAD) * GRID + a % SIZE + PAD) * NOFF + k);
-    };
-    for (int i = 0; i < N_POINTS - SIZE; ++i) add(i, i + SIZE, kx);
-    for (int i = 0; i < N_POINTS; ++i)
-      if (i % SIZE != SIZE - 1) add(i, i + 1, ky);
-  }
-};
-inline Steps steps;
-
-// The held-ground flow network has a fixed shape: points, a source and a sink;
-// both directions of every unit step, source -> point and point -> sink. Only
-// capacities change between calls (0 = absent), so the adjacency is built
-// once. Arcs come in pairs (a, a ^ 1): forward and residual reverse.
-struct FlowGraph {
-  static constexpr int SOURCE = N_POINTS, SINK = N_POINTS + 1, NODES = N_POINTS + 2;
-  std::vector<int> to, start, adj;  // adjacency in CSR form: adj[start[v] .. start[v + 1])
-  int step_arc0, source_arc0, sink_arc0;
-  FlowGraph() {
-    std::vector<std::pair<int, int>> ends;  // forward arcs; reverses are implied
-    step_arc0 = 0;
-    for (size_t s = 0; s < steps.u.size(); ++s) {
-      ends.push_back({steps.u[s], steps.v[s]});
-      ends.push_back({steps.v[s], steps.u[s]});
-    }
-    source_arc0 = 2 * int(ends.size());
-    for (int q = 0; q < N_POINTS; ++q) ends.push_back({SOURCE, q});
-    sink_arc0 = 2 * int(ends.size());
-    for (int q = 0; q < N_POINTS; ++q) ends.push_back({q, SINK});
-    std::vector<std::vector<int>> lists(NODES);
-    for (size_t i = 0; i < ends.size(); ++i) {
-      to.push_back(ends[i].second); lists[ends[i].first].push_back(int(2 * i));
-      to.push_back(ends[i].first); lists[ends[i].second].push_back(int(2 * i + 1));
-    }
-    start.push_back(0);
-    for (auto& l : lists) { adj.insert(adj.end(), l.begin(), l.end()); start.push_back(int(adj.size())); }
-  }
-};
-inline FlowGraph flow_graph;
-
-// Dinic's maximum flow on flow_graph with the given arc capacities (modified in place).
-struct Dinic {
-  const FlowGraph& g = flow_graph;
-  std::vector<int>& cap;
-  std::vector<int> level, it, queue;
-  explicit Dinic(std::vector<int>& c) : cap(c), level(FlowGraph::NODES), it(FlowGraph::NODES) {}
-  bool levels() {
-    std::fill(level.begin(), level.end(), -1);
-    queue.assign(1, FlowGraph::SOURCE);
-    level[FlowGraph::SOURCE] = 0;
-    for (size_t i = 0; i < queue.size(); ++i) {
-      int u = queue[i];
-      for (int k = g.start[u]; k < g.start[u + 1]; ++k) {
-        int a = g.adj[k];
-        if (cap[a] > 0 && level[g.to[a]] < 0) { level[g.to[a]] = level[u] + 1; queue.push_back(g.to[a]); }
-      }
-    }
-    return level[FlowGraph::SINK] >= 0;
-  }
-  int push(int u, int f) {
-    if (u == FlowGraph::SINK) return f;
-    for (int& k = it[u]; k < g.start[u + 1]; ++k) {
-      int a = g.adj[k], v = g.to[a];
-      if (cap[a] > 0 && level[v] == level[u] + 1) {
-        int got = push(v, std::min(f, cap[a]));
-        if (got) { cap[a] -= got; cap[a ^ 1] += got; return got; }
-      }
-    }
-    return 0;
-  }
-  void run() {
-    while (levels()) {
-      for (int v = 0; v < FlowGraph::NODES; ++v) it[v] = g.start[v];
-      while (push(FlowGraph::SOURCE, 1 << 30)) {}
-    }
-  }
-  // Vertices reachable from the source in the residual graph: the same for every maximum flow.
-  void source_side(std::vector<char>& seen) {
-    seen.assign(FlowGraph::NODES, 0);
-    queue.assign(1, FlowGraph::SOURCE);
-    seen[FlowGraph::SOURCE] = 1;
-    for (size_t i = 0; i < queue.size(); ++i) {
-      int u = queue[i];
-      for (int k = g.start[u]; k < g.start[u + 1]; ++k) {
-        int a = g.adj[k];
-        if (cap[a] > 0 && !seen[g.to[a]]) { seen[g.to[a]] = 1; queue.push_back(g.to[a]); }
-      }
-    }
-  }
-};
-
-// Boykov-Kolmogorov maximum flow on flow_graph (Boykov and Kolmogorov, "An
-// experimental comparison of min-cut/max-flow algorithms", PAMI 2004): two
-// search trees, from the source and the sink, grow until they touch; the path
-// found is augmented, and nodes cut off from their tree are re-adopted rather
-// than rebuilt, so trees persist between augmentations. It is much faster than
-// Dinic's on grid graphs like ours. run() may be called again after raising
-// capacities (warm start): the residual already holds the earlier flow.
-struct BKFlow {
-  static constexpr int NONE = -1, TERMINAL = -2, ORPHAN = -3;
-  const FlowGraph& g = flow_graph;
-  std::vector<int>& cap;  // residual capacity per arc (arcs a and a ^ 1 are reverses)
-  std::vector<int8_t> tree;  // 0 free, 1 source tree, 2 sink tree
-  std::vector<int> parent;   // S: arc parent -> node; T: arc node -> parent
-  std::vector<int> stamp, dist;
-  std::vector<int> active, orphans;
-  std::vector<char> queued;
-  int time = 0;
-  explicit BKFlow(std::vector<int>& c) : cap(c) {}
-
-  int tail(int a) const { return g.to[a ^ 1]; }
-
-  void activate(int v) {
-    if (!queued[v]) { queued[v] = 1; active.push_back(v); }
-  }
-
-  // Does v still reach its terminal through valid parents? Stamps and distances
-  // (the paper's heuristics) remember recent answers.
-  int origin_distance(int v) {
-    int d = 0, u = v;
-    while (true) {
-      if (stamp[u] == time) { d += dist[u]; break; }
-      int a = parent[u];
-      if (a == TERMINAL) { stamp[u] = time; dist[u] = 1; d += 1; break; }
-      if (a < 0) return -1;
-      u = tree[v] == 1 ? tail(a) : g.to[a];
-      ++d;
-    }
-    // Record distances along the path for later queries.
-    for (u = v; stamp[u] != time; ) {
-      stamp[u] = time; dist[u] = d--;
-      u = tree[v] == 1 ? tail(parent[u]) : g.to[parent[u]];
-    }
-    return d;
-  }
-
-  void adopt(int v) {
-    const int t = tree[v];
-    int best = NONE, best_d = 1 << 30;
-    for (int k = g.start[v]; k < g.start[v + 1]; ++k) {
-      int a = g.adj[k], q = g.to[a];
-      if (tree[q] != t) continue;
-      int arc = t == 1 ? (a ^ 1) : a;  // S: q -> v must have capacity; T: v -> q
-      if (cap[arc] <= 0 || parent[q] == ORPHAN || parent[q] == NONE) continue;
-      int d = origin_distance(q);
-      if (d >= 0 && d < best_d) { best_d = d; best = arc; }
-    }
-    if (best != NONE) {
-      parent[v] = best; stamp[v] = time; dist[v] = best_d + 1;
-      return;
-    }
-    // No valid parent: v becomes free; its children become orphans, and
-    // same-tree neighbours that could reach it become active again.
-    for (int k = g.start[v]; k < g.start[v + 1]; ++k) {
-      int a = g.adj[k], q = g.to[a];
-      if (tree[q] != t) continue;
-      int arc = t == 1 ? (a ^ 1) : a;
-      if (cap[arc] > 0) activate(q);
-      int pq = parent[q];
-      if (pq >= 0 && (t == 1 ? tail(pq) : g.to[pq]) == v) { parent[q] = ORPHAN; orphans.push_back(q); }
-    }
-    tree[v] = 0;
-    parent[v] = NONE;
-  }
-
-  void augment(int middle) {  // middle: an arc from the source tree to the sink tree
-    int delta = cap[middle];
-    for (int v = tail(middle); parent[v] != TERMINAL; v = tail(parent[v])) delta = std::min(delta, cap[parent[v]]);
-    for (int v = g.to[middle]; parent[v] != TERMINAL; v = g.to[parent[v]]) delta = std::min(delta, cap[parent[v]]);
-    cap[middle] -= delta; cap[middle ^ 1] += delta;
-    for (int v = tail(middle); parent[v] != TERMINAL;) {
-      int a = parent[v], u = tail(a);
-      cap[a] -= delta; cap[a ^ 1] += delta;
-      if (cap[a] == 0) { parent[v] = ORPHAN; orphans.push_back(v); }
-      v = u;
-    }
-    for (int v = g.to[middle]; parent[v] != TERMINAL;) {
-      int a = parent[v], u = g.to[a];
-      cap[a] -= delta; cap[a ^ 1] += delta;
-      if (cap[a] == 0) { parent[v] = ORPHAN; orphans.push_back(v); }
-      v = u;
-    }
-    ++time;
-    while (!orphans.empty()) {
-      int v = orphans.back();
-      orphans.pop_back();
-      adopt(v);
-    }
-  }
-
-  void run(bool warm) {
-    const int n = FlowGraph::NODES;
-    if (!warm) {
-      tree.assign(n, 0); parent.assign(n, NONE); stamp.assign(n, 0); dist.assign(n, 0);
-      queued.assign(n, 0); active.clear(); time = 1;
-      tree[FlowGraph::SOURCE] = 1; parent[FlowGraph::SOURCE] = TERMINAL;
-      tree[FlowGraph::SINK] = 2; parent[FlowGraph::SINK] = TERMINAL;
-    } else {
-      // Raised capacities can let any tree node grow again.
-      std::fill(queued.begin(), queued.end(), 0);
-      active.clear();
-    }
-    for (int v = 0; v < n; ++v)
-      if (tree[v]) activate(v);
-    for (size_t i = 0; i < active.size(); ++i) {
-      int v = active[i];
-      queued[v] = 0;
-      const int t = tree[v];
-      if (!t) continue;
-      bool grew_path = false;
-      for (int k = g.start[v]; k < g.start[v + 1]; ++k) {
-        int a = g.adj[k], q = g.to[a];
-        int arc = t == 1 ? a : (a ^ 1);  // S grows along v -> q; T along q -> v
-        if (cap[arc] <= 0) continue;
-        if (!tree[q]) {
-          tree[q] = int8_t(t); parent[q] = arc; stamp[q] = stamp[v]; dist[q] = dist[v] + 1;
-          activate(q);
-        } else if (tree[q] != t) {
-          augment(arc);
-          grew_path = true;
-          if (tree[v] != t) break;  // v itself was cut off and re-adopted elsewhere or freed
-        }
-      }
-      if (grew_path && tree[v] == t) activate(v);  // It may still have more to give.
-    }
-  }
-};
-
-// Vertices reachable from the source through arcs with residual capacity: the same set
-// for every maximum flow, so any max-flow algorithm gives the same region.
-inline void residual_source_side(const std::vector<int>& cap, std::vector<char>& seen) {
-  const FlowGraph& g = flow_graph;
-  seen.assign(FlowGraph::NODES, 0);
-  static thread_local std::vector<int> queue;
-  queue.assign(1, FlowGraph::SOURCE);
-  seen[FlowGraph::SOURCE] = 1;
-  for (size_t i = 0; i < queue.size(); ++i) {
-    int u = queue[i];
-    for (int k = g.start[u]; k < g.start[u + 1]; ++k) {
-      int a = g.adj[k];
-      if (cap[a] > 0 && !seen[g.to[a]]) { seen[g.to[a]] = 1; queue.push_back(g.to[a]); }
-    }
-  }
-}
-
-// Held ground (heuristic.held_ground): returns the value; region[x * SIZE + y]
-// and the open border steps (indices into steps) of the best region.
-inline double held_ground(const Position& p, int player, const int* mine, const int* theirs, uint8_t* region,
-                   std::vector<int>& border, const std::vector<int16_t>* own_hits = nullptr) {
-  static thread_local std::vector<int16_t> own_counts;
-  if (!own_hits) { crossing_counts(p.edges[player], own_counts); own_hits = &own_counts; }
-  const std::vector<int16_t>& hits = *own_hits;
-  const int ns = int(steps.u.size());
-  const FlowGraph& g = flow_graph;
-  static thread_local std::vector<char> passable, side, opp;
-  passable.resize(ns);
-  for (int s = 0; s < ns; ++s) passable[s] = hits[steps.idx[s]] < 2;
-  int w[N_POINTS];
-  for (int q = 0; q < N_POINTS; ++q) w[q] = mine[q] < theirs[q] ? 1 : theirs[q] < mine[q] ? -1 : 0;
-  opp.assign(N_POINTS, 0);
-  for (const Edge& e : p.edges[1 - player]) opp[e.ax * SIZE + e.ay] = opp[e.bx * SIZE + e.by] = 1;
-  double best = 0.0;
-  std::fill(region, region + N_POINTS, 0);
-  border.clear();
-  static thread_local std::vector<int> cap, open;
-  // lam = 0.5 then 2.0: unit-step capacities 2, then 8. Raising capacities keeps
-  // the first maximum flow feasible, so the second run continues from it.
-  cap.assign(g.to.size(), 0);
-  for (int s = 0; s < ns; ++s)
-    if (passable[s]) cap[g.step_arc0 + 4 * s] = cap[g.step_arc0 + 4 * s + 2] = 2;
-  for (int q = 0; q < N_POINTS; ++q) {
-    cap[g.source_arc0 + 2 * q] = w[q] > 0 ? 4 : 0;
-    cap[g.sink_arc0 + 2 * q] = (w[q] < 0 ? 4 : 0) + (opp[q] ? 1000000 : 0);
-  }
-  BKFlow flow(cap);
-  for (int round = 0; round < 2; ++round) {
-    if (round == 1)
-      for (int s = 0; s < ns; ++s)
-        if (passable[s]) { cap[g.step_arc0 + 4 * s] += 6; cap[g.step_arc0 + 4 * s + 2] += 6; }
-    flow.run(round == 1);
-    residual_source_side(cap, side);
-    open.clear();
-    for (int s = 0; s < ns; ++s)
-      if (passable[s] && side[steps.u[s]] != side[steps.v[s]]) open.push_back(s);
-    int lead = 0;
-    for (int q = 0; q < N_POINTS; ++q) lead += w[q] > 0 && side[q];
-    double value = lead * std::max(0.0, 1.0 - double(open.size()) / (3 * 8));
-    if (value > best) {
-      best = value;
-      for (int q = 0; q < N_POINTS; ++q) region[q] = side[q];
-      border = open;
-    }
-  }
-  return best;
-}
-
-#ifdef ENCLOSURE_INPUTS_FIXED
-// A build with no environment (the WebAssembly bot, v2/wasm/build.sh) fixes the three input options at compile time
-// (ENCLOSURE_INPUT_NO_HELD_GROUND, ENCLOSURE_INPUT_EDGE_BOTH_ENDS, ENCLOSURE_INPUT_TURN_SAFE: 0 or 1), as the run's
-// markers give them for the model. With the environment's defaults (all off) a model trained with them on plays on
-// inputs it never saw (2026-10-08: the first upload lost every game).
-inline const bool NO_HELD_GROUND = ENCLOSURE_INPUT_NO_HELD_GROUND;
-inline const bool EDGE_BOTH_ENDS = ENCLOSURE_INPUT_EDGE_BOTH_ENDS;
-inline const bool TURN_SAFE = ENCLOSURE_INPUT_TURN_SAFE;
-#else
-// ENCLOSURE_NO_HELD_GROUND=1 (owner, 2026-10-03, "no_maxflow"): held ground and its openings (planes 7 and 8 of
-// each player) stay zero and their max flow is not computed, about 15% of self-play's CPU. Measured first: on
-// v2a's own data a network learned as well without them (v2/docs/decisions/inputs-and-targets.md). The input shape is unchanged.
-inline const bool NO_HELD_GROUND = [] {
-  const char* v = std::getenv("ENCLOSURE_NO_HELD_GROUND");
-  return v != nullptr && *v != 0 && *v != '0';
-}();
-
-// ENCLOSURE_EDGE_BOTH_ENDS=1 (owner, 2026-10-03): the network's edge planes mark each edge at both ends, at the
-// lower end in its offset's plane (as the observation) and at the upper end in the opposite offset's plane, so a
-// point sees every edge it ends; with one end only, half of the 48 offset planes were never set. Read in
-// NNInputs::fillRowV8; the Python observation (net1's inputs) is unchanged.
-inline const bool EDGE_BOTH_ENDS = [] {
-  const char* v = std::getenv("ENCLOSURE_EDGE_BOTH_ENDS");
-  return v != nullptr && *v != 0 && *v != '0';
-}();
-
-// ENCLOSURE_TURN_SAFE=1 (owner, 2026-10-03; V2): each player's plane 7 (held ground, empty under no_maxflow) holds
-// the points of its turn-safe edges instead: those the opponent cannot cut in its coming turn (coming_turn,
-// planes.turn_safe_edges). Held ground and its openings are not computed. Protection lasts one turn, which the
-// steady-state planes (Solid, the hops, Unreached) ignore; this plane states it for that turn only.
-inline const bool TURN_SAFE = [] {
-  const char* v = std::getenv("ENCLOSURE_TURN_SAFE");
-  return v != nullptr && *v != 0 && *v != '0';
-}();
-#endif
-
 // Feature planes (planes.feature_planes) as 0/1 bytes, channels last:
 // out[(y * SIZE + x) * FEATURE_PLANES + f].
+// Each player's plane 7 holds the points of its turn-safe edges: those the opponent cannot cut in its coming turn
+// (coming_turn, planes.turn_safe_edges). Protection lasts one turn, which the steady-state planes (Solid, the hops,
+// Unreached) ignore; this plane states it for that turn only. Plane 8 stays zero: it held the openings of held ground
+// (a max flow, about 15% of self-play's CPU), which V2 dropped (v2/docs/decisions/inputs-and-targets.md). These were
+// the input options ENCLOSURE_TURN_SAFE and ENCLOSURE_NO_HELD_GROUND until 2026-10-08, when they became the only way.
 inline void feature_planes(const Position& p, uint8_t* out) {
-  // Each player's crossing counts, computed once and shared by hops, solidity and held ground.
+  // Each player's crossing counts, computed once and shared by the hops and solidity.
   static thread_local std::vector<int16_t> counts[2];
   crossing_counts(p.edges[0], counts[0]);
   crossing_counts(p.edges[1], counts[1]);
   int dist[2][N_POINTS];
-  // ENCLOSURE_TURN_SAFE: guarded[k] are k's edges the opponent may not cut in its coming turn (turn_edges[1 - k]
-  // edges); turn_reach[k] the points k can start a cut from in its coming turn.
+  // guarded[k] are k's edges the opponent may not cut in its coming turn (turn_edges[1 - k] edges); turn_reach[k]
+  // the points k can start a cut from in its coming turn.
   static thread_local std::vector<uint8_t> guard_marks(size_t(GRID) * GRID * NOFF, 0);
   std::vector<Edge> guarded[2];
   int turn_edges[2] = {0, 0};
   uint8_t turn_reach[2][N_POINTS];
-  if (TURN_SAFE)
-    for (int k = 0; k < 2; ++k) turn_edges[1 - k] = coming_turn(p, k, guarded[k]);
+  for (int k = 0; k < 2; ++k) turn_edges[1 - k] = coming_turn(p, k, guarded[k]);
   for (int k = 0; k < 2; ++k) {
-    if (TURN_SAFE) mark_crossings(guarded[1 - k], guard_marks, 1);
-    hop_distances(p, k, dist[k], &counts[1 - k], TURN_SAFE ? turn_reach[k] : nullptr, turn_edges[k], &guard_marks);
-    if (TURN_SAFE) mark_crossings(guarded[1 - k], guard_marks, 0);
+    mark_crossings(guarded[1 - k], guard_marks, 1);
+    hop_distances(p, k, dist[k], &counts[1 - k], turn_reach[k], turn_edges[k], &guard_marks);
+    mark_crossings(guarded[1 - k], guard_marks, 0);
   }
   std::fill(out, out + N_POINTS * FEATURE_PLANES, 0);
   auto set = [&](int q, int f) { out[((q % SIZE) * SIZE + q / SIZE) * FEATURE_PLANES + f] = 1; };
   uint8_t mask[N_POINTS];
   std::vector<uint8_t> solid;
-  std::vector<int> border;
   for (int k = 0; k < 2; ++k) {
     const int base = k * PER_PLAYER;
     const int* d = dist[k];
@@ -524,28 +189,19 @@ inline void feature_planes(const Position& p, uint8_t* out) {
     for (int q = 0; q < N_POINTS; ++q)
       if (mask[q]) set(q, base + 1);
     std::vector<uint8_t> turn_safe;
-    solid_flags(p, k, dist[1 - k], solid, &counts[k], TURN_SAFE ? turn_reach[1 - k] : nullptr, &guarded[k],
-                TURN_SAFE ? &turn_safe : nullptr);
+    solid_flags(p, k, dist[1 - k], solid, &counts[k], turn_reach[1 - k], &guarded[k], &turn_safe);
     std::vector<Edge> solid_edges;
     for (size_t i = 0; i < solid.size(); ++i)
       if (solid[i]) solid_edges.push_back(p.edges[k][i]);
     edge_points(solid_edges, mask);
     for (int q = 0; q < N_POINTS; ++q)
       if (mask[q]) set(q, base + 2);
-    if (TURN_SAFE) {
-      std::vector<Edge> safe_edges;
-      for (size_t i = 0; i < turn_safe.size(); ++i)
-        if (turn_safe[i]) safe_edges.push_back(p.edges[k][i]);
-      edge_points(safe_edges, mask);
-      for (int q = 0; q < N_POINTS; ++q)
-        if (mask[q]) set(q, base + 7);
-    }
-    else if (!NO_HELD_GROUND) {
-      held_ground(p, k, d, dist[1 - k], mask, border, &counts[k]);
-      for (int q = 0; q < N_POINTS; ++q)
-        if (mask[q]) set(q, base + 7);
-      for (int s : border) { set(steps.u[s], base + 8); set(steps.v[s], base + 8); }
-    }
+    std::vector<Edge> safe_edges;
+    for (size_t i = 0; i < turn_safe.size(); ++i)
+      if (turn_safe[i]) safe_edges.push_back(p.edges[k][i]);
+    edge_points(safe_edges, mask);
+    for (int q = 0; q < N_POINTS; ++q)
+      if (mask[q]) set(q, base + 7);
   }
   for (int h = 0; h < HISTORY_TURNS; ++h) {
     if (!p.history_n[h]) continue;

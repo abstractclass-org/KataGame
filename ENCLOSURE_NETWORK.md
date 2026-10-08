@@ -152,17 +152,16 @@ flowchart TD
     classDef io fill:#e3f4e3,stroke:#3a7d3a,color:#000
 ```
 
-- **Edge planes.** An edge is set at its lower end (the canonical edge's first point), in the plane of its offset.
-  v2a sets it at both ends (`ENCLOSURE_EDGE_BOTH_ENDS=1`), so the upper end also has it, in the plane of the opposite
-  offset.
+- **Edge planes.** An edge is set at both ends: at its lower end (the canonical edge's first point) in the plane of
+  its offset, and at its upper end in the plane of the opposite offset.
 - **Feature planes, per player:**
   - 0: the player's nodes.
   - 1: points inside its enclosed regions.
   - 2: points on its edges that the opponent cannot cut.
   - 3-5: points that it reaches in exactly 1, 2 or 3 hops.
   - 6: points that it cannot reach.
-  - 7: held ground. v2a replaces it with the turn-safe plane (edges that the opponent cannot cut in its next turn).
-  - 8: openings, empty in v2a.
+  - 7: the turn-safe plane: points of its edges that the opponent cannot cut in its next turn (V1: held ground).
+  - 8: empty (V1: openings).
 
   The 4 history planes mark the edges placed 2 to 5 turns ago. The observation's edge planes already carry the
   current and the previous turn.
