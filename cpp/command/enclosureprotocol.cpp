@@ -13,8 +13,12 @@
 //   {"action": "terminate", "terminateId"}           ends that search; its last results, "terminated": true
 // A position is "position" (the notation; default the standard start) followed by "moves" (edges, "pass").
 // "history" (newest turn first, at most 4 turns of at most 2 edges) gives the last turns' edges of a position whose
-// moves are not known, for the network's history planes. "overrideSettings": {"maxTime": seconds} limits a search by
-// time (KataGo's field; other keys are refused).
+// moves are not known, for the network's history planes. "overrideSettings" (KataGo's field) takes "maxTime"
+// (seconds), which limits a search by time, and the chosen move's settings (chosenMoveTemperature and the other
+// chosenMove* keys); other keys are refused. "chooseMove": true adds "chosenMove" to a search's final reply: the move
+// KataGo's GTP engine would play, drawn with the chosen-move temperature, seeded by "seed" (a string or an integer,
+// default 0) and the position. A position's turn number is its edge count, so the temperature's early phase follows
+// the game.
 // Results are reproducible: each evaluation's symmetry comes from its cache key (nnSymmetryFromHash), so the same
 // request gives the same reply whatever came before, and a search in slices equals one whole search (with one search
 // thread; more threads search faster and are not reproducible).
@@ -155,6 +159,9 @@ bool buildPosition(const json& q, Board& board, BoardHistory& hist, Player& pla,
     rules.komi = k->get<float>();
   }
   hist = BoardHistory(board, pla, rules, 0);
+  // The game's turn number counts edges from the standard start, so a position in the middle of a game is at its
+  // edge count: the move temperature's early phase (Search::interpolateEarly) is then the game's, not the query's.
+  hist.setInitialTurnNumber(start.move_count);
   if(const json* moves = field(q, "moves")) {
     if(!moves->is_array()) {
       f = {"moves", "moves is a list of edges"};
@@ -429,6 +436,17 @@ json analysisReply(const json& q, const Board& board, const BoardHistory& hist, 
     {"id", q["id"]}, {"isDuringSearch", during}, {"turnNumber", hist.moveHistory.size()}, {"engine", engineTag()},
     {"rootInfo", rootInfo}, {"moveInfos", moveInfos},
   };
+  if(flag("chooseMove") && !during) {
+    // The move KataGo's GTP engine would play (Search::getChosenMoveLoc): a draw over the play selection values with
+    // the chosen-move temperature. Its seed comes from the query's "seed" (default 0) and the position, never from
+    // earlier requests (design 04, "Reproducible analysis"), so the same request draws the same move. A bot that
+    // must not repeat itself sends a new seed each time.
+    const json* s = field(q, "seed");
+    const string seed = s == nullptr ? "0" : s->is_string() ? s->get<string>() : std::to_string(s->get<uint64_t>());
+    Rand rand("chosenMove:" + seed + ":" + board.pos_hash.toString());
+    const Loc loc = E.search->getChosenMoveLoc(rand);
+    reply["chosenMove"] = loc == Board::NULL_LOC ? json(nullptr) : ourMove(Location::toString(loc, board));
+  }
   if(flag("includePolicy")) {
     // The root's network policy over every legal edge, by edge (the fork's policy index is the action index).
     static float probs[NNPos::MAX_NN_POLICY_SIZE];
@@ -512,16 +530,45 @@ json analyze(const json& q) {
       return errorReply(q["id"], {"maxVisits", "maxVisits is a positive integer"});
     visits = v->get<int>();
   }
+  SearchParams p = E.params;
   double maxTime = 1e20;
   if(const json* o = field(q, "overrideSettings")) {
     if(!o->is_object())
       return errorReply(q["id"], {"overrideSettings", "overrideSettings is an object"});
     for(auto it = o->begin(); it != o->end(); ++it) {
-      if(it.key() != "maxTime" || !it.value().is_number() || it.value().get<double>() <= 0)
-        return errorReply(q["id"], {"overrideSettings", "only maxTime (seconds, positive) is supported"});
-      maxTime = it.value().get<double>();
+      if(it.key() == "maxTime") {
+        if(!it.value().is_number() || it.value().get<double>() <= 0)
+          return errorReply(q["id"], {"overrideSettings", "maxTime is in seconds, positive"});
+        maxTime = it.value().get<double>();
+        continue;
+      }
+      // The chosen move's settings, with the ranges KataGo's config reader allows (Setup::loadParams).
+      const struct { const char* key; double* value; double lo, hi; } choice[] = {
+        {"chosenMoveTemperature", &p.chosenMoveTemperature, 0.0, 5.0},
+        {"chosenMoveTemperatureEarly", &p.chosenMoveTemperatureEarly, 0.0, 5.0},
+        {"chosenMoveTemperatureHalflife", &p.chosenMoveTemperatureHalflife, 0.1, 100000.0},
+        {"chosenMoveTemperatureOnlyBelowProb", &p.chosenMoveTemperatureOnlyBelowProb, 0.0, 1.0},
+        {"chosenMoveSubtract", &p.chosenMoveSubtract, 0.0, 1.0e10},
+        {"chosenMovePrune", &p.chosenMovePrune, 0.0, 1.0e10},
+      };
+      bool known = false;
+      for(const auto& c : choice) {
+        if(it.key() != c.key)
+          continue;
+        known = true;
+        if(!it.value().is_number() || it.value().get<double>() < c.lo || it.value().get<double>() > c.hi)
+          return errorReply(q["id"], {"overrideSettings", it.key() + " is a number from " + Global::doubleToString(c.lo) +
+                                                            " to " + Global::doubleToString(c.hi)});
+        *c.value = it.value().get<double>();
+      }
+      if(!known)
+        return errorReply(q["id"], {"overrideSettings", "the settings are maxTime and the chosenMove* settings, not " +
+                                                          it.key()});
     }
   }
+  const json* seed = field(q, "seed");
+  if(seed != nullptr && !seed->is_string() && !seed->is_number_unsigned())
+    return errorReply(q["id"], {"seed", "seed is a string or a non-negative integer"});
   int64_t sliceVisits = 0;
   double sliceSeconds = 0;
   const json* slice = field(q, "slice");
@@ -539,7 +586,6 @@ json analyze(const json& q) {
   }
   auto flag = [&](const char* key) { const json* b = field(q, key); return b != nullptr && b->is_boolean() && b->get<bool>(); };
   endRunning();  // one search at a time: a new query ends the one before
-  SearchParams p = E.params;
   p.maxVisits = visits;
   p.maxPlayouts = (int64_t)1 << 50;
   p.maxTime = maxTime;

@@ -571,6 +571,10 @@ const SearchNode* Search::getChildForMove(const SearchNode* node, Loc moveLoc) c
 }
 
 Loc Search::getChosenMoveLoc() {
+  return getChosenMoveLoc(nonSearchRand);
+}
+
+Loc Search::getChosenMoveLoc(Rand& rand) {
   if(rootNode == NULL)
     return Board::NULL_LOC;
 
@@ -587,7 +591,7 @@ Loc Search::getChosenMoveLoc() {
   );
 
   uint32_t idxChosen = chooseIndexWithTemperature(
-    nonSearchRand,
+    rand,
     playSelectionValues.data(),
     (int)playSelectionValues.size(),
     temperature,

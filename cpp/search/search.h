@@ -360,6 +360,8 @@ struct Search {
   //Choose a move at the root of the tree, with randomization, if possible.
   //Might return Board::NULL_LOC if there is no root, or no legal moves that aren't forcibly pruned, etc.
   Loc getChosenMoveLoc();
+  //Enclosure fork: the same, drawing from rand (the engine protocol's "seed", for a reproducible draw).
+  Loc getChosenMoveLoc(Rand& rand);
   //Get the vector of values (e.g. modified visit counts) used to select a move.
   //Does take into account chosenMoveSubtract but does NOT apply temperature.
   //If somehow the max value is less than scaleMaxToAtLeast, scale it to at least that value.
