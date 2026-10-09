@@ -71,6 +71,8 @@ cp -r "$KATAGO"/python/katago "$DATED_ARCHIVE"
 cp -r "$KATAGO"/python/muon "$DATED_ARCHIVE"
 cp "$KATAGO_BIN" "$DATED_ARCHIVE"/bin/katago
 cp "$SELFPLAY_CONFIG" "$DATED_ARCHIVE"/selfplay.cfg
+# The run's overrides of selfplay.cfg (SELFPLAY_OVERRIDES), which the dashboard applies to show the settings in force.
+printf '%s\n' "${SELFPLAY_OVERRIDES:-}" > "$DATED_ARCHIVE"/selfplay_overrides.txt
 git -C "$REPO" show --no-patch --no-color > "$DATED_ARCHIVE"/version.txt || true
 git -C "$REPO" diff --no-color > "$DATED_ARCHIVE"/diff.txt || true
 cd "$DATED_ARCHIVE"
