@@ -339,6 +339,9 @@ struct Search {
   //Expert manual playout-by-playout interface
   void beginSearch(bool pondering);
   bool runSinglePlayout(SearchThread& thread, double upperBoundVisitsLeft);
+  //Enclosure fork (2026-10-09): ends a search run through the two above, as runWholeSearch ends its own (the engine
+  //protocol's search in slices, v2/wasm/engine.cpp). The tree stays for inspection.
+  void endManualSearch(SearchThread& thread);
 
   //================================================================================================================
   // SEARCH RESULTS AND TREE INSPECTION METHODS

@@ -267,6 +267,12 @@ class NNEvaluator {
   int getDefaultSymmetry() const;
   void setDoRandomize(bool b);
   void setDefaultSymmetry(int s);
+  // Enclosure fork (2026-10-09, docs/design/04-notation-and-protocol.md "Reproducible analysis"): when on, an
+  // evaluation's symmetry is computed from its cache key instead of drawn at random (the nnSymmetryFromHash setting).
+  // Different positions still get different symmetries; the same position always gets the same one, so a cached
+  // result equals a fresh one and results do not depend on earlier requests. Off by default (self-play draws).
+  bool getSymmetryFromHash() const;
+  void setSymmetryFromHash(bool b);
 
   // Benchmark raw NN forward throughput, bypassing the query queue and search.
   // Spins up one thread per configured NN server thread, each with its own compute handle,
@@ -367,6 +373,7 @@ class NNEvaluator {
   // Randomization settings for symmetries
   std::atomic<bool> currentDoRandomize;
   std::atomic<int> currentDefaultSymmetry;
+  std::atomic<bool> currentSymmetryFromHash{false};
   // See setMaxRowsToSendPerBatch
   std::atomic<int> maxRowsToSendPerBatch;
 

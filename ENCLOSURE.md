@@ -158,6 +158,17 @@ meaf.us gives a board and not its moves, so the move server (`enclosure/v2/katag
 - **A bad position is refused** with an error on the field: an edge off the board or longer than 3, a player other
   than 0 or 1, more than 2 edges left, or more history turns than `HISTORY_TURNS`.
 
+## Reproducible analysis and search in slices
+
+For the engine protocol (docs/design/04-notation-and-protocol.md), two additions that change nothing by default:
+
+- **`nnSymmetryFromHash`** (a setting, off by default): each network evaluation's symmetry is computed from its
+  cache key instead of drawn at random (`NNEvaluator::setSymmetryFromHash`, `nneval.cpp`). Different positions still
+  get different symmetries, so a search keeps the averaging over orientations. The same position always gets the
+  same one, so results do not depend on earlier requests. The engine module turns it on. Self-play keeps its draws.
+- **`Search::endManualSearch`**: ends a search run through KataGo's manual interface (`beginSearch`,
+  `runSinglePlayout`) as `runWholeSearch` ends its own. The engine module runs a search in slices with it.
+
 ## Moves where points are expected (this blocked step 3)
 
 At first, move `Loc`s were 2 + action, and they shared the values 2-420 with points. Code that treats a move as a

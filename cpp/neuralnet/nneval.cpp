@@ -374,6 +374,12 @@ void NNEvaluator::setDoRandomize(bool b) {
 void NNEvaluator::setDefaultSymmetry(int s) {
   currentDefaultSymmetry.store(s, std::memory_order_release);
 }
+bool NNEvaluator::getSymmetryFromHash() const {
+  return currentSymmetryFromHash.load(std::memory_order_acquire);
+}
+void NNEvaluator::setSymmetryFromHash(bool b) {
+  currentSymmetryFromHash.store(b, std::memory_order_release);
+}
 
 Rules NNEvaluator::getSupportedRules(const Rules& desiredRules, bool& supported) const {
   if(loadedModel == NULL) {
@@ -1422,7 +1428,9 @@ void NNEvaluator::evaluate(
   //gets the identity, and the outputs are mapped back when they arrive.
   int symmetry = nnInputParams.symmetry;
   if(symmetry == NNInputs::SYMMETRY_NOTSPECIFIED) {
-    if(currentDoRandomize.load(std::memory_order_acquire))
+    if(currentSymmetryFromHash.load(std::memory_order_acquire))  //Enclosure fork: from the cache key (setSymmetryFromHash)
+      symmetry = (int)((nnHash.hash0 ^ (nnHash.hash1 >> 7)) % SymmetryHelpers::NUM_SYMMETRIES);
+    else if(currentDoRandomize.load(std::memory_order_acquire))
       symmetry = (int)clientSymmetryRand(randSeed).nextUInt(SymmetryHelpers::NUM_SYMMETRIES);
     else
       symmetry = currentDefaultSymmetry.load(std::memory_order_acquire);

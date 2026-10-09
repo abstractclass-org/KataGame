@@ -709,6 +709,12 @@ void Search::runWholeSearch(
 //If we're being asked to search from a position where the game is over, this is fine. Just keep going, the boardhistory
 //should reasonably tolerate just continuing. We do NOT want to clear history because we could inadvertently make a move
 //that an external ruleset COULD think violated superko.
+//Enclosure fork: what runWholeSearch does after its playouts, for a search run by beginSearch and runSinglePlayout.
+void Search::endManualSearch(SearchThread& thread) {
+  transferOldNNOutputs(thread);
+  cleanUpOldRootFocus();
+}
+
 void Search::beginSearch(bool pondering) {
   if(rootBoard.x_size > nnXLen || rootBoard.y_size > nnYLen)
     throw StringError("Search got from NNEval nnXLen = " + Global::intToString(nnXLen) +

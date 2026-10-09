@@ -383,6 +383,11 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       cfg
     );
 
+    //Enclosure fork (2026-10-09): nnSymmetryFromHash, each evaluation's symmetry from its cache key
+    //(NNEvaluator::setSymmetryFromHash). Off by default: self-play keeps its random draws.
+    if(cfg.contains("nnSymmetryFromHash"))
+      nnEval->setSymmetryFromHash(cfg.getBool("nnSymmetryFromHash"));
+
     // benchmarkPureForward drives compute handles itself, without server threads.
     if(setupFor != SETUP_FOR_BENCHMARKNN)
       nnEval->spawnServerThreads();
