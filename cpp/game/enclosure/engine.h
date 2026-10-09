@@ -188,10 +188,15 @@ inline double clipped_area(const std::vector<double>& xs, const std::vector<doub
 // are faces of the components nested in them.
 // With `income` (x * SIZE + y; owner, 2026-10-03, the territory-income target): the enclosed area inside the unit
 // square centred on each lattice point (planes.income_points); the values sum to the enclosed area.
-inline double enclosed_area(const std::vector<Edge>& edges, uint8_t* inside_points = nullptr, float* income = nullptr) {
+// With `polygons`: the positive face cycles as polygons of (x, y) points (crossings are exact rationals, given as
+// doubles). Their union is the enclosed region, so a board fills each of them to draw it (the engine protocol's
+// describe action, docs/design/04-notation-and-protocol.md). Nested ones overlap, so their areas do not sum to it.
+inline double enclosed_area(const std::vector<Edge>& edges, uint8_t* inside_points = nullptr, float* income = nullptr,
+                            std::vector<std::vector<std::pair<double, double>>>* polygons = nullptr) {
   const int n = int(edges.size());
   if (inside_points) std::fill(inside_points, inside_points + SIZE * SIZE, 0);
   if (income) std::fill(income, income + SIZE * SIZE, 0.0f);
+  if (polygons) polygons->clear();
   if (n < 3) return 0.0;
   std::map<RPt, int> index;
   std::vector<double> vx, vy;
@@ -324,6 +329,12 @@ inline double enclosed_area(const std::vector<Edge>& edges, uint8_t* inside_poin
         }
       }
   }
+  if (polygons)
+    for (const Cycle& c : cycles)
+      if (c.area > 0) {
+        polygons->emplace_back();
+        for (int v : c.verts) polygons->back().push_back({vx[v], vy[v]});
+      }
   double total = 0.0;
   std::vector<int> counted;  // the cycles whose signed areas sum to the total: faces, and holes (nested outer cycles)
   for (int i = 0; i < int(cycles.size()); ++i)
