@@ -1101,6 +1101,8 @@ add_executable(katago
   distributed/client.cpp
   command/commandline.cpp
   command/analysis.cpp
+  command/enclosureengine.cpp
+  command/enclosureprotocol.cpp
   command/benchmark.cpp
   command/benchmarknn.cpp
   command/contribute.cpp

@@ -2,6 +2,7 @@
 
 namespace MainCmds {
   int analysis(const std::vector<std::string>& args);
+  int enclosureEngine(const std::vector<std::string>& args);  //Enclosure fork: the engine protocol (command/enclosureengine.cpp)
   int benchmark(const std::vector<std::string>& args);
   int benchmarknn(const std::vector<std::string>& args);
   int contribute(const std::vector<std::string>& args);

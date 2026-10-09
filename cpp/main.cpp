@@ -87,6 +87,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
   vector<string> subArgs(args.begin()+1,args.end());
   if(subcommand == "analysis")
     return MainCmds::analysis(subArgs);
+  else if(subcommand == "enclosure-engine")
+    return MainCmds::enclosureEngine(subArgs);
   else if(subcommand == "benchmark")
     return MainCmds::benchmark(subArgs);
   else if(subcommand == "benchmarknn")

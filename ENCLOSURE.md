@@ -166,6 +166,8 @@ For the engine protocol (docs/design/04-notation-and-protocol.md), two additions
   cache key instead of drawn at random (`NNEvaluator::setSymmetryFromHash`, `nneval.cpp`). Different positions still
   get different symmetries, so a search keeps the averaging over orientations. The same position always gets the
   same one, so results do not depend on earlier requests. The engine module turns it on. Self-play keeps its draws.
+- **`katago enclosure-engine`** (`command/enclosureengine.cpp`, `command/enclosureprotocol.cpp`): the engine protocol
+  as a command, the same code as the WebAssembly module's. See docs/design/04-notation-and-protocol.md.
 - **`Search::endManualSearch`**: ends a search run through KataGo's manual interface (`beginSearch`,
   `runSinglePlayout`) as `runWholeSearch` ends its own. The engine module runs a search in slices with it.
 
