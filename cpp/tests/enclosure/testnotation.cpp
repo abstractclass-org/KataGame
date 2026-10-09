@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "cannot open %s\n", argv[1]);
     return 2;
   }
-  int games = 0, positions = 0, failures = 0;
+  int games = 0, positions = 0, failures = 0, cutMoves = 0;
   auto fail = [&](const string& what) {
     if(failures++ < 20)
       fprintf(stderr, "FAIL game %d: %s\n", games, what.c_str());
@@ -102,6 +102,16 @@ int main(int argc, char** argv) {
       }
       if(move_name(action) != moves[n])
         fail("move " + to_string(n + 1) + " " + moves[n] + " is named " + move_name(action));
+      // The cut mark: a record writes `x` on a move that cuts, reads it back, and refuses it on one that does not.
+      const bool cut = cuts(action, p);
+      cutMoves += cut;
+      const string written = record_move(action, p);
+      if(written != move_name(action) + (cut ? "x" : ""))
+        fail("move " + to_string(n + 1) + " written as " + written);
+      if(parse_move(written, p, &why) != action)
+        fail("move " + to_string(n + 1) + " " + written + " not read back");
+      if(!cut && action != PASS && parse_move(move_name(action) + "x", p, &why) >= 0)
+        fail("move " + to_string(n + 1) + " accepted with a cut mark, but it cuts nothing");
       p.play(action);
       n++;
     }
@@ -131,6 +141,8 @@ int main(int argc, char** argv) {
   if(position_string(start) != "A10-D10 Q10-T10 b1 0/0 0")
     fail("the start prints as " + position_string(start));
 
-  printf("notation: %d games, %d positions, %d failures\n", games, positions, failures);
+  if(cutMoves <= 10)
+    fail("only " + to_string(cutMoves) + " cuts in the vectors");
+  printf("notation: %d games, %d positions, %d cuts, %d failures\n", games, positions, cutMoves, failures);
   return failures == 0 ? 0 : 1;
 }

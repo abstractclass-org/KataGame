@@ -53,7 +53,7 @@ namespace nt = enclosure::notation;
 
 namespace {
 
-const char* PROTOCOL = "1.0";
+const char* PROTOCOL = "1.1";
 const char* RULES = "online";  // the online variant (enclosure/README.md "Rules"), 19 x 19
 const int DEFAULT_VISITS = 500;
 

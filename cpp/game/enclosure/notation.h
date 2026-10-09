@@ -4,6 +4,8 @@
 //   D10                       a point: column letter A-T without I (x 0-18), row 1-19 (y 0-18, from the bottom)
 //   D10-E11                   an edge: the lower point first (by column, then by row); either order is read
 //   pass                      a timeout pass (the rest of the turn forfeited)
+//   D10-G10x                  a move in a game record: `x` marks a move that cuts an opponent's edge. Readers
+//                             accept a move with or without it, and refuse it on a move that cuts nothing.
 //   A10-D10 Q10-T10 b1 0/0 0  a position: Blue's edges, Red's edges, the mover and the edges left in its turn,
 //                             the scores (Blue's/Red's), the edge count. `*` marks a protected edge (the opponent's
 //                             last turn), `+` a placed edge (the mover's edges of this turn), `-` an empty list.
@@ -74,21 +76,44 @@ inline std::string move_name(int action) {
   return edge_name(make_edge(ax, ay, ax + OFFS[k].dx, ay + OFFS[k].dy));
 }
 
+// Whether `action` cuts one of the opponent's edges in `p`.
+inline bool cuts(int action, const Position& p) {
+  if (action == PASS) return false;
+  Position after = p;
+  after.play(action);
+  const int enemy = 1 - p.player;
+  for (const auto& e : p.edges[enemy])
+    if (!contains(after.edges[enemy], e)) return true;
+  return false;
+}
+
+// A move as a game record writes it: the edge, with `x` when it cuts.
+inline std::string record_move(int action, const Position& p) {
+  return move_name(action) + (cuts(action, p) ? "x" : "");
+}
+
 // A move as text -> the action for `p`, or -1. The engine lists an edge in one direction only, so both are tried.
-// "pass" is a timeout pass (PASS, which Position::play plays as forfeit_turn).
+// "pass" is a timeout pass (PASS, which Position::play plays as forfeit_turn). A trailing `x` (a cut, as a record
+// writes it) is accepted, and refused on a move that cuts nothing.
 inline int parse_move(const std::string& text, const Position& p, std::string* why = nullptr) {
   std::string t = text;
   std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) { return char(std::tolower(c)); });
   if (t == "pass") return PASS;
+  const bool marked = !t.empty() && t.back() == 'x';
   Edge e;
-  if (!parse_edge(text, e, why)) return -1;
+  if (!parse_edge(marked ? text.substr(0, text.size() - 1) : text, e, why)) return -1;
   const int ends[2][4] = {{e.ax, e.ay, e.bx, e.by}, {e.bx, e.by, e.ax, e.ay}};
   for (const auto& d : ends) {
     const int dx = d[2] - d[0], dy = d[3] - d[1];
     const int k = OFF_INDEX[dx + 3][dy + 3];
     if (k < 0) continue;
     const int action = (d[1] * SIZE + d[0]) * NOFF + k;
-    if (p.is_legal(action)) return action;
+    if (!p.is_legal(action)) continue;
+    if (marked && !cuts(action, p)) {
+      if (why) *why = "marked as a cut, but it cuts nothing: " + text;
+      return -1;
+    }
+    return action;
   }
   if (why) *why = "illegal move in this position: " + text;
   return -1;
