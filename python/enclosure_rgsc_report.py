@@ -12,9 +12,11 @@ environment does not carry it, so run it in an environment of its own.
 """
 
 import argparse
+import datetime
 import glob
 import json
 import os
+import re
 
 import matplotlib
 
@@ -80,6 +82,74 @@ def fig_curriculum(a, out):
     ax.set_title("Restart states by opening length, by model (the paper's Figures 16-18)")
     ax.legend(fontsize=7, loc="upper left", bbox_to_anchor=(1.0, 1.0))
     return save(fig, out, "curriculum.png")
+
+
+def fig_premise(cache_path, out, run="v2a"):
+    """From the dashboard's per-folder RGSC sums (tools/dashboard.py _rgsc_stats, runs/dashboard_v2_games.json), in
+    bins of 500,000 data rows: the share of the games written that restarted, and the premise, the restart states'
+    realized regret over that of games from the empty board at the same depths (1 = no harder than usual)."""
+    if not cache_path or not os.path.exists(cache_path):
+        return None
+    bins = {}
+    for key, entry in json.load(open(cache_path)).items():
+        m = re.search(r"-d(\d+)$", key)
+        rg = (entry.get("stats") or {}).get("rgsc")
+        if not key.startswith(run + "/") or not m or not rg or not rg.get("games"):
+            continue
+        acc = bins.setdefault(int(m.group(1)) // 500_000, [0, 0, 0.0, 0.0])
+        acc[0] += rg["games"]
+        acc[1] += sum(rg["restarts"])
+        acc[2] += rg.get("reg_sum") or 0.0
+        acc[3] += rg.get("reg_expect") or 0.0
+    keys = sorted(bins)
+    x = np.array([(k + 0.5) * 0.5 for k in keys])
+    share = np.array([bins[k][1] / bins[k][0] for k in keys])
+    ratio = np.array([bins[k][2] / bins[k][3] if bins[k][3] else np.nan for k in keys])
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.6, 3.4))
+    ax1.plot(x, share, "o-", color=BLUE, ms=3)
+    ax1.axhline(0.5, color=GREY, ls="--", label="λ = 0.5")
+    ax1.set(xlabel="data row (millions)", ylabel="share of the games written", title="Restarted games", ylim=(0, 0.6))
+    ax2.plot(x, ratio, "o-", color=ORANGE, ms=3)
+    ax2.axhline(1, color=GREY, ls="--", label="no harder than usual")
+    ax2.set(xlabel="data row (millions)", ylabel="regret / same-depth regret", title="The premise: are restart states harder?")
+    for ax in (ax1, ax2):
+        for row in (11.38, 12.22):  # 600/100 visits; restarts written after their state left the buffer
+            ax.axvline(row, color=GREEN, ls=":", lw=1)
+        ax.legend(fontsize=8)
+    return save(fig, out, "premise.png")
+
+
+def fig_heads_over_training(a, out):
+    """Each trainer's heads at every training window (enclosure_rgsc_analysis.py --json "heads"): the ranking head's
+    skill between no skill (0) and a perfect ranking (1), and the regret value head's R², on today's targets' scale."""
+    heads = a.get("heads") or {}
+    if not heads:
+        return None
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.6, 3.4))
+    for (name, rows), color in zip(sorted(heads.items()), (BLUE, ORANGE, GREEN)):
+        x = np.array([r["row"] for r in rows]) / 1e6
+        k = max(1, len(rows) // 60)  # a running mean over about a sixtieth of the windows
+        smooth = lambda v: np.convolve(v, np.ones(k) / k, mode="valid")
+        ax1.plot(x[k - 1:], smooth(np.array([r["skill"] for r in rows])), color=color, label=name)
+        ax2.plot(x[k - 1:], smooth(np.array([r["r2"] for r in rows])), color=color, label=name)
+    for ax in (ax1, ax2):
+        ax.axhline(0, color=GREY, ls="--")
+        ax.set_xlabel("training window's last data row (millions)")
+        ax.legend(fontsize=8)
+    ax1.set(ylabel="ranking skill (0 none, 1 perfect)", title="The ranking head (it picks the candidates)")
+    ax2.set(ylabel="R² (1 − loss / variance)", title="The regret value head (a candidate's regret)")
+    return save(fig, out, "heads_over_training.png")
+
+
+def selectors_caption(s):
+    """The selectors figure's reading, from its numbers."""
+    p = s["picks"]
+    beat = [n for n in ("ranking", "regret value") if p[n] > p["random"]]
+    heads = ("Both heads beat a random pick, as in both papers." if len(beat) == 2 else
+             f"Only the {beat[0]} head beats a random pick." if beat else "Neither head beats a random pick.")
+    shallow = (" Picking the game's first state beats both heads." if p["shallowest"] > max(p["ranking"], p["regret value"])
+               else " The heads beat picking the game's first state.")
+    return "Mean realized regret (Eq. 2) of the state each selector picks in a game, with the median move of the picks. " + heads + shallow
 
 
 def snapshot_history(snap_dir, since=None):
@@ -200,6 +270,8 @@ def main():
     ap.add_argument("--selectors", required=True)
     ap.add_argument("--analysis", required=True)
     ap.add_argument("--snapshots", required=True)
+    ap.add_argument("--games-cache", help="the dashboard's per-folder statistics (runs/dashboard_v2_games.json): the "
+                                          "restart share and the premise by data row")
     ap.add_argument("--out", required=True)
     ap.add_argument("--since", action="append", default=[], metavar="YYYYMMDD-HHMM[=LABEL]",
                     help="also draw Figure 8 from the snapshots taken from this time on (repeatable), e.g. after a change")
@@ -215,16 +287,25 @@ def main():
                            f"Only the snapshots taken from {when} on. {note}."))
     figs = [
         ("The paper's Figure 7 / the thesis's Figure 4.1: one state picked per game",
-         fig_selectors(s, args.out),
-         "Mean realized regret (Eq. 2) of the state each selector picks in a game, with the median move of the picks. "
-         "Both heads beat a random pick, as in both papers. Picking the game's first state beats both heads."),
+         fig_selectors(s, args.out), selectors_caption(s)),
         ("The heads within each depth", fig_heads_by_depth(s, args.out),
          "Rank correlation of each head with the realized regret among states of the same depth. Early, where restart "
          "states come from, the heads see little beyond depth."),
         ("The paper's Figures 16-18: restart states by opening length", fig_curriculum(a, args.out),
          "The share of restart states by their move number, for each self-play model (from the training rows)."),
+        ("RGSC's premise by data row, and the share of games that restart", fig_premise(args.games_cache, args.out),
+         "From every training row of each self-play folder (the dashboard's statistics), in bins of 500,000 rows. Left: "
+         "the share of the games written that started from a buffer state; until row 12.22M self-play dropped a "
+         "restart whose state left the buffer during the game. Right: the restart states' realized regret over that "
+         "of games from the empty board at the same depths; 1 means the buffer's states are no harder than the "
+         "positions self-play reaches anyway. Dotted: 600/100 visits (row 11.38M), restarts written (row 12.22M)."),
+        ("The heads over training", fig_heads_over_training(a, args.out),
+         "Each trainer's heads at every training window, read on the scale of today's targets: the ranking head's "
+         "skill between no skill (equal scores, 0) and a perfect ranking (1), and the regret value head's R²."),
         ("The paper's Figure 8 / the thesis's Figures 4.5-4.6: buffer regret, first against last", entry_png,
-         f"{entry_note}. A shift to the left means restarts teach the network those states."),
+         f"{entry_note}. A shift to the left means restarts teach the network those states. A state's regret changes "
+         "only when a game restarted from it ends. Until 2026-10-10 21:22 self-play dropped about two thirds of the "
+         "restarts first (their state had left the buffer), so many restarted states show no change."),
         *since_figs,
         ("Why vanilla regret picks the first moves: the value along a game", fig_accuracy(v, args.out),
          "Early, the search value is near 0 (uncertain), so (v − z)² is near 1 at every early state. Eq. 2 averages "
@@ -239,6 +320,8 @@ def main():
         ("Example games", fig_examples(v, args.out),
          "The search value (black) against the outcome (red). Swing picks the state just before the value turns."),
     ]
+    snaps = sorted(glob.glob(os.path.join(args.snapshots, "*.txt")))
+    snapshots_end = os.path.basename(snaps[-1])[:-4] if snaps else "(none)"
     parts = []
     for title, png, text in figs:
         img = f'<img src="{png}" alt="{title}">' if png else "<p><em>No data yet.</em></p>"
@@ -250,6 +333,8 @@ img{{max-width:100%;border:1px solid #eee}} h2{{font-size:17px;margin-top:28px}}
 <p>Our versions of the analysis figures of the RGSC paper (Tsai et al., 2026) and of the Gomoku thesis (Lin, 2026).
 The buffer's states on the board: <a href="buffer_top_regret.html">by regret</a>,
 <a href="buffer_top_restarts.html">by restarts</a>.</p>
+<p>Built {datetime.datetime.now():%Y-%m-%d %H:%M}. The buffer snapshots run to {snapshots_end}; the definitions use
+{v["games"]:,} games, the heads' picks {s["games"]:,}.</p>
 {"".join(parts)}"""
     open(os.path.join(args.out, "report.html"), "w", encoding="utf-8").write(page)
     print(f"wrote {args.out}/report.html")

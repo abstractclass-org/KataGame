@@ -50,6 +50,7 @@ def load_rows(run_dir, folders, files_per_folder, rng):
 def restart_premise(rows):
     has = rows["flag"] > 0
     restart = rows["mode"] == MODE_SGFPOS
+    premise = {}
     games = np.unique(rows["game"])
     restarted_games = np.unique(rows["game"][restart])
     print(f"rows {len(has):,} ({has.mean():.1%} with a regret target); games {len(games):,}, "
@@ -74,13 +75,16 @@ def restart_premise(rows):
               f"the same depths: mean {matched.mean():.3f}; ratio {own.mean() / matched.mean():.2f}")
         print(f"percentile of each start state's regret among normal positions at its depth: mean {pct.mean():.2f} "
               f"(0.50 = no harder than usual), share above the median {(pct > 0.5).mean():.2f}")
+        premise = {"states": int(len(own)), "regret": float(own.mean()), "same_depth": float(matched.mean()),
+                   "ratio": float(own.mean() / matched.mean()), "percentile": float(pct.mean()),
+                   "above_median": float((pct > 0.5).mean())}
     print("\nregret by depth, normal games (mean, positions):")
     for lo in range(0, 120, 12):
         sel = (depth >= lo) & (depth < lo + 12)
         n_start = ((start_depth >= lo) & (start_depth < lo + 12)).sum()
         if sel.any():
             print(f"  turns {lo:3d}-{lo + 11:3d}: regret {regret[sel].mean():.3f} (n {sel.sum():,}); restart states here {n_start}")
-    return rows["regret"][has]
+    return rows["regret"][has], premise
 
 
 def ranking_scale(regrets, rng, batch=256, group=32, trials=400):
@@ -98,7 +102,10 @@ def ranking_scale(regrets, rng, batch=256, group=32, trials=400):
 
 
 def heads_on_a_scale(regrets, metrics_dirs, rng):
+    """Prints the heads' skill at a sample of training windows; returns every window's, by trainer (the scale is
+    today's targets' variance and ranking range, so earlier windows are read on today's scale)."""
     var = float(np.var(regrets))
+    out = {}
     no_skill, perfect = ranking_scale(regrets, rng)
     print(f"\nregret targets: mean {regrets.mean():.3f}, variance {var:.4f}; ranking loss with no skill {no_skill:.4f}, "
           f"perfect {perfect:.4f}")
@@ -110,13 +117,17 @@ def heads_on_a_scale(regrets, metrics_dirs, rng):
         rows = [m for m in rows if m.get("rgrows", 0) > 0.01 and "rgloss" in m]
         if not rows:
             continue
-        print(f"{os.path.basename(d.rstrip('/'))}: by training window (per row with a target)")
+        name = os.path.basename(d.rstrip('/'))
+        out[name] = [{"row": int(m.get("window_end_batch", 0)), "r2": 1 - m["rgloss"] / m["rgrows"] / var,
+                      "skill": (no_skill - m["rkloss"] / m["rgrows"]) / (no_skill - perfect)} for m in rows]
+        print(f"{name}: by training window (per row with a target)")
         step = max(1, len(rows) // 8)
         for m in rows[::step] + ([rows[-1]] if (len(rows) - 1) % step else []):
             rg, rk = m["rgloss"] / m["rgrows"], m["rkloss"] / m["rgrows"]
             skill = (no_skill - rk) / (no_skill - perfect)
             print(f"  row {int(m.get('window_end_batch', 0)):>9,}: regret value R2 {1 - rg / var:+.3f} (loss {rg:.4f}); "
                   f"ranking skill {skill:+.3f} (loss {rk:+.4f})")
+    return out
 
 
 def depth_curriculum(run_dir, files_per_folder, rng, buckets=(0, 12, 24, 36, 48, 60, 120)):
@@ -159,18 +170,18 @@ def main():
     ap.add_argument("--folders", type=int, default=12, help="the newest self-play folders (one per network)")
     ap.add_argument("--files-per-folder", type=int, default=40)
     ap.add_argument("--metrics", nargs="*", default=[], help="trainer folders (train/NAME) for the heads' losses")
-    ap.add_argument("--json", help="also write the report's figure data (the restart depths by model) here")
+    ap.add_argument("--json", help="also write the report's figure data (the restart depths by model, the premise, "
+                                   "the heads' skill by training window) here")
     args = ap.parse_args()
     rng = np.random.default_rng(0)
     rows, n = load_rows(args.run_dir, args.folders, args.files_per_folder, rng)
     print(f"{n} self-play folders read")
-    regrets = restart_premise(rows)
-    heads_on_a_scale(regrets, args.metrics, rng)
+    regrets, premise = restart_premise(rows)
+    heads = heads_on_a_scale(regrets, args.metrics, rng)
     curriculum = depth_curriculum(args.run_dir, max(2, args.files_per_folder // 8), rng)
     if args.json and curriculum:
-        import json
         with open(args.json, "w") as f:
-            json.dump({"curriculum": curriculum}, f)
+            json.dump({"curriculum": curriculum, "premise": premise, "heads": heads}, f)
         print(f"wrote {args.json}")
 
 
