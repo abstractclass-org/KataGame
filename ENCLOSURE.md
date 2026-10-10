@@ -399,6 +399,7 @@ term exactly as KataGo does on scores of Go's size ("scale-invariant retune"). T
 | Loss weights: score mean 0.0015, lead 0.006, stdev 0.001, short-term score 0.0004, q-value score 0.0008 | as listed | ÷144 | Source not found yet (to trace in KataGo's commits and issues). The paper's first version used 0.004 for the self-predictions. The division keeps each term's share of the total loss, whatever the original reason. |
 | Loss weight: short-term score error | 0.00002 | ÷20,736 | A loss of the fourth degree |
 | Score distribution pdf and cdf losses | 0.02 each | unchanged | Over bins, not points (paper: pdf and cdf 0.02) |
+| GTP resignation (`command/gtp.cpp`, `shouldResign`): the bound on the score above which Red never resigns; the handicap test; the buffer below schedule | 361; 0.9; 5 points | 4,332; 10.8; 60 | The board area as the largest score; "Always require at least a 5 point buffer" before resigning a handicap game. Only GTP play uses them. |
 
 The paper's base weights, for reference: value 1.5, policy 1.0, opponent policy 0.15, ownership 1.5/b², score pdf
 and cdf 0.02 each, L2 3e-5.
@@ -597,6 +598,8 @@ Game-phase constants:
   - the earliest self-play resignation (A / 5).
   - the early-fork move (`earlyForkGameExpectedMoveProp` × A).
   - the number of opening policy moves (`policyInitAreaProp` × A).
+  - GTP play: KataGo's time allocation (`TimeControls::getTime`: A in its game-length estimates, the edges played in
+    place of the stones), and GTP resignation's minimum game length and handicap catch-up (`shouldResign`).
 - Provisionally, until its target is measured: the variance-time output multiplier (40 → 14.6) and its Huber delta
   (50 → 18.3), with the loss weight ÷ 0.366².
 - The look-ahead formulas keep the board area. KataGo's code comment on the short-term constants says that they
