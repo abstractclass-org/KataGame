@@ -19,8 +19,9 @@
 // KataGo's GTP engine would play, drawn with the chosen-move temperature, seeded by "seed" (a string or an integer,
 // default 0) and the position. A position's turn number is its edge count, so the temperature's early phase follows
 // the game.
-// Results are reproducible: each evaluation's symmetry comes from its cache key (nnSymmetryFromHash), so the same
-// request gives the same reply whatever came before, and a search in slices equals one whole search (with one search
+// Results are reproducible: each evaluation's symmetry comes from its cache key (nnSymmetryFromHash), and the search's
+// random numbers (root noise) from the query's "seed" and the position, so the same request gives the same reply
+// whatever came before, and a search in slices equals one whole search (with one search
 // thread; more threads search faster and are not reproducible).
 #include "../command/enclosureprotocol.h"
 
@@ -593,6 +594,14 @@ json analyze(const json& q) {
   // As KataGo's analysis engine: the search keeps ownership only when asked (analysis.cpp).
   E.search->setAlwaysIncludeOwnerMap(flag("includeOwnership") || flag("includeMovesOwnership"));
   E.search->setPosition(pla, board, hist);
+  // Root noise (wideRootNoise, KataGo's analysis default) draws from the search thread's random numbers. KataGo seeds
+  // them with the engine's seed, the position and the count of searches begun (search.cpp, makeSeed). Seeded with the
+  // query's "seed" in place of the engine's, and the count reset, the same request draws the same noise whatever came
+  // before (design 04, "Reproducible analysis"). A search in slices keeps one thread, so its draws are those of one
+  // whole search.
+  E.search->randSeed = "analysis:" + (seed == nullptr ? string("0") : seed->is_string() ? seed->get<string>()
+                                                                    : std::to_string(seed->get<uint64_t>()));
+  E.search->numSearchesBegun = 0;
   if(slice == nullptr) {
     E.search->runWholeSearch(pla);
     return analysisReply(q, board, hist, pla, false);
