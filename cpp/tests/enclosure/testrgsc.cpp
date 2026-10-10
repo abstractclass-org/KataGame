@@ -41,6 +41,20 @@ int main(int argc, char** argv) {
     check(d[0] == 0.0f && d[1] == 0.0f, "a no-result game with zero values has zero regret");
   }
 
+  // The swing regret (2026-10-11), the same values and outcome, gamma 0.5, scale 2: the steps to the next value (the
+  // outcome after the last move) are -0.7, 1.1, 0.1, squared 0.49, 1.21, 0.01.
+  {
+    vector<float> s = Rgsc::swingsOfGame({0.5f, -0.2f, 0.9f}, 1.0, 0.5, 2.0, 4.0);
+    check(s.size() == 3, "swings: one per turn");
+    check(near(s[2], 2.0 * 0.01, 1e-6), "swing at the last turn: the step to the outcome");
+    check(near(s[1], 2.0 * (1.21 + 0.5 * 0.01) / 1.5, 1e-6), "swing at turn 1: the discounted mean of its steps");
+    check(near(s[0], 2.0 * (0.49 + 0.5 * 1.21 + 0.25 * 0.01) / 1.75, 1e-6), "swing at turn 0: every step, discounted");
+    vector<float> capped = Rgsc::swingsOfGame({0.5f, -0.2f, 0.9f}, 1.0, 0.5, 10.0, 4.0);
+    check(capped[1] == 4.0f && near(capped[2], 0.1, 1e-6), "swing is capped (8.1 -> 4), the rest is not");
+    vector<float> flat = Rgsc::swingsOfGame({1.0f, 1.0f, 1.0f}, 1.0, 0.9, 50.0, 4.0);
+    check(flat[0] == 0.0f && flat[2] == 0.0f, "a value that never moves has zero swing");
+  }
+
   // Keys: the same moves in another order give the same key; another player or move does not.
   {
     vector<Move> a = {Move(100, P_BLACK), Move(200, P_BLACK), Move(300, P_WHITE)};
@@ -111,6 +125,48 @@ int main(int argc, char** argv) {
     check(loaded.contains(keyOfI(1)) && loaded.contains(keyOfI(3)) && loaded.contains(keyOfI(5)), "load gets the same states");
     check(near(loaded.floorRegret(), 0.5, 1e-6), "load gets the regrets");
     check(loaded.countFinishedGame() == 2, "load gets the finished-game count");
+  }
+
+  // The swing buffer (2026-10-11): its settings, draws only when full, and each state's origin through a save and
+  // a load; a file saved before the origins loads with the origin unknown.
+  {
+    Rgsc::Settings both = settings;
+    both.startProb = 0.2;
+    both.swingStartProb = 0.4;
+    both.swingBufferFile = string(argv[1]) + "/rgsc_swing_buffer.txt";
+    Rgsc::Settings sw = both.forSwingBuffer();
+    check(sw.bufferFile == both.swingBufferFile && sw.startProb == 0.4 && sw.warmupGames == 0 && sw.sampleOnlyWhenFull,
+          "the swing buffer's settings: its file and probability, no warm-up, draws only when full");
+    Rgsc::Buffer swing(sw, "RGSC swing");
+    Rand rand("testrgsc swing");
+    Rgsc::Entry e;
+    swing.offer(keyOfI(1), 0.5, movesOf(1), Rgsc::ORIGIN_TREE);
+    swing.offer(keyOfI(2), 0.7, movesOf(2), Rgsc::ORIGIN_PLAYED);
+    check(!swing.sample(rand, e), "the swing buffer does not draw while it has room");
+    swing.offer(keyOfI(3), 0.9, movesOf(3), Rgsc::ORIGIN_PLAYED);
+    check(swing.sample(rand, e), "the swing buffer draws once full");
+    swing.save();
+    Rgsc::Buffer loaded(sw, "RGSC swing");
+    loaded.load();
+    map<uint64_t, int> origins;
+    for(int i = 0; i < 2000; i++) {
+      check(loaded.sample(rand, e), "a loaded full buffer draws");
+      origins[e.key] = e.origin;
+    }
+    check(origins[keyOfI(1)] == Rgsc::ORIGIN_TREE && origins[keyOfI(2)] == Rgsc::ORIGIN_PLAYED &&
+          origins[keyOfI(3)] == Rgsc::ORIGIN_PLAYED, "the origins survive a save and a load");
+    check(loaded.summary().find("from search trees 1, played 2") != string::npos, "the summary counts the origins");
+
+    Rgsc::Settings old = settings;
+    old.bufferFile = string(argv[1]) + "/rgsc_buffer_old.txt";
+    FILE* f = fopen(old.bufferFile.c_str(), "w");
+    fprintf(f, "gamesFinished 7\nentry 0.5 3 2 101 1 201 1\n");
+    fclose(f);
+    Rgsc::Buffer oldBuffer(old);
+    oldBuffer.load();
+    check(oldBuffer.size() == 1 && oldBuffer.contains(keyOfI(1)), "an old file loads");
+    check(oldBuffer.maybeSample(rand, e) && e.origin == Rgsc::ORIGIN_UNKNOWN && e.moves.size() == 2,
+          "an old entry's origin is unknown and its moves intact");
   }
 
   printf("%s (%d failures)\n", failures == 0 ? "all RGSC checks passed" : "RGSC checks FAILED", failures);

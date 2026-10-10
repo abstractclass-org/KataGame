@@ -1879,6 +1879,9 @@ FinishedGameData* Play::runGame(
         const NNOutput* rootOutput = toMoveBot->rootNode != NULL ? toMoveBot->rootNode->getNNOutput() : NULL;
         gameData->regretRankingByTurn.push_back(
           rootOutput != NULL && rootOutput->hasRegret ? rootOutput->regretRanking : std::numeric_limits<float>::quiet_NaN());
+        //Enclosure fork (2026-10-11): the swing source's ranking, the same way.
+        gameData->swingRankingByTurn.push_back(
+          rootOutput != NULL && rootOutput->hasSwing ? rootOutput->swingRanking : std::numeric_limits<float>::quiet_NaN());
       }
 
       //Occasionally fork off some positions to evaluate

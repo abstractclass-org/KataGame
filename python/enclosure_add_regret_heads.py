@@ -1,7 +1,10 @@
 #!/usr/bin/python3
 """Enclosure fork: add RGSC's regret value and regret ranking heads to a training checkpoint.
 
-    python enclosure_add_regret_heads.py CHECKPOINT
+    python enclosure_add_regret_heads.py CHECKPOINT [--swing]
+
+With --swing (2026-10-11), it adds the second source's pair instead: the swing value and swing ranking heads (config
+swing_heads; the checkpoint must have the regret heads already), and keeps the original as CHECKPOINT.before-swing.
 
 RGSC (owner, 2026-10-04; v2/docs/decisions/rgsc.md) adds two heads to the value head (model_pytorch.RegretHead), present when
 the config has regret_heads. For a checkpoint trained before, this sets the flag and adds both heads with KataGo's
@@ -40,21 +43,32 @@ def prefix_of(state_dict):
     return keys[0][:-len(ANCHOR)]
 
 
+# Each pair of heads: its config key, the module names of its heads, and the backup's suffix.
+PAIRS = {
+    "regret": ("regret_heads", (".regret_value.", ".regret_ranking."), ".before-regret"),
+    "swing": ("swing_heads", (".swing_value.", ".swing_ranking."), ".before-swing"),
+}
+
+
 def main():
     path = sys.argv[1]
+    pair = "swing" if "--swing" in sys.argv[2:] else "regret"
+    key, modules, backup = PAIRS[pair]
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
     config = ckpt["config"]
-    if config.get("regret_heads"):
-        print(f"{path}: already has the regret heads")
+    if config.get(key):
+        print(f"{path}: already has the {pair} heads")
         return
+    if pair == "swing" and not config.get("regret_heads"):
+        sys.exit(f"{path}: add the regret heads first")
     new_config = copy.deepcopy(config)
-    new_config["regret_heads"] = True
+    new_config[key] = True
     old_model = Model(config, 19)
     new_model = Model(new_config, 19)
     new_model.initialize()
     fresh = new_model.state_dict()
     added = [k for k in fresh if k not in old_model.state_dict()]
-    assert added and all(".regret_value." in k or ".regret_ranking." in k for k in added), added
+    assert added and all(any(m in k for m in modules) for k in added), added
 
     touched = []
     for part in ("model", "swa_model"):
@@ -90,9 +104,9 @@ def main():
     touched.append(f"optimizer ({len(new_state)} states kept, {i - len(old_index)} new parameters without state)")
 
     ckpt["config"] = new_config
-    shutil.copy2(path, path + ".before-regret")
+    shutil.copy2(path, path + backup)
     torch.save(ckpt, path)
-    print(f"{path}: regret heads added to " + "; ".join(touched))
+    print(f"{path}: {pair} heads added to " + "; ".join(touched))
 
 
 if __name__ == "__main__":

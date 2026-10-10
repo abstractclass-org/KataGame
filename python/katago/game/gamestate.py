@@ -149,6 +149,8 @@ class GameState:
                 scorebelief_logits, # N, 2 * (self.pos_len*self.pos_len + EXTRA_SCORE_DISTR_RADIUS)
                 pred_regret,        # N
                 pred_ranking,       # N
+                pred_swing,         # N
+                pred_swing_ranking, # N
             ) = (x[0] for x in outputs[0]) # N = 0
 
             policy0 = torch.nn.functional.softmax(policy_logits[0,:],dim=0).cpu().numpy()

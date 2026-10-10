@@ -23,6 +23,7 @@
 //   owner <x * y values>                   (white's view, after tanh)
 // training: the training-only outputs, which the Eigen backend does not compute:
 //   regret <value> <ranking>
+//   swing <value> <ranking>                (models with the swing heads, 2026-10-11)
 //   auxvalues <12 values>
 //   auxmap <9 * x * y values>
 //   auxpolicy <count> <action>:<4 comma-separated logits> ...   (export stage 2: policy outputs 1-4 at the legal
@@ -170,6 +171,8 @@ int main(int argc, char** argv) {
     }
     if(training) {
       out << "regret " << o.regretValue << " " << o.regretRanking;
+      if(o.hasSwing)
+        out << "\nswing " << o.swingValue << " " << o.swingRanking;
       out << "\nauxvalues";
       for(int i = 0; i < NNOutput::NUM_AUX_VALUES; i++)
         out << " " << o.auxValues[i];

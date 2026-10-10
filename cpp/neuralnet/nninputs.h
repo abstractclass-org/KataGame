@@ -283,6 +283,11 @@ struct NNOutput {
   bool hasRegret;
   float regretValue;
   float regretRanking;
+  //Enclosure fork (2026-10-11): RGSC's second source, the swing regret's two heads (the 3rd and 4th regret heads), in
+  //the same ranges. hasSwing is false when the model has none.
+  bool hasSwing;
+  float swingValue;
+  float swingRanking;
 
   //Enclosure fork (owner, 2026-10-04): the exported training-only outputs (ValueHeadDesc::auxVersion), when requested
   //(NNResultBuf::includeAuxOutputs) and the model has them, else NULL. Raw outputs (before any tanh, softmax or

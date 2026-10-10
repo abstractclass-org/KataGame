@@ -1991,6 +1991,8 @@ struct InputBuffers {
   int numRegretHeads;
   vector<float> regretValueResults;
   vector<float> regretRankingResults;
+  vector<float> swingValueResults;    //Enclosure fork (2026-10-11): the swing regret's heads, with 4 regret heads
+  vector<float> swingRankingResults;
   vector<float> auxTrunkResults;      // 8 channels, NCHW
   vector<float> auxScoringResults;    // 1 channel
   vector<float> auxValueResults;      // 12 values
@@ -2057,6 +2059,8 @@ struct InputBuffers {
     numRegretHeads = (int)m.valueHead.regretHeads.size();
     regretValueResults.resize(maxBatchSize);
     regretRankingResults.resize(maxBatchSize);
+    swingValueResults.resize(maxBatchSize);
+    swingRankingResults.resize(maxBatchSize);
   }
 
   InputBuffers() = delete;
@@ -2235,12 +2239,19 @@ void NeuralNet::getOutput(
     CUDA_ERR("getOutput", cudaMemcpyAsync(dst.data(), gpuHandle->getBuffer(name), sizeof(float) * perRow * batchSize,
                                      cudaMemcpyDeviceToHost, gpuHandle->stream));
   };
-  const bool hasRegret = inputBuffers->numRegretHeads == 2 && gpuHandle->hasBuffer("OutputRegretValue");
+  const bool hasRegret = inputBuffers->numRegretHeads >= 2 && gpuHandle->hasBuffer("OutputRegretValue");
   if(inputBuffers->numRegretHeads > 0)
     testAssert(hasRegret);
   if(hasRegret) {
     copyOut(inputBuffers->regretValueResults, "OutputRegretValue", 1);
     copyOut(inputBuffers->regretRankingResults, "OutputRegretRanking", 1);
+  }
+  const bool hasSwing = inputBuffers->numRegretHeads >= 4 && gpuHandle->hasBuffer("OutputSwingValue");
+  if(inputBuffers->numRegretHeads >= 4)
+    testAssert(hasSwing);
+  if(hasSwing) {
+    copyOut(inputBuffers->swingValueResults, "OutputSwingValue", 1);
+    copyOut(inputBuffers->swingRankingResults, "OutputSwingRanking", 1);
   }
   bool wantAux = false;
   for(int row = 0; row < batchSize; row++)
@@ -2323,6 +2334,11 @@ void NeuralNet::getOutput(
       output->hasRegret = true;
       output->regretValue = inputBuffers->regretValueResults[row];
       output->regretRanking = inputBuffers->regretRankingResults[row];
+    }
+    if(hasSwing) {
+      output->hasSwing = true;
+      output->swingValue = inputBuffers->swingValueResults[row];
+      output->swingRanking = inputBuffers->swingRankingResults[row];
     }
     if(output->auxMap != NULL && wantAux) {
       std::copy(inputBuffers->auxTrunkResults.begin() + (size_t)row * 8 * xy,

@@ -2853,7 +2853,8 @@ class PolicyHead(torch.nn.Module):
 
 
 class ValueHead(torch.nn.Module):
-    def __init__(self, c_in, c_v1, c_v2, c_sv2, num_scorebeliefs, config, activation, pos_len, regret_heads=False):
+    def __init__(self, c_in, c_v1, c_v2, c_sv2, num_scorebeliefs, config, activation, pos_len, regret_heads=False,
+                 swing_heads=False):
         super(ValueHead, self).__init__()
         self.activation = activation
         # Enclosure fork (owner, 2026-10-04): RGSC's regret value and regret ranking heads, when the config has
@@ -2862,6 +2863,14 @@ class ValueHead(torch.nn.Module):
         if regret_heads:
             self.regret_value = RegretHead(c_in, c_v1, c_v2, config, activation)
             self.regret_ranking = RegretHead(c_in, c_v1, c_v2, config, activation)
+        # Enclosure fork (2026-10-11): RGSC's second source, value swing (v2/docs/decisions/rgsc.md, "RGSC with two
+        # sources"): the same two heads for the swing regret, when the config has swing_heads (only with regret_heads;
+        # enclosure_add_regret_heads.py --swing adds them).
+        assert regret_heads or not swing_heads, "swing_heads needs regret_heads"
+        self.swing_heads = swing_heads
+        if swing_heads:
+            self.swing_value = RegretHead(c_in, c_v1, c_v2, config, activation)
+            self.swing_ranking = RegretHead(c_in, c_v1, c_v2, config, activation)
         self.conv1 = torch.nn.Conv2d(c_in, c_v1, kernel_size=1, padding="same", bias=False)
         self.bias1 = BiasMask(
             c_v1,
@@ -2950,6 +2959,9 @@ class ValueHead(torch.nn.Module):
         if self.regret_heads:
             self.regret_value.initialize()
             self.regret_ranking.initialize()
+        if self.swing_heads:
+            self.swing_value.initialize()
+            self.swing_ranking.initialize()
 
     def add_reg_dict(self, reg_dict:Dict[str,List]):
         reg_dict["output"].append(self.conv1.weight)
@@ -2977,6 +2989,9 @@ class ValueHead(torch.nn.Module):
         if self.regret_heads:
             self.regret_value.add_reg_dict(reg_dict)
             self.regret_ranking.add_reg_dict(reg_dict)
+        if self.swing_heads:
+            self.swing_value.add_reg_dict(reg_dict)
+            self.swing_ranking.add_reg_dict(reg_dict)
 
     def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
         pass
@@ -3023,15 +3038,18 @@ class ValueHead(torch.nn.Module):
         out_scorebelief_logprobs = torch.logsumexp(out_scorebelief_logprobs + outsmix_logweights.view(-1, 1, self.num_scorebeliefs), dim=2)
 
         # RGSC: on the detached trunk, as the authors' heads (they never train the trunk). Raw outputs: the regret
-        # value before its sigmoid x 4, then the ranking score. Zeros without the heads, so the outputs keep one shape.
+        # value before its sigmoid x 4, then the ranking score; then the same for the swing regret. Zeros for heads
+        # that the model does not have, so the outputs keep one shape.
+        heads = []
         if self.regret_heads:
-            xd = x.detach()
-            out_regret = torch.cat((
-                self.regret_value(xd, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum),
-                self.regret_ranking(xd, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum),
-            ), dim=1)
-        else:
-            out_regret = torch.zeros((x.shape[0], 2), dtype=x.dtype, device=x.device)
+            heads += [self.regret_value, self.regret_ranking]
+        if self.swing_heads:
+            heads += [self.swing_value, self.swing_ranking]
+        xd = x.detach()
+        outs = [h(xd, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum) for h in heads]
+        if len(outs) < 4:
+            outs.append(torch.zeros((x.shape[0], 4 - len(outs)), dtype=x.dtype, device=x.device))
+        out_regret = torch.cat(outs, dim=1)
 
         return (
             out_value,
@@ -3734,6 +3752,7 @@ class Model(torch.nn.Module):
             self.activation,
             self.pos_len,
             regret_heads=bool(self.config.get("regret_heads", False)),
+            swing_heads=bool(self.config.get("swing_heads", False)),
         )
         if self.has_intermediate_head:
             self.norm_intermediate_trunkfinal = NormMask(self.c_trunk, self.config, fixup_use_gamma=False, is_last_batchnorm=True)
@@ -4484,9 +4503,12 @@ class Model(torch.nn.Module):
             pred_shortterm_value_error = SoftPlusWithGradientFloorFunction.apply(out_moremiscvalue[:,0], 0.05, True) * self.shortterm_value_error_multiplier
             pred_shortterm_score_error = SoftPlusWithGradientFloorFunction.apply(out_moremiscvalue[:,1], 0.05, True) * self.shortterm_score_error_multiplier
         scorebelief_logits = out_scorebelief_logprobs
-        # RGSC: the regret value in [0, 4] (the authors' sigmoid x 4), the ranking score as is.
+        # RGSC: the regret value in [0, 4] (the authors' sigmoid x 4), the ranking score as is; the same for the swing
+        # regret.
         pred_regret = torch.sigmoid(out_regret[:, 0]) * 4.0
         pred_ranking = out_regret[:, 1]
+        pred_swing = torch.sigmoid(out_regret[:, 2]) * 4.0
+        pred_swing_ranking = out_regret[:, 3]
 
         return (
             policy_logits,      # N, num_policy_outputs, move
@@ -4506,4 +4528,6 @@ class Model(torch.nn.Module):
             scorebelief_logits, # N, 2 * (self.pos_len*self.pos_len + EXTRA_SCORE_DISTR_RADIUS)
             pred_regret,        # N (2.0 without regret_heads: the sigmoid of 0, x 4)
             pred_ranking,       # N
+            pred_swing,         # N (2.0 without swing_heads)
+            pred_swing_ranking, # N
         )

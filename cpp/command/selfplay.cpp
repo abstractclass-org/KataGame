@@ -37,22 +37,62 @@ static void signalHandler(int signal)
 //-----------------------------------------------------------------------------------------
 
 
+//Enclosure fork: one buffer's candidate from a game from the normal start: the tracker's tree state (its regret from
+//the source's value head, at least the buffer's lowest) or a played position that ranks higher (its regret from the
+//game), later positions first, as the authors' code; states already in the buffer are skipped.
+static void rgscOfferCandidate(
+  Rgsc::Buffer& buffer, const Rgsc::TreeTracker* tracker, const vector<float>& rankingByTurn,
+  const vector<float>& regretByTurn, const vector<Move>& allMoves, size_t start
+) {
+  bool found = tracker->found();
+  float best = tracker->ranking();
+  double regret = found ? std::max(buffer.floorRegret(), (double)tracker->regretValue()) : 0.0;
+  uint64_t key = tracker->key();
+  vector<Move> moves = found ? tracker->moves() : vector<Move>();
+  int origin = Rgsc::ORIGIN_TREE;
+  for(size_t k = regretByTurn.size(); k-- > 0; ) {
+    const size_t length = start + k;  //the position the move of turn k was searched in
+    const float ranking = rankingByTurn[k];
+    if(length == 0 || !(ranking > best))
+      continue;
+    const uint64_t positionKey = Rgsc::keyOf(allMoves, length);
+    if(buffer.contains(positionKey))
+      continue;
+    found = true;
+    best = ranking;
+    regret = regretByTurn[k];
+    key = positionKey;
+    moves.assign(allMoves.begin(), allMoves.begin() + length);
+    origin = Rgsc::ORIGIN_PLAYED;
+  }
+  if(found)
+    buffer.offer(key, regret, moves, origin);
+}
+
 //Enclosure fork (owner, 2026-10-04): RGSC after a game (program/rgsc.h): each turn's regret target (Eq. 2); the
 //start state's EMA update after a restart, or, after a game from the normal start, its candidate offered to the
 //buffer (the highest regret ranking among the tracker's tree states and the played positions, later positions
 //first, as the authors' code). Returns whether to write the game: not during the warm-up, nor a restart that
 //searched no move. A restart whose start state left the buffer meanwhile is written (the authors' code drops it;
 //see below).
+//Enclosure fork (2026-10-11): the swing source. Each turn's swing regret target too, whenever RGSC is on; after a
+//restart from the swing buffer, the EMA update from the start state's swing regret; and, when the swing buffer
+//exists, a second candidate from a game from the normal start, by the swing ranking. The warm-up follows the
+//vanilla buffer only.
 static bool rgscAfterGame(
-  Rgsc::Buffer& buffer, const Rgsc::Settings& settings, FinishedGameData* gameData,
-  bool restarted, uint64_t restartKey, const Rgsc::TreeTracker* tracker
+  Rgsc::Buffer& buffer, Rgsc::Buffer* swingBuffer, const Rgsc::Settings& settings, FinishedGameData* gameData,
+  Rgsc::Source source, uint64_t restartKey, const Rgsc::TreeTracker* tracker, const Rgsc::TreeTracker* swingTracker
 ) {
   const vector<float>& selected = gameData->selectedWhiteWinLossByTurn;
   const bool hasRegret = !selected.empty();
+  const bool restarted = source != Rgsc::SOURCE_NONE;
+  gameData->rgscSource = (int)source;
   if(hasRegret) {
     const Player winner = gameData->endHist.winner;
     const double whiteOutcome = winner == P_WHITE ? 1.0 : winner == P_BLACK ? -1.0 : 0.0;
     gameData->regretByTurn = Rgsc::regretsOfGame(selected, whiteOutcome);
+    gameData->swingByTurn =
+      Rgsc::swingsOfGame(selected, whiteOutcome, settings.swingGamma, settings.swingScale, settings.swingCap);
   }
   //A model exported before the heads were added gives no rankings: the game still gets its regret targets (so the
   //heads train on them), but offers nothing and does not count toward the warm-up, which starts with the first
@@ -67,12 +107,15 @@ static bool rgscAfterGame(
     //thirds of the restarts were dropped (v2/docs/decisions/rgsc.md, "Why the share of restarted games fell").
     //Such a game is ordinary self-play from a state that was in the buffer when it was drawn, so it is written.
     //Only its EMA update is skipped: its state is gone.
+    const bool fromSwing = source == Rgsc::SOURCE_SWING;
+    testAssert(!fromSwing || swingBuffer != NULL);
+    Rgsc::Buffer& from = fromSwing ? *swingBuffer : buffer;
     if(!hasRegret) {
       keep = false;
-      buffer.countDroppedRestart();
+      from.countDroppedRestart();
     }
-    else if(!buffer.updateAfterRestart(restartKey, gameData->regretByTurn[0]))
-      buffer.countRestartStateGone();
+    else if(!from.updateAfterRestart(restartKey, fromSwing ? gameData->swingByTurn[0] : gameData->regretByTurn[0]))
+      from.countRestartStateGone();
   }
   else if(
     tracker != NULL && hasRegret && gameData->usedInitialPosition == 0 && gameData->mode == FinishedGameData::MODE_NORMAL &&
@@ -81,33 +124,21 @@ static bool rgscAfterGame(
     const vector<Move>& allMoves = gameData->endHist.moveHistory;
     const size_t start = gameData->startHist.moveHistory.size();
     testAssert(allMoves.size() >= start + selected.size());
-    bool found = tracker->found();
-    float best = tracker->ranking();
-    double regret = found ? std::max(buffer.floorRegret(), (double)tracker->regretValue()) : 0.0;
-    uint64_t key = tracker->key();
-    vector<Move> moves = found ? tracker->moves() : vector<Move>();
-    for(size_t k = selected.size(); k-- > 0; ) {
-      const size_t length = start + k;  //the position the move of turn k was searched in
-      const float ranking = gameData->regretRankingByTurn[k];
-      if(length == 0 || !(ranking > best))
-        continue;
-      const uint64_t positionKey = Rgsc::keyOf(allMoves, length);
-      if(buffer.contains(positionKey))
-        continue;
-      found = true;
-      best = ranking;
-      regret = gameData->regretByTurn[k];
-      key = positionKey;
-      moves.assign(allMoves.begin(), allMoves.begin() + length);
-    }
-    if(found)
-      buffer.offer(key, regret, moves);
+    rgscOfferCandidate(buffer, tracker, gameData->regretRankingByTurn, gameData->regretByTurn, allMoves, start);
+    //A model without the swing heads ranks every state NaN, so it offers nothing to the swing buffer.
+    if(swingBuffer != NULL && swingTracker != NULL && gameData->swingRankingByTurn.size() == selected.size())
+      rgscOfferCandidate(*swingBuffer, swingTracker, gameData->swingRankingByTurn, gameData->swingByTurn, allMoves, start);
   }
   const int64_t finishedBefore = buffer.countFinishedGame();
+  if(swingBuffer != NULL)
+    swingBuffer->countFinishedGame();
   if(finishedBefore < settings.warmupGames)
     keep = false;
-  if((finishedBefore + 1) % 50 == 0)
+  if((finishedBefore + 1) % 50 == 0) {
     buffer.save();
+    if(swingBuffer != NULL)
+      swingBuffer->save();
+  }
   return keep;
 }
 
@@ -204,6 +235,20 @@ int MainCmds::selfplay(const vector<string>& args) {
     rgscBuffer->load();
     logger.write("RGSC: buffer of " + Global::uint64ToString(rgscBuffer->size()) + " states loaded from " + rgscSettings.bufferFile);
   }
+  //Enclosure fork (2026-10-11): the swing source's buffer, when its restarts are on. Its targets are written either
+  //way (rgscAfterGame).
+  Rgsc::Buffer* rgscSwingBuffer = NULL;
+  if(rgscSettings.enabled && rgscSettings.swingStartProb > 0) {
+    rgscSwingBuffer = new Rgsc::Buffer(rgscSettings.forSwingBuffer(), "RGSC swing");
+    rgscSwingBuffer->load();
+    logger.write("RGSC swing: buffer of " + Global::uint64ToString(rgscSwingBuffer->size()) + " states loaded from " +
+                 rgscSettings.swingBufferFile + "; restarts with probability " +
+                 Global::doubleToString(rgscSettings.swingStartProb) + " once it holds " +
+                 Global::intToString(rgscSettings.bufferSize) + " states");
+  }
+  if(rgscSettings.enabled)
+    logger.write("RGSC swing targets: gamma " + Global::doubleToString(rgscSettings.swingGamma) + ", scale " +
+                 Global::doubleToString(rgscSettings.swingScale) + ", cap " + Global::doubleToString(rgscSettings.swingCap));
   bool autoCleanupAllButLatestIfUnused = true;
   SelfplayManager* manager = new SelfplayManager(maxDataQueueSize, &logger, logGamesEvery, autoCleanupAllButLatestIfUnused);
 
@@ -344,6 +389,7 @@ int MainCmds::selfplay(const vector<string>& args) {
     &baseParams,
     &gameSeedBase,
     rgscBuffer,
+    rgscSwingBuffer,
     &rgscSettings,
     maxBoardXSizeUsed,
     maxBoardYSizeUsed
@@ -397,13 +443,25 @@ int MainCmds::selfplay(const vector<string>& args) {
         string seed = gameSeedBase + ":" + Global::uint64ToHexString(thisLoopSeedRand.nextUInt64());
         //Enclosure fork (owner, 2026-10-04): RGSC. With probability rgscStartProb the game starts exactly at a state
         //drawn from the buffer (and takes no fork position); otherwise a tracker collects its searches' candidate.
+        //Enclosure fork (2026-10-11): else, with probability rgscSwingStartProb / (1 - rgscStartProb), from a state of
+        //the swing buffer (when it is full), so that rgscSwingStartProb of the games start there.
         Rgsc::Entry rgscEntry;
         bool rgscRestarted = false;
+        Rgsc::Source rgscSource = Rgsc::SOURCE_NONE;
         Sgf::PositionSample rgscStart;
         std::unique_ptr<Rgsc::TreeTracker> rgscTracker;
+        std::unique_ptr<Rgsc::TreeTracker> rgscSwingTracker;
         std::function<void(const MatchPairer::BotSpec&, Search*)> rgscAttach = nullptr;
         if(rgscBuffer != NULL) {
-          if(rgscBuffer->maybeSample(thisLoopSeedRand, rgscEntry)) {
+          if(rgscBuffer->maybeSample(thisLoopSeedRand, rgscEntry))
+            rgscSource = Rgsc::SOURCE_VANILLA;
+          else if(
+            rgscSwingBuffer != NULL && rgscSettings.startProb < 1.0 &&
+            thisLoopSeedRand.nextBool(rgscSettings.swingStartProb / (1.0 - rgscSettings.startProb)) &&
+            rgscSwingBuffer->sample(thisLoopSeedRand, rgscEntry)
+          )
+            rgscSource = Rgsc::SOURCE_SWING;
+          if(rgscSource != Rgsc::SOURCE_NONE) {
             rgscRestarted = true;
             rgscStart.board = Board(maxBoardXSizeUsed, maxBoardYSizeUsed);
             rgscStart.nextPla = P_BLACK;
@@ -416,8 +474,14 @@ int MainCmds::selfplay(const vector<string>& args) {
           }
           else {
             rgscTracker = std::make_unique<Rgsc::TreeTracker>(rgscBuffer);
+            if(rgscSwingBuffer != NULL)
+              rgscSwingTracker = std::make_unique<Rgsc::TreeTracker>(rgscSwingBuffer, Rgsc::SOURCE_SWING);
             Rgsc::TreeTracker* tracker = rgscTracker.get();
-            rgscAttach = [tracker](const MatchPairer::BotSpec&, Search* search) { search->rgscTracker = tracker; };
+            Rgsc::TreeTracker* swingTracker = rgscSwingTracker.get();
+            rgscAttach = [tracker, swingTracker](const MatchPairer::BotSpec&, Search* search) {
+              search->rgscTracker = tracker;
+              search->rgscSwingTracker = swingTracker;
+            };
           }
         }
         gameData = gameRunner->runGame(
@@ -429,7 +493,9 @@ int MainCmds::selfplay(const vector<string>& args) {
           nullptr
         );
         if(gameData != NULL && rgscBuffer != NULL) {
-          bool keep = rgscAfterGame(*rgscBuffer, rgscSettings, gameData, rgscRestarted, rgscEntry.key, rgscTracker.get());
+          bool keep = rgscAfterGame(
+            *rgscBuffer, rgscSwingBuffer, rgscSettings, gameData, rgscSource, rgscEntry.key, rgscTracker.get(),
+            rgscSwingTracker.get());
           if(!keep) {
             delete gameData;
             gameData = NULL;
@@ -532,6 +598,11 @@ int MainCmds::selfplay(const vector<string>& args) {
     rgscBuffer->save();
     logger.write(rgscBuffer->summary() + "; saved to " + rgscSettings.bufferFile);
     delete rgscBuffer;
+  }
+  if(rgscSwingBuffer != NULL) {
+    rgscSwingBuffer->save();
+    logger.write(rgscSwingBuffer->summary() + "; saved to " + rgscSettings.swingBufferFile);
+    delete rgscSwingBuffer;
   }
 
   //Delete and clean up everything else

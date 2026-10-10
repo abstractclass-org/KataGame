@@ -1317,7 +1317,8 @@ Result build(
     markOutput(sv3, "OutputScoreValue", desc.numScoreValueChannels, false);
     markOutput(ownership, "OutputOwnership", desc.numOwnershipChannels, true);
 
-    //Enclosure fork (owner, 2026-10-04): RGSC's heads (the regret value, then the regret ranking), at every
+    //Enclosure fork (owner, 2026-10-04): RGSC's heads (the regret value, then the regret ranking; with 4 heads, then
+    //the swing value and the swing ranking, 2026-10-11), at every
     //evaluation: the value head's layers in miniature from the trunk tip (conv, norm and activation, the value
     //head's pooling, a hidden layer, one output), as the CUDA backend's RegretHeadLayers.
     for(size_t h = 0; h < vh.regretHeads.size(); h++) {
@@ -1332,7 +1333,10 @@ Result build(
       r2 = b.buildActivation(r2, r.act2);
       string r3 = b.buildMatMul(r2, r.mul3);
       r3 = b.buildMatBias(r3, r.bias3);
-      markOutput(r3, h == 0 ? "OutputRegretValue" : "OutputRegretRanking", 1, false);
+      static const char* const regretOutputNames[4] =
+        {"OutputRegretValue", "OutputRegretRanking", "OutputSwingValue", "OutputSwingRanking"};
+      testAssert(h < 4);
+      markOutput(r3, regretOutputNames[h], 1, false);
     }
 
     //Enclosure fork (owner, 2026-10-04): the exported training-only outputs, only when asked (BuildParams).

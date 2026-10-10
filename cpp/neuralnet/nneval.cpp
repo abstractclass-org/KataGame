@@ -161,6 +161,7 @@ NNEvaluator::NNEvaluator(
     numInputMetaChannels = desc.numInputMetaChannels;
     modelHasAux = desc.valueHead.auxVersion >= 1;
     modelHasRegret = !desc.valueHead.regretHeads.empty();
+    modelHasSwing = desc.valueHead.regretHeads.size() >= 4;
     //Export stage 2: copied before createComputeContext, which may scale the model's weights for its backend.
     modelHasPolicyAux = modelHasAux && desc.policyHead.auxVersion >= 1;
     if(modelHasAux && desc.valueHead.auxVersion >= 2) {
@@ -193,6 +194,7 @@ NNEvaluator::NNEvaluator(
     modelHasAux = false;
     modelHasPolicyAux = false;
     modelHasRegret = false;
+    modelHasSwing = false;
     inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
   }
 
@@ -1510,6 +1512,9 @@ void NNEvaluator::evaluate(
     buf.result->hasRegret = resultWithoutOwnerMap->hasRegret;
     buf.result->regretValue = resultWithoutOwnerMap->regretValue;
     buf.result->regretRanking = resultWithoutOwnerMap->regretRanking;
+    buf.result->hasSwing = resultWithoutOwnerMap->hasSwing;
+    buf.result->swingValue = resultWithoutOwnerMap->swingValue;
+    buf.result->swingRanking = resultWithoutOwnerMap->swingRanking;
     testAssert(!includeOwnerMap || buf.result->whiteOwnerMap != NULL);
   }
   else {
@@ -1890,6 +1895,12 @@ void NNEvaluator::evaluate(
     double rawRegret = buf.result->regretValue * postProcessParams.outputScaleMultiplier;
     buf.result->regretValue = (float)(4.0 / (1.0 + exp(-rawRegret)));
     buf.result->regretRanking = (float)(buf.result->regretRanking * postProcessParams.outputScaleMultiplier);
+  }
+  //The swing regret's heads, the same way (Enclosure fork, 2026-10-11).
+  if(buf.result->hasSwing && !hadResultWithoutOwnerMap) {
+    double rawSwing = buf.result->swingValue * postProcessParams.outputScaleMultiplier;
+    buf.result->swingValue = (float)(4.0 / (1.0 + exp(-rawSwing)));
+    buf.result->swingRanking = (float)(buf.result->swingRanking * postProcessParams.outputScaleMultiplier);
   }
   if(buf.result->auxMap != NULL) {
     for(int c = 0; c<NNOutput::NUM_AUX_MAP_CHANNELS; c++)

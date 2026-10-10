@@ -638,6 +638,8 @@ class Metrics:
             scorebelief_logits,
             pred_regret,
             pred_ranking,
+            pred_swing,
+            pred_swing_ranking,
         ) = model_output_postprocessed
 
         input_binary_nchw = batch["binaryInputNCHW"]
@@ -910,6 +912,15 @@ class Metrics:
             pred_regret, target_regret, target_weight_regret, global_weight,
         ).sum()
         loss_regret_ranking = self.loss_regret_ranking(pred_ranking, target_regret, target_weight_regret, global_weight)
+        # Enclosure fork (2026-10-11): RGSC's swing regret, the same two losses on rows that carry it (C73; C72 the
+        # swing regret, scaled to vanilla's range and capped at 4). A model without the swing heads outputs constants
+        # there, so these losses train nothing in it.
+        target_swing = target_global_nc[:, 72]
+        target_weight_swing = target_global_nc[:, 73]
+        loss_swing_value = self.loss_regret_value_samplewise(
+            pred_swing, target_swing, target_weight_swing, global_weight,
+        ).sum()
+        loss_swing_ranking = self.loss_regret_ranking(pred_swing_ranking, target_swing, target_weight_swing, global_weight)
         loss_income = self.loss_income_samplewise(
             income_logits,
             target_income,
@@ -1004,6 +1015,8 @@ class Metrics:
             + loss_income
             + loss_regret_value
             + loss_regret_ranking
+            + loss_swing_value
+            + loss_swing_ranking
             + loss_seki * seki_loss_scale
             + loss_scoremean
             + loss_scorebelief_cdf
@@ -1046,6 +1059,9 @@ class Metrics:
             "rgloss_sum": loss_regret_value,
             "rkloss_sum": loss_regret_ranking,
             "rgrows_sum": (target_weight_regret * global_weight).sum(),
+            "swloss_sum": loss_swing_value,
+            "swkloss_sum": loss_swing_ranking,
+            "swrows_sum": (target_weight_swing * global_weight).sum(),
             # Enclosure fork (2026-10-04): the share of rows carrying each Enclosure spatial target (logged as the
             # mean over rows, like the losses), so a loss divided by its share reads per row that carries the target
             # (these targets started on rows written from 2026-10-03, so the plain losses rose as such rows filled

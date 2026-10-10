@@ -6,7 +6,8 @@
 Loads both as train.py does (strict model load, the optimizer from its saved state), then checks that:
 every existing output is unchanged (the heads read the detached trunk); the optimizer's momentum carried over by
 parameter name; the regret losses run on rows with made-up regret targets and send gradients only into the two
-new heads. With ROWS (a shuffled .npz of training rows) the forward uses real inputs, else random ones.
+new heads. With ROWS (a shuffled .npz of training rows) the forward uses real inputs, else random ones. The pair
+added is the one CONVERTED has and ORIGINAL lacks: the regret heads, or (--swing, 2026-10-11) the swing heads.
 """
 
 import sys
@@ -47,7 +48,14 @@ def main():
     rows = sys.argv[3] if len(sys.argv) > 3 else None
     orig_ckpt, orig = load(orig_path)
     conv_ckpt, conv = load(conv_path)
-    assert conv_ckpt["config"].get("regret_heads") and not orig_ckpt["config"].get("regret_heads")
+    swing = bool(conv_ckpt["config"].get("swing_heads")) and not orig_ckpt["config"].get("swing_heads")
+    if not swing:
+        assert conv_ckpt["config"].get("regret_heads") and not orig_ckpt["config"].get("regret_heads")
+    # The pair's raw output columns (out_regret), its postprocessed outputs, its target columns and its heads.
+    cols, keep = (slice(2, 4), slice(0, 2)) if swing else (slice(0, 2), slice(2, 4))
+    out_value, out_ranking = (17, 18) if swing else (15, 16)
+    target, flag = (72, 73) if swing else (70, 71)
+    heads = ["swing_ranking", "swing_value"] if swing else ["regret_ranking", "regret_value"]
 
     spatial, glob, d = inputs(rows, 64, orig_ckpt["config"])
     with torch.no_grad():
@@ -57,8 +65,9 @@ def main():
         same = torch.equal(x, y)
         print(f"output {i}: {'identical' if same else 'DIFFERS'} {tuple(x.shape)}")
         assert same or i == len(a) - 1
-    assert torch.count_nonzero(a[-1]) == 0 and torch.count_nonzero(b[-1]) > 0
-    print("regret outputs (raw):", b[-1][:4].tolist())
+    assert torch.equal(a[-1][:, keep], b[-1][:, keep]), "the other pair's outputs changed"
+    assert torch.count_nonzero(a[-1][:, cols]) == 0 and torch.count_nonzero(b[-1][:, cols]) > 0
+    print(f"{heads[1].split('_')[0]} outputs (raw):", b[-1][:4, cols].tolist())
 
     # Optimizer: momentum by parameter name.
     names = {id(p): n for n, p in conv.named_parameters()}
@@ -87,19 +96,19 @@ def main():
     metrics = Metrics(1, conv)
     batch_size = spatial.shape[0]
     global_targets = torch.zeros(batch_size, 80)
-    global_targets[:, 70] = torch.rand(batch_size) * 2.0
-    global_targets[:, 71] = 1.0
+    global_targets[:, target] = torch.rand(batch_size) * 2.0
+    global_targets[:, flag] = 1.0
     out = conv.postprocess_output(conv(spatial, glob))[0]
-    pred_regret, pred_ranking = out[-2], out[-1]
-    w = global_targets[:, 71]
+    pred_regret, pred_ranking = out[out_value], out[out_ranking]
+    w = global_targets[:, flag]
     gw = torch.ones(batch_size)
-    lv = metrics.loss_regret_value_samplewise(pred_regret, global_targets[:, 70], w, gw).sum()
-    lr = metrics.loss_regret_ranking(pred_ranking, global_targets[:, 70], w, gw)
+    lv = metrics.loss_regret_value_samplewise(pred_regret, global_targets[:, target], w, gw).sum()
+    lr = metrics.loss_regret_ranking(pred_ranking, global_targets[:, target], w, gw)
     (lv + lr).backward()
     with_grad = sorted({n.split(".")[1] for n, p in conv.named_parameters()
                         if p.grad is not None and torch.count_nonzero(p.grad) > 0})
     print(f"losses: regret value {lv.item():.3f} (sum of {batch_size}), ranking {lr.item():.3f}; gradients in {with_grad}")
-    assert with_grad == ["regret_ranking", "regret_value"], with_grad
+    assert with_grad == heads, with_grad
     print("all checks passed")
 
 

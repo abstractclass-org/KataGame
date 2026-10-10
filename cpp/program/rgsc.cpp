@@ -24,6 +24,26 @@ Rgsc::Settings Rgsc::Settings::load(ConfigParser& cfg) {
   if(cfg.contains("rgscTemperature")) s.temperature = cfg.getDouble("rgscTemperature", 1e-3, 100.0);
   if(cfg.contains("rgscEmaAlpha")) s.emaAlpha = cfg.getDouble("rgscEmaAlpha", 0.0, 1.0);
   if(cfg.contains("rgscWarmupGames")) s.warmupGames = cfg.getInt64("rgscWarmupGames", 0, (int64_t)1 << 40);
+  //The swing source (2026-10-11).
+  if(cfg.contains("rgscSwingStartProb")) s.swingStartProb = cfg.getDouble("rgscSwingStartProb", 0.0, 1.0);
+  if((s.enabled && s.swingStartProb > 0) || cfg.contains("rgscSwingBufferFile"))
+    s.swingBufferFile = cfg.getString("rgscSwingBufferFile");
+  if(cfg.contains("rgscSwingGamma")) s.swingGamma = cfg.getDouble("rgscSwingGamma", 0.0, 1.0);
+  if(cfg.contains("rgscSwingScale")) s.swingScale = cfg.getDouble("rgscSwingScale", 0.0, 1e6);
+  if(cfg.contains("rgscSwingCap")) s.swingCap = cfg.getDouble("rgscSwingCap", 0.0, 4.0);
+  if(s.startProb + s.swingStartProb > 1.0)
+    throw StringError("RGSC: rgscStartProb + rgscSwingStartProb must be at most 1");
+  if(s.swingStartProb > 0 && s.swingBufferFile == s.bufferFile)
+    throw StringError("RGSC: the swing buffer needs its own file (rgscSwingBufferFile)");
+  return s;
+}
+
+Rgsc::Settings Rgsc::Settings::forSwingBuffer() const {
+  Settings s = *this;
+  s.bufferFile = swingBufferFile;
+  s.startProb = swingStartProb;
+  s.warmupGames = 0;
+  s.sampleOnlyWhenFull = true;
   return s;
 }
 
@@ -36,8 +56,8 @@ uint64_t Rgsc::keyOf(const vector<Move>& moves, size_t count) {
 
 //------------------------------------------------------------------------------------------------------------
 
-Rgsc::Buffer::Buffer(const Settings& s)
-  : settings(s), mutex(), entries(), keys(), gamesFinished(0)
+Rgsc::Buffer::Buffer(const Settings& s, const string& n)
+  : settings(s), name(n), mutex(), entries(), keys(), gamesFinished(0)
 {}
 
 void Rgsc::Buffer::load() {
@@ -66,6 +86,10 @@ void Rgsc::Buffer::load() {
       }
       if(row.fail())
         throw StringError("RGSC buffer file " + settings.bufferFile + ": unreadable entry");
+      //The state's origin, an optional last token (files saved before 2026-10-11 have none).
+      int origin;
+      if(row >> origin)
+        e.origin = origin;
       e.key = keyOf(e.moves, e.moves.size());
       if(keys.insert(e.key).second)
         entries.push_back(std::move(e));
@@ -86,7 +110,7 @@ void Rgsc::Buffer::save() const {
       out << "entry " << e.regret << " " << e.sampleCount << " " << e.moves.size();
       for(const Move& m : e.moves)
         out << " " << (int)m.loc << " " << (int)m.pla;
-      out << "\n";
+      out << " " << e.origin << "\n";
     }
   }
   if(std::rename(tmp.c_str(), settings.bufferFile.c_str()) != 0)
@@ -101,6 +125,21 @@ bool Rgsc::Buffer::maybeSample(Rand& rand, Entry& out) {
   }
   if(!rand.nextBool(settings.startProb))
     return false;
+  drawLocked(rand, out);
+  return true;
+}
+
+bool Rgsc::Buffer::sample(Rand& rand, Entry& out) {
+  lock_guard<std::mutex> lock(mutex);
+  if(entries.empty() || (settings.sampleOnlyWhenFull && (int)entries.size() < settings.bufferSize)) {
+    drawsWhileEmpty++;
+    return false;
+  }
+  drawLocked(rand, out);
+  return true;
+}
+
+void Rgsc::Buffer::drawLocked(Rand& rand, Entry& out) {
   restartsDrawn++;
   //The paper's rule, P(i) = R_i^(1/tau) / sum_j R_j^(1/tau), in logs so that tau 0.1 (R^10) does not underflow.
   double maxLog = -numeric_limits<double>::infinity();
@@ -125,7 +164,6 @@ bool Rgsc::Buffer::maybeSample(Rand& rand, Entry& out) {
   }
   entries[chosen].sampleCount += 1;
   out = entries[chosen];
-  return true;
 }
 
 bool Rgsc::Buffer::contains(uint64_t key) const {
@@ -143,7 +181,7 @@ double Rgsc::Buffer::floorRegret() const {
   return lowest;
 }
 
-void Rgsc::Buffer::offer(uint64_t key, double regret, const vector<Move>& moves) {
+void Rgsc::Buffer::offer(uint64_t key, double regret, const vector<Move>& moves, int origin) {
   lock_guard<std::mutex> lock(mutex);
   candidatesOffered++;
   if(keys.count(key) > 0)
@@ -151,6 +189,7 @@ void Rgsc::Buffer::offer(uint64_t key, double regret, const vector<Move>& moves)
   Entry e;
   e.key = key;
   e.regret = regret;
+  e.origin = origin;
   e.moves = moves;
   if((int)entries.size() < settings.bufferSize) {
     keys.insert(key);
@@ -204,13 +243,18 @@ void Rgsc::Buffer::countRestartStateGone() {
 string Rgsc::Buffer::summary() const {
   lock_guard<std::mutex> lock(mutex);
   vector<double> r;
-  for(const Entry& e : entries)
+  int64_t fromTree = 0, fromPlayed = 0;
+  for(const Entry& e : entries) {
     r.push_back(e.regret);
+    fromTree += e.origin == ORIGIN_TREE;
+    fromPlayed += e.origin == ORIGIN_PLAYED;
+  }
   std::sort(r.begin(), r.end());
   ostringstream out;
-  out << "RGSC: " << entries.size() << " states";
+  out << name << ": " << entries.size() << " states";
   if(!r.empty())
-    out << ", regret min " << r.front() << " median " << r[r.size() / 2] << " max " << r.back();
+    out << ", regret min " << r.front() << " median " << r[r.size() / 2] << " max " << r.back()
+        << ", from search trees " << fromTree << ", played " << fromPlayed;
   out << "; games finished " << gamesFinished << "; this run: restarts drawn " << restartsDrawn
       << ", written after their state left " << restartsStateGone << ", dropped " << restartsDropped
       << "; candidates offered " << candidatesOffered << ", taken " << candidatesTaken
@@ -220,28 +264,31 @@ string Rgsc::Buffer::summary() const {
 
 //------------------------------------------------------------------------------------------------------------
 
-Rgsc::TreeTracker::TreeTracker(const Buffer* b)
-  : buffer(b), mutex(), bestRanking(-numeric_limits<float>::infinity()), hasCandidate(false),
+Rgsc::TreeTracker::TreeTracker(const Buffer* b, Source s)
+  : buffer(b), source(s), mutex(), bestRanking(-numeric_limits<float>::infinity()), hasCandidate(false),
     candidateRegretValue(0.0f), candidateKey(0), candidateMoves()
 {}
 
 void Rgsc::TreeTracker::offer(const NNOutput& nnOutput, const BoardHistory& hist) {
-  //As the authors' actor: every evaluated, non-terminal state but the initial one.
-  if(!nnOutput.hasRegret || hist.moveHistory.empty() || hist.isGameFinished)
+  //As the authors' actor: every evaluated, non-terminal state but the initial one. The swing tracker reads the
+  //swing heads.
+  const bool swing = source == SOURCE_SWING;
+  if(!(swing ? nnOutput.hasSwing : nnOutput.hasRegret) || hist.moveHistory.empty() || hist.isGameFinished)
     return;
-  if(!(nnOutput.regretRanking > bestRanking.load(std::memory_order_acquire)))
+  const float ranking = swing ? nnOutput.swingRanking : nnOutput.regretRanking;
+  if(!(ranking > bestRanking.load(std::memory_order_acquire)))
     return;
   uint64_t key = keyOf(hist.moveHistory, hist.moveHistory.size());
   if(buffer->contains(key))
     return;
   lock_guard<std::mutex> lock(mutex);
-  if(!(nnOutput.regretRanking > bestRanking.load(std::memory_order_acquire)))
+  if(!(ranking > bestRanking.load(std::memory_order_acquire)))
     return;
   hasCandidate = true;
-  candidateRegretValue = nnOutput.regretValue;
+  candidateRegretValue = swing ? nnOutput.swingValue : nnOutput.regretValue;
   candidateKey = key;
   candidateMoves = hist.moveHistory;
-  bestRanking.store(nnOutput.regretRanking, std::memory_order_release);
+  bestRanking.store(ranking, std::memory_order_release);
 }
 
 //------------------------------------------------------------------------------------------------------------
@@ -257,4 +304,22 @@ vector<float> Rgsc::regretsOfGame(const vector<float>& selectedWhiteWinLoss, dou
     regrets[t] = (float)(sum / (double)(k + 1));
   }
   return regrets;
+}
+
+vector<float> Rgsc::swingsOfGame(
+  const vector<float>& selectedWhiteWinLoss, double whiteOutcome, double gamma, double scale, double cap
+) {
+  const size_t n = selectedWhiteWinLoss.size();
+  vector<float> swings(n);
+  double num = 0.0;
+  double den = 0.0;
+  for(size_t k = 0; k < n; k++) {
+    size_t t = n - 1 - k;
+    double next = t + 1 < n ? selectedWhiteWinLoss[t + 1] : whiteOutcome;
+    double d = next - selectedWhiteWinLoss[t];
+    num = d * d + gamma * num;
+    den = 1.0 + gamma * den;
+    swings[t] = (float)std::min(cap, scale * num / den);
+  }
+  return swings;
 }

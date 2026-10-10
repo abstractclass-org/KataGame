@@ -37,7 +37,8 @@ def main():
         assert batch["globalInputNC"].shape == (n, 5)
         assert batch["policyTargetsNCMove"].shape == (n, 2, policy_len(SIZE))
         assert batch["scoreDistrN"].shape == (n, 842)
-        assert batch["valueTargetsNCHW"].shape == (n, 5, SIZE, SIZE)
+        # 7 planes since the territory income (C5-6, 2026-10-03); files written before have 5.
+        assert batch["valueTargetsNCHW"].shape in ((n, 5, SIZE, SIZE), (n, 7, SIZE, SIZE))
         model.zero_grad()
         outputs = model(batch["binaryInputNCHW"], batch["globalInputNC"])
         metrics = metrics_obj.metrics_dict_batchwise(

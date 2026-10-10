@@ -855,8 +855,12 @@ def main(args):
             # From v2: the misc value outputs not exported above (4-9) and the more-misc ones (2-7).
             write_matmul(name+".linear_auxvalue", torch.cat((valuehead.linear_miscvaluehead.weight[4:10], valuehead.linear_moremiscvaluehead.weight[2:8]), dim=0))
             write_matbias(name+".bias_auxvalue", torch.cat((valuehead.linear_miscvaluehead.bias[4:10], valuehead.linear_moremiscvaluehead.bias[2:8]), dim=0))
-            # RGSC's heads (model_pytorch.RegretHead): none, or the regret value then the regret ranking.
+            # RGSC's heads (model_pytorch.RegretHead): none, or the regret value then the regret ranking, then (since
+            # 2026-10-11, with swing_heads) the swing value then the swing ranking. A binary from before reads only 0
+            # or 2, so it refuses a model with 4.
             regret_heads = [("regret_value", valuehead.regret_value), ("regret_ranking", valuehead.regret_ranking)] if valuehead.regret_heads else []
+            if valuehead.swing_heads:
+                regret_heads += [("swing_value", valuehead.swing_value), ("swing_ranking", valuehead.swing_ranking)]
             writeln(len(regret_heads))
             for head_name, head in regret_heads:
                 writeln(name+"."+head_name)

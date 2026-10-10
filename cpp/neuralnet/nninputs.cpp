@@ -293,7 +293,8 @@ void NNInputs::fillScoring(
 
 NNOutput::NNOutput()
   :policyPassSlot(-1),policyDense(NULL),whiteOwnerMap(NULL),noisedPolicyProbs(NULL),hasRegret(false),regretValue(0.0f),
-   regretRanking(0.0f),auxMap(NULL),auxValues(NULL),auxPolicy(NULL),scoreBeliefLen(0),scoreBelief(NULL),scoreBeliefRaw(NULL)
+   regretRanking(0.0f),hasSwing(false),swingValue(0.0f),swingRanking(0.0f),auxMap(NULL),auxValues(NULL),auxPolicy(NULL),
+   scoreBeliefLen(0),scoreBelief(NULL),scoreBeliefRaw(NULL)
 {
   std::fill(policyMask, policyMask + NNPos::MAX_BOARD_AREA, uint64_t(0));
 }
@@ -429,6 +430,9 @@ NNOutput::NNOutput(const NNOutput& other) {
   hasRegret = other.hasRegret;
   regretValue = other.regretValue;
   regretRanking = other.regretRanking;
+  hasSwing = other.hasSwing;
+  swingValue = other.swingValue;
+  swingRanking = other.swingRanking;
   auxMap = copyOrNull(other.auxMap, (size_t)NUM_AUX_MAP_CHANNELS * nnXLen * nnYLen);
   auxValues = copyOrNull(other.auxValues, NUM_AUX_VALUES);
   auxPolicy = copyOrNull(other.auxPolicy, (size_t)NUM_AUX_POLICIES * NNPos::MAX_NN_POLICY_SIZE);
@@ -510,9 +514,14 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
   hasRegret = others[0]->hasRegret;
   regretValue = 0.0f;
   regretRanking = 0.0f;
+  hasSwing = others[0]->hasSwing;
+  swingValue = 0.0f;
+  swingRanking = 0.0f;
   for(int i = 0; i<len; i++) {
     regretValue += others[i]->regretValue / floatLen;
     regretRanking += others[i]->regretRanking / floatLen;
+    swingValue += others[i]->swingValue / floatLen;
+    swingRanking += others[i]->swingRanking / floatLen;
   }
   auto averageOf = [&](float* NNOutput::* field, size_t n) {
     float* avg = NULL;
@@ -629,6 +638,9 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
   hasRegret = other.hasRegret;
   regretValue = other.regretValue;
   regretRanking = other.regretRanking;
+  hasSwing = other.hasSwing;
+  swingValue = other.swingValue;
+  swingRanking = other.swingRanking;
   delete[] auxMap;
   auxMap = copyOrNull(other.auxMap, (size_t)NUM_AUX_MAP_CHANNELS * nnXLen * nnYLen);
   delete[] auxValues;

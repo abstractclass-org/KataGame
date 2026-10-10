@@ -96,7 +96,7 @@ flowchart TD
     RH["Regret heads (RGSC)"]
     PO["Policy logits<br/>48 per point, plus pass"]
     VO["Game outcome, score, ownership, etc."]
-    RO["Regret value, regret ranking"]
+    RO["Regret value, regret ranking<br/>(and the swing pair)"]
     SI -->|"215 channels"| C0
     C0 -->|"C channels"| ADD0
     GI -->|"5 values"| L0
@@ -405,6 +405,13 @@ flowchart TD
 - **Pooling.** The heads use KataGo's value-head pooling (`KataValueHeadGPool`): a mean and two board-size scalings
   of it. On the 19 x 19 board these are 0.5 x and 0.15 x the mean, so there is no max. The class's docstring and
   rgsc.md say "mean, scaled mean, max". The code is as drawn here.
+- **The swing pair** (`swing_heads`, since 2026-10-11). RGSC's second source has its own two heads, a swing value and
+  a swing ranking, with the same shape and the same detached input. Their target is the value swing: the mean of
+  the squared steps of the search value from the position to the end of the game (the result is the value after the
+  last move), each step weighted by 0.9 to the power of its distance, times 50, capped at 4. The
+  export writes the four heads in this order: regret value, regret ranking, swing value, swing ranking. A binary
+  built before reads only 0 or 2 heads, so it refuses a model with 4. The pair adds 2 x 11,969 parameters to b10c128
+  (the table below counts the first pair only).
 
 ## Layout
 

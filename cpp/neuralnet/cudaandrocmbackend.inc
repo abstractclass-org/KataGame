@@ -6164,10 +6164,16 @@ void NeuralNet::getOutput(
 
     //Enclosure fork (owner, 2026-10-04): RGSC's heads (raw; NNEvaluator applies the output scale and the sigmoid),
     //and the aux outputs when asked for, channel-major. The 8 trunk channels come in the model's layout.
-    if(inputBuffers->numRegretHeads == 2) {
+    if(inputBuffers->numRegretHeads >= 2) {
       output->hasRegret = true;
       output->regretValue = inputBuffers->regretResults[row];
       output->regretRanking = inputBuffers->regretResults[batchSize + row];
+    }
+    //The swing regret's heads, the 3rd and 4th (Enclosure fork, 2026-10-11).
+    if(inputBuffers->numRegretHeads >= 4) {
+      output->hasSwing = true;
+      output->swingValue = inputBuffers->regretResults[2 * batchSize + row];
+      output->swingRanking = inputBuffers->regretResults[3 * batchSize + row];
     }
     if(output->auxMap != NULL && extra.wantAux) {
       const float* trunkAux = inputBuffers->auxTrunkResults + (size_t)row * 8 * xy;

@@ -103,6 +103,7 @@ Search::Search(const SearchParams& params, NNEvaluator* nnEval, NNEvaluator* hum
    nnEvaluator(nnEval),
    humanEvaluator(humanEval),
    rgscTracker(nullptr),
+   rgscSwingTracker(nullptr),
    nnXLen(),
    nnYLen(),
    policySize(),

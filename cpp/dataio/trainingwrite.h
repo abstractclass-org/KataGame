@@ -139,6 +139,12 @@ struct FinishedGameData {
   std::vector<float> selectedWhiteWinLossByTurn;
   std::vector<float> regretRankingByTurn;
   std::vector<float> regretByTurn;
+  //Enclosure fork (2026-10-11): RGSC's second source, value swing. Per turn, the network's swing ranking of the
+  //position (NaN without the swing heads); and, set after the game, each turn's swing regret target (C72, flag C73).
+  //rgscSource: the buffer the game restarted from (Rgsc::Source; C74 of every row of the game).
+  std::vector<float> swingRankingByTurn;
+  std::vector<float> swingByTurn;
+  int rgscSource = 0;
 
   Color* finalFullArea;
   Color* finalOwnership;
@@ -274,7 +280,13 @@ struct TrainingWriteBuffers {
   //which the shuffle pads to 7 channels, and in rows with no turn end left).
   //C70: Enclosure fork (owner, 2026-10-04): RGSC's regret target (Eq. 2), if C71.
   //C71: Enclosure fork: 1 if C70 holds the regret target (0 in side positions and when RGSC is off).
-  //C72-79: Unused, zero-filled.
+  //C72: Enclosure fork (2026-10-11): RGSC's swing regret target (value swing, scaled to the regret's range and capped),
+  //if C73.
+  //C73: Enclosure fork: 1 if C72 holds the swing regret target (0 in side positions, when RGSC is off, and in rows
+  //written before 2026-10-11).
+  //C74: Enclosure fork (2026-10-11): the RGSC buffer that the row's game restarted from: 0 none (a normal start, a
+  //fork, or RGSC off), 1 the vanilla buffer, 2 the swing buffer. Side positions carry their game's.
+  //C75-79: Unused, zero-filled.
 
   NumpyBuffer<float> globalTargetsNC;
 
@@ -323,6 +335,10 @@ struct TrainingWriteBuffers {
 
   //Enclosure fork (owner, 2026-10-04): the regret target of the row just added (C70, flag C71).
   void setLastRowRegret(float regret);
+  //Enclosure fork (2026-10-11): the swing regret target of the row just added (C72, flag C73), and its game's restart
+  //source (C74).
+  void setLastRowSwing(float swing);
+  void setLastRowRgscSource(int source);
 
   void addRow(
     const Board& board, const BoardHistory& hist, Player nextPlayer,

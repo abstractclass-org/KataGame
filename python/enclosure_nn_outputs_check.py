@@ -81,13 +81,19 @@ def main():
             worst[name] = max(worst.get(name, 0.0), float(np.max(np.abs(diff))))
 
         for n, p in enumerate(positions):
-            value = torch.softmax(out_value[n], dim=0).numpy()  # mover's view
+            # Mover's view. As NNEvaluator under the fork's rules (area scoring, positional ko): no result is
+            # impossible, so its probability is 0 and win and loss are renormalised (enclosure_nn_check.py too).
+            value = np.zeros(3)
+            value[:2] = torch.softmax(out_value[n, :2], dim=0).numpy()
             cpp_value = p["value"] if p["pla"] == WHITE else p["value"][[1, 0, 2]]
             note("value", value - cpp_value)
             owner = torch.tanh(out_ownership[n, 0]).numpy().reshape(-1)
             note("ownership", owner - (p["owner"] if p["pla"] == WHITE else -p["owner"]))
             note("regret value", torch.sigmoid(out_regret[n, 0]).item() * 4.0 - p["regret"][0])
             note("regret ranking", out_regret[n, 1].item() - p["regret"][1])
+            if "swing" in p:  # models with the swing heads (2026-10-11)
+                note("swing value", torch.sigmoid(out_regret[n, 2]).item() * 4.0 - p["swing"][0])
+                note("swing ranking", out_regret[n, 3].item() - p["swing"][1])
             aux_values = torch.cat((out_misc[n, 4:10], out_moremisc[n, 2:8])).numpy()
             note("aux values", aux_values - p["auxvalues"])
             aux_map = torch.cat((out_futurepos[n], out_seki[n], out_scoring[n])).numpy().reshape(9, -1)

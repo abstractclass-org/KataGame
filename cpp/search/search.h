@@ -192,8 +192,10 @@ struct Search {
   NNEvaluator* nnEvaluator;
   NNEvaluator* humanEvaluator;
   //Enclosure fork (owner, 2026-10-04): when set (self-play with RGSC), every network evaluation of this search is
-  //offered to it, to find the game's highest-ranked state (program/rgsc.h). Not owned.
+  //offered to it, to find the game's highest-ranked state (program/rgsc.h). Not owned. rgscSwingTracker (2026-10-11):
+  //the same for the swing source's buffer.
   Rgsc::TreeTracker* rgscTracker;
+  Rgsc::TreeTracker* rgscSwingTracker;
   int nnXLen;
   int nnYLen;
   int policySize;

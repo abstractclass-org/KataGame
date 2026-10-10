@@ -131,6 +131,8 @@ bool Search::initNodeNNOutput(
   //Enclosure fork (owner, 2026-10-04): RGSC's tree candidates, from the network's own output (before any noise).
   if(rgscTracker != nullptr)
     rgscTracker->offer(**result, thread.history);
+  if(rgscSwingTracker != nullptr)
+    rgscSwingTracker->offer(**result, thread.history);
 
   if(antiMirrorDifficult) {
     // Copy

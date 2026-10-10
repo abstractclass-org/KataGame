@@ -2414,8 +2414,9 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
     auxValueBias = MatBiasLayerDesc(in,binaryFloats);
     int numRegretHeads = 0;
     in >> numRegretHeads;
-    if(in.fail() || (numRegretHeads != 0 && numRegretHeads != 2))
-      throw StringError(name + ": number of regret heads must be 0 or 2, got " + Global::intToString(numRegretHeads));
+    //0, 2 (the regret value and ranking), or 4 (then the swing value and ranking, Enclosure fork 2026-10-11).
+    if(in.fail() || (numRegretHeads != 0 && numRegretHeads != 2 && numRegretHeads != 4))
+      throw StringError(name + ": number of regret heads must be 0, 2 or 4, got " + Global::intToString(numRegretHeads));
     regretHeads.reserve(numRegretHeads);
     for(int i = 0; i < numRegretHeads; i++)
       regretHeads.push_back(RegretHeadDesc(in,modelVersion,binaryFloats));

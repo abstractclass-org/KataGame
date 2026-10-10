@@ -453,6 +453,19 @@ void TrainingWriteBuffers::setLastRowRegret(float regret) {
   rowGlobal[71] = 1.0f;
 }
 
+void TrainingWriteBuffers::setLastRowSwing(float swing) {
+  testAssert(curRows > 0);
+  float* rowGlobal = globalTargetsNC.data + (curRows - 1) * GLOBAL_TARGET_NUM_CHANNELS;
+  rowGlobal[72] = swing;
+  rowGlobal[73] = 1.0f;
+}
+
+void TrainingWriteBuffers::setLastRowRgscSource(int source) {
+  testAssert(curRows > 0);
+  float* rowGlobal = globalTargetsNC.data + (curRows - 1) * GLOBAL_TARGET_NUM_CHANNELS;
+  rowGlobal[74] = (float)source;
+}
+
 void TrainingWriteBuffers::addRow(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const BoardHistory& startHist,
@@ -720,7 +733,8 @@ void TrainingWriteBuffers::addRow(
   //excluding empty points adjacent to chains in atari (rules version 3).
   rowGlobal[69] = hist.modes.excludeTerritoryAdjacentToAtari ? 1.0f : 0.0f;
 
-  //Unused
+  //RGSC's targets and restart source (C70-74, set after the row by setLastRowRegret, setLastRowSwing and
+  //setLastRowRgscSource), and the unused rest
   for(int i = 70; i<80; i++)
     rowGlobal[i] = 0.0f;
 
@@ -1369,6 +1383,10 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
           //Enclosure fork (owner, 2026-10-04): RGSC's regret target, set by the self-play loop after the game.
           if(turnAfterStart < (int)data.regretByTurn.size())
             writeBuffers->setLastRowRegret(data.regretByTurn[turnAfterStart]);
+          //Enclosure fork (2026-10-11): the swing regret target and the game's restart source.
+          if(turnAfterStart < (int)data.swingByTurn.size())
+            writeBuffers->setLastRowSwing(data.swingByTurn[turnAfterStart]);
+          writeBuffers->setLastRowRgscSource(data.rgscSource);
           writeAndClearIfFull();
         }
         rowCount.fetch_add(1, std::memory_order_relaxed);
@@ -1442,6 +1460,8 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
             NULL,
             rand
           );
+          //Enclosure fork (2026-10-11): the game's RGSC restart source, as on its other rows.
+          writeBuffers->setLastRowRgscSource(data.rgscSource);
           writeAndClearIfFull();
         }
         rowCount.fetch_add(1, std::memory_order_relaxed);

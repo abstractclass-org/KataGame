@@ -111,6 +111,8 @@ def main(args):
             scorebelief_logits, # N, 2 * (self.pos_len*self.pos_len + EXTRA_SCORE_DISTR_RADIUS)
             pred_regret,        # N
             pred_ranking,       # N
+            pred_swing,         # N
+            pred_swing_ranking, # N
         ) = results
 
         for batch_idx in range(batch["binaryInputNCHW"].shape[0]):

@@ -517,7 +517,8 @@ struct ValueHeadDesc {
   ConvLayerDesc auxScoringConv;  //v1 -> 1: the future occupancy (KataGo's scoring head)
   MatMulLayerDesc auxValueMul;   //v2 -> 12: the misc value outputs 4-9 and the more-misc 2-7 (TD values and scores)
   MatBiasLayerDesc auxValueBias;
-  std::vector<RegretHeadDesc> regretHeads;  //none, or 2: the regret value, then the regret ranking
+  std::vector<RegretHeadDesc> regretHeads;  //none, 2: the regret value, then the regret ranking, or 4: then the swing
+                                            //value and the swing ranking (Enclosure fork, 2026-10-11)
   //Export stage 2 (aux version 2): the score belief (model_pytorch.ValueHead.forward), scoreBeliefLen bins of
   //scoreBinWidth points, centred (bin i's centre is (i - len/2 + 0.5) bins). The backend computes sbS2 and sbMix
   //from the pooled v1 features; NNEvaluator finishes the mixture (NNEvaluator::finishScoreBelief).
