@@ -169,6 +169,9 @@ static int parseByoYomiPeriods(const vector<string>& args, int argIdx) {
 
 //Assumes that stones are worth 15 points area and 14 points territory, and that 7 komi is fair
 static double initialBlackAdvantage(const BoardHistory& hist) {
+  //Enclosure fork (v2/docs/design/18-play-through-gtp.md): no handicap stones, and an even game is at komi 0 (Go's
+  //fair komi is 7), so Blue's starting advantage is the komi given to Red, negated.
+  return -hist.rules.komi;
   BoardHistory histCopy = hist;
   histCopy.setAssumeMultipleStartingBlackMovesAreHandicap(true);
   int handicapStones = histCopy.computeNumHandicapStones();
@@ -267,6 +270,17 @@ static void updateDynamicPDAHelper(
   }
 }
 
+//Enclosure fork (v2/docs/design/18-play-through-gtp.md): a move for a player who is not to move, or after the game's
+//last edge, is refused. Go lets either colour play at any time; in Enclosure the turn order is fixed (Blue's first
+//turn of one edge, then turns of two), and the game ends after its last edge. Empty when the move may be played.
+static string enclosureTurnError(const Board& board, const BoardHistory& hist, Player pla) {
+  if(hist.isGameFinished || board.pos.terminal())
+    return "the game is over";
+  if(pla != hist.presumedNextMovePla)
+    return string("it is ") + (hist.presumedNextMovePla == P_BLACK ? "b" : "w") + "'s turn";
+  return "";
+}
+
 static bool shouldResign(
   const Board& board,
   const BoardHistory& hist,
@@ -280,15 +294,18 @@ static bool shouldResign(
 ) {
   double initialBlackAdvantageInPoints = initialBlackAdvantage(hist);
 
+  //Enclosure fork (design 18): game lengths by the game-length area (design 08, as self-play's resignation in play.cpp),
+  //and Go's points x SCORE_SCALE (design 05).
+  const double gameLengthArea = Board::GAME_LENGTH_AREA;
   int minTurnForResignation = 0;
-  double noResignationWhenWhiteScoreAbove = board.x_size * board.y_size;
-  if(initialBlackAdvantageInPoints > 0.9 && pla == P_WHITE) {
+  double noResignationWhenWhiteScoreAbove = board.x_size * board.y_size * NNPos::SCORE_SCALE;
+  if(initialBlackAdvantageInPoints > 0.9 * NNPos::SCORE_SCALE && pla == P_WHITE) {
     //Play at least some moves no matter what
-    minTurnForResignation = 1 + board.x_size * board.y_size / 5;
+    minTurnForResignation = 1 + (int)(gameLengthArea / 5);
 
     //In a handicap game, also only resign if the lead difference is well behind schedule assuming
     //that we're supposed to catch up over many moves.
-    double numTurnsToCatchUp = 0.60 * board.x_size * board.y_size - minTurnForResignation;
+    double numTurnsToCatchUp = 0.60 * gameLengthArea - minTurnForResignation;
     double numTurnsSpent = (double)(hist.moveHistory.size()) - minTurnForResignation;
     if(numTurnsToCatchUp <= 1.0)
       numTurnsToCatchUp = 1.0;
@@ -298,13 +315,13 @@ static bool shouldResign(
       numTurnsSpent = numTurnsToCatchUp;
 
     double resignScore = -initialBlackAdvantageInPoints * ((numTurnsToCatchUp - numTurnsSpent) / numTurnsToCatchUp);
-    resignScore -= 5.0; //Always require at least a 5 point buffer
+    resignScore -= 5.0 * NNPos::SCORE_SCALE; //Always require at least a 5 point buffer (Enclosure fork: x SCORE_SCALE)
     resignScore -= initialBlackAdvantageInPoints * 0.15; //And also require a 15% of the initial handicap
 
     noResignationWhenWhiteScoreAbove = resignScore;
   }
-  if(minTurnForResignation < resignMinMovesPerBoardArea * board.x_size * board.y_size)
-    minTurnForResignation = (int)(resignMinMovesPerBoardArea * board.x_size * board.y_size);
+  if(minTurnForResignation < resignMinMovesPerBoardArea * gameLengthArea)
+    minTurnForResignation = (int)(resignMinMovesPerBoardArea * gameLengthArea);
 
   if(hist.moveHistory.size() < minTurnForResignation)
     return false;
@@ -3106,6 +3123,10 @@ int MainCmds::gtp(const vector<string>& args) {
         responseIsError = true;
         response = "Could not parse vertex: '" + pieces[1] + "'";
       }
+      else if(!enclosureTurnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla).empty()) {
+        responseIsError = true;
+        response = enclosureTurnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla);
+      }
       else {
         bool suc = engine->play(loc,pla);
         if(!suc) {
@@ -3180,6 +3201,10 @@ int MainCmds::gtp(const vector<string>& args) {
       else if(!PlayerIO::tryParsePlayer(pieces[0],pla)) {
         responseIsError = true;
         response = "Could not parse color: '" + pieces[0] + "'";
+      }
+      else if(!enclosureTurnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla).empty()) {
+        responseIsError = true;
+        response = enclosureTurnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla);
       }
       else {
         bool debug = command == "genmove_debug" || command == "kata-search_debug";
