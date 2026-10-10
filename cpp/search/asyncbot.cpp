@@ -6,6 +6,7 @@
 
 using namespace std;
 
+#ifndef ASYNCBOT_SYNCHRONOUS
 static void searchThreadLoop(AsyncBot* asyncBot, Logger* logger) {
   try {
     asyncBot->internalSearchThreadLoop();
@@ -20,6 +21,7 @@ static void searchThreadLoop(AsyncBot* asyncBot, Logger* logger) {
     logger->write("ERROR: Async bot thread failed with unexpected throw");
   }
 }
+#endif
 
 AsyncBot::AsyncBot(
   const SearchParams& params,
@@ -37,7 +39,9 @@ AsyncBot::AsyncBot(
    searchBegunCallback()
 {
   search = new Search(params,nnEval,l,randSeed);
+#ifndef ASYNCBOT_SYNCHRONOUS
   searchThread = std::thread(searchThreadLoop,this,l);
+#endif
 }
 
 AsyncBot::AsyncBot(
@@ -57,7 +61,9 @@ AsyncBot::AsyncBot(
    searchBegunCallback()
 {
   search = new Search(params,nnEval,humanEval,l,randSeed);
+#ifndef ASYNCBOT_SYNCHRONOUS
   searchThread = std::thread(searchThreadLoop,this,l);
+#endif
 }
 
 AsyncBot::~AsyncBot() {
@@ -68,7 +74,9 @@ AsyncBot::~AsyncBot() {
     isKilled = true;
   }
   threadWaitingToSearch.notify_all();
+#ifndef ASYNCBOT_SYNCHRONOUS
   searchThread.join();
+#endif
   delete search;
 }
 
@@ -208,7 +216,7 @@ void AsyncBot::genMoveAsync(Player movePla, int searchId, const TimeControls& tc
   analyzeCallback = nullptr;
   searchBegunCallback = onSearchBegun;
   lock.unlock();
-  threadWaitingToSearch.notify_all();
+  startQueuedSearch();
 }
 
 Loc AsyncBot::genMoveSynchronous(Player movePla, const TimeControls& tc) {
@@ -236,6 +244,11 @@ void AsyncBot::ponder() {
 }
 
 void AsyncBot::ponder(double sf) {
+#ifdef ASYNCBOT_SYNCHRONOUS
+  //Enclosure fork: a ponder search has no end of its own, so with one thread there is no pondering.
+  (void)sf;
+  return;
+#endif
   std::unique_lock<std::mutex> lock(controlMutex);
   if(isRunning)
     return;
@@ -254,7 +267,7 @@ void AsyncBot::ponder(double sf) {
   analyzeCallback = nullptr;
   searchBegunCallback = nullptr;
   lock.unlock();
-  threadWaitingToSearch.notify_all();
+  startQueuedSearch();
 }
 void AsyncBot::analyzeAsync(
   Player movePla,
@@ -284,7 +297,7 @@ void AsyncBot::analyzeAsync(
   analyzeCallback = callback;
   searchBegunCallback = nullptr;
   lock.unlock();
-  threadWaitingToSearch.notify_all();
+  startQueuedSearch();
 }
 
 void AsyncBot::genMoveAsyncAnalyze(
@@ -332,7 +345,7 @@ void AsyncBot::genMoveAsyncAnalyze(
   analyzeCallback = callback;
   searchBegunCallback = onSearchBegun;
   lock.unlock();
-  threadWaitingToSearch.notify_all();
+  startQueuedSearch();
 }
 
 Loc AsyncBot::genMoveSynchronousAnalyze(
@@ -409,7 +422,21 @@ void AsyncBot::internalSearchThreadLoop() {
       userWaitingForStop.notify_all();
       break;
     }
+    runQueuedSearch(lock);
+  }
+}
 
+void AsyncBot::startQueuedSearch() {
+#ifdef ASYNCBOT_SYNCHRONOUS
+  std::unique_lock<std::mutex> lock(controlMutex);
+  runQueuedSearch(lock);
+#else
+  threadWaitingToSearch.notify_all();
+#endif
+}
+
+void AsyncBot::runQueuedSearch(std::unique_lock<std::mutex>& lock) {
+  {
     const bool pondering = isPondering;
     const TimeControls tc = timeControls;
     double callbackPeriod = analyzeCallbackPeriod;
@@ -429,7 +456,11 @@ void AsyncBot::internalSearchThreadLoop() {
     }
 
     //Handle search begun and analysis callback loops
+#ifdef ASYNCBOT_SYNCHRONOUS
+    const bool usingCallbackLoop = false;  //Enclosure fork: no second thread for periodic reports
+#else
     const bool usingCallbackLoop = (firstCallbackAfter >= 0 || callbackPeriod >= 0) && analyzeCallbackLocal;
+#endif
 
     bool isSearchBegun = false;
     condition_variable callbackLoopWaitingForSearchBegun;

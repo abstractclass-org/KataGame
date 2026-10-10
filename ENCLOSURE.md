@@ -80,8 +80,9 @@ player from the last mover break. A survey of the 29 `getOpp` calls in `search/`
     at its root but uses it to choose no move.
 
 Outside `search/`, the self-play game loop (`program/play.cpp`, `playutils.cpp`) and the analysis engine
-(`command/analysis.cpp`) get the same change. GTP, SGF, the book and the start-position tools are not on our path,
-and they stay as they are.
+(`command/analysis.cpp`) get the same change. GTP play got its own turn-order check later (`command/gtp.cpp`,
+`enclosureTurnError`, v2/docs/design/18-play-through-gtp.md). SGF, the book and the start-position tools are not on
+our path, and they stay as they are.
 
 Training rows need no change for turn order. KataGo's opponent-policy target is the policy of the next move, whoever
 plays it (`policyTargetsByTurn[i + 1]`). The value targets are written from the row's `nextPla`.

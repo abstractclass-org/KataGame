@@ -15,6 +15,7 @@
 #include "../program/play.h"
 #include "../tests/tests.h"
 #include "../command/commandline.h"
+#include "../command/gtpsession.h"
 #include "../main.h"
 
 using namespace std;
@@ -2069,10 +2070,60 @@ static bool parseRawNNArgs(
 }
 
 
+//Enclosure fork (v2/docs/design/18-play-through-gtp.md): the GTP engine one command at a time. The command loop's
+//state, which were the locals of MainCmds::gtp, lives in a GTPSession: its constructor is the old set-up, handle runs
+//one input line as the loop's body did (it returns false after quit), and finish is the old ending. MainCmds::gtp reads
+//standard input into it, and a host without standard input or threads (the WebAssembly bot, v2/wasm/bot.cpp) passes
+//its commands one by one (gtpSessionStart and gtpSessionHandle).
+class GTPSession {
+ public:
+  GTPSession(
+    ConfigParser& cfg, const string& nnModelFile, const string& humanModelFile, const string& overrideVersion,
+    const KataGoCommandLine* cmd
+  );
+  bool handle(string line);
+  void finish();
+
+  ConfigParser& cfg;
+  Rand seedRand;
+  string overrideVersion;
+  Logger logger;
+  bool logAllGTPCommunication;
+  bool logSearchInfo;
+  bool logSearchInfoForChosenMove;
+  PrintTreeOptions logSearchTreeOptions;
+  bool isForcingKomi;
+  float forcedKomi;
+  bool hasHumanModel;
+  std::function<void(ConfigParser&, SearchParams&, SearchParams&)> loadParams;
+  SearchParams initialGenmoveParams;
+  SearchParams initialAnalysisParams;
+  bool ponderingEnabled;
+  enabled_t cleanupBeforePass;
+  enabled_t friendlyPass;
+  bool allowResignation;
+  double resignThreshold;
+  int resignConsecTurns;
+  double resignMinScoreDifference;
+  double resignMinMovesPerBoardArea;
+  double searchFactorWhenWinning;
+  double searchFactorWhenWinningThreshold;
+  bool ogsChatToStderr;
+  bool preventEncore;
+  double dynamicPlayoutDoublingAdvantageCapPerOppLead;
+  bool staticPDATakesPrecedence;
+  bool autoAvoidPatterns;
+  bool shouldReloadAutoAvoidPatterns;
+  Player perspective;
+  GTPEngine* engine = NULL;
+  std::function<void(bool)> maybeSaveAvoidPatterns;
+  bool currentlyGenmoving = false;
+  bool currentlyAnalyzing = false;
+};
+
 int MainCmds::gtp(const vector<string>& args) {
   Board::initHash();
   ScoreValue::initTables();
-  Rand seedRand;
 
   ConfigParser cfg;
   string nnModelFile;
@@ -2100,12 +2151,30 @@ int MainCmds::gtp(const vector<string>& args) {
     return 1;
   }
 
-  Logger logger(&cfg);
+  GTPSession session(cfg,nnModelFile,humanModelFile,overrideVersion,&cmd);
+  string line;
+  while(getline(cin,line)) {
+    if(!session.handle(line))
+      break;
+  }
+  session.finish();
+  NeuralNet::globalCleanup();
+  ScoreValue::freeTables();
 
-  const bool logAllGTPCommunication = cfg.getBool("logAllGTPCommunication");
-  const bool logSearchInfo = cfg.getBool("logSearchInfo");
-  const bool logSearchInfoForChosenMove = cfg.contains("logSearchInfoForChosenMove") ? cfg.getBool("logSearchInfoForChosenMove") : false;
-  const PrintTreeOptions logSearchTreeOptions = Setup::loadLogSearchTreeOptions(cfg);
+  session.logger.write("All cleaned up, quitting");
+  return 0;
+}
+
+GTPSession::GTPSession(
+  ConfigParser& cfg_, const string& nnModelFile, const string& humanModelFile, const string& overrideVersion_,
+  const KataGoCommandLine* cmd
+)
+  :cfg(cfg_),seedRand(),overrideVersion(overrideVersion_),logger(&cfg_)
+{
+  logAllGTPCommunication = cfg.getBool("logAllGTPCommunication");
+  logSearchInfo = cfg.getBool("logSearchInfo");
+  logSearchInfoForChosenMove = cfg.contains("logSearchInfoForChosenMove") ? cfg.getBool("logSearchInfoForChosenMove") : false;
+  logSearchTreeOptions = Setup::loadLogSearchTreeOptions(cfg);
 
   bool startupPrintMessageToStderr = true;
   if(cfg.contains("startupPrintMessageToStderr"))
@@ -2125,17 +2194,17 @@ int MainCmds::gtp(const vector<string>& args) {
   if(startupPrintMessageToStderr && !logger.isLoggingToStderr()) {
     cerr << "Using " + initialRules.toStringNoKomiMaybeNice() + " rules initially, unless GTP/GUI overrides this" << endl;
   }
-  bool isForcingKomi = false;
-  float forcedKomi = 0;
+  isForcingKomi = false;
+  forcedKomi = 0;
   if(cfg.contains("ignoreGTPAndForceKomi")) {
     isForcingKomi = true;
     forcedKomi = cfg.getFloat("ignoreGTPAndForceKomi", Rules::MIN_USER_KOMI, Rules::MAX_USER_KOMI);
     initialRules.komi = forcedKomi;
   }
 
-  const bool hasHumanModel = humanModelFile != "";
+  hasHumanModel = humanModelFile != "";
 
-  auto loadParams = [&hasHumanModel](ConfigParser& config, SearchParams& genmoveOut, SearchParams& analysisOut) {
+  loadParams = [this](ConfigParser& config, SearchParams& genmoveOut, SearchParams& analysisOut) {
     SearchParams params = Setup::loadSingleParams(config,Setup::SETUP_FOR_GTP,hasHumanModel);
     //Set a default for conservativePass that differs from matches or selfplay
     if(!config.contains("conservativePass"))
@@ -2158,36 +2227,34 @@ int MainCmds::gtp(const vector<string>& args) {
     analysisOut.ignorePreRootHistory = analysisIgnorePreRootHistory;
   };
 
-  SearchParams initialGenmoveParams;
-  SearchParams initialAnalysisParams;
   loadParams(cfg,initialGenmoveParams,initialAnalysisParams);
   logger.write("Using " + Global::intToString(initialGenmoveParams.numThreads) + " CPU thread(s) for search");
 
-  bool ponderingEnabled = cfg.contains("ponderingEnabled") ? cfg.getBool("ponderingEnabled") : false;
+  ponderingEnabled = cfg.contains("ponderingEnabled") ? cfg.getBool("ponderingEnabled") : false;
 
-  const enabled_t cleanupBeforePass = cfg.contains("cleanupBeforePass") ? cfg.getEnabled("cleanupBeforePass") : enabled_t::Auto;
-  const enabled_t friendlyPass = cfg.contains("friendlyPass") ? cfg.getEnabled("friendlyPass") : enabled_t::Auto;
+  cleanupBeforePass = cfg.contains("cleanupBeforePass") ? cfg.getEnabled("cleanupBeforePass") : enabled_t::Auto;
+  friendlyPass = cfg.contains("friendlyPass") ? cfg.getEnabled("friendlyPass") : enabled_t::Auto;
   if(cleanupBeforePass == enabled_t::True && friendlyPass == enabled_t::True)
     throw StringError("Cannot specify both cleanupBeforePass = true and friendlyPass = true at the same time");
 
-  bool allowResignation = cfg.contains("allowResignation") ? cfg.getBool("allowResignation") : false;
-  const double resignThreshold = cfg.contains("allowResignation") ? cfg.getDouble("resignThreshold",-1.0,0.0) : -1.0; //Threshold on [-1,1], regardless of winLossUtilityFactor
-  const int resignConsecTurns = cfg.contains("resignConsecTurns") ? cfg.getInt("resignConsecTurns",1,100) : 3;
-  const double resignMinScoreDifference = cfg.contains("resignMinScoreDifference") ? cfg.getDouble("resignMinScoreDifference",0.0,1000.0) : -1e10;
-  const double resignMinMovesPerBoardArea = cfg.contains("resignMinMovesPerBoardArea") ? cfg.getDouble("resignMinMovesPerBoardArea",0.0,1.0) : 0.0;
+  allowResignation = cfg.contains("allowResignation") ? cfg.getBool("allowResignation") : false;
+  resignThreshold = cfg.contains("allowResignation") ? cfg.getDouble("resignThreshold",-1.0,0.0) : -1.0; //Threshold on [-1,1], regardless of winLossUtilityFactor
+  resignConsecTurns = cfg.contains("resignConsecTurns") ? cfg.getInt("resignConsecTurns",1,100) : 3;
+  resignMinScoreDifference = cfg.contains("resignMinScoreDifference") ? cfg.getDouble("resignMinScoreDifference",0.0,1000.0) : -1e10;
+  resignMinMovesPerBoardArea = cfg.contains("resignMinMovesPerBoardArea") ? cfg.getDouble("resignMinMovesPerBoardArea",0.0,1.0) : 0.0;
 
   Setup::initializeSession(cfg);
 
-  const double searchFactorWhenWinning = cfg.contains("searchFactorWhenWinning") ? cfg.getDouble("searchFactorWhenWinning",0.01,1.0) : 1.0;
-  const double searchFactorWhenWinningThreshold = cfg.contains("searchFactorWhenWinningThreshold") ? cfg.getDouble("searchFactorWhenWinningThreshold",0.0,1.0) : 1.0;
-  const bool ogsChatToStderr = cfg.contains("ogsChatToStderr") ? cfg.getBool("ogsChatToStderr") : false;
+  searchFactorWhenWinning = cfg.contains("searchFactorWhenWinning") ? cfg.getDouble("searchFactorWhenWinning",0.01,1.0) : 1.0;
+  searchFactorWhenWinningThreshold = cfg.contains("searchFactorWhenWinningThreshold") ? cfg.getDouble("searchFactorWhenWinningThreshold",0.0,1.0) : 1.0;
+  ogsChatToStderr = cfg.contains("ogsChatToStderr") ? cfg.getBool("ogsChatToStderr") : false;
   const int analysisPVLen = cfg.contains("analysisPVLen") ? cfg.getInt("analysisPVLen",1,1000) : 13;
   const bool assumeMultipleStartingBlackMovesAreHandicap =
     cfg.contains("assumeMultipleStartingBlackMovesAreHandicap") ? cfg.getBool("assumeMultipleStartingBlackMovesAreHandicap") : true;
-  const bool preventEncore = cfg.contains("preventCleanupPhase") ? cfg.getBool("preventCleanupPhase") : true;
-  const double dynamicPlayoutDoublingAdvantageCapPerOppLead =
+  preventEncore = cfg.contains("preventCleanupPhase") ? cfg.getBool("preventCleanupPhase") : true;
+  dynamicPlayoutDoublingAdvantageCapPerOppLead =
     cfg.contains("dynamicPlayoutDoublingAdvantageCapPerOppLead") ? cfg.getDouble("dynamicPlayoutDoublingAdvantageCapPerOppLead",0.0,0.5) : 0.045;
-  bool staticPDATakesPrecedence = cfg.contains("playoutDoublingAdvantage") && !cfg.contains("dynamicPlayoutDoublingAdvantageCapPerOppLead");
+  staticPDATakesPrecedence = cfg.contains("playoutDoublingAdvantage") && !cfg.contains("dynamicPlayoutDoublingAdvantageCapPerOppLead");
   const double normalAvoidRepeatedPatternUtility = initialGenmoveParams.avoidRepeatedPatternUtility;
   const double handicapAvoidRepeatedPatternUtility = cfg.contains("avoidRepeatedPatternUtility") ?
     initialGenmoveParams.avoidRepeatedPatternUtility : 0.005;
@@ -2211,7 +2278,7 @@ int MainCmds::gtp(const vector<string>& args) {
     patternBonusTable = std::move(tables[0]);
   }
 
-  bool autoAvoidPatterns = false;
+  autoAvoidPatterns = false;
   {
     std::unique_ptr<PatternBonusTable> autoTable = Setup::loadAndPruneAutoPatternBonusTables(cfg,logger);
     if(autoTable != nullptr && patternBonusTable != nullptr)
@@ -2222,11 +2289,11 @@ int MainCmds::gtp(const vector<string>& args) {
     }
   }
   // Toggled to true every time we save, toggled back to false once we do load.
-  bool shouldReloadAutoAvoidPatterns = false;
+  shouldReloadAutoAvoidPatterns = false;
 
-  Player perspective = Setup::parseReportAnalysisWinrates(cfg,C_EMPTY);
+  perspective = Setup::parseReportAnalysisWinrates(cfg,C_EMPTY);
 
-  GTPEngine* engine = new GTPEngine(
+  engine = new GTPEngine(
     nnModelFile,humanModelFile,
     initialGenmoveParams,initialAnalysisParams,
     initialRules,
@@ -2240,7 +2307,7 @@ int MainCmds::gtp(const vector<string>& args) {
   );
   engine->setOrResetBoardSize(cfg,logger,seedRand,defaultBoardXSize,defaultBoardYSize,logger.isLoggingToStderr());
 
-  auto maybeSaveAvoidPatterns = [&](bool forceSave) {
+  maybeSaveAvoidPatterns = [this](bool forceSave) {
     if(engine != NULL && autoAvoidPatterns) {
       int samplesPerSave = 200;
       if(cfg.contains("autoAvoidRepeatSaveChunkSize"))
@@ -2274,7 +2341,8 @@ int MainCmds::gtp(const vector<string>& args) {
   logger.write("Loaded model " + nnModelFile);
   if(humanModelFile != "")
     logger.write("Loaded human SL model " + humanModelFile);
-  cmd.logOverrides(logger);
+  if(cmd != NULL)
+    cmd->logOverrides(logger);
   logger.write("Model name: "+ (engine->nnEval == NULL ? string() : engine->nnEval->getInternalModelName()));
   if(engine->humanEval != NULL)
     logger.write("Human SL model name: "+ (engine->humanEval->getInternalModelName()));
@@ -2297,10 +2365,10 @@ int MainCmds::gtp(const vector<string>& args) {
       cerr << "WARNING: Provided -human-model but humanSLProfile was not set in the config or overrides. The human SL model will not be used until it is set in the config or at runtime via kata-set-param." << endl;
   }
 
-  bool currentlyGenmoving = false;
-  bool currentlyAnalyzing = false;
-  string line;
-  while(getline(cin,line)) {
+}
+
+bool GTPSession::handle(string line) {
+  {
     //Parse command, extracting out the command itself, the arguments, and any GTP id number for the command.
     string command;
     vector<string> pieces;
@@ -2323,7 +2391,7 @@ int MainCmds::gtp(const vector<string>& args) {
       }
 
       if(line.length() == 0)
-        continue;
+        return true;
 
       if(logAllGTPCommunication)
         logger.write("Controller: " + line);
@@ -2339,7 +2407,7 @@ int MainCmds::gtp(const vector<string>& args) {
         }
         catch(const IOError& e) {
           cout << "? GTP id '" << id << "' could not be parsed: " << e.what() << endl;
-          continue;
+          return true;
         }
         line = line.substr(digitPrefixLen);
       }
@@ -2347,7 +2415,7 @@ int MainCmds::gtp(const vector<string>& args) {
       line = Global::trim(line);
       if(line.length() <= 0) {
         cout << "? empty command" << endl;
-        continue;
+        return true;
       }
 
       pieces = Global::split(line,' ');
@@ -2359,7 +2427,7 @@ int MainCmds::gtp(const vector<string>& args) {
       pieces.erase(pieces.begin());
     }
 
-    auto printGTPResponse = [hasId,id,&logger,logAllGTPCommunication](const string& response, bool responseIsError) {
+    auto printGTPResponse = [hasId,id,this](const string& response, bool responseIsError) {
       string postProcessed = response;
       if(hasId)
         postProcessed = Global::intToString(id) + " " + postProcessed;
@@ -2377,7 +2445,7 @@ int MainCmds::gtp(const vector<string>& args) {
       if(logAllGTPCommunication)
         logger.write(postProcessed);
     };
-    auto printGTPResponseHeader = [hasId,id,&logger,logAllGTPCommunication]() {
+    auto printGTPResponseHeader = [hasId,id,this]() {
       if(hasId) {
         string s = "=" + Global::intToString(id);
         cout << s << endl;
@@ -2391,7 +2459,7 @@ int MainCmds::gtp(const vector<string>& args) {
       }
     };
 
-    auto printGTPResponseNoHeader = [&logger,logAllGTPCommunication](const string& response, bool responseIsError) {
+    auto printGTPResponseNoHeader = [this](const string& response, bool responseIsError) {
       //Postprocessing of response in the case where we already printed the "=" and a newline ahead of time via printGTPResponseHeader.
       if(!responseIsError) {
         cout << response << endl;
@@ -3522,7 +3590,7 @@ int MainCmds::gtp(const vector<string>& args) {
 
             sgfRules = sgf->getRulesOrWarn(
               engine->getCurrentRules(), //Use current rules as default
-              [&logger](const string& msg) { logger.write(msg); cerr << msg << endl; }
+              [this](const string& msg) { logger.write(msg); cerr << msg << endl; }
             );
             if(engine->nnEval != NULL) {
               bool rulesWereSupported;
@@ -3840,13 +3908,16 @@ int MainCmds::gtp(const vector<string>& args) {
       printGTPResponse(response,responseIsError);
 
     if(shouldQuitAfterResponse)
-      break;
+      return false;
 
     if(maybeStartPondering && ponderingEnabled)
       engine->ponder();
 
-  } //Close read loop
+  }
+  return true;
+}
 
+void GTPSession::finish() {
   // Interrupt stuff if we close stdout
   if(currentlyAnalyzing) {
     currentlyAnalyzing = false;
@@ -3862,9 +3933,17 @@ int MainCmds::gtp(const vector<string>& args) {
   maybeSaveAvoidPatterns(true);
   delete engine;
   engine = NULL;
-  NeuralNet::globalCleanup();
-  ScoreValue::freeTables();
+}
 
-  logger.write("All cleaned up, quitting");
-  return 0;
+GTPSession* GTPSessions::start(ConfigParser& cfg, const string& nnModelFile) {
+  return new GTPSession(cfg,nnModelFile,"","",NULL);
+}
+
+string GTPSessions::handle(GTPSession* session, const string& line, bool& quit) {
+  //The engine prints its responses to standard output: collect them for this command.
+  std::ostringstream out;
+  std::streambuf* old = cout.rdbuf(out.rdbuf());
+  quit = !session->handle(line);
+  cout.rdbuf(old);
+  return out.str();
 }
