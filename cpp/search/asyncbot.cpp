@@ -254,6 +254,11 @@ void AsyncBot::ponder(double sf) {
     return;
   if(isKilled)
     return;
+  //Enclosure fork (2026-10-11): no ponder on a finished game. A finished Enclosure game has no legal action (Go's
+  //still has a pass), so a search there fails the evaluator's legalCount assert, and the process exits. GTP starts a
+  //ponder after every move, a game's last edge too.
+  if(search->getRootHist().isGameFinished)
+    return;
 
   queuedSearchId = 0;
   queuedOnMove = nullptr;
