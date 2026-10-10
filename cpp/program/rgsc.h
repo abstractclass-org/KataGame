@@ -73,10 +73,12 @@ namespace Rgsc {
     //Counts a finished game; returns how many had finished before it (for the warm-up).
     int64_t countFinishedGame();
     size_t size() const;
-    //A one-line summary for the log: states and their regrets, and this run's counts (restarts drawn and dropped,
-    //candidates offered and taken, sample attempts while the buffer was empty).
+    //A one-line summary for the log: states and their regrets, and this run's counts (restarts drawn, written after
+    //their state left the buffer, and dropped; candidates offered and taken; sample attempts while the buffer was
+    //empty).
     std::string summary() const;
     void countDroppedRestart();
+    void countRestartStateGone();
 
    private:
     Settings settings;
@@ -86,6 +88,7 @@ namespace Rgsc {
     int64_t gamesFinished;
     int64_t restartsDrawn = 0;
     int64_t restartsDropped = 0;
+    int64_t restartsStateGone = 0;
     int64_t candidatesOffered = 0;
     int64_t candidatesTaken = 0;
     int64_t drawsWhileEmpty = 0;

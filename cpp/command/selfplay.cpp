@@ -40,8 +40,9 @@ static void signalHandler(int signal)
 //Enclosure fork (owner, 2026-10-04): RGSC after a game (program/rgsc.h): each turn's regret target (Eq. 2); the
 //start state's EMA update after a restart, or, after a game from the normal start, its candidate offered to the
 //buffer (the highest regret ranking among the tracker's tree states and the played positions, later positions
-//first, as the authors' code). Returns whether to write the game: not when its start state left the buffer
-//meanwhile (the authors' code drops such games) nor during the warm-up.
+//first, as the authors' code). Returns whether to write the game: not during the warm-up, nor a restart that
+//searched no move. A restart whose start state left the buffer meanwhile is written (the authors' code drops it;
+//see below).
 static bool rgscAfterGame(
   Rgsc::Buffer& buffer, const Rgsc::Settings& settings, FinishedGameData* gameData,
   bool restarted, uint64_t restartKey, const Rgsc::TreeTracker* tracker
@@ -61,10 +62,17 @@ static bool rgscAfterGame(
     return true;
   bool keep = true;
   if(restarted) {
-    if(!hasRegret || !buffer.updateAfterRestart(restartKey, gameData->regretByTurn[0])) {
+    //Enclosure fork (2026-10-10), a departure from the authors' code, which drops a restarted game whose start
+    //state left the buffer meanwhile. With 384 games in flight against one buffer (the authors run 32), about two
+    //thirds of the restarts were dropped (v2/docs/decisions/rgsc.md, "Why the share of restarted games fell").
+    //Such a game is ordinary self-play from a state that was in the buffer when it was drawn, so it is written.
+    //Only its EMA update is skipped: its state is gone.
+    if(!hasRegret) {
       keep = false;
       buffer.countDroppedRestart();
     }
+    else if(!buffer.updateAfterRestart(restartKey, gameData->regretByTurn[0]))
+      buffer.countRestartStateGone();
   }
   else if(
     tracker != NULL && hasRegret && gameData->usedInitialPosition == 0 && gameData->mode == FinishedGameData::MODE_NORMAL &&

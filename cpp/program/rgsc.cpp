@@ -196,6 +196,11 @@ void Rgsc::Buffer::countDroppedRestart() {
   restartsDropped++;
 }
 
+void Rgsc::Buffer::countRestartStateGone() {
+  lock_guard<std::mutex> lock(mutex);
+  restartsStateGone++;
+}
+
 string Rgsc::Buffer::summary() const {
   lock_guard<std::mutex> lock(mutex);
   vector<double> r;
@@ -206,8 +211,9 @@ string Rgsc::Buffer::summary() const {
   out << "RGSC: " << entries.size() << " states";
   if(!r.empty())
     out << ", regret min " << r.front() << " median " << r[r.size() / 2] << " max " << r.back();
-  out << "; games finished " << gamesFinished << "; this run: restarts drawn " << restartsDrawn << ", dropped "
-      << restartsDropped << "; candidates offered " << candidatesOffered << ", taken " << candidatesTaken
+  out << "; games finished " << gamesFinished << "; this run: restarts drawn " << restartsDrawn
+      << ", written after their state left " << restartsStateGone << ", dropped " << restartsDropped
+      << "; candidates offered " << candidatesOffered << ", taken " << candidatesTaken
       << "; draws while empty " << drawsWhileEmpty;
   return out.str();
 }
