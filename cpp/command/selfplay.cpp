@@ -465,6 +465,7 @@ int MainCmds::selfplay(const vector<string>& args) {
   std::condition_variable modelLoadSleepVar;
   auto modelLoadLoop = [&modelLoadMutex,&modelLoadSleepVar,&logger,&manager,&loadLatestNeuralNetIntoManager]() {
     logger.write("Model loading loop thread starting");
+    auto nextProgressLog = std::chrono::steady_clock::now();
 
     while(true) {
       if(shouldStop.load())
@@ -472,6 +473,14 @@ int MainCmds::selfplay(const vector<string>& args) {
       string lastNetName = manager->getLatestModelName();
       bool success = loadLatestNeuralNetIntoManager(&lastNetName);
       (void)success;
+
+      //Enclosure fork (2026-10-10): once a minute, the network rows evaluated by every model so far. The watchdog
+      //(v2/scripts/watchdog_selfplay.sh) tests that this count rises. Games log only when they start or end, and at
+      //high visits none ends for many minutes after a start, while a hang in the CUDA driver stops the evaluations.
+      if(std::chrono::steady_clock::now() >= nextProgressLog) {
+        logger.write("Progress: NN rows processed " + Global::uint64ToString(manager->getTotalNumRowsProcessed()));
+        nextProgressLog = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+      }
 
       if(shouldStop.load())
         break;
