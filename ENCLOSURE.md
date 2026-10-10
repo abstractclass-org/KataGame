@@ -319,7 +319,7 @@ then: win/loss only).
     weight 0.25, centre scale 0.50 (about 70 points).
   - Play and analysis (`analysis_example.cfg`, `match_example.cfg`): static 0.10, dynamic 0.30 (centre zero weight
     0.20, scale 0.75: about 105 points), as upstream's defaults.
-- **The gauntlet's `analysis_enclosure.cfg`:** first 0, then KataGo's 0.10 and 0.30, in a new rating pool.
+- **The gauntlet's config** (now `analysis_play_enclosure.cfg`)**:** first 0, then KataGo's 0.10 and 0.30, in a new rating pool.
 - The score value tables clamp scores beyond Go's range. With the unit, the scaled scores stay within them.
 
 ## Score distribution bins
