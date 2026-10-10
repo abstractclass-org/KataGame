@@ -184,8 +184,11 @@ static double applyLagBuffer(double time, double lagBuffer) {
 void TimeControls::getTime(const Board& board, const BoardHistory& hist, double lagBuffer, double& minTime, double& recommendedTime, double& maxTime) const {
   (void)hist;
 
-  int boardArea = board.x_size * board.y_size;
-  int numStonesOnBoard = board.numStonesOnBoard();
+  //Enclosure fork: game-phase constants (v2/docs/design/08-time-horizons.md): the game-length area in place of the
+  //board area, and the edges played in place of the stones. A whole game then allows for 0.75 x 132 + 15, about 114
+  //edges, against the real 120. The halving below holds: each player places half the edges.
+  double boardArea = Board::GAME_LENGTH_AREA;
+  int numStonesOnBoard = board.pos.move_count;
 
   //Very crude way to estimate game progress
   double approxTurnsLeftAbsolute;
@@ -283,20 +286,26 @@ void TimeControls::getTime(const Board& board, const BoardHistory& hist, double 
     if(mainTimeLimit < originalMainTime)
       throw StringError("TimeControls: mainTimeLimit is smaller than original mainTime");
 
+    //Enclosure fork (v2/docs/design/18-play-through-gtp.md): the increment comes once a turn, after the turn's last
+    //edge, and a turn has two edges. So an edge counts half the increment, and the first edge of a two-edge turn keeps
+    //at least half the time left for the second, since no increment comes between them.
+    const double edgeIncrement = increment / 2.0;
     //Note that some GTP controllers might give us a negative mainTimeLeft in weird cases. We tolerate this and do the best we can.
-    if(mainTimeLeft <= increment) {
-      minTime = std::min(std::max(0.0, mainTimeLeft * 0.5), std::max(0.0, mainTimeLeft + increment - mainTimeLimit));
+    if(mainTimeLeft <= edgeIncrement) {
+      minTime = std::min(std::max(0.0, mainTimeLeft * 0.5), std::max(0.0, mainTimeLeft + edgeIncrement - mainTimeLimit));
       //Apply lagbuffer an extra time to the mainTimeLeft, ensuring we get extra buffering
       recommendedTime = applyLagBuffer(mainTimeLeft, lagBufferToUse);
       maxTime = mainTimeLeft;
     }
     else {
       //Apply lagbuffer an extra time to the excessMainTime, ensuring we get extra buffering
-      double excessMainTime = applyLagBuffer(mainTimeLeft - increment, lagBufferToUse);
-      minTime = std::min(std::max(0.0, mainTimeLeft * 0.5), std::max(0.0, mainTimeLeft + increment - mainTimeLimit));
-      recommendedTime = increment + divideTimeEvenlyForGame(excessMainTime,true,false);
-      maxTime = std::min(mainTimeLeft, increment + excessMainTime / 5.0);
+      double excessMainTime = applyLagBuffer(mainTimeLeft - edgeIncrement, lagBufferToUse);
+      minTime = std::min(std::max(0.0, mainTimeLeft * 0.5), std::max(0.0, mainTimeLeft + edgeIncrement - mainTimeLimit));
+      recommendedTime = edgeIncrement + divideTimeEvenlyForGame(excessMainTime,true,false);
+      maxTime = std::min(mainTimeLeft, edgeIncrement + excessMainTime / 5.0);
     }
+    if(board.pos.moves_left == 2)
+      maxTime = std::min(maxTime, mainTimeLeft * 0.5);  //the first edge of a turn (the clamps below follow)
   }
   //Byo yomi or canadian time handling
   else {
