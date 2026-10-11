@@ -23,6 +23,11 @@
 // random numbers (root noise) from the query's "seed" and the position, so the same request gives the same reply
 // whatever came before, and a search in slices equals one whole search (with one search
 // thread; more threads search faster and are not reproducible).
+//
+// One engine for each thread (PER_ENGINE): the native command's -parallel runs one in each of its threads. Their
+// engines share one network evaluator (setParallel, acquireEvaluator), so that one batch gathers the evaluations of
+// every engine. A batch's size can change the network's last digits on a GPU, so a reply then equals the reply of one
+// engine alone to rounding; with batches of one, exactly.
 #include "../command/enclosureprotocol.h"
 
 #include "../core/global.h"
@@ -43,9 +48,19 @@
 #include <algorithm>
 #include <fstream>
 #include <iterator>
+#include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <vector>
+
+// An engine's state is per thread in native builds (the native command's -parallel), and a plain global in the
+// WebAssembly module, which has one thread.
+#ifdef __wasm__
+#define PER_ENGINE
+#else
+#define PER_ENGINE thread_local
+#endif
 
 using json = nlohmann::json;
 using std::string;
@@ -58,8 +73,14 @@ const char* PROTOCOL = "0.3";  // pre-1.0: any change takes the next minor versi
 const char* RULES = "online";  // the online variant (enclosure/README.md "Rules"), 19 x 19
 const int DEFAULT_VISITS = 500;
 
-struct Engine {
+// The process's settings (setup, setParallel), the same for every engine.
+struct Process {
   string baseConfig, build = "unknown";
+  int engines = 1;
+};
+Process P;
+
+struct Engine {
   vector<char> pending;  // a network's bytes, written by the caller (modelBuffer)
   vector<char> model;    // a network loaded from memory: its bytes, which the evaluator reads ("memory:")
   string modelName, modelSha;
@@ -67,10 +88,20 @@ struct Engine {
   Logger* logger = nullptr;
   ConfigParser* cfg = nullptr;
   NNEvaluator* nnEval = nullptr;
+  string evalKey;  // the shared evaluator's key (sharedEvals), empty when the engine has its own
   Search* search = nullptr;
   SearchParams params;
 };
-Engine E;
+PER_ENGINE Engine E;
+
+// With several engines (setParallel): one evaluator for each network (its SHA-256) and settings text, shared by the
+// engines that load the same, and deleted when the last of them loads another.
+struct SharedEval {
+  NNEvaluator* nnEval = nullptr;
+  int users = 0;
+};
+std::mutex sharedMutex;
+std::map<string, SharedEval> sharedEvals;
 
 struct Fail {
   string field, why;
@@ -300,7 +331,7 @@ json play(const json& q) {
 }
 
 json engineTag() {
-  return {{"protocol", PROTOCOL}, {"build", E.build}, {"model", E.modelSha.empty() ? json(nullptr) : json(E.modelSha)}};
+  return {{"protocol", PROTOCOL}, {"build", P.build}, {"model", E.modelSha.empty() ? json(nullptr) : json(E.modelSha)}};
 }
 
 json modelInfo() {
@@ -309,7 +340,7 @@ json modelInfo() {
 
 json queryVersion(const json& q) {
   return {
-    {"id", q["id"]}, {"protocol", PROTOCOL}, {"build", E.build},
+    {"id", q["id"]}, {"protocol", PROTOCOL}, {"build", P.build},
     {"model", E.nnEval != nullptr ? modelInfo() : json(nullptr)}, {"rules", RULES},
     {"trained", {"winrate", "scoreSelfplay", "scoreStdev", "scoreLead", "policy", "ownership"}},
   };
@@ -319,6 +350,50 @@ string sha256(const vector<char>& bytes) {
   char hash[65];
   SHA2::get256(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), hash);  // of every byte
   return hash;
+}
+
+// The engine's evaluator given back: its own deleted, or the shared one's use counted down (deleted with its last).
+void releaseEvaluator() {
+  if(E.nnEval == nullptr)
+    return;
+  if(E.evalKey.empty())
+    delete E.nnEval;
+  else {
+    std::lock_guard<std::mutex> lock(sharedMutex);
+    auto it = sharedEvals.find(E.evalKey);
+    if(it != sharedEvals.end() && --it->second.users == 0) {
+      delete it->second.nnEval;
+      sharedEvals.erase(it);
+    }
+  }
+  E.nnEval = nullptr;
+  E.evalKey.clear();
+}
+
+// The engine's evaluator for the network `file` with the settings `text`: its own with one engine, else the one that
+// every engine loading the same network and settings shares, made for all their evaluations at once (so that, by
+// default, a batch can hold one evaluation from each engine's search threads).
+void acquireEvaluator(const string& file, const string& text, Setup::MaxBatchSizeRequest batch) {
+  const int threads = std::max(1, E.params.numThreads);
+  auto make = [&](int concurrent) {
+    Rand seedRand("engine");
+    return Setup::initializeNNEvaluator(
+      "engine", file, "", *E.cfg, *E.logger, seedRand, concurrent, enclosure::SIZE, enclosure::SIZE, batch, true,
+      false, Setup::SETUP_FOR_ANALYSIS
+    );
+  };
+  if(P.engines <= 1) {
+    E.nnEval = make(threads);
+    return;
+  }
+  const string key = E.modelSha + "\n" + text;
+  std::lock_guard<std::mutex> lock(sharedMutex);
+  SharedEval& s = sharedEvals[key];
+  if(s.nnEval == nullptr)
+    s.nnEval = make(threads * P.engines);
+  s.users++;
+  E.nnEval = s.nnEval;
+  E.evalKey = key;
 }
 
 json loadModel(const json& q) {
@@ -343,7 +418,7 @@ json loadModel(const json& q) {
   // By default each evaluation's symmetry from its cache key, so that the same request gives the same result (design
   // 04, "Reproducible analysis"); then the base settings and the request's settings, which can change it (a later line
   // wins).
-  string text = "nnSymmetryFromHash = true\n" + E.baseConfig + "\n";
+  string text = "nnSymmetryFromHash = true\n" + P.baseConfig + "\n";
   if(const json* s = field(q, "settings")) {
     if(!s->is_object())
       return errorReply(q["id"], {"settings", "settings is an object of analysis settings"});
@@ -353,10 +428,9 @@ json loadModel(const json& q) {
     }
   }
   delete E.search;
-  delete E.nnEval;
-  delete E.cfg;
   E.search = nullptr;
-  E.nnEval = nullptr;
+  releaseEvaluator();
+  delete E.cfg;
   string file;
   if(path != nullptr) {
     E.model.clear();
@@ -382,15 +456,12 @@ json loadModel(const json& q) {
   const json* name = field(q, "name");
   E.modelName = name != nullptr && name->is_string() ? name->get<string>() : (path != nullptr ? file : "");
   E.params = Setup::loadSingleParams(*E.cfg, Setup::SETUP_FOR_ANALYSIS);
-  // As many evaluations at once as search threads; a batch size named in the settings is taken as it is.
+  // As many evaluations at once as search threads (of every engine, with several); a batch size named in the settings
+  // is taken as it is.
   const Setup::MaxBatchSizeRequest batch = E.cfg->contains("nnMaxBatchSize")
     ? Setup::MaxBatchSizeRequest::explicitSize(E.cfg->getInt("nnMaxBatchSize", 1, 65536))
     : Setup::MaxBatchSizeRequest::fromConcurrency();
-  Rand seedRand("engine");
-  E.nnEval = Setup::initializeNNEvaluator(
-    "engine", file, "", *E.cfg, *E.logger, seedRand, std::max(1, E.params.numThreads), enclosure::SIZE,
-    enclosure::SIZE, batch, true, false, Setup::SETUP_FOR_ANALYSIS
-  );
+  acquireEvaluator(file, text, batch);
   E.search = new Search(E.params, E.nnEval, E.logger, "engine");
   return {{"id", q["id"]}, {"model", modelInfo()}};
 }
@@ -450,7 +521,7 @@ json analysisReply(const json& q, const Board& board, const BoardHistory& hist, 
   }
   if(flag("includePolicy")) {
     // The root's network policy over every legal edge, by edge (the fork's policy index is the action index).
-    static float probs[NNPos::MAX_NN_POLICY_SIZE];
+    static PER_ENGINE float probs[NNPos::MAX_NN_POLICY_SIZE];
     if(E.search->getPolicy(probs)) {
       vector<int> legal;
       board.pos.legal_actions(legal);
@@ -482,7 +553,7 @@ struct Running {
   int64_t sliceVisits = 0;  // 0: by time
   double sliceSeconds = 0;
 };
-Running* RUN = nullptr;
+PER_ENGINE Running* RUN = nullptr;
 
 void endRunning() {
   if(RUN == nullptr)
@@ -654,8 +725,12 @@ json handleJson(const string& text) {
 }  // namespace
 
 void EnclosureProtocol::setup(const string& configText, const string& build) {
-  E.baseConfig = configText;
-  E.build = build;
+  P.baseConfig = configText;
+  P.build = build;
+}
+
+void EnclosureProtocol::setParallel(int engines) {
+  P.engines = std::max(1, engines);
 }
 
 char* EnclosureProtocol::modelBuffer(size_t len) {
