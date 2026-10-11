@@ -357,13 +357,18 @@ bins. Only the training rows and the Python head use the distribution (step 6).
 - **Score-belief bin centres** are in points: 12 × (bin − 421 + 0.5) (the Enclosure score bins).
 - **No result:** the fork never sets `isNoResult`. Its rules (area scoring, positional ko) take KataGo's branch that
   sets the no-result output to zero. So win and loss share the probability, as under Go's area rules.
-- **Test:** `katago/python/enclosure_nn_check.py` with `katago runenclosurenntests`. The test initialises a b6c96 at random.
-  Then it perturbs every parameter and statistic, so that no layer is an identity. It exports the model and
-  evaluates it in C++ (Eigen, `NNEvaluator`) and in PyTorch on the 332 unfinished positions of
-  `tests/data/enclosure_inputs.txt`.
+- **Test:** `katago/python/enclosure_nn_check.py` with the fork's test `testnnoutputs`. The test initialises a b6c96 at
+  random. Then it perturbs every parameter and statistic, so that no layer is an identity. It exports the model and
+  evaluates it in C++ (`NNEvaluator`) on the 332 unfinished positions of `tests/data/enclosure_inputs.txt`.
+  `testnnoutputs` writes the input rows that the network got with its outputs, and PyTorch evaluates the same rows.
+  So the test checks the network alone, and `testnninputs` checks the rows against the fixture.
   - The largest differences: policy 6e-6 (relative), value 6e-7, score 4e-6 (in units of the model's score
     multiplier, 240 points after the score scale below), ownership 7e-6. The tolerance is 1e-3.
   - A model with other weights fails at every position.
+  - Until 2026-10-11 PyTorch built its rows from the fixture. These rows stopped matching the C++ rows when the
+    turn-safe plane, the edges at both ends and the removal of held ground became the only inputs, so the test
+    failed everywhere for every build (v2/docs/decisions/build.md "The FP32 check against PyTorch: stale inputs,
+    not the network").
 - **Training augmentation** (`katago/train/enclosure_symmetry.py`, used by `data_processing_pytorch.py`):
   - point planes and the value targets move as pixels.
   - the edge planes and the policy and q-value targets go through index maps. A stored edge goes to the lower end of
