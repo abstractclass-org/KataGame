@@ -194,6 +194,7 @@ parser.add_argument('-ignore-attn-logit-bound', help='Export anyway when the att
 parser.add_argument('-prune-dead-ffn-channels', help='Leave out transformer FFN hidden channels whose weights are all zero, to improve performance', action="store_true", required=False)
 parser.add_argument('-float16', help='Enclosure fork: write every weight block in 16-bit floats ("@BIN16@", which neuralnet/desc.cpp reads), for the WebAssembly build\'s size limit (v2/wasm)', action="store_true", required=False)
 parser.add_argument('-prune-ffn-scratch-factor', help='With -prune-dead-ffn-channels, the sum of the distinct FFN widths in use may be at most this multiple of the original width. Inference backends keep scratch memory for each distinct width, so this bounds the growth of that memory (default 2.0)', type=float, default=2.0, required=False)
+parser.add_argument('-regret-heads', type=int, choices=[0, 2, 4], help='Enclosure fork: write only the first N of the model\'s RGSC heads (0: none; 2: the regret value and ranking; 4: those and the swing value and ranking). Only self-play\'s restarts read them, so a network for play can leave them out (the Constellation bot\'s file size limit, v2/wasm). Default: all that the model has.', required=False)
 args = vars(parser.parse_args())
 
 
@@ -861,6 +862,9 @@ def main(args):
             regret_heads = [("regret_value", valuehead.regret_value), ("regret_ranking", valuehead.regret_ranking)] if valuehead.regret_heads else []
             if valuehead.swing_heads:
                 regret_heads += [("swing_value", valuehead.swing_value), ("swing_ranking", valuehead.swing_ranking)]
+            if args["regret_heads"] is not None:
+                assert args["regret_heads"] <= len(regret_heads), f"the model has {len(regret_heads)} RGSC heads"
+                regret_heads = regret_heads[:args["regret_heads"]]
             writeln(len(regret_heads))
             for head_name, head in regret_heads:
                 writeln(name+"."+head_name)
