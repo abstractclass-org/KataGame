@@ -77,11 +77,20 @@ const int DEFAULT_VISITS = 500;
 struct Process {
   string baseConfig, build = "unknown";
   int engines = 1;
+  bool releaseModelBytes = false;  // setReleaseModelBytes
 };
 Process P;
 
+// A network that the caller holds and lends through a reader (modelReader): its size, SHA-256 and reader.
+struct PendingReader {
+  size_t len = 0;
+  string sha256;
+  std::function<size_t(size_t, char*, size_t)> read;
+};
+
 struct Engine {
   vector<char> pending;  // a network's bytes, written by the caller (modelBuffer)
+  PendingReader pendingReader;  // or the caller's reader of them (modelReader)
   vector<char> model;    // a network loaded from memory: its bytes, which the evaluator reads ("memory:")
   string modelName, modelSha;
   size_t modelBytes = 0;
@@ -409,7 +418,7 @@ json loadModel(const json& q) {
   }
   else {
 #ifdef MODEL_FROM_MEMORY
-    if(E.pending.empty())
+    if(E.pending.empty() && !E.pendingReader.read)
       return errorReply(q["id"], {"", "no network: give a path, or fill the model buffer first"});
 #else
     return errorReply(q["id"], {"path", "this build loads a network from a file: give its path"});
@@ -438,6 +447,17 @@ json loadModel(const json& q) {
     E.modelBytes = fileBytes.size();
     file = path->get<string>();
   }
+  else if(E.pendingReader.read) {
+    // The caller's bytes, read where it holds them: the module never copies the whole network.
+    E.model.clear();
+    E.modelSha = E.pendingReader.sha256;
+    E.modelBytes = E.pendingReader.len;
+#ifdef MODEL_FROM_MEMORY
+    ModelDesc::registerInMemoryModelReader("engine", E.pendingReader.len, E.pendingReader.read);
+#endif
+    E.pendingReader = PendingReader();
+    file = "memory:engine";
+  }
   else {
     E.model.swap(E.pending);
     E.pending.clear();
@@ -462,6 +482,13 @@ json loadModel(const json& q) {
     ? Setup::MaxBatchSizeRequest::explicitSize(E.cfg->getInt("nnMaxBatchSize", 1, 65536))
     : Setup::MaxBatchSizeRequest::fromConcurrency();
   acquireEvaluator(file, text, batch);
+  if(P.releaseModelBytes && path == nullptr) {
+    // Only a load_model reads the bytes, and each brings its own: the evaluator holds what it took from them.
+    vector<char>().swap(E.model);
+#ifdef MODEL_FROM_MEMORY
+    ModelDesc::registerInMemoryModel("engine", E.model.data(), 0);
+#endif
+  }
   E.search = new Search(E.params, E.nnEval, E.logger, "engine");
   return {{"id", q["id"]}, {"model", modelInfo()}};
 }
@@ -733,9 +760,23 @@ void EnclosureProtocol::setParallel(int engines) {
   P.engines = std::max(1, engines);
 }
 
+void EnclosureProtocol::setReleaseModelBytes(bool release) {
+  P.releaseModelBytes = release;
+}
+
 char* EnclosureProtocol::modelBuffer(size_t len) {
+  E.pendingReader = PendingReader();
   E.pending.assign(std::max<size_t>(len, 1), 0);
   return E.pending.data();
+}
+
+void EnclosureProtocol::modelReader(
+  size_t len, const string& sha256, const std::function<size_t(size_t, char*, size_t)>& read
+) {
+  vector<char>().swap(E.pending);
+  E.pendingReader.len = len;
+  E.pendingReader.sha256 = sha256;
+  E.pendingReader.read = read;
 }
 
 string EnclosureProtocol::handle(const string& request) {

@@ -40,10 +40,27 @@ static float readFloatFast(istream& in, string& tmp) {
   return x;
 }
 
+//Enclosure fork (v2/wasm, the GPU module, whose network runs outside the module): when set, the layers keep their
+//shapes and drop their weights as a model is read (readFloats reads past them and gives none). Off unless set.
+static bool skipWeightsOnLoad = false;
+void ModelDesc::setSkipWeightsOnLoad(bool skip) {
+  skipWeightsOnLoad = skip;
+}
+
 static void readFloats(istream& in, size_t numFloats, bool binaryFloats, const string& name, vector<float>& buf) {
-  buf.resize(numFloats);
+  if(skipWeightsOnLoad)
+    buf.clear();
+  else
+    buf.resize(numFloats);
   if(!binaryFloats) {
     string tmp;
+    if(skipWeightsOnLoad) {
+      for(size_t i = 0; i<numFloats; i++)
+        readFloatFast(in,tmp);
+      if(in.fail())
+        throw StringError(name + ": could not read float weights. Invalid model - perhaps you are trying to load a .bin.gz model as a .txt.gz model?");
+      return;
+    }
     for(size_t i = 0; i<numFloats; i++)
       buf[i] = readFloatFast(in,tmp);
     if(in.fail())
@@ -78,6 +95,12 @@ static void readFloats(istream& in, size_t numFloats, bool binaryFloats, const s
       }
       else if(s != "BIN@")
         throw StringError(name + ": did not find expected header for binary float block");
+    }
+    if(skipWeightsOnLoad) {
+      in.ignore((std::streamsize)(numFloats * (halfFloats ? sizeof(uint16_t) : sizeof(float))));
+      if(in.fail())
+        throw StringError(name + ": did not find the expected number of floats in binary float block");
+      return;
     }
     if(halfFloats) {
       vector<uint16_t> halves(numFloats);
@@ -172,7 +195,6 @@ ConvLayerDesc::ConvLayerDesc(istream& in, bool binaryFloats) {
   // Model file order is y,x,ic,oc
   // Cuda's order is oc,ic,y,x
   int numWeights = convYSize * convXSize * inChannels * outChannels;
-  weights.resize(numWeights);
   int ocStride = convYSize * convXSize * inChannels;
   int icStride = convYSize * convXSize;
   int yStride = convXSize;
@@ -180,6 +202,9 @@ ConvLayerDesc::ConvLayerDesc(istream& in, bool binaryFloats) {
 
   vector<float> floats;
   readFloats(in, (size_t)convYSize * convXSize * inChannels * outChannels, binaryFloats, name, floats);
+  if(skipWeightsOnLoad)  //Enclosure fork: shapes only
+    return;
+  weights.resize(numWeights);
   size_t idx = 0;
   for(int y = 0; y < convYSize; y++) {
     for(int x = 0; x < convXSize; x++) {
@@ -291,7 +316,8 @@ BatchNormLayerDesc::BatchNormLayerDesc(istream& in, bool binaryFloats) {
     throw StringError(
       name + ": bnlayer failed to parse expected number of batch norm mean, variance, bias, scale values");
 
-  computeMerged();
+  if(!skipWeightsOnLoad)  //Enclosure fork: shapes only
+    computeMerged();
 }
 
 BatchNormLayerDesc::BatchNormLayerDesc(BatchNormLayerDesc&& other) {
@@ -502,12 +528,14 @@ MatMulLayerDesc::MatMulLayerDesc(istream& in, bool binaryFloats) {
   // Model file order is ic,oc
   // Cublas order used is also ic,oc since we transpose
   int numWeights = inChannels * outChannels;
-  weights.resize(numWeights);
   int icStride = outChannels;
   int ocStride = 1;
 
   vector<float> floats;
   readFloats(in, (size_t)inChannels * outChannels, binaryFloats, name, floats);
+  if(skipWeightsOnLoad)  //Enclosure fork: shapes only
+    return;
+  weights.resize(numWeights);
   size_t idx = 0;
   for(int ic = 0; ic < inChannels; ic++) {
     for(int oc = 0; oc < outChannels; oc++) {
@@ -2430,6 +2458,12 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
     in >> scoreOffsetScale;
     if(in.fail() || scoreBeliefLen <= 0 || scoreBeliefLen % 2 != 0 || !(scoreBinWidth > 0.0f))
       throw StringError(name + ": failed to parse the score belief's length and bin width");
+    //Enclosure fork: NNEvaluator reads the score belief's own weights, so its small layers keep them always.
+    struct KeepWeights {
+      bool was;
+      KeepWeights() : was(skipWeightsOnLoad) { skipWeightsOnLoad = false; }
+      ~KeepWeights() { skipWeightsOnLoad = was; }
+    } keepWeights;
     sbS2Mul = MatMulLayerDesc(in,binaryFloats);
     sbS2Bias = MatBiasLayerDesc(in,binaryFloats);
     sbS2OffMul = MatMulLayerDesc(in,binaryFloats);
@@ -3052,14 +3086,51 @@ struct NonCopyingStreamBuf : public std::streambuf
 };
 
 #ifdef MODEL_FROM_MEMORY
-//Enclosure fork (the WebAssembly build, v2/wasm): models embedded in the module, opened by the name "memory:NAME".
-static std::map<string, std::pair<const char*, size_t>>& inMemoryModels() {
-  static std::map<string, std::pair<const char*, size_t>> models;
+//Enclosure fork (the WebAssembly build, v2/wasm): models embedded in the module, opened by the name "memory:NAME":
+//bytes in memory, or a reader of bytes held elsewhere (the GPU module's page).
+struct InMemoryModel {
+  const char* data = nullptr;
+  size_t len = 0;
+  std::function<size_t(size_t, char*, size_t)> read;
+};
+static std::map<string, InMemoryModel>& inMemoryModels() {
+  static std::map<string, InMemoryModel> models;
   return models;
 }
 void ModelDesc::registerInMemoryModel(const string& name, const char* data, size_t len) {
-  inMemoryModels()[name] = std::make_pair(data, len);
+  InMemoryModel& m = inMemoryModels()[name];
+  m.data = data;
+  m.len = len;
+  m.read = nullptr;
 }
+void ModelDesc::registerInMemoryModelReader(
+  const string& name, size_t len, const std::function<size_t(size_t, char*, size_t)>& read
+) {
+  InMemoryModel& m = inMemoryModels()[name];
+  m.data = nullptr;
+  m.len = len;
+  m.read = read;
+}
+
+//A model read through its reader, 64 KB at a time.
+struct ReaderStreamBuf : public std::streambuf {
+  std::function<size_t(size_t, char*, size_t)> read;
+  size_t len, offset = 0;
+  vector<char> chunk;
+  ReaderStreamBuf(const std::function<size_t(size_t, char*, size_t)>& r, size_t n) : read(r), len(n), chunk(1 << 16) {}
+  int_type underflow() override {
+    if(gptr() < egptr())
+      return traits_type::to_int_type(*gptr());
+    if(offset >= len)
+      return traits_type::eof();
+    const size_t n = read(offset, chunk.data(), std::min(chunk.size(), len - offset));
+    if(n == 0)
+      return traits_type::eof();
+    offset += n;
+    setg(chunk.data(), chunk.data(), chunk.data() + n);
+    return traits_type::to_int_type(*gptr());
+  }
+};
 #endif
 
 void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& descBuf, const string& expectedSha256) {
@@ -3068,8 +3139,20 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
     auto it = inMemoryModels().find(fileName.substr(7));
     if(it == inMemoryModels().end())
       throw StringError("No in-memory model named " + fileName);
-    string bytes(it->second.first, it->second.second);  //an uncompressed binary model (.bin)
-    NonCopyingStreamBuf streamBuf(bytes);
+    const InMemoryModel& m = it->second;
+    if(m.read) {
+      ReaderStreamBuf streamBuf(m.read, m.len);
+      std::istream in(&streamBuf);
+      descBuf = ModelDesc(in, "in-memory:" + fileName.substr(7), true);
+      return;
+    }
+    //An uncompressed binary model (.bin), read where it lies: a copy would double the module's memory for a moment.
+    struct MemoryStreamBuf : public std::streambuf {
+      MemoryStreamBuf(const char* data, size_t len) {
+        char* s = const_cast<char*>(data);  //read only: the get area is never written
+        setg(s, s, s + len);
+      }
+    } streamBuf(m.data, m.len);
     std::istream in(&streamBuf);
     descBuf = ModelDesc(in, "in-memory:" + fileName.substr(7), true);
     return;

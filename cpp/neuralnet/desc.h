@@ -5,6 +5,7 @@
 #define DESC_H
 
 #include <cstdint>
+#include <functional>
 #include <istream>
 #include <string>
 #include <vector>
@@ -645,7 +646,14 @@ struct ModelDesc {
   //Enclosure fork (v2/wasm): an uncompressed binary model (.bin) held in memory, which loadFromFileMaybeGZipped then
   //opens by the name "memory:NAME". The bytes must outlive every load.
   static void registerInMemoryModel(const std::string& name, const char* data, size_t len);
+  //The same model held elsewhere: read(offset, dst, n) copies up to n of its len bytes from offset to dst and returns
+  //how many it copied (the GPU module's page holds the bytes, v2/wasm/engine.cpp).
+  static void registerInMemoryModelReader(
+    const std::string& name, size_t len, const std::function<size_t(size_t, char*, size_t)>& read);
 #endif
+  //Enclosure fork (v2/wasm, the GPU module): when set, models read from then on keep their layers' shapes and drop
+  //their weights (the score belief's small layers keep theirs, as NNEvaluator reads them). Off unless set.
+  static void setSkipWeightsOnLoad(bool skip);
 
   //Throws StringError if name is not usable as a model name. Model names get embedded into on-disk
   //cache filenames (e.g. the TensorRT plan cache), so they are restricted to a short
