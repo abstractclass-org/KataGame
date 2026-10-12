@@ -46,7 +46,11 @@ def get_version(config: ModelConfig):
     return config["version"]
 
 # Enclosure fork: every version reads the Enclosure inputs (the C++ NNInputs V8): on board, 4 * 48 edge
-# planes, 22 feature planes; 5 global inputs.
+# planes, 22 feature planes; 5 global inputs. The config's "inputs_version" 9 (2026-10-13; absent: 8) adds KataGo's
+# playout doubling advantage as 2 more global inputs (C++ NNInputs V9, exported as model version 18).
+def get_inputs_version(config: ModelConfig):
+    return config.get("inputs_version", 8)
+
 def get_num_bin_input_features(config: ModelConfig):
     version = get_version(config)
     if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16 or version == 17:
@@ -57,7 +61,8 @@ def get_num_bin_input_features(config: ModelConfig):
 def get_num_global_input_features(config: ModelConfig):
     version = get_version(config)
     if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16 or version == 17:
-        return 5
+        assert get_inputs_version(config) in (8, 9)
+        return 7 if get_inputs_version(config) == 9 else 5
     else:
         assert(False)
 

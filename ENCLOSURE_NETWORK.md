@@ -46,7 +46,7 @@ In order of how much they change the network:
    distance 3. Each policy output has 48 channels per point, so the board's policy is 19 x 19 x 48 = 17,328 logits,
    plus pass: 17,329 against Go's 362. Pass stays one logit per output. The head itself is KataGo's. Only its last
    1x1 convolution is 48 times wider.
-2. **The inputs.** 215 spatial planes (Go: 22) and 5 global values (Go: 19), in absolute colours, with the player to
+2. **The inputs.** 215 spatial planes (Go: 22) and 5 global values (7 with V9's playout doubling advantage; Go: 19), in absolute colours, with the player to
    move as a global input. 192 of the planes are edges, 48 offsets each for four kinds of edge. The initial
    convolution grows from 22 x C to 215 x C, about 8% of b10c128's parameters.
 3. **The targets in KataGo's spatial heads change their meaning.** The heads keep their shapes and slots, except that

@@ -26,6 +26,19 @@ def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     padded[:, :num_channels] = globalTargetsNC
     return padded
 
+# Enclosure fork (2026-10-13): the C++ V9 rows add the playout doubling advantage as 2 global inputs after V8's 5
+# (modelconfigs.get_inputs_version). Rows written before have 5 and are zero-padded, as rows with no advantage are. A
+# model with 5 global inputs reads the first 5 of a V9 row: it has no inputs for the advantage.
+def fit_global_input_nc(globalInputNC: np.ndarray, num_global_features: int) -> np.ndarray:
+    num_channels = globalInputNC.shape[1]
+    if num_channels == num_global_features:
+        return globalInputNC
+    if num_channels > num_global_features:
+        return globalInputNC[:, :num_global_features]
+    padded = np.zeros((globalInputNC.shape[0], num_global_features), dtype=globalInputNC.dtype)
+    padded[:, :num_channels] = globalInputNC
+    return padded
+
 # Enclosure fork (owner, 2026-10-03): valueTargetsNCHW gained C5-6 (the territory income); rows written before have 5
 # channels and are zero-padded (their C69 flag is 0, so the padding is never trained on).
 VALUE_TARGETS_NCHW_CHANNELS = 7
@@ -86,7 +99,7 @@ def read_npz_training_data(
                 return arr.reshape(num_whole_steps * batch_size, *rest)
 
             binaryInputNCHWPacked = select_rank_rows(npz["binaryInputNCHWPacked"])
-            globalInputNC = select_rank_rows(npz["globalInputNC"])
+            globalInputNC = fit_global_input_nc(select_rank_rows(npz["globalInputNC"]), num_global_features)
             policyTargetsNCMove = select_rank_rows(npz["policyTargetsNCMove"]).astype(np.float32)
             globalTargetsNC = pad_global_targets_nc(select_rank_rows(npz["globalTargetsNC"]))
             scoreDistrN = select_rank_rows(npz["scoreDistrN"]).astype(np.float32)

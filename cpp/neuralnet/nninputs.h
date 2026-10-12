@@ -136,6 +136,12 @@ namespace NNInputs {
   const int V8_FEATURE_PLANES_START = V8_EDGE_PLANES_START + 4 * enclosure::NOFF;
   const int NUM_FEATURES_SPATIAL_V8 = V8_FEATURE_PLANES_START + enclosure::FEATURE_PLANES;
   const int NUM_FEATURES_GLOBAL_V8 = enclosure::SCALARS;
+  //Enclosure fork (2026-10-13): V9, V8 with KataGo's playout doubling advantage as two more global inputs (V7's
+  //inputs 15 and 16): 1 when the advantage is nonzero, and half the advantage, from the player to move's side. Self-play
+  //gives one side more visits in some games (normalAsymmetricPlayoutProb), and its rows record the advantage. Model
+  //version 18.
+  const int NUM_FEATURES_SPATIAL_V9 = NUM_FEATURES_SPATIAL_V8;
+  const int NUM_FEATURES_GLOBAL_V9 = enclosure::SCALARS + 2;
 
   Hash128 getHash(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
@@ -181,6 +187,17 @@ namespace NNInputs {
   //(each entry moved to its image: a point's to the image point, an edge's to the image edge's canonical anchor),
   //equal to fillRowV8Packed(getSymBoard(board, symmetry), ...) without building the image board.
   void fillRowV8Packed(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
+    int symmetry = 0
+  );
+  //V9: the V8 rows, with rowGlobal holding NUM_FEATURES_GLOBAL_V9 values.
+  void fillRowV9(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal,
+    std::vector<int>* setEntries = NULL
+  );
+  void fillRowV9Packed(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
     int symmetry = 0

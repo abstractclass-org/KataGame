@@ -82,6 +82,11 @@ int main(int argc, char** argv) {
   int packedChecks = 0;
   vector<float> symRow(S * S * C), symGlobal(G);
   int symChecks = 0;
+  const int G9 = NNInputs::NUM_FEATURES_GLOBAL_V9;
+  static_assert(NNInputs::NUM_FEATURES_SPATIAL_V9 == NNInputs::NUM_FEATURES_SPATIAL_V8, "");
+  static_assert(NNInputs::NUM_FEATURES_GLOBAL_V9 == NNInputs::NUM_FEATURES_GLOBAL_V8 + 2, "");
+  vector<float> v9Row(S * S * C), v9Global(G9), v9GlobalPacked(G9), v8Global(G);
+  int v9Checks = 0;
 
   string line;
   int positions = 0, failures = 0, historyChecks = 0;
@@ -218,6 +223,37 @@ int main(int argc, char** argv) {
         fail(label + ": global " + Global::intToString(i) + " is " + Global::floatToString(global[i]) +
              ", want " + Global::floatToString(expectedGlobal[i]));
 
+    //V9 (2026-10-13): V8's row and its global inputs, then the playout doubling advantage's two: 0 and 0 without an
+    //advantage, 1 and half the advantage with one; the float and packed fills agree. V8 ignores the advantage, and the
+    //advantage enters the NN cache's hash.
+    for(double advantage : {0.0, 1.5, -2.25}) {
+      MiscNNInputParams v9Params;
+      v9Params.playoutDoublingAdvantage = advantage;
+      std::fill(v9Global.begin(), v9Global.end(), -1.0f);
+      NNInputs::fillRowV9(board, hist, pla, v9Params, S, S, true, v9Row.data(), v9Global.data());
+      const string what = label + ": V9 with advantage " + Global::doubleToString(advantage);
+      if(v9Row != nhwc)
+        fail(what + ": the spatial row differs from V8's");
+      for(int i = 0; i < G; i++)
+        if(v9Global[i] != global[i])
+          fail(what + ": global " + Global::intToString(i) + " differs from V8's");
+      const float wantFlag = advantage != 0 ? 1.0f : 0.0f, wantValue = (float)(0.5 * advantage);
+      if(v9Global[G] != wantFlag || v9Global[G + 1] != wantValue)
+        fail(what + ": the advantage's inputs are " + Global::floatToString(v9Global[G]) + " and " +
+             Global::floatToString(v9Global[G + 1]));
+      std::fill(v9GlobalPacked.begin(), v9GlobalPacked.end(), -1.0f);
+      NNInputs::fillRowV9Packed(board, hist, pla, v9Params, S, S, true, nhwcBits.data(), v9GlobalPacked.data());
+      NNInputs::unpackSpatialBits(nhwcBits.data(), unpacked.data(), S * S * C);
+      if(unpacked != nhwc || v9GlobalPacked != v9Global)
+        fail(what + ": the packed fill differs from the float fill");
+      NNInputs::fillRowV8(board, hist, pla, v9Params, S, S, true, v9Row.data(), v8Global.data());
+      if(v8Global != global)
+        fail(what + ": V8's global inputs depend on the advantage");
+      if(advantage != 0 && NNInputs::getHash(board, hist, pla, v9Params) == NNInputs::getHash(board, hist, pla, params))
+        fail(what + ": the advantage does not enter the hash");
+      v9Checks++;
+    }
+
     //The history planes enter the inputs, so they must enter the NN cache's hash too.
     bool hasHistory = false;
     for(int h = 0; h < enclosure::HISTORY_TURNS; h++)
@@ -231,7 +267,7 @@ int main(int argc, char** argv) {
       historyChecks++;
     }
   }
-  printf("%d positions, %d with history, %d refilled, %d packed, %d symmetric, %d failures\n", positions, historyChecks,
-         reusedChecks, packedChecks, symChecks, failures);
+  printf("%d positions, %d with history, %d refilled, %d packed, %d symmetric, %d V9, %d failures\n", positions,
+         historyChecks, reusedChecks, packedChecks, symChecks, v9Checks, failures);
   return failures == 0 && positions > 0 ? 0 : 1;
 }

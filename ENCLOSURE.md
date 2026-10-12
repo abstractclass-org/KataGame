@@ -238,6 +238,9 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
 - **Global, 5** (`NUM_FEATURES_GLOBAL_V8`): the observation's scalars. These are the player to move, the edges left in
   the turn / 2, the move count / 120, and both scores / (18 · 18 · 61). The plan puts the scalars here, not in
   constant planes.
+- **Global, 7 in V9** (`NUM_FEATURES_GLOBAL_V9`, model version 18, 2026-10-13): V8's 5, then KataGo's playout
+  doubling advantage as its V7 inputs 15 and 16: 1 when the advantage is nonzero, and half the advantage, from the
+  player to move's side (v2/docs/design/03-network-inputs.md).
 - **Absolute colours,** as in the Enclosure network: plane k is Blue's for k = 0. The player to move is a global
   input. (KataGo's Go inputs are relative to the mover. The choice was "our feature planes, as KataGo uses its Go
   features".)
@@ -350,10 +353,10 @@ bins. Only the training rows and the Python head use the distribution (step 6).
     - FP16, NHWC and NCHW: within 6e-3.
 
     TensorRT came later.
-- **Inputs in PyTorch:** `modelconfigs` gives 215 spatial and 5 global inputs. The model's first layers read them from
+- **Inputs in PyTorch:** `modelconfigs` gives 215 spatial and 5 global inputs (7 with the config's `inputs_version` 9). The model's first layers read them from
   there, not from Go's hard-coded 22 and 19.
 - **Go's score parity** (the komi feature times a parity vector in the score-belief head) stays as a no-op: the vector
-  is zero. Here the last global input is a score, not komi.
+  is zero. Here the last global input is a score (V8) or half the playout doubling advantage (V9), not komi.
 - **Score-belief bin centres** are in points: 12 × (bin − 421 + 0.5) (the Enclosure score bins).
 - **No result:** the fork never sets `isNoResult`. Its rules (area scoring, positional ko) take KataGo's branch that
   sets the no-result output to zero. So win and loss share the probability, as under Go's area rules.

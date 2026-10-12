@@ -329,6 +329,12 @@ def main(args):
             + str(version) + " < 17, which can technically represent it but we're not outputting in practice"
         )
 
+    # Enclosure fork (2026-10-13): a model with the V9 inputs (the playout doubling advantage: 7 global inputs) is
+    # version 17's format as version 18, which C++ maps to NNInputs V9. A binary from before refuses it.
+    if modelconfigs.get_inputs_version(model_config) == 9:
+        assert version == 17, version
+        version = 18
+
     writeln(model_name)
     writeln(version)
     writeln(modelconfigs.get_num_bin_input_features(model_config))

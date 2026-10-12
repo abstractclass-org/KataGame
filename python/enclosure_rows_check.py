@@ -15,6 +15,7 @@ import sys
 
 import torch
 
+from katago.train import modelconfigs
 from katago.train.data_processing_pytorch import read_npz_training_data
 from katago.train.load_model import load_model
 from katago.train.metrics_pytorch import Metrics
@@ -34,7 +35,8 @@ def main():
                                         randomize_symmetries=True, include_meta=False, model_config=model.config):
         n = batch["binaryInputNCHW"].shape[0]
         assert batch["binaryInputNCHW"].shape == (n, 215, SIZE, SIZE)
-        assert batch["globalInputNC"].shape == (n, 5)
+        # 5 global inputs, or 7 with the V9 inputs (inputs_version 9, 2026-10-13); the loader fits the rows to the model.
+        assert batch["globalInputNC"].shape == (n, modelconfigs.get_num_global_input_features(model.config))
         assert batch["policyTargetsNCMove"].shape == (n, 2, policy_len(SIZE))
         assert batch["scoreDistrN"].shape == (n, 842)
         # 7 planes since the territory income (C5-6, 2026-10-03); files written before have 5.

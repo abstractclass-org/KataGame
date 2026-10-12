@@ -148,6 +148,17 @@ def save_output_npz(
         **save_dict
     )
 
+# Enclosure fork (2026-10-13): the C++ V9 rows have 7 global inputs, V8's 5 and the playout doubling advantage.
+# Files of both widths merge at the widest width, the narrower zero-padded (no advantage), so the output stays 5 wide
+# until the first V9 rows arrive. The trainer fits the width to its model (fit_global_input_nc).
+def pad_global_inputs_to_widest(globalInputNCList: list[np.ndarray]) -> None:
+    width = max(arr.shape[1] for arr in globalInputNCList)
+    for i, arr in enumerate(globalInputNCList):
+        if arr.shape[1] < width:
+            padded = np.zeros((arr.shape[0], width), dtype=arr.dtype)
+            padded[:, :arr.shape[1]] = arr
+            globalInputNCList[i] = padded
+
 def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     """Zero-pad older-format globalTargetsNC rows up to the current channel count."""
     num_channels = globalTargetsNC.shape[1]
@@ -251,6 +262,7 @@ def shardify(
     if len(binaryInputNCHWPackedList) <= 0:
         return num_files_not_found # Early quit since we don't know shapes
 
+    pad_global_inputs_to_widest(globalInputNCList)
     concatenated_arrs = (
         joint_concatenate(
             [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList]
@@ -356,6 +368,7 @@ def merge_bucket(
         print("WARNING: empty merge bucket: ", out_tmp_dir)
         return []
 
+    pad_global_inputs_to_widest(globalInputNCList)
     concatenated_arrs = (
         joint_concatenate(
             [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList]

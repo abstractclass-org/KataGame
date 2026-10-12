@@ -4,10 +4,11 @@
 // Model versions
 namespace NNModelVersion {
 
-  constexpr int latestModelVersionImplemented = 17;
-  //Enclosure fork: every model version reads the Enclosure inputs (V8); Go's V3-V7 are not used.
-  constexpr int latestInputsVersionImplemented = 8;
-  constexpr int defaultModelVersion = 17;
+  constexpr int latestModelVersionImplemented = 18;
+  //Enclosure fork: every model version reads the Enclosure inputs (V8, or V9 from version 18); Go's V3-V7 are not used.
+  constexpr int latestInputsVersionImplemented = 9;
+  //Self-play writes its training rows in this version's inputs (selfplay.cpp), whatever its network reads.
+  constexpr int defaultModelVersion = 18;
 
   constexpr int oldestModelVersionImplemented = 8;
   constexpr int oldestInputsVersionImplemented = 8;

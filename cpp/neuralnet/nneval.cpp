@@ -552,10 +552,11 @@ void NNEvaluator::fillRowBufs(
   int symmetry
 ) const {
   const int rowSpatialLen = NNModelVersion::getNumSpatialFeatures(modelVersion) * nnXLen * nnYLen;
-  //Enclosure fork (owner, 2026-10-06; trick 3): symmetry, the image's row written from board, for V8 only.
-  testAssert(symmetry == 0 || inputsVersion == 8);
-  //V8 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
-  if(inputsVersion != 8 && buf.rowSpatialBuf.size() < rowSpatialLen)
+  //Enclosure fork (owner, 2026-10-06; trick 3): symmetry, the image's row written from board, for V8 and V9 only.
+  const bool enclosureInputs = inputsVersion == 8 || inputsVersion == 9;
+  testAssert(symmetry == 0 || enclosureInputs);
+  //V8 and V9 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
+  if(!enclosureInputs && buf.rowSpatialBuf.size() < rowSpatialLen)
     buf.rowSpatialBuf.resize(rowSpatialLen);
   const int rowGlobalLen = NNModelVersion::getNumGlobalFeatures(modelVersion);
   if(buf.rowGlobalBuf.size() < rowGlobalLen)
@@ -564,15 +565,19 @@ void NNEvaluator::fillRowBufs(
   if(buf.rowMetaBuf.size() < rowMetaLen)
     buf.rowMetaBuf.resize(rowMetaLen);
 
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 8, "");
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 9, "");
   //Enclosure fork (owner, 2026-10-06): V8 rows packed, one bit per entry (NNResultBuf::rowSpatialBits). This replaces
-  //the float row cleared by its last entries (2026-10-05): the packed row is 9.7 KB, cleared whole.
-  buf.rowSpatialPacked = inputsVersion == 8;
-  if(inputsVersion == 8) {
+  //the float row cleared by its last entries (2026-10-05): the packed row is 9.7 KB, cleared whole. V9 rows are V8's
+  //with two more global inputs (2026-10-13).
+  buf.rowSpatialPacked = enclosureInputs;
+  if(enclosureInputs) {
     testAssert(rowSpatialLen == NNInputs::NUM_SPATIAL_ELTS_V8);
     if(buf.rowSpatialBits.size() < NNInputs::NUM_SPATIAL_WORDS_V8)
       buf.rowSpatialBits.resize(NNInputs::NUM_SPATIAL_WORDS_V8);
-    NNInputs::fillRowV8Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
+    if(inputsVersion == 9)
+      NNInputs::fillRowV9Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
+    else
+      NNInputs::fillRowV8Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
   }
   else if(inputsVersion == 3)
     NNInputs::fillRowV3(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBuf.data(), buf.rowGlobalBuf.data());

@@ -3019,12 +3019,13 @@ void NNInputs::fillRowV7(
 //Fills rowGlobal and calls setEntry(i) for each spatial entry i that is 1 (the spatial row must start all 0); shared
 //by fillRowV8 (floats) and fillRowV8Packed (bits), so the two rows cannot differ. symmetry (owner, 2026-10-06; trick
 //3): the row of board's image under it, each entry moved to its image (a point's to the image point, an edge's to
-//the image edge's canonical anchor as the image's observation lists it); the scalars do not change.
+//the image edge's canonical anchor as the image's observation lists it); the scalars do not change. playoutInputs
+//(V9, 2026-10-13): rowGlobal also holds the two playout doubling advantage inputs (NUM_FEATURES_GLOBAL_V9).
 template<typename SetEntry>
 static void fillRowV8Entries(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams,
-  int nnXLen, int nnYLen, bool useNHWC, float* rowGlobal, int symmetry, SetEntry setEntry
+  int nnXLen, int nnYLen, bool useNHWC, float* rowGlobal, int symmetry, bool playoutInputs, SetEntry setEntry
 ) {
   assert(nnXLen == enclosure::SIZE && nnYLen == enclosure::SIZE);
   assert(board.x_size == enclosure::SIZE && board.y_size == enclosure::SIZE);
@@ -3036,7 +3037,7 @@ static void fillRowV8Entries(
   using NNInputs::NUM_FEATURES_GLOBAL_V8;
   using NNInputs::V8_EDGE_PLANES_START;
   using NNInputs::V8_FEATURE_PLANES_START;
-  std::fill(rowGlobal, rowGlobal + NUM_FEATURES_GLOBAL_V8, 0.0f);
+  std::fill(rowGlobal, rowGlobal + (playoutInputs ? NNInputs::NUM_FEATURES_GLOBAL_V9 : NUM_FEATURES_GLOBAL_V8), 0.0f);
 
   int featureStride;
   int posStride;
@@ -3109,6 +3110,14 @@ static void fillRowV8Entries(
     rowGlobal[4] = float((board.pos.scores[1] + komi) / (18 * 18 * 61));
   else if(komi < 0)
     rowGlobal[3] = float((board.pos.scores[0] - komi) / (18 * 18 * 61));
+  //V9 (2026-10-13): KataGo's playout doubling advantage, as V7's inputs 15 and 16. The first is 1 whenever the
+  //advantage is nonzero, because "there's actually a discontinuity in how training behavior works when this is
+  //nonzero, no matter how slightly" (KataGo's comment). The search and the training rows give the advantage from the
+  //player to move's side.
+  if(playoutInputs && nnInputParams.playoutDoublingAdvantage != 0) {
+    rowGlobal[enclosure::SCALARS] = 1.0f;
+    rowGlobal[enclosure::SCALARS + 1] = (float)(0.5 * nnInputParams.playoutDoublingAdvantage);
+  }
 
   //Feature planes, channels last, (y * 19 + x) * FEATURE_PLANES + plane.
   static thread_local std::vector<uint8_t> planes(enclosure::N_POINTS * enclosure::FEATURE_PLANES);
@@ -3125,11 +3134,13 @@ static void fillRowV8Entries(
   }
 }
 
-void NNInputs::fillRowV8(
+static void fillRowV8Floats(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams,
-  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries
+  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries,
+  bool playoutInputs
 ) {
+  using NNInputs::NUM_FEATURES_SPATIAL_V8;
   //The spatial planes are sparse 0/1: with setEntries, clear only the entries the last fill set (nninputs.h).
   if(setEntries != NULL) {
     for(int i : *setEntries)
@@ -3139,11 +3150,30 @@ void NNInputs::fillRowV8(
   else
     std::fill(rowBin, rowBin + NUM_FEATURES_SPATIAL_V8 * nnXLen * nnYLen, 0.0f);
   //Each entry set is recorded for the next fill's clearing.
-  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, 0, [&](int i) {
+  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, 0, playoutInputs, [&](int i) {
     rowBin[i] = 1.0f;
     if(setEntries != NULL)
       setEntries->push_back(i);
   });
+}
+
+static void fillRowV8Bits(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry, bool playoutInputs
+) {
+  std::fill(rowBits, rowBits + NNInputs::NUM_SPATIAL_WORDS_V8, 0u);
+  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, symmetry, playoutInputs, [&](int i) {
+    rowBits[i >> 5] |= 1u << (i & 31);
+  });
+}
+
+void NNInputs::fillRowV8(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries
+) {
+  fillRowV8Floats(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBin, rowGlobal, setEntries, false);
 }
 
 void NNInputs::fillRowV8Packed(
@@ -3151,10 +3181,23 @@ void NNInputs::fillRowV8Packed(
   const MiscNNInputParams& nnInputParams,
   int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry
 ) {
-  std::fill(rowBits, rowBits + NUM_SPATIAL_WORDS_V8, 0u);
-  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, symmetry, [&](int i) {
-    rowBits[i >> 5] |= 1u << (i & 31);
-  });
+  fillRowV8Bits(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBits, rowGlobal, symmetry, false);
+}
+
+void NNInputs::fillRowV9(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries
+) {
+  fillRowV8Floats(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBin, rowGlobal, setEntries, true);
+}
+
+void NNInputs::fillRowV9Packed(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry
+) {
+  fillRowV8Bits(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBits, rowGlobal, symmetry, true);
 }
 
 void NNInputs::unpackSpatialBits(const uint32_t* rowBits, float* out, int n) {
