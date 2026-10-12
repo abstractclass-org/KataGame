@@ -77,7 +77,6 @@ const int DEFAULT_VISITS = 500;
 struct Process {
   string baseConfig, build = "unknown";
   int engines = 1;
-  bool releaseModelBytes = false;  // setReleaseModelBytes
 };
 Process P;
 
@@ -89,9 +88,8 @@ struct PendingReader {
 };
 
 struct Engine {
-  vector<char> pending;  // a network's bytes, written by the caller (modelBuffer)
+  vector<char> pending;  // a network's bytes, written by the caller (modelBuffer), until load_model reads them
   PendingReader pendingReader;  // or the caller's reader of them (modelReader)
-  vector<char> model;    // a network loaded from memory: its bytes, which the evaluator reads ("memory:")
   string modelName, modelSha;
   size_t modelBytes = 0;
   Logger* logger = nullptr;
@@ -442,14 +440,12 @@ json loadModel(const json& q) {
   delete E.cfg;
   string file;
   if(path != nullptr) {
-    E.model.clear();
     E.modelSha = sha256(fileBytes);
     E.modelBytes = fileBytes.size();
     file = path->get<string>();
   }
   else if(E.pendingReader.read) {
     // The caller's bytes, read where it holds them: the module never copies the whole network.
-    E.model.clear();
     E.modelSha = E.pendingReader.sha256;
     E.modelBytes = E.pendingReader.len;
 #ifdef MODEL_FROM_MEMORY
@@ -459,12 +455,10 @@ json loadModel(const json& q) {
     file = "memory:engine";
   }
   else {
-    E.model.swap(E.pending);
-    E.pending.clear();
-    E.modelSha = sha256(E.model);
-    E.modelBytes = E.model.size();
+    E.modelSha = sha256(E.pending);
+    E.modelBytes = E.pending.size();
 #ifdef MODEL_FROM_MEMORY
-    ModelDesc::registerInMemoryModel("engine", E.model.data(), E.model.size());
+    ModelDesc::registerInMemoryModel("engine", E.pending.data(), E.pending.size());
 #endif
     file = "memory:engine";
   }
@@ -482,11 +476,11 @@ json loadModel(const json& q) {
     ? Setup::MaxBatchSizeRequest::explicitSize(E.cfg->getInt("nnMaxBatchSize", 1, 65536))
     : Setup::MaxBatchSizeRequest::fromConcurrency();
   acquireEvaluator(file, text, batch);
-  if(P.releaseModelBytes && path == nullptr) {
-    // Only a load_model reads the bytes, and each brings its own: the evaluator holds what it took from them.
-    vector<char>().swap(E.model);
+  if(path == nullptr) {
+    // The evaluator holds what it took from the network, and each load_model brings its own: the bytes go now.
+    vector<char>().swap(E.pending);
 #ifdef MODEL_FROM_MEMORY
-    ModelDesc::registerInMemoryModel("engine", E.model.data(), 0);
+    ModelDesc::registerInMemoryModel("engine", nullptr, 0);
 #endif
   }
   E.search = new Search(E.params, E.nnEval, E.logger, "engine");
@@ -758,10 +752,6 @@ void EnclosureProtocol::setup(const string& configText, const string& build) {
 
 void EnclosureProtocol::setParallel(int engines) {
   P.engines = std::max(1, engines);
-}
-
-void EnclosureProtocol::setReleaseModelBytes(bool release) {
-  P.releaseModelBytes = release;
 }
 
 char* EnclosureProtocol::modelBuffer(size_t len) {

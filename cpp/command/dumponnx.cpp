@@ -35,6 +35,7 @@ int MainCmds::dumponnx(const vector<string>& args) {
   bool requireExactNNLen;
   bool transformerNHWC;
   bool skipScale8;
+  bool keepWeights;
   try {
     KataGoCommandLine cmd("Dump the ONNX graph that KataGo builds for a model.");
     cmd.addModelFileArg();
@@ -59,12 +60,19 @@ int MainCmds::dumponnx(const vector<string>& args) {
       "", "skip-scale8",
       "Skip the 1/8 activation rescaling that keeps convnet activations inside the FP16 range. "
       "Matches onnxSkipScale8 = true in a config; the TensorRT backend always applies it.");
+    //Enclosure fork (v2/docs/design/19-webgpu-module.md): the GPU module's graph computes in FP32 and stores the weights
+    //of a 16-bit network file in 16 bits, which needs them exactly as the file has them.
+    TCLAP::SwitchArg keepWeightsArg(
+      "", "no-reduce-activations",
+      "Keep the weights as the model file has them: no transformToReduceActivations, which moves batch norm scales "
+      "into the convolutions before them (use with -skip-scale8).");
     cmd.add(outputFileArg);
     cmd.add(nnXLenArg);
     cmd.add(nnYLenArg);
     cmd.add(requireExactNNLenArg);
     cmd.add(transformerNHWCArg);
     cmd.add(skipScale8Arg);
+    cmd.add(keepWeightsArg);
     cmd.parseArgs(args);
 
     modelFile = cmd.getModelFile();
@@ -73,6 +81,7 @@ int MainCmds::dumponnx(const vector<string>& args) {
     nnYLen = nnYLenArg.getValue();
     requireExactNNLen = requireExactNNLenArg.getValue();
     skipScale8 = skipScale8Arg.getValue();
+    keepWeights = keepWeightsArg.getValue();
 
     const string& nhwcStr = transformerNHWCArg.getValue();
     if(nhwcStr == "0")
@@ -110,7 +119,7 @@ int MainCmds::dumponnx(const vector<string>& args) {
   Logger logger(nullptr, logToStdout, logToStderr, logTime);
 
   ModelDesc modelDesc;
-  ModelDesc::loadFromFileMaybeGZipped(modelFile, modelDesc, "");
+  ModelDesc::loadFromFileMaybeGZipped(modelFile, modelDesc, "", !keepWeights);
   logger.write(
     "Loaded model " + modelDesc.name + " (" + modelDesc.getShortInfoString() + ") from " + modelFile);
 

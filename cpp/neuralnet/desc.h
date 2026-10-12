@@ -641,7 +641,13 @@ struct ModelDesc {
 
   //Loads a model from a file that may or may not be gzipped, storing it in descBuf
   //If expectedSha256 is nonempty, will also verify sha256 of the loaded data.
-  static void loadFromFileMaybeGZipped(const std::string& fileName, ModelDesc& descBuf, const std::string& expectedSha256);
+  //Enclosure fork: reduceActivations false keeps the weights as the file has them (katago dumponnx
+  //-no-reduce-activations), with no transformToReduceActivations. shapesOnly keeps the layers' shapes and drops their
+  //weights as the model is read (the GPU module, v2/wasm/jsbackend.cpp, whose network runs outside it); the score
+  //belief's small layers keep theirs, as NNEvaluator reads them.
+  static void loadFromFileMaybeGZipped(
+    const std::string& fileName, ModelDesc& descBuf, const std::string& expectedSha256, bool reduceActivations = true,
+    bool shapesOnly = false);
 #ifdef MODEL_FROM_MEMORY
   //Enclosure fork (v2/wasm): an uncompressed binary model (.bin) held in memory, which loadFromFileMaybeGZipped then
   //opens by the name "memory:NAME". The bytes must outlive every load.
@@ -651,9 +657,6 @@ struct ModelDesc {
   static void registerInMemoryModelReader(
     const std::string& name, size_t len, const std::function<size_t(size_t, char*, size_t)>& read);
 #endif
-  //Enclosure fork (v2/wasm, the GPU module): when set, models read from then on keep their layers' shapes and drop
-  //their weights (the score belief's small layers keep theirs, as NNEvaluator reads them). Off unless set.
-  static void setSkipWeightsOnLoad(bool skip);
 
   //Throws StringError if name is not usable as a model name. Model names get embedded into on-disk
   //cache filenames (e.g. the TensorRT plan cache), so they are restricted to a short

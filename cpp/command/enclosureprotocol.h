@@ -20,12 +20,8 @@ namespace EnclosureProtocol {
   // the same network with the same settings then share one network evaluator, created for all their evaluations at
   // once, so that its batches gather every engine's evaluations. Native builds only.
   void setParallel(int engines);
-  // Before the first request: a network loaded from the model buffer gives its bytes back once its evaluator holds
-  // what it needs of them (the GPU module, v2/wasm/engine.cpp, whose evaluator keeps only the network's shapes, runs
-  // one module a search). Off by default: the bytes stay, as before.
-  void setReleaseModelBytes(bool release);
   // A buffer for a network's bytes (a .bin model, as model-float16.bin); the load_model action without a path then
-  // loads it. The buffer stays valid until the next call.
+  // loads it, and frees it once loaded. The buffer stays valid until the next call or that load.
   char* modelBuffer(size_t len);
   // In place of the buffer: a network of `len` bytes that the caller holds, with its SHA-256 (hex), read in chunks
   // through read(offset, dst, n) -> bytes copied, so that the engine never holds a copy of it (the GPU module's page,

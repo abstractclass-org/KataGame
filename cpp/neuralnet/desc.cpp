@@ -40,29 +40,30 @@ static float readFloatFast(istream& in, string& tmp) {
   return x;
 }
 
-//Enclosure fork (v2/wasm, the GPU module, whose network runs outside the module): when set, the layers keep their
-//shapes and drop their weights as a model is read (readFloats reads past them and gives none). Off unless set.
-static bool skipWeightsOnLoad = false;
-void ModelDesc::setSkipWeightsOnLoad(bool skip) {
-  skipWeightsOnLoad = skip;
+//Enclosure fork (v2/wasm, the GPU module, whose network runs outside the module): a model read with shapesOnly
+//(loadFromFileMaybeGZipped) keeps its layers' shapes and drops their weights: readFloats reads past them and gives
+//none. The stream being read carries the mode, so it belongs to that one read.
+static int shapesOnlyIndex() {
+  static const int index = std::ios_base::xalloc();
+  return index;
+}
+static bool skippingWeights(istream& in) {
+  return in.iword(shapesOnlyIndex()) != 0;
 }
 
 static void readFloats(istream& in, size_t numFloats, bool binaryFloats, const string& name, vector<float>& buf) {
-  if(skipWeightsOnLoad)
+  const bool skip = skippingWeights(in);
+  if(skip)
     buf.clear();
   else
     buf.resize(numFloats);
   if(!binaryFloats) {
     string tmp;
-    if(skipWeightsOnLoad) {
-      for(size_t i = 0; i<numFloats; i++)
-        readFloatFast(in,tmp);
-      if(in.fail())
-        throw StringError(name + ": could not read float weights. Invalid model - perhaps you are trying to load a .bin.gz model as a .txt.gz model?");
-      return;
+    for(size_t i = 0; i<numFloats; i++) {
+      const float f = readFloatFast(in,tmp);
+      if(!skip)
+        buf[i] = f;
     }
-    for(size_t i = 0; i<numFloats; i++)
-      buf[i] = readFloatFast(in,tmp);
     if(in.fail())
       throw StringError(name + ": could not read float weights. Invalid model - perhaps you are trying to load a .bin.gz model as a .txt.gz model?");
   }
@@ -96,8 +97,12 @@ static void readFloats(istream& in, size_t numFloats, bool binaryFloats, const s
       else if(s != "BIN@")
         throw StringError(name + ": did not find expected header for binary float block");
     }
-    if(skipWeightsOnLoad) {
-      in.ignore((std::streamsize)(numFloats * (halfFloats ? sizeof(uint16_t) : sizeof(float))));
+    if(skip) {
+      const std::streamoff bytes = (std::streamoff)(numFloats * (halfFloats ? sizeof(uint16_t) : sizeof(float)));
+      if(!in.seekg(bytes, std::ios::cur)) {  //a stream that cannot seek reads them through
+        in.clear();
+        in.ignore((std::streamsize)bytes);
+      }
       if(in.fail())
         throw StringError(name + ": did not find the expected number of floats in binary float block");
       return;
@@ -202,7 +207,7 @@ ConvLayerDesc::ConvLayerDesc(istream& in, bool binaryFloats) {
 
   vector<float> floats;
   readFloats(in, (size_t)convYSize * convXSize * inChannels * outChannels, binaryFloats, name, floats);
-  if(skipWeightsOnLoad)  //Enclosure fork: shapes only
+  if(skippingWeights(in))  //Enclosure fork: shapes only
     return;
   weights.resize(numWeights);
   size_t idx = 0;
@@ -316,7 +321,7 @@ BatchNormLayerDesc::BatchNormLayerDesc(istream& in, bool binaryFloats) {
     throw StringError(
       name + ": bnlayer failed to parse expected number of batch norm mean, variance, bias, scale values");
 
-  if(!skipWeightsOnLoad)  //Enclosure fork: shapes only
+  if(!skippingWeights(in))  //Enclosure fork: shapes only
     computeMerged();
 }
 
@@ -533,7 +538,7 @@ MatMulLayerDesc::MatMulLayerDesc(istream& in, bool binaryFloats) {
 
   vector<float> floats;
   readFloats(in, (size_t)inChannels * outChannels, binaryFloats, name, floats);
-  if(skipWeightsOnLoad)  //Enclosure fork: shapes only
+  if(skippingWeights(in))  //Enclosure fork: shapes only
     return;
   weights.resize(numWeights);
   size_t idx = 0;
@@ -2460,10 +2465,11 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
       throw StringError(name + ": failed to parse the score belief's length and bin width");
     //Enclosure fork: NNEvaluator reads the score belief's own weights, so its small layers keep them always.
     struct KeepWeights {
-      bool was;
-      KeepWeights() : was(skipWeightsOnLoad) { skipWeightsOnLoad = false; }
-      ~KeepWeights() { skipWeightsOnLoad = was; }
-    } keepWeights;
+      istream& in;
+      long was;
+      KeepWeights(istream& s) : in(s), was(s.iword(shapesOnlyIndex())) { in.iword(shapesOnlyIndex()) = 0; }
+      ~KeepWeights() { in.iword(shapesOnlyIndex()) = was; }
+    } keepWeights(in);
     sbS2Mul = MatMulLayerDesc(in,binaryFloats);
     sbS2Bias = MatBiasLayerDesc(in,binaryFloats);
     sbS2OffMul = MatMulLayerDesc(in,binaryFloats);
@@ -3130,10 +3136,27 @@ struct ReaderStreamBuf : public std::streambuf {
     setg(chunk.data(), chunk.data(), chunk.data() + n);
     return traits_type::to_int_type(*gptr());
   }
+  //A seek from the reading position (readFloats skipping weights): nothing is fetched until the next read.
+  pos_type seekoff(off_type off, std::ios_base::seekdir way, std::ios_base::openmode which) override {
+    if(way != std::ios_base::cur || !(which & std::ios_base::in))
+      return pos_type(off_type(-1));
+    const off_type at = off_type(offset) - off_type(egptr() - gptr()) + off;
+    if(at < 0 || size_t(at) > len)
+      return pos_type(off_type(-1));
+    offset = size_t(at);
+    setg(chunk.data(), chunk.data(), chunk.data());
+    return pos_type(at);
+  }
 };
 #endif
 
-void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& descBuf, const string& expectedSha256) {
+void ModelDesc::loadFromFileMaybeGZipped(
+  const string& fileName, ModelDesc& descBuf, const string& expectedSha256, bool reduceActivations, bool shapesOnly
+) {
+  auto parse = [&](std::istream& in, const string& sha256, bool binaryFloats) {
+    in.iword(shapesOnlyIndex()) = shapesOnly ? 1 : 0;
+    descBuf = ModelDesc(in, sha256, binaryFloats);
+  };
 #ifdef MODEL_FROM_MEMORY
   if(Global::isPrefix(fileName, "memory:")) {
     auto it = inMemoryModels().find(fileName.substr(7));
@@ -3143,7 +3166,7 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
     if(m.read) {
       ReaderStreamBuf streamBuf(m.read, m.len);
       std::istream in(&streamBuf);
-      descBuf = ModelDesc(in, "in-memory:" + fileName.substr(7), true);
+      parse(in, "in-memory:" + fileName.substr(7), true);
       return;
     }
     //An uncompressed binary model (.bin), read where it lies: a copy would double the module's memory for a moment.
@@ -3154,7 +3177,7 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
       }
     } streamBuf(m.data, m.len);
     std::istream in(&streamBuf);
-    descBuf = ModelDesc(in, "in-memory:" + fileName.substr(7), true);
+    parse(in, "in-memory:" + fileName.substr(7), true);
     return;
   }
 #endif
@@ -3172,7 +3195,7 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
       FileUtils::loadFileIntoString(fileName,expectedSha256,uncompressed,&sha256Buf);
       NonCopyingStreamBuf uncompressedStreamBuf(uncompressed);
       std::istream uncompressedIn(&uncompressedStreamBuf);
-      descBuf = ModelDesc(uncompressedIn,sha256Buf,binaryFloats);
+      parse(uncompressedIn,sha256Buf,binaryFloats);
     }
     else if(Global::isSuffix(lower,".bin")) {
       bool binaryFloats = true;
@@ -3181,7 +3204,7 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
       FileUtils::loadFileIntoString(fileName,expectedSha256,uncompressed,&sha256Buf);
       NonCopyingStreamBuf uncompressedStreamBuf(uncompressed);
       std::istream uncompressedIn(&uncompressedStreamBuf);
-      descBuf = ModelDesc(uncompressedIn,sha256Buf,binaryFloats);
+      parse(uncompressedIn,sha256Buf,binaryFloats);
     }
     else if(Global::isSuffix(lower,".txt.gz") || Global::isSuffix(lower,".bin.gz") || Global::isSuffix(lower,".gz")) {
       string uncompressed;
@@ -3194,7 +3217,7 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
         NonCopyingStreamBuf uncompressedStreamBuf(uncompressed);
         std::istream uncompressedIn(&uncompressedStreamBuf);
         //And read in the model desc
-        descBuf = ModelDesc(uncompressedIn,sha256Buf,binaryFloats);
+        parse(uncompressedIn,sha256Buf,binaryFloats);
       }
       catch(const StringError& e) {
         //On failure, try again to read as a .txt.gz file if the extension was ambiguous
@@ -3206,7 +3229,7 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
           try {
             NonCopyingStreamBuf uncompressedStreamBuf(uncompressed);
             std::istream uncompressedIn(&uncompressedStreamBuf);
-            descBuf = ModelDesc(uncompressedIn,sha256Buf,binaryFloats);
+            parse(uncompressedIn,sha256Buf,binaryFloats);
           }
           catch(const StringError& e2) {
             throw StringError(string("Could neither parse .gz model as .txt.gz model nor as .bin.gz model, errors were:\n") + e2.what() + "\n" + e.what());
@@ -3218,7 +3241,8 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
       throw StringError("Model file should end with .txt, .bin, .txt.gz, .bin.gz, or possibly just .gz. (If it doesn't have one of these extensions already, it's probably the wrong file, renaming will probably NOT help).");
     }
 
-    descBuf.transformToReduceActivations();
+    if(reduceActivations)
+      descBuf.transformToReduceActivations();
   }
   catch(const StringError& e) {
     throw StringError("Error loading or parsing model file " + fileName + ": " + e.what());

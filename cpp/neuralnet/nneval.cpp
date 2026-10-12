@@ -161,7 +161,6 @@ NNEvaluator::NNEvaluator(
     numInputMetaChannels = desc.numInputMetaChannels;
     modelHasAux = desc.valueHead.auxVersion >= 1;
     modelHasRegret = !desc.valueHead.regretHeads.empty();
-    modelHasSwing = desc.valueHead.regretHeads.size() >= 4;
     //Export stage 2: copied before createComputeContext, which may scale the model's weights for its backend.
     modelHasPolicyAux = modelHasAux && desc.policyHead.auxVersion >= 1;
     if(modelHasAux && desc.valueHead.auxVersion >= 2) {
@@ -194,7 +193,6 @@ NNEvaluator::NNEvaluator(
     modelHasAux = false;
     modelHasPolicyAux = false;
     modelHasRegret = false;
-    modelHasSwing = false;
     inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
   }
 

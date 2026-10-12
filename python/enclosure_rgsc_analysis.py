@@ -29,9 +29,11 @@ import os
 import numpy as np
 
 MODE_SGFPOS = 4  # FinishedGameData::MODE_SGFPOS: a game from a start position (RGSC's restarts in v2a)
-# Each source: its target and flag columns, its C74 code, and the trainer's metrics (value loss, ranking loss, rows).
-SOURCES = {"vanilla": dict(regret=70, flag=71, code=1, metrics=("rgloss", "rkloss", "rgrows")),
-           "swing": dict(regret=72, flag=73, code=2, metrics=("swloss", "swkloss", "swrows"))}
+# Each source: its target and flag columns, its C74 code, the trainer's metrics (value loss, ranking loss, rows), and
+# its value and ranking heads among postprocess_output's outputs (the last four are the regret value, the regret
+# ranking, the swing value and the swing ranking; enclosure_rgsc_selectors.py).
+SOURCES = {"vanilla": dict(regret=70, flag=71, code=1, metrics=("rgloss", "rkloss", "rgrows"), heads=(-4, -3)),
+           "swing": dict(regret=72, flag=73, code=2, metrics=("swloss", "swkloss", "swrows"), heads=(-2, -1))}
 
 
 def load_rows(run_dir, folders, files_per_folder, rng, source):

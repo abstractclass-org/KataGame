@@ -158,8 +158,6 @@ class NNEvaluator {
   bool hasScoreBelief() const { return scoreBeliefParams.len > 0; }
   double getScoreBinWidth() const { return scoreBeliefParams.binWidth; }
   bool hasRegretHeads() const { return modelHasRegret; }
-  //Enclosure fork (2026-10-11): whether the model has RGSC's swing heads too (NNOutput::hasSwing).
-  bool hasSwingHeads() const { return modelHasSwing; }
   // The build-time max batch size: backend buffers are allocated for this many rows, and
   // fixed-shape backends (NeuralNet::BatchPolicy::FixedShape) pad every inference up to exactly
   // this many rows, so it is also the one input shape their sessions get compiled for.
@@ -340,7 +338,6 @@ class NNEvaluator {
   ScoreBeliefParams scoreBeliefParams;
   void finishScoreBelief(NNOutput& output) const;
   bool modelHasRegret;
-  bool modelHasSwing;
 
   ModelPostProcessParams postProcessParams;
 

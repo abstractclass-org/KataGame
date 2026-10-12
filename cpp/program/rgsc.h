@@ -102,7 +102,6 @@ namespace Rgsc {
     //Counts a finished game; returns how many had finished before it (for the warm-up).
     int64_t countFinishedGame();
     size_t size() const;
-    const Settings& getSettings() const { return settings; }
     //A one-line summary for the log: states and their regrets and origins, and this run's counts (restarts drawn,
     //written after their state left the buffer, and dropped; candidates offered and taken; sample attempts while
     //the buffer was empty, or not yet full).

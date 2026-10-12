@@ -28,23 +28,16 @@ import numpy as np
 import torch
 
 from katago.train.data_processing_pytorch import read_npz_training_data
-from katago.train.model_pytorch import Model
+from katago.train.load_model import load_model
+from enclosure_rgsc_analysis import MODE_SGFPOS, SOURCES  # each source's target and flag columns, and its heads
 
 SIZE = 19
-MODE_SGFPOS = 4
-# Each source: its target and flag columns, and its value and ranking heads among postprocess_output's outputs (the
-# last four are the regret value, the regret ranking, the swing value and the swing ranking, with or without the heads).
-SOURCES = {"vanilla": dict(target=70, flag=71, value=-4, ranking=-3),
-           "swing": dict(target=72, flag=73, value=-2, ranking=-1)}
 
 
 def load(path, device, use_swa):
-    ckpt = torch.load(path, map_location="cpu", weights_only=False)
-    model = Model(ckpt["config"], SIZE)
-    sd = ckpt["swa_model"] if use_swa else ckpt["model"]
-    prefix = [k for k in sd if k.endswith("value_head.conv1.weight")][0][:-len("value_head.conv1.weight")]
-    model.load_state_dict({k[len(prefix):]: v for k, v in sd.items() if k.startswith(prefix)}, strict=True)
-    return model.to(device).eval()
+    """The checkpoint's network, or its SWA weights (what the run exports), as KataGo's training loads them."""
+    model, swa_model, _ = load_model(path, use_swa=use_swa, device=device)
+    return (swa_model if use_swa else model).eval()
 
 
 def rank_corr(a, b):
@@ -77,9 +70,9 @@ def main():
             if g.shape[1] <= src["flag"]:  # rows from before the source's columns: no target
                 continue
             post = model.postprocess_output(model(batch["binaryInputNCHW"], batch["globalInputNC"]))[0]
-            cols["pred"].append(post[src["value"]].float().cpu().numpy())
-            cols["rank"].append(post[src["ranking"]].float().cpu().numpy())
-            cols["regret"].append(g[:, src["target"]]); cols["flag"].append(g[:, src["flag"]])
+            cols["pred"].append(post[src["heads"][0]].float().cpu().numpy())
+            cols["rank"].append(post[src["heads"][1]].float().cpu().numpy())
+            cols["regret"].append(g[:, src["regret"]]); cols["flag"].append(g[:, src["flag"]])
             cols["turn"].append(g[:, 51]); cols["start"].append(g[:, 53]); cols["mode"].append(g[:, 55])
             h = g[:, 41:47].astype(np.int64)
             cols["game"].append(h[:, 0] * 4194304 * 4194304 + h[:, 1] * 4194304 + h[:, 3] + 31 * h[:, 4])
