@@ -446,8 +446,8 @@ This section lists them so that a reader sees them as choices. "On" and "off" de
 `selfplay_enclosure.cfg`, `train.log`). To change one, use KataGo's own flag or key.
 
 - **Training** (`python/train.py`, `python/shuffle.py`):
-  - **Learning rate:** KataGo's base rate (`pslr_batch` 3e-5 a sample), times a third for the self-play trainer
-    (`-lr-scale 0.333`). No schedule. Available: `-lr-scale` (a multiplier), `-lr-schedule` (explicit steps by
+  - **Learning rate:** KataGo's base rate (`pslr_batch` 3e-5 a sample), times a ninth for the self-play trainer
+    (`-lr-scale 0.111`, after a third from 2026-10-07), each drop at a flat stretch. No schedule. Available: `-lr-scale` (a multiplier), `-lr-schedule` (explicit steps by
     samples trained), `-lr-scale-auto`/`-auto2` (KataGo's step schedules, with their first cuts at 20M-550M samples),
     `-lr-cycle-*` (cyclic).
   - **Rates by parameter group: on, the defaults.** The output layers of all heads together run at half the trunk's
