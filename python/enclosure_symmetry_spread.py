@@ -16,7 +16,9 @@ symmetry's frame and compared with the network's own policy there.
   and symmetries. The policy is the softmax over every move and pass, as the trainer computes it: the engine also
   leaves out the illegal moves, which a trained network gives almost nothing.
 - topAgree: the share of (position, symmetry) pairs whose top move is the identity's top move. lightvector's study of
-  KataGo's released networks (July 2026) finds 90 to 95%.
+  KataGo's released networks (July 2026) finds 90 to 95%. topAgreeClear: the same, only on the positions where the
+  identity's top move leads the second by more than CLEAR_GAP (counted in clearPositions): near ties decide topAgree
+  (v2/docs/decisions/build.md, "The training's symmetry handling").
 - winSD: the standard deviation of the mover's win chance over the 8 symmetries, mean over the undecided positions
   (mean win chance 0.1 to 0.9, counted in winPositions). leadSD: the same for the lead in points, over all positions.
 
@@ -25,8 +27,9 @@ spread evenly through the file. It keeps their inputs, the same for every checkp
 
 measure: each checkpoint in RUN_DIR/models and models_extra (NAME-sS-dD with model.ckpt) exported after the run's last
 input change (the RUN_DIR/*_since markers: older networks read other inputs), not yet in RUN_DIR/symmetry.jsonl, at
-least --every-rows data rows after the last one measured of its size. It appends one line for each. With --watch it
-looks again every SECONDS, forever. With --only it measures just the checkpoints named and prints them, writing nothing.
+least --every-rows data rows after the last one measured of its size. It appends one line for each. First it measures
+again each line that lacks a number this version computes, and rewrites the file. With --watch it looks again every
+SECONDS, forever. With --only it measures just the checkpoints named and prints them, writing nothing.
 The positions are RUN_DIR/symmetry_positions.npz.
 """
 
@@ -49,6 +52,7 @@ from katago.train.model_pytorch import Model
 SIZE = 19
 NAME = re.compile(r"(.+)-s(\d+)-d(\d+)")
 FUTUREPOS = "value_head.conv_futurepos.weight"
+CLEAR_GAP = 0.15
 
 
 def load(path):
@@ -111,13 +115,18 @@ def spread(model, binary, global_raw):
         wins.append(torch.softmax(out[1].float(), dim=1)[:, 0])
         leads.append(out[2][:, 2].float() * model.lead_multiplier)
     tv, agree = [], []
+    top2 = policies[0].topk(2, dim=1).values
+    clear = (top2[:, 0] - top2[:, 1]) > CLEAR_GAP
     for s in range(1, NUM_SYMMETRIES):
         expected = apply_symmetry_policy(policies[0].unsqueeze(1), s, binary, g)[:, 0]  # the identity's, in frame s
         tv.append(0.5 * (expected - policies[s]).abs().sum(dim=1))
         agree.append((expected.argmax(dim=1) == policies[s].argmax(dim=1)).float())
+    agree = torch.stack(agree)  # symmetries, positions
     wins, leads = torch.stack(wins, dim=1), torch.stack(leads, dim=1)
     undecided = (wins.mean(dim=1) >= 0.1) & (wins.mean(dim=1) <= 0.9)
-    return {"policyTV": round(float(torch.stack(tv).mean()), 4), "topAgree": round(float(torch.stack(agree).mean()), 4),
+    return {"policyTV": round(float(torch.stack(tv).mean()), 4), "topAgree": round(float(agree.mean()), 4),
+            "topAgreeClear": round(float(agree[:, clear].mean()), 4) if bool(clear.any()) else None,
+            "clearPositions": int(clear.sum()),
             "winSD": round(float(wins[undecided].std(dim=1).mean()), 4) if bool(undecided.any()) else None,
             "winPositions": int(undecided.sum()), "leadSD": round(float(leads.std(dim=1).mean()), 2)}
 
@@ -150,11 +159,30 @@ def candidates(run, done, every_rows):
     return sorted(chosen, key=lambda c: c[1])
 
 
+def fill_missing(run, out, binary, global_raw):
+    """Measure again each line of out that lacks a number spread() now computes, and rewrite out after each."""
+    rows = [json.loads(line) for line in out.read_text().splitlines()] if out.exists() else []
+    dirs = checkpoint_dirs(run)
+    for i, row in enumerate(rows):
+        if "topAgreeClear" in row or row["model"] not in dirs or not (dirs[row["model"]] / "model.ckpt").exists():
+            continue
+        start = time.time()
+        net, weights = load(str(dirs[row["model"]] / "model.ckpt"))
+        rows[i] = {**row, "weights": weights, **spread(net, binary, global_raw), "seconds": round(time.time() - start)}
+        tmp = out.with_suffix(".jsonl.tmp")
+        tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        tmp.replace(out)
+        print(f"filled {row['model']}", flush=True)
+        del net
+
+
 def measure(args):
     run = pathlib.Path(args.run)
     out = run / "symmetry.jsonl"
     torch.set_num_threads(args.threads)
     binary, global_raw = load_positions(run / "symmetry_positions.npz")
+    if not args.only:
+        fill_missing(run, out, binary, global_raw)
     while True:
         done = {json.loads(line)["model"] for line in out.read_text().splitlines()} if out.exists() else set()
         todo = candidates(run, done, args.every_rows)
