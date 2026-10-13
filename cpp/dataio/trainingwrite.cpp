@@ -275,7 +275,7 @@ void FinishedGameData::printDebug(ostream& out) const {
 //And update the python code
 static const int POLICY_TARGET_NUM_CHANNELS = 2;
 static const int GLOBAL_TARGET_NUM_CHANNELS = 80;
-static const int VALUE_SPATIAL_TARGET_NUM_CHANNELS = 7;  //Enclosure fork: KataGo's 5, then the territory income (C5-6)
+static const int VALUE_SPATIAL_TARGET_NUM_CHANNELS = 8;  //Enclosure fork: KataGo's 5, the territory income (C5-6), the next mover's nodes (C7)
 static const int QVALUE_SPATIAL_TARGET_NUM_CHANNELS = 3;
 
 TrainingWriteBuffers::TrainingWriteBuffers(int iVersion, int maxRws, int numBChannels, int numFChannels, int xLen, int yLen, bool includeMetadata)
@@ -934,6 +934,25 @@ void TrainingWriteBuffers::addRow(
         else if(board3.colors[loc] == opp) rowOwnership[pos+posArea*3] = -1;
       }
     }
+  }
+
+  //Enclosure fork (2026-10-14): C7, not a target: the next mover's nodes in the position after this row's move
+  //(boards[t+1], where policy channel 1's search ran), flagged by C75. The trainer's symmetries need them to list
+  //channel 1's moves between two of that player's nodes from their lower end (v2/docs/decisions/build.md, "The
+  //training's symmetry handling"): the row's own inputs hold the mover's nodes before the move.
+  rowGlobal[75] = 0.0f;
+  for(int i = 0; i<posArea; i++)
+    rowOwnership[i+posArea*7] = 0;
+  if(policyTarget1 != NULL && posHistForFutureBoards != NULL && whiteValueTargetsIdx+1 < (int)posHistForFutureBoards->size()) {
+    const Board& nextBoard = (*posHistForFutureBoards)[whiteValueTargetsIdx+1];
+    const Player nextMover = Board::playerOfIndex(nextBoard.pos.player);
+    for(int y = 0; y<board.y_size; y++) {
+      for(int x = 0; x<board.x_size; x++) {
+        if(nextBoard.colors[Location::getLoc(x,y,board.x_size)] == nextMover)
+          rowOwnership[NNPos::xyToPos(x,y,dataXLen)+posArea*7] = 1;
+      }
+    }
+    rowGlobal[75] = 1.0f;
   }
 
 

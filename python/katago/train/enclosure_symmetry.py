@@ -134,17 +134,25 @@ def apply_symmetry_inputs(binary_inputs, symmetry):
     return out
 
 
-def apply_symmetry_policy(policy, symmetry, binary_inputs, global_inputs):
+def player_nodes(binary_inputs, player):
+    """(N, points) bool: the nodes of player (N,; 0 blue, 1 red) in the inputs' feature planes."""
+    n = binary_inputs.shape[0]
+    node_planes = binary_inputs[:, FEATURE_PLANES_START:FEATURE_PLANES_START + 2 * FEATURES_PER_PLAYER:FEATURES_PER_PLAYER]
+    return node_planes[torch.arange(n, device=binary_inputs.device), player].reshape(n, SIZE * SIZE) > 0.5
+
+
+def apply_symmetry_policy(policy, symmetry, binary_inputs, global_inputs, nodes=None):
     """Policy-shaped targets (N, C, NUM_ACTIONS + 1), pass last, for the positions of binary_inputs (before
-    the symmetry). A move between two of the mover's nodes is listed from its lower end, so its image is
-    listed from the image's lower end; any other move from the image of its source (the mover's node)."""
+    the symmetry). A move between two of its player's nodes is listed from its lower end, so its image is
+    listed from the image's lower end; any other move from the image of its source (the player's node).
+    The player is the mover, whose nodes the inputs hold; nodes (N, points) bool gives another player's."""
     if symmetry == 0:
         return policy
     n, c, _ = policy.shape
     forward, canonical, _, dest = tables(symmetry, policy.device)
-    player = global_inputs[:, 0].round().long()  # 0 blue, 1 red
-    node_planes = binary_inputs[:, FEATURE_PLANES_START:FEATURE_PLANES_START + 2 * FEATURES_PER_PLAYER:FEATURES_PER_PLAYER]
-    mover_nodes = node_planes[torch.arange(n, device=policy.device), player].reshape(n, SIZE * SIZE) > 0.5  # N, points
+    if nodes is None:
+        nodes = player_nodes(binary_inputs, global_inputs[:, 0].round().long())  # the mover: 0 blue, 1 red
+    mover_nodes = nodes
     valid = forward >= 0
     dest_is_node = torch.zeros(n, NUM_ACTIONS, dtype=torch.bool, device=policy.device)
     dest_is_node[:, valid] = mover_nodes[:, dest[valid]]
@@ -155,3 +163,34 @@ def apply_symmetry_policy(policy, symmetry, binary_inputs, global_inputs):
     padded.scatter_add_(2, index.unsqueeze(1).expand(n, c, NUM_ACTIONS), moves)
     out = padded[:, :, :NUM_ACTIONS]
     return torch.cat((out, policy[:, :, NUM_ACTIONS:]), dim=2)
+
+
+NEXT_NODES_PLANE = 7   # valueTargetsNCHW C7: the next mover's nodes after the row's move (trainingwrite.h)
+NEXT_NODES_FLAG = 75   # globalTargetsNC C75: 1 if C7 holds them
+
+
+def next_mover_nodes(binary_inputs, global_inputs, value_targets, global_targets):
+    """(N, points) bool: the nodes of policy channel 1's player in the position after the row's move. From
+    valueTargetsNCHW C7 where C75 flags it. Otherwise from the inputs: the opponent's nodes after a turn's last
+    edge, the mover's after its first (rows written before C7; a node that the row's own move creates is missing)."""
+    player = global_inputs[:, 0].round().long()
+    last_edge = global_inputs[:, 1] < 0.75  # one edge left in the turn (the edges left / 2): the opponent moves next
+    nodes = player_nodes(binary_inputs, torch.where(last_edge, 1 - player, player))
+    if value_targets.shape[1] > NEXT_NODES_PLANE and global_targets.shape[1] > NEXT_NODES_FLAG:
+        n = binary_inputs.shape[0]
+        written = global_targets[:, NEXT_NODES_FLAG] > 0.5
+        plane = value_targets[:, NEXT_NODES_PLANE].reshape(n, SIZE * SIZE) > 0.5
+        nodes = torch.where(written.unsqueeze(1), plane, nodes)
+    return nodes
+
+
+def apply_symmetry_policy_targets(policy, symmetry, binary_inputs, global_inputs, value_targets, global_targets):
+    """The trainer's policy targets (N, 2, NUM_ACTIONS + 1), for the positions before the symmetry: channel 0 is
+    the mover's move, channel 1 the next move, which C++ lists for the next mover. Each channel maps with its own
+    player's nodes (v2/docs/decisions/build.md, "The training's symmetry handling")."""
+    if symmetry == 0:
+        return policy
+    first = apply_symmetry_policy(policy[:, :1], symmetry, binary_inputs, global_inputs)
+    second = apply_symmetry_policy(policy[:, 1:], symmetry, binary_inputs, global_inputs,
+                                   nodes=next_mover_nodes(binary_inputs, global_inputs, value_targets, global_targets))
+    return torch.cat((first, second), dim=1)

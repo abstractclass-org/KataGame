@@ -39,8 +39,8 @@ def main():
         assert batch["globalInputNC"].shape == (n, modelconfigs.get_num_global_input_features(model.config))
         assert batch["policyTargetsNCMove"].shape == (n, 2, policy_len(SIZE))
         assert batch["scoreDistrN"].shape == (n, 842)
-        # 7 planes since the territory income (C5-6, 2026-10-03); files written before have 5.
-        assert batch["valueTargetsNCHW"].shape in ((n, 5, SIZE, SIZE), (n, 7, SIZE, SIZE))
+        # 8 planes since the next mover's nodes (C7, 2026-10-14); the loader pads files written before (5 or 7).
+        assert batch["valueTargetsNCHW"].shape == (n, 8, SIZE, SIZE)
         model.zero_grad()
         outputs = model(batch["binaryInputNCHW"], batch["globalInputNC"])
         metrics = metrics_obj.metrics_dict_batchwise(

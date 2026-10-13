@@ -169,9 +169,10 @@ def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     padded[:, :num_channels] = globalTargetsNC
     return padded
 
-# Enclosure fork (owner, 2026-10-03): valueTargetsNCHW gained C5-6 (the territory income); rows written before have 5
-# channels and are zero-padded (their C69 flag is 0, so the padding is never trained on).
-VALUE_TARGETS_NCHW_CHANNELS = 7
+# Enclosure fork (owner, 2026-10-03): valueTargetsNCHW gained C5-6 (the territory income), and C7 (2026-10-14: the
+# next mover's nodes, for the symmetries of policy channel 1, not a target); rows written before have 5 or 7
+# channels and are zero-padded (their C69 and C75 flags are 0, so the padding is never read).
+VALUE_TARGETS_NCHW_CHANNELS = 8
 
 def pad_value_targets_nchw(valueTargetsNCHW: np.ndarray) -> np.ndarray:
     """Zero-pad older-format valueTargetsNCHW rows up to the current channel count."""

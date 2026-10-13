@@ -375,12 +375,18 @@ bins. Only the training rows and the Python head use the distribution (step 6).
 - **Training augmentation** (`katago/train/enclosure_symmetry.py`, used by `data_processing_pytorch.py`):
   - point planes and the value targets move as pixels.
   - the edge planes and the policy and q-value targets go through index maps. A stored edge goes to the lower end of
-    its image. A move between two of the mover's nodes (read from the node feature planes before the symmetry) goes
-    to the lower end of its image. Any other move goes to the image of its source.
+    its image. A move between two of its player's nodes goes to the lower end of its image. Any other move goes to
+    the image of its source.
+  - Each policy channel uses its own player's nodes, before the symmetry: channel 0 and the q-values the mover's
+    (the node feature planes), channel 1 (the next move) the next mover's after the row's move (valueTargetsNCHW
+    C7, flagged by C75; rows written before C7 fall back to the next mover's node plane in the inputs, which lacks a
+    node that the row's own move creates). Until 2026-10-14 channel 1 used the mover's nodes too
+    (v2/docs/decisions/build.md, "The training's symmetry handling").
   - Symmetries have the same numbers as in C++.
   - Test: `katago/python/enclosure_symmetry_check.py` against `testsymmetry -dump`. For 40 positions × 8 symmetries,
     the augmented inputs equal the C++ inputs of the image position, and every legal move lands on the image from
-    `getSymAction`. Scrambled symmetry labels fail.
+    `getSymAction`, in channel 0 and in channel 1 (with the position as the next position and another player as the
+    row's mover; the old mapping fails 248 of the 280 cases with a symmetry). Scrambled symmetry labels fail.
 
 ## Score scale (step 6)
 
@@ -504,7 +510,9 @@ their format, and old and new rows mix in the shuffle:
   weight C34 = the value weight.
   - The 1-round horizon is left out on its merits too. The current regions are an input, the future nodes cover 8
     edges ahead, and the ownership target covers the whole game.
-- `v2/tools/check_katago_rows.py` checks the rows (it computes all three again from the engine).
+- **C7, not a target** (2026-10-14): the next mover's nodes after the row's move, flagged by C75, for the
+  augmentation of policy channel 1 ("Symmetries" above). The shuffle and the trainer pad older rows to 8 planes.
+- `v2/tools/check_katago_rows.py` checks the rows (it computes all three again from the engine, and C7).
   `enclosure_rows_check.py` checks KataGo's trainer (every loss finite).
 
 The design as first written:

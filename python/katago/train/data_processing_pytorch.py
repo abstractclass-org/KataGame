@@ -39,9 +39,10 @@ def fit_global_input_nc(globalInputNC: np.ndarray, num_global_features: int) -> 
     padded[:, :num_channels] = globalInputNC
     return padded
 
-# Enclosure fork (owner, 2026-10-03): valueTargetsNCHW gained C5-6 (the territory income); rows written before have 5
-# channels and are zero-padded (their C69 flag is 0, so the padding is never trained on).
-VALUE_TARGETS_NCHW_CHANNELS = 7
+# Enclosure fork (owner, 2026-10-03): valueTargetsNCHW gained C5-6 (the territory income), and C7 (2026-10-14: the
+# next mover's nodes, for the symmetries of policy channel 1, not a target); rows written before have 5 or 7
+# channels and are zero-padded (their C69 and C75 flags are 0, so the padding is never read).
+VALUE_TARGETS_NCHW_CHANNELS = 8
 
 def pad_value_targets_nchw(valueTargetsNCHW: np.ndarray) -> np.ndarray:
     """Zero-pad older-format valueTargetsNCHW rows up to the current channel count."""
@@ -181,10 +182,11 @@ def read_npz_training_data(
                 batch_binaryInputNCHW = apply_history_dropout(model_config, batch_binaryInputNCHW)
 
                 if randomize_symmetries:
-                    # Enclosure fork: edges move as edges (enclosure_symmetry); the policy mapping reads the
-                    # mover's nodes from the inputs before the symmetry.
+                    # Enclosure fork: edges move as edges (enclosure_symmetry); the policy mapping reads each
+                    # channel's player's nodes before the symmetry: the mover's from the inputs, the next mover's
+                    # (channel 1) from valueTargetsNCHW C7.
                     symm = int(rand.integers(0,enclosure_symmetry.NUM_SYMMETRIES))
-                    batch_policyTargetsNCMove = enclosure_symmetry.apply_symmetry_policy(batch_policyTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC)
+                    batch_policyTargetsNCMove = enclosure_symmetry.apply_symmetry_policy_targets(batch_policyTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC, batch_valueTargetsNCHW, batch_globalTargetsNC)
                     if include_qvalues:
                         batch_qValueTargetsNCMove = enclosure_symmetry.apply_symmetry_policy(batch_qValueTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC)
                     batch_binaryInputNCHW = enclosure_symmetry.apply_symmetry_inputs(batch_binaryInputNCHW, symm)

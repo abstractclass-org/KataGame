@@ -286,7 +286,9 @@ struct TrainingWriteBuffers {
   //written before 2026-10-11).
   //C74: Enclosure fork (2026-10-11): the RGSC buffer that the row's game restarted from: 0 none (a normal start, a
   //fork, or RGSC off), 1 the vanilla buffer, 2 the swing buffer. Side positions carry their game's.
-  //C75-79: Unused, zero-filled.
+  //C75: Enclosure fork (2026-10-14): 1 if valueTargetsNCHW C7 holds the next mover's nodes (0 in rows with no next
+  //move, and in rows written before it, which the shuffle pads to 8 channels).
+  //C76-79: Unused, zero-filled.
 
   NumpyBuffer<float> globalTargetsNC;
 
@@ -307,6 +309,10 @@ struct TrainingWriteBuffers {
   //C5-6: Enclosure fork (owner, 2026-10-03; iviazovetskyi's ownership target): territory income of the player to move
   //(C5) and of the opponent (C6). Per lattice point, its enclosed area inside the unit square around the point,
   //averaged over the turn ends after this row's position, x 120 ([0,120]). All 0 unless C69.
+  //C7: Enclosure fork (2026-10-14): not a target. 1 on each node of the next mover (the player of policy channel 1)
+  //in the position after this row's move, 0 elsewhere. The trainer's symmetries list policy channel 1's moves
+  //between two of that player's nodes from their lower end, as C++ does (v2/docs/decisions/build.md, "The
+  //training's symmetry handling"). All 0 unless C75.
   NumpyBuffer<int8_t> valueTargetsNCHW;
 
   //Spatial q-value targets, from the perspective of the player to move.
