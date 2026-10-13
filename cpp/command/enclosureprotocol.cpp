@@ -69,7 +69,7 @@ namespace nt = enclosure::notation;
 
 namespace {
 
-const char* PROTOCOL = "0.3";  // pre-1.0: any change takes the next minor version (design 04, "Versioning")
+const char* PROTOCOL = "0.4";  // pre-1.0: any change takes the next minor version (design 04, "Versioning")
 const char* RULES = "online";  // the online variant (enclosure/README.md "Rules"), 19 x 19
 const int DEFAULT_VISITS = 500;
 
@@ -496,7 +496,7 @@ json ourMove(const json& m) {
 }
 
 void dropGoFields(json& j) {
-  for(const char* key : {"scoreMean", "noResultValue", "rawNoResultProb", "isSymmetryOf"})
+  for(const char* key : {"scoreMean", "noResultValue", "rawNoResultProb"})
     j.erase(key);
 }
 
@@ -513,8 +513,11 @@ json analysisReply(const json& q, const Board& board, const BoardHistory& hist, 
     return errorReply(q["id"], {"", "the search gave no analysis"});
   json moveInfos = json::array();
   for(json mi : out["moveInfos"]) {
+    // In a position that is its own image, the search keeps one edge of each set of equivalent edges (root symmetry
+    // pruning), and KataGo lists each other edge of the set with that edge's values: "isSymmetryOf" names it (design
+    // 04, "Symmetric twins").
     if(mi.contains("isSymmetryOf"))
-      continue;  // KataGo lists symmetric twins of a move too; each legal edge once here
+      mi["isSymmetryOf"] = ourMove(mi["isSymmetryOf"]);
     mi["move"] = ourMove(mi["move"]);
     if(mi.contains("pv"))
       for(json& m : mi["pv"])
