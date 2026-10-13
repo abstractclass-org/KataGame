@@ -5,7 +5,9 @@
 //   {"action": "load_model", "path"?, "name", "settings"}
 //                                                     a network: the file at "path" (the native engine), else the
 //                                                     model buffer; settings override the base settings
-//   {"action": "describe", "position", "moves"}      the position for a board: edges, nodes, regions, legal moves
+//   {"action": "describe", "position", "moves"}      the position for a board: edges, nodes, regions, legal moves, and
+//                                                     "check": whether "position" could occur in a game, with reasons
+//                                                     (position_check.h); an analysis of one that cannot is refused
 //   {"action": "play", "position", "moves", "move"}  whether the move is legal, what it cuts, the new position
 //   {"position", "moves", "maxVisits", ...}          an analysis (no action), as KataGo's analysis engine; with
 //                                                     "slice": {"visits": N} or {"ms": T}, one slice of it at a time
@@ -39,6 +41,7 @@
 #include "../game/board.h"
 #include "../game/boardhistory.h"
 #include "../game/enclosure/notation.h"
+#include "../game/enclosure/position_check.h"
 #include "../neuralnet/desc.h"
 #include "../neuralnet/nneval.h"
 #include "../program/setup.h"
@@ -69,7 +72,7 @@ namespace nt = enclosure::notation;
 
 namespace {
 
-const char* PROTOCOL = "0.4";  // pre-1.0: any change takes the next minor version (design 04, "Versioning")
+const char* PROTOCOL = "0.5";  // pre-1.0: any change takes the next minor version (design 04, "Versioning")
 const char* RULES = "online";  // the online variant (enclosure/README.md "Rules"), 19 x 19
 const int DEFAULT_VISITS = 500;
 
@@ -120,6 +123,7 @@ json errorReply(const json& id, const Fail& f) {
     r["field"] = f.field;
   return r;
 }
+
 
 const json* field(const json& q, const char* key) {
   auto it = q.find(key);
@@ -261,6 +265,22 @@ json outcome(const enclosure::Position& p) {
   return {{"result", result}};
 }
 
+// The position check (design 04, "The position check"; learn-enclosure's request 16) of the query's "position", the
+// position before its moves (the moves themselves are checked as legal moves): {"possible", "reasons"}, each reason
+// {"code", "text", "edges"}. A query with no position starts from the standard start, which passes. Call it after
+// buildPosition, which refuses a position string that does not parse.
+json positionCheck(const json& q) {
+  json reasons = json::array();
+  if(const json* p = field(q, "position")) {
+    enclosure::Position start;
+    string why;
+    if(p->is_string() && nt::parse_position(p->get<string>(), start, why))
+      for(const auto& r : enclosure::position_check::check(start))
+        reasons.push_back({{"code", r.code}, {"text", r.text}, {"edges", r.edges}});
+  }
+  return {{"possible", reasons.empty()}, {"reasons", reasons}};
+}
+
 json describe(const json& q) {
   Board board;
   BoardHistory hist;
@@ -301,6 +321,7 @@ json describe(const json& q) {
     {"areas", areas},
     {"legal", legalNames(p)},
     {"outcome", outcome(p)},
+    {"check", positionCheck(q)},
   };
 }
 
@@ -620,6 +641,13 @@ json analyze(const json& q) {
     return errorReply(q["id"], f);
   if(board.pos.terminal())
     return errorReply(q["id"], {"position", "the game is over"});
+  // A position that no game reaches gives numbers that mean nothing: refused, with its reasons (design 04).
+  const json check = positionCheck(q);
+  if(!check["possible"].get<bool>()) {
+    json reply = errorReply(q["id"], {"position", check["reasons"][0]["text"].get<string>()});
+    reply["reasons"] = check["reasons"];
+    return reply;
+  }
   int visits = DEFAULT_VISITS;
   if(const json* v = field(q, "maxVisits")) {
     if(!v->is_number_integer() || v->get<int>() < 1)
