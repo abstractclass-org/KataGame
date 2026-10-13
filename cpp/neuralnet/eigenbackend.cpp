@@ -3023,4 +3023,69 @@ bool NeuralNet::testEvaluateGlobalPoolingResidualBlock(
   return true;
 }
 
+#ifdef ENCLOSURE_EVAL_RAW
+//Enclosure fork (the threaded practice bot's CPU evaluator, v2/docs/design/22-practice-bot.md; v2/wasm/evaluator.cpp):
+//the network on `rows` positions given in the ONNX graph's layouts, with getOutput's steps: the inputs NCHW, and the
+//raw outputs as the graph gives them (policyPass [rows, P], policy [rows, P * K, H, W] with channel = output * K +
+//offset, value [rows, 3], scoreValue [rows, 6], ownership [rows, 1, H, W]), so that the module decodes them as it
+//decodes the GPU's (v2/wasm/jsbackend.cpp).
+void enclosureEigenRawOutput(
+  ComputeHandle* computeHandle, InputBuffers* inputBuffers, int rows, const float* spatialNCHW, const float* global,
+  float* policyPassOut, float* policyOut, float* valueOut, float* scoreValueOut, float* ownershipOut
+) {
+  testAssert(rows > 0 && rows <= inputBuffers->maxBatchSize);
+  testAssert(inputBuffers->singleInputMetaElts == 0);
+  const int nnXLen = computeHandle->context->nnXLen;
+  const int nnYLen = computeHandle->context->nnYLen;
+  const int hw = nnXLen * nnYLen;
+  const int C = computeHandle->model->numInputChannels;
+  const int G = (int)inputBuffers->singleInputGlobalElts;
+  const int P = computeHandle->model->numPolicyChannels;
+  const int K = NNPos::NUM_OFFSETS;
+  const int batchSize = rows;
+  //The Eigen backend is all NHWC.
+  for(int n = 0; n < rows; n++)
+    for(int c = 0; c < C; c++) {
+      const float* src = spatialNCHW + (size_t(n) * C + c) * hw;
+      float* dst = inputBuffers->spatialInput.data() + size_t(n) * hw * C + c;
+      for(int i = 0; i < hw; i++)
+        dst[size_t(i) * C] = src[i];
+    }
+  std::copy(global, global + size_t(rows) * G, inputBuffers->globalInput.data());
+
+  Buffers& buffers = *(computeHandle->buffers);
+  CONSTTENSORMAP4 input(inputBuffers->spatialInput.data(), C, nnXLen, nnYLen, batchSize);
+  CONSTTENSORMAP2 inputGlobal(inputBuffers->globalInput.data(), G, batchSize);
+  MAP4(trunk);
+  MAP2(policyPass);
+  MAP4(policy);
+  MAP2(value);
+  MAP2(scoreValue);
+  MAP4(ownership);
+  MAP3(mask);
+  vector<float>& maskSum = buffers.maskSum;
+  computeMaskSum(&mask,maskSum.data());
+  vector<float>& convWorkspace = buffers.convWorkspace;
+  computeHandle->model->apply(
+    &computeHandle->handleInternal, computeHandle->scratch.get(), &input, &inputGlobal, NULL, &trunk, &policyPass,
+    &policy, &value, &scoreValue, &ownership, &mask, maskSum.data(), convWorkspace.data()
+  );
+
+  std::copy(policyPass.data(), policyPass.data() + size_t(rows) * P, policyPassOut);
+  for(int n = 0; n < rows; n++) {
+    const float* src = policy.data() + size_t(n) * P * K * hw;  //NHWC: point, then channel
+    float* dst = policyOut + size_t(n) * P * K * hw;  //NCHW: channel, then point
+    for(int i = 0; i < hw; i++)
+      for(int ch = 0; ch < P * K; ch++)
+        dst[size_t(ch) * hw + i] = src[size_t(i) * P * K + ch];
+  }
+  testAssert(computeHandle->model->numValueChannels == 3);
+  testAssert(computeHandle->model->numScoreValueChannels == 6);
+  testAssert(computeHandle->model->numOwnershipChannels == 1);
+  std::copy(value.data(), value.data() + size_t(rows) * 3, valueOut);
+  std::copy(scoreValue.data(), scoreValue.data() + size_t(rows) * 6, scoreValueOut);
+  std::copy(ownership.data(), ownership.data() + size_t(rows) * hw, ownershipOut);
+}
+#endif
+
 #endif  // USE_EIGEN_BACKEND
