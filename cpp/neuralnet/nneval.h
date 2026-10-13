@@ -411,6 +411,13 @@ class NNEvaluator {
   NNServerBuf* syncServerBuf = NULL;
   Rand* syncRand = NULL;
   void evaluateSynchronously(NNResultBuf* resultBuf);
+#ifdef ENCLOSURE_COOP_THREADS
+  // Enclosure fork (the practice bot, v2/docs/design/22-practice-bot.md): with cooperative threads an evaluation can
+  // wait inside the network's call while another starts, so each takes a lane of its own (a compute handle and its
+  // buffers). The first lane is syncHandle and syncServerBuf; more are made as evaluations overlap.
+  std::vector<std::pair<ComputeHandle*, NNServerBuf*>> syncFreeLanes;
+  int syncNumLanes = 0;
+#endif
 #endif
 };
 

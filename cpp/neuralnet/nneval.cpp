@@ -510,6 +510,16 @@ void NNEvaluator::spawnServerThreads() {
 
 void NNEvaluator::killServerThreads() {
 #ifdef NNEVAL_SYNCHRONOUS
+#ifdef ENCLOSURE_COOP_THREADS
+  //Every lane is free here (no evaluation is in flight). The first is syncHandle and syncServerBuf, freed below.
+  for(const auto& lane : syncFreeLanes)
+    if(lane.first != syncHandle) {
+      NeuralNet::freeComputeHandle(lane.first);
+      delete lane.second;
+    }
+  syncFreeLanes.clear();
+  syncNumLanes = 0;
+#endif
   if(syncHandle != NULL)
     NeuralNet::freeComputeHandle(syncHandle);
   delete syncServerBuf;
@@ -1120,7 +1130,28 @@ void NNEvaluator::evaluateSynchronously(NNResultBuf* resultBuf) {
       resultBuf->symmetry = currentDefaultSymmetry.load(std::memory_order_acquire);
   }
   vector<NNOutput*> outputBuf(1, emptyOutput);
+#ifdef ENCLOSURE_COOP_THREADS
+  //Enclosure fork (the practice bot): a lane of its own, as the call can wait while another evaluation starts.
+  std::pair<ComputeHandle*, NNServerBuf*> lane;
+  if(!syncFreeLanes.empty()) {
+    lane = syncFreeLanes.back();
+    syncFreeLanes.pop_back();
+  }
+  else if(syncNumLanes == 0) {
+    lane = {syncHandle, syncServerBuf};
+    syncNumLanes = 1;
+  }
+  else {
+    lane = {NeuralNet::createComputeHandle(computeContext, loadedModel, logger, maxBatchSize, requireExactNNLen,
+                                           inputsUseNHWC, gpuIdxByServerThread.empty() ? 0 : gpuIdxByServerThread[0], 0),
+            new NNServerBuf(*this, loadedModel)};
+    syncNumLanes += 1;
+  }
+  NeuralNet::getOutput(lane.first, lane.second->inputBuffers, 1, &resultBuf, outputBuf);
+  syncFreeLanes.push_back(lane);
+#else
   NeuralNet::getOutput(syncHandle, syncServerBuf->inputBuffers, 1, &resultBuf, outputBuf);
+#endif
   testAssert(outputBuf.size() == 1);
   m_numRowsProcessed.fetch_add(1, std::memory_order_relaxed);
   m_numBatchesProcessed.fetch_add(1, std::memory_order_relaxed);
