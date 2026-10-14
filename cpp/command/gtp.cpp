@@ -636,6 +636,21 @@ struct GTPEngine {
     return true;
   }
 
+  //Enclosure fork (v2/docs/design/22-practice-bot.md): a game from a set-up start, as clearBoard starts one from the
+  //standard start. The start is the game's first position, so undo stops there. Its turn number is its edge count, so
+  //the early phase of the move temperature is the game's, as in the engine protocol (command/enclosureprotocol.cpp).
+  void setEnclosureStart(const enclosure::Position& start) {
+    testAssert(bot->getRootHist().rules == currentRules);
+    Board board(bot->getRootBoard().x_size,bot->getRootBoard().y_size);
+    board.setPosition(start);
+    Player pla = start.player == 0 ? P_BLACK : P_WHITE; //Blue is KataGo's Black
+    BoardHistory hist(board,pla,currentRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
+    hist.setInitialTurnNumber(start.move_count);
+    vector<Move> newMoveHistory;
+    setPositionAndRules(pla,board,hist,board,pla,newMoveHistory);
+    clearStatsForNewGame();
+  }
+
   void updateKomiIfNew(float newKomi) {
     bot->setKomiIfNew(newKomi);
     currentRules.komi = newKomi;
@@ -3937,6 +3952,11 @@ void GTPSession::finish() {
 
 GTPSession* GTPSessions::start(ConfigParser& cfg, const string& nnModelFile) {
   return new GTPSession(cfg,nnModelFile,"","",NULL);
+}
+
+void GTPSessions::setStart(GTPSession* session, const enclosure::Position& start) {
+  session->maybeSaveAvoidPatterns(false); //as clear_board
+  session->engine->setEnclosureStart(start);
 }
 
 string GTPSessions::handle(GTPSession* session, const string& line, bool& quit) {
