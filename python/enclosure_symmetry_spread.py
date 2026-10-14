@@ -21,6 +21,10 @@ symmetry's frame and compared with the network's own policy there.
   (v2/docs/decisions/build.md, "The training's symmetry handling").
 - winSD: the standard deviation of the mover's win chance over the 8 symmetries, mean over the undecided positions
   (mean win chance 0.1 to 0.9, counted in winPositions). leadSD: the same for the lead in points, over all positions.
+- advWin, advLead: how far the playout doubling advantage's two inputs (V9, model version 18: input 5 is 1, input 6 half
+  the doublings) move the mover's win chance and the lead in points, from the opponent at 8 times the visits (-1.5) to
+  the mover at 8 times (+1.5), mean over the positions, the board as it is (inputs-and-targets.md "V9's judgement").
+  None for a network with the V8 inputs.
 
 positions: the newest --files .npz files under DIR (self-play's tdata folders, by time), --per-file rows from each,
 spread evenly through the file. It keeps their inputs, the same for every checkpoint after.
@@ -53,6 +57,7 @@ SIZE = 19
 NAME = re.compile(r"(.+)-s(\d+)-d(\d+)")
 FUTUREPOS = "value_head.conv_futurepos.weight"
 CLEAR_GAP = 0.15
+ADVANTAGE = 1.5  # half the playout doublings: 8 times the visits (selfplay's maxAsymmetricRatio)
 
 
 def load(path):
@@ -131,6 +136,23 @@ def spread(model, binary, global_raw):
             "winPositions": int(undecided.sum()), "leadSD": round(float(leads.std(dim=1).mean()), 2)}
 
 
+@torch.no_grad()
+def advantage_read(model, binary, global_raw):
+    """advWin and advLead of the docstring, for one network on the positions."""
+    n = modelconfigs.get_num_global_input_features(model.config)
+    if n < 7:
+        return {"advWin": None, "advLead": None}
+    g = torch.from_numpy(fit_global_input_nc(global_raw, n)).float()
+    wins, leads = [], []
+    for half_doublings in (-ADVANTAGE, ADVANTAGE):
+        gh = g.clone()
+        gh[:, 5], gh[:, 6] = 1.0, half_doublings
+        out = model(binary, gh)[0]
+        wins.append(torch.softmax(out[1].float(), dim=1)[:, 0])
+        leads.append(out[2][:, 2].float() * model.lead_multiplier)
+    return {"advWin": round(float((wins[1] - wins[0]).mean()), 4), "advLead": round(float((leads[1] - leads[0]).mean()), 2)}
+
+
 def checkpoint_dirs(run):
     """Every exported checkpoint's folder by name: models/ holds the exports of the network that self-play plays (at
     the time), models_extra/ the other trainers'."""
@@ -160,15 +182,20 @@ def candidates(run, done, every_rows):
 
 
 def fill_missing(run, out, binary, global_raw):
-    """Measure again each line of out that lacks a number spread() now computes, and rewrite out after each."""
+    """Measure again each line of out that lacks a number this version computes (spread()'s, or advantage_read()'s
+    alone), and rewrite out after each."""
     rows = [json.loads(line) for line in out.read_text().splitlines()] if out.exists() else []
     dirs = checkpoint_dirs(run)
     for i, row in enumerate(rows):
-        if "topAgreeClear" in row or row["model"] not in dirs or not (dirs[row["model"]] / "model.ckpt").exists():
+        lacks_spread, lacks_advantage = "topAgreeClear" not in row, "advWin" not in row
+        if not (lacks_spread or lacks_advantage) or row["model"] not in dirs or not (dirs[row["model"]] / "model.ckpt").exists():
             continue
         start = time.time()
         net, weights = load(str(dirs[row["model"]] / "model.ckpt"))
-        rows[i] = {**row, "weights": weights, **spread(net, binary, global_raw), "seconds": round(time.time() - start)}
+        rows[i] = {**row, "weights": weights, **(spread(net, binary, global_raw) if lacks_spread else {}),
+                   **advantage_read(net, binary, global_raw)}
+        if lacks_spread:
+            rows[i]["seconds"] = round(time.time() - start)
         tmp = out.with_suffix(".jsonl.tmp")
         tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
         tmp.replace(out)
@@ -197,7 +224,7 @@ def measure(args):
             row = {"model": d.name, "size": size, "samples": samples, "rows": rows,
                    "exported": exported.isoformat(" ", "seconds"),
                    "weights": weights, "positions": binary.shape[0], **spread(net, binary, global_raw),
-                   "seconds": round(time.time() - start)}
+                   **advantage_read(net, binary, global_raw), "seconds": round(time.time() - start)}
             if not args.only:
                 with open(out, "a") as f:
                     f.write(json.dumps(row) + "\n")
