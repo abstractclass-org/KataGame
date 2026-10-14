@@ -1157,7 +1157,15 @@ void NNEvaluator::evaluateSynchronously(NNResultBuf* resultBuf) {
   m_numBatchesProcessed.fetch_add(1, std::memory_order_relaxed);
   resultBuf->result = std::shared_ptr<NNOutput>(outputBuf[0]);
   resultBuf->hasResult = true;
+  //The evaluation's end as serve() ends a batch: wake the threads that wait for it in waitForNextNNEvalIfAny (a search
+  //thread at a finished game). With one thread none waits; the practice bot's cooperative threads can.
+  unique_lock<std::mutex> lock(bufferMutex);
   numOngoingEvals -= 1;
+  if(numWaitingEvals > 0) {
+    numEvalsToAwaken += numWaitingEvals;
+    numWaitingEvals = 0;
+    waitingForFinish.notify_all();
+  }
 }
 #endif
 
