@@ -73,7 +73,9 @@ namespace nt = enclosure::notation;
 
 namespace {
 
-const char* PROTOCOL = "0.6";  // pre-1.0: any change takes the next minor version (design 04, "Versioning")
+// The interface's version (design 04, "Versioning"). Before 1.0, a breaking change takes the next minor version and a
+// compatible change the next patch ("0.6" is 0.6.0).
+const char* PROTOCOL = "0.6";
 // The first build that searched as this one does (design 04, "The same search"), given as each reply's "search". A
 // change that can alter an analysis reply sets it to "", and the build then names itself. After that build's release,
 // it takes the released build's name. A change that leaves every analysis reply as it was keeps it.
