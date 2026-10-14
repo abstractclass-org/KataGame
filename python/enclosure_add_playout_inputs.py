@@ -55,13 +55,12 @@ def main():
         touched.append(f"{part} ({keys[0]})")
 
     # The optimizer state of linear_global's weight: its position in train.get_param_groups' order.
-    index, i = None, 0
+    index = None
     for saved, (_, names) in zip(ckpt["optimizer"]["param_groups"], group_names(Model(config, 19))):
         assert len(saved["params"]) == len(names), "the saved optimizer does not match this code's parameter groups"
         for p, n in zip(saved["params"], names):
             if n == KEY:
                 index = p
-            i += 1
     assert index is not None, f"no {KEY} in the optimizer's groups"
     state = ckpt["optimizer"]["state"].get(index, {})
     widened = []

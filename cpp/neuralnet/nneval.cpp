@@ -482,6 +482,9 @@ void NNEvaluator::spawnServerThreads() {
     serverThreadsIsUsingFP16[0] = NeuralNet::isUsingFP16(syncHandle) ? 1 : 0;
   }
   syncServerBuf = new NNServerBuf(*this, loadedModel);
+#ifdef ENCLOSURE_COOP_THREADS
+  syncFreeLanes.push_back({syncHandle, syncServerBuf});
+#endif
   return;
 #endif
 
@@ -518,7 +521,6 @@ void NNEvaluator::killServerThreads() {
       delete lane.second;
     }
   syncFreeLanes.clear();
-  syncNumLanes = 0;
 #endif
   if(syncHandle != NULL)
     NeuralNet::freeComputeHandle(syncHandle);
@@ -1137,15 +1139,10 @@ void NNEvaluator::evaluateSynchronously(NNResultBuf* resultBuf) {
     lane = syncFreeLanes.back();
     syncFreeLanes.pop_back();
   }
-  else if(syncNumLanes == 0) {
-    lane = {syncHandle, syncServerBuf};
-    syncNumLanes = 1;
-  }
   else {
     lane = {NeuralNet::createComputeHandle(computeContext, loadedModel, logger, maxBatchSize, requireExactNNLen,
                                            inputsUseNHWC, gpuIdxByServerThread.empty() ? 0 : gpuIdxByServerThread[0], 0),
             new NNServerBuf(*this, loadedModel)};
-    syncNumLanes += 1;
   }
   NeuralNet::getOutput(lane.first, lane.second->inputBuffers, 1, &resultBuf, outputBuf);
   syncFreeLanes.push_back(lane);

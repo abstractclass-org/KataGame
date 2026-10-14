@@ -246,9 +246,7 @@ bool buildPosition(
 vector<string> sortedEdgeNames(const vector<enclosure::Edge>& edges) {
   vector<string> out;
   vector<enclosure::Edge> es = edges;
-  std::sort(es.begin(), es.end(), [](const enclosure::Edge& a, const enclosure::Edge& b) {
-    return std::tie(a.ax, a.ay, a.bx, a.by) < std::tie(b.ax, b.ay, b.bx, b.by);
-  });
+  std::sort(es.begin(), es.end(), enclosure::position_check::edge_less);
   for(const auto& e : es)
     out.push_back(nt::edge_name(e));
   return out;
@@ -284,19 +282,13 @@ json outcome(const enclosure::Position& p) {
   return {{"result", result}};
 }
 
-// The position check (design 04, "The position check"; learn-enclosure's request 16) of the query's "position", the
-// position before its moves (the moves themselves are checked as legal moves): {"possible", "reasons"}, each reason
-// {"code", "text", "edges"}. A query with no position starts from the standard start, which passes. Call it after
-// buildPosition, which refuses a position string that does not parse.
-json positionCheck(const json& q) {
+// The position check (design 04, "The position check"; learn-enclosure's request 16) of a query's start, the position
+// before its moves (hist.initialBoard; the moves themselves are checked as legal moves): {"possible", "reasons"}, each
+// reason {"code", "text", "edges"}. A query with no position starts from the standard start, which passes.
+json positionCheck(const enclosure::Position& start) {
   json reasons = json::array();
-  if(const json* p = field(q, "position")) {
-    enclosure::Position start;
-    string why;
-    if(p->is_string() && nt::parse_position(p->get<string>(), start, why))
-      for(const auto& r : enclosure::position_check::check(start))
-        reasons.push_back({{"code", r.code}, {"text", r.text}, {"edges", r.edges}});
-  }
+  for(const auto& r : enclosure::position_check::check(start))
+    reasons.push_back({{"code", r.code}, {"text", r.text}, {"edges", r.edges}});
   return {{"possible", reasons.empty()}, {"reasons", reasons}};
 }
 
@@ -314,7 +306,7 @@ json boardFields(const enclosure::Position& p) {
         pts.push_back({Global::roundDynamic(x, 9), Global::roundDynamic(y, 9)});
       list.push_back(pts);
     }
-    regions[name] = list;
+    regions[name] = std::move(list);
     areas.push_back(area);
     edges[name] = sortedEdgeNames(p.edges[side]);
   }
@@ -324,11 +316,11 @@ json boardFields(const enclosure::Position& p) {
     {"movesLeft", p.moves_left},
     {"moveCount", p.move_count},
     {"scores", {p.scores[0], p.scores[1]}},
-    {"edges", edges},
+    {"edges", std::move(edges)},
     {"protected", sortedEdgeNames(p.protected_)},
     {"placed", sortedEdgeNames(p.placed)},
-    {"regions", regions},
-    {"areas", areas},
+    {"regions", std::move(regions)},
+    {"areas", std::move(areas)},
     {"outcome", outcome(p)},
   };
 }
@@ -345,20 +337,22 @@ json describe(const json& q) {
   for(int side = 0; side < 2; side++)
     nodes[string(1, nt::PLAYERS[side])] = nodeNames(p.edges[side]);
   reply["id"] = q["id"];
-  reply["nodes"] = nodes;
+  reply["nodes"] = std::move(nodes);
   reply["legal"] = legalNames(p);
-  reply["check"] = positionCheck(q);
+  reply["check"] = positionCheck(hist.initialBoard.pos);
   return reply;
 }
 
-// The opponent's edge that a move from "before" to "after" cut, or null.
+// The opponent's edge that a move from "before" to "after" cut, or null. A move removes at most one opponent edge and
+// adds none.
 json cutEdge(const enclosure::Position& before, const enclosure::Position& after) {
   const int enemy = 1 - before.player;
-  json cuts = nullptr;
+  if(after.edges[enemy].size() == before.edges[enemy].size())
+    return nullptr;
   for(const auto& e : before.edges[enemy])
     if(!enclosure::contains(after.edges[enemy], e))
-      cuts = nt::edge_name(e);
-  return cuts;
+      return nt::edge_name(e);
+  return nullptr;
 }
 
 // Every position of a game in one request (learn-enclosure's request 18): "position" and "moves" as describe's, played
@@ -392,7 +386,7 @@ json describeGame(const json& q) {
   Fail f;
   if(!buildPosition(q, board, hist, pla, f, each))
     return errorReply(q["id"], f);
-  return {{"id", q["id"]}, {"positions", positions}};
+  return {{"id", q["id"]}, {"positions", std::move(positions)}};
 }
 
 json play(const json& q) {
@@ -605,7 +599,7 @@ json analysisReply(const json& q, const Board& board, const BoardHistory& hist, 
                                 flag("includeMovesOwnership"), false, flag("includePVVisits"), false, out))
     return errorReply(q["id"], {"", "the search gave no analysis"});
   json moveInfos = json::array();
-  for(json mi : out["moveInfos"]) {
+  for(json& mi : out["moveInfos"]) {
     // In a position that is its own image, the search keeps one edge of each set of equivalent edges (root symmetry
     // pruning), and KataGo lists each other edge of the set with that edge's values: "isSymmetryOf" names it (design
     // 04, "Symmetric twins").
@@ -616,14 +610,14 @@ json analysisReply(const json& q, const Board& board, const BoardHistory& hist, 
       for(json& m : mi["pv"])
         m = ourMove(m);
     dropGoFields(mi);
-    moveInfos.push_back(mi);
+    moveInfos.push_back(std::move(mi));
   }
-  json rootInfo = out["rootInfo"];
+  json rootInfo = std::move(out["rootInfo"]);
   dropGoFields(rootInfo);
   rootInfo["currentPlayer"] = string(1, nt::PLAYERS[pla == P_BLACK ? 0 : 1]);
   json reply = {
     {"id", q["id"]}, {"isDuringSearch", during}, {"turnNumber", hist.moveHistory.size()}, {"engine", engineTag()},
-    {"rootInfo", rootInfo}, {"moveInfos", moveInfos},
+    {"rootInfo", std::move(rootInfo)}, {"moveInfos", std::move(moveInfos)},
   };
   if(flag("chooseMove") && !during) {
     // The move KataGo's GTP engine would play (Search::getChosenMoveLoc): a draw over the play selection values with
@@ -649,11 +643,11 @@ json analysisReply(const json& q, const Board& board, const BoardHistory& hist, 
       json policy = json::array();
       for(const auto& [prob, name] : rows)
         policy.push_back({name, Global::roundDynamic(prob, 8)});
-      reply["policy"] = policy;
+      reply["policy"] = std::move(policy);
     }
   }
   if(out.contains("ownership"))
-    reply["ownership"] = out["ownership"];  // per point, index y * 19 + x (row 1 first), Blue's side
+    reply["ownership"] = std::move(out["ownership"]);  // per point, index y * 19 + x (row 1 first), Blue's side
   return reply;
 }
 
@@ -714,7 +708,7 @@ json analyze(const json& q) {
   if(board.pos.terminal())
     return errorReply(q["id"], {"position", "the game is over"});
   // A position that no game reaches gives numbers that mean nothing: refused, with its reasons (design 04).
-  const json check = positionCheck(q);
+  const json check = positionCheck(hist.initialBoard.pos);
   if(!check["possible"].get<bool>()) {
     json reply = errorReply(q["id"], {"position", check["reasons"][0]["text"].get<string>()});
     reply["reasons"] = check["reasons"];
