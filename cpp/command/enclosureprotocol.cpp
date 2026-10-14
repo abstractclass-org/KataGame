@@ -9,6 +9,10 @@
 //   {"action": "describe", "position", "moves"}      the position for a board: edges, nodes, regions, legal moves, and
 //                                                     "check": whether "position" could occur in a game, with reasons
 //                                                     (position_check.h); an analysis of one that cannot is refused
+//   {"action": "describe_game", "position", "moves", "from"?}
+//                                                     every position of the game from "from" on, with the moves played
+//                                                     once: describe's fields without nodes, legal and check, and the
+//                                                     edge that each move cuts
 //   {"action": "play", "position", "moves", "move"}  whether the move is legal, what it cuts, the new position
 //   {"position", "moves", "maxVisits", ...}          an analysis (no action), as KataGo's analysis engine; with
 //                                                     "slice": {"visits": N} or {"ms": T}, one slice of it at a time
@@ -51,6 +55,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -75,7 +80,7 @@ namespace {
 
 // The interface's version (design 04, "Versioning"). Before 1.0, a breaking change takes the next minor version and a
 // compatible change the next patch ("0.6" is 0.6.0).
-const char* PROTOCOL = "0.6";
+const char* PROTOCOL = "0.6.1";
 // The first build that searched as this one does (design 04, "The same search"), given as each reply's "search". A
 // change that can alter an analysis reply sets it to "", and the build then names itself. After that build's release,
 // it takes the released build's name. A change that leaves every analysis reply as it was keeps it.
@@ -183,8 +188,11 @@ bool readHistory(const json& q, enclosure::Position& p, Fail& f) {
 }
 
 // The query's position: "position" (default the start) with its "history", then "moves". Fills board, hist and the
-// player to move.
-bool buildPosition(const json& q, Board& board, BoardHistory& hist, Player& pla, Fail& f) {
+// player to move. "each", if given, gets the position before the moves and the position after each move.
+bool buildPosition(
+  const json& q, Board& board, BoardHistory& hist, Player& pla, Fail& f,
+  const std::function<void(const enclosure::Position&)>& each = nullptr
+) {
   if(!checkVariant(q, f))
     return false;
   enclosure::Position start;
@@ -212,6 +220,8 @@ bool buildPosition(const json& q, Board& board, BoardHistory& hist, Player& pla,
   // The game's turn number counts edges from the standard start, so a position in the middle of a game is at its
   // edge count: the move temperature's early phase (Search::interpolateEarly) is then the game's, not the query's.
   hist.setInitialTurnNumber(start.move_count);
+  if(each)
+    each(board.pos);
   if(const json* moves = field(q, "moves")) {
     if(!moves->is_array()) {
       f = {"moves", "moves is a list of edges"};
@@ -226,6 +236,8 @@ bool buildPosition(const json& q, Board& board, BoardHistory& hist, Player& pla,
         return false;
       }
       pla = hist.presumedNextMovePla;
+      if(each)
+        each(board.pos);
     }
   }
   return true;
@@ -288,15 +300,9 @@ json positionCheck(const json& q) {
   return {{"possible", reasons.empty()}, {"reasons", reasons}};
 }
 
-json describe(const json& q) {
-  Board board;
-  BoardHistory hist;
-  Player pla;
-  Fail f;
-  if(!buildPosition(q, board, hist, pla, f))
-    return errorReply(q["id"], f);
-  const enclosure::Position& p = board.pos;
-  json regions = json::object(), areas = json::array(), edges = json::object(), nodes = json::object();
+// The fields of a position that a board shows: describe's, without the nodes, the legal moves and the check.
+json boardFields(const enclosure::Position& p) {
+  json regions = json::object(), areas = json::array(), edges = json::object();
   for(int side = 0; side < 2; side++) {
     const string name(1, nt::PLAYERS[side]);
     vector<vector<std::pair<double, double>>> polygons;
@@ -311,10 +317,8 @@ json describe(const json& q) {
     regions[name] = list;
     areas.push_back(area);
     edges[name] = sortedEdgeNames(p.edges[side]);
-    nodes[name] = nodeNames(p.edges[side]);
   }
   return {
-    {"id", q["id"]},
     {"position", nt::position_string(p)},
     {"mover", string(1, nt::PLAYERS[p.player])},
     {"movesLeft", p.moves_left},
@@ -323,13 +327,72 @@ json describe(const json& q) {
     {"edges", edges},
     {"protected", sortedEdgeNames(p.protected_)},
     {"placed", sortedEdgeNames(p.placed)},
-    {"nodes", nodes},
     {"regions", regions},
     {"areas", areas},
-    {"legal", legalNames(p)},
     {"outcome", outcome(p)},
-    {"check", positionCheck(q)},
   };
+}
+
+json describe(const json& q) {
+  Board board;
+  BoardHistory hist;
+  Player pla;
+  Fail f;
+  if(!buildPosition(q, board, hist, pla, f))
+    return errorReply(q["id"], f);
+  const enclosure::Position& p = board.pos;
+  json reply = boardFields(p), nodes = json::object();
+  for(int side = 0; side < 2; side++)
+    nodes[string(1, nt::PLAYERS[side])] = nodeNames(p.edges[side]);
+  reply["id"] = q["id"];
+  reply["nodes"] = nodes;
+  reply["legal"] = legalNames(p);
+  reply["check"] = positionCheck(q);
+  return reply;
+}
+
+// The opponent's edge that a move from "before" to "after" cut, or null.
+json cutEdge(const enclosure::Position& before, const enclosure::Position& after) {
+  const int enemy = 1 - before.player;
+  json cuts = nullptr;
+  for(const auto& e : before.edges[enemy])
+    if(!enclosure::contains(after.edges[enemy], e))
+      cuts = nt::edge_name(e);
+  return cuts;
+}
+
+// Every position of a game in one request (learn-enclosure's request 18): "position" and "moves" as describe's, played
+// once. "from" (default 0) is the first position in the reply: 0 is the position before the moves, k the position after
+// k moves. Each position has the board's fields (boardFields) and "cuts": the opponent's edge that the move to it cut,
+// as play gives it (null for the position before the moves).
+json describeGame(const json& q) {
+  int from = 0;
+  if(const json* fr = field(q, "from")) {
+    const json* moves = field(q, "moves");
+    const long long n = moves != nullptr && moves->is_array() ? (long long)moves->size() : 0;
+    if(!fr->is_number_integer() || fr->get<long long>() < 0 || fr->get<long long>() > n)
+      return errorReply(q["id"], {"from", "from is the first position's index: 0 to the number of moves"});
+    from = fr->get<int>();
+  }
+  json positions = json::array();
+  enclosure::Position before;
+  int k = 0;
+  const auto each = [&](const enclosure::Position& p) {
+    if(k >= from) {
+      json r = boardFields(p);
+      r["cuts"] = k == 0 ? json(nullptr) : cutEdge(before, p);
+      positions.push_back(std::move(r));
+    }
+    before = p;
+    k++;
+  };
+  Board board;
+  BoardHistory hist;
+  Player pla;
+  Fail f;
+  if(!buildPosition(q, board, hist, pla, f, each))
+    return errorReply(q["id"], f);
+  return {{"id", q["id"]}, {"positions", positions}};
 }
 
 json play(const json& q) {
@@ -350,10 +413,7 @@ json play(const json& q) {
   enclosure::Position after = before;
   after.play(action);  // PASS forfeits the rest of the turn (a timeout)
   const int enemy = 1 - before.player;
-  json cuts = nullptr;
-  for(const auto& e : before.edges[enemy])
-    if(!enclosure::contains(after.edges[enemy], e))
-      cuts = nt::edge_name(e);
+  const json cuts = cutEdge(before, after);
   const vector<string> nodesBefore = nodeNames(before.edges[enemy]), nodesAfter = nodeNames(after.edges[enemy]);
   json removed = json::array();
   for(const string& n : nodesBefore)
@@ -780,6 +840,7 @@ json handleJson(const string& text) {
   if(a == "query_version") return queryVersion(q);
   if(a == "load_model") { endRunning(); return loadModel(q); }
   if(a == "describe") return describe(q);
+  if(a == "describe_game") return describeGame(q);
   if(a == "play") return play(q);
   if(a == "continue") return continueQuery(q);
   if(a == "terminate") return terminateQuery(q);
