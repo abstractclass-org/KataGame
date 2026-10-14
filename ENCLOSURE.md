@@ -668,5 +668,5 @@ exports.
 
 ## Build and resources
 
-The CPU build is in `~/ws/game-ai/enclosure/katago-build`, with the Eigen backend. The CUDA build and its use of the
+The CPU build is in `~/ws/game-ai/enclosure/builds/eigen-base`, with the Eigen backend. The CUDA build and its use of the
 machine are in [v2/README.md](../v2/README.md) and [docs/toolchain.md](../docs/toolchain.md).

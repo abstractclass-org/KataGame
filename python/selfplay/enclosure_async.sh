@@ -27,7 +27,7 @@ TRAINERS="${TRAINERS:?set TRAINERS, the trainers, the one for self-play first (e
 
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 KATAGO="$REPO"/katago
-KATAGO_BIN="${KATAGO_BIN:-$HOME/ws/game-ai/enclosure/katago-build-cuda/katago}"
+KATAGO_BIN="${KATAGO_BIN:-$HOME/ws/game-ai/enclosure/builds/cuda/katago}"
 export PATH="$REPO/.venv-katago/bin:$PATH"
 
 LOGSDIR="$BASEDIR"/logs

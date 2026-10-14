@@ -3,7 +3,7 @@
 # repository. Retired for v2a on 2026-10-05 in favour of the asynchronous setup (enclosure_async.sh, run by
 # v2/scripts/start.sh); kept for a run that wants the loop. Only these differ from upstream:
 #   - KataGo lives in katago/ of this repository (upstream assumes the repository root);
-#   - Python is the project's .venv-katago; the binary is ~/ws/game-ai/enclosure/katago-build-cuda/katago (override KATAGO_BIN);
+#   - Python is the project's .venv-katago; the binary is ~/ws/game-ai/enclosure/builds/cuda/katago (override KATAGO_BIN);
 #   - the self-play config is configs/training/selfplay_enclosure.cfg;
 #   - the shuffle's row counts are upstream's scaled to the same bytes per worker: an Enclosure row is
 #     186,167 bytes uncompressed (measured: two 17,329-entry policy targets and three q-value targets)
@@ -34,7 +34,7 @@ CYCLES="${5:-0}"  # 0: until stopped
 
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 KATAGO="$REPO"/katago
-KATAGO_BIN="${KATAGO_BIN:-$HOME/ws/game-ai/enclosure/katago-build-cuda/katago}"
+KATAGO_BIN="${KATAGO_BIN:-$HOME/ws/game-ai/enclosure/builds/cuda/katago}"
 export PATH="$REPO/.venv-katago/bin:$PATH"  # the scripts call python3
 
 LOGSDIR="$BASEDIR"/logs
