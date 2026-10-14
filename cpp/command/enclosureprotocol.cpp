@@ -1,7 +1,8 @@
 // Enclosure fork: the engine protocol (docs/design/04-notation-and-protocol.md). See enclosureprotocol.h.
 //
 // Requests (each has an "id", echoed in its reply; an error reply is {"id", "error", "field"}):
-//   {"action": "query_version"}                       the protocol, the build, the model, the rules, trained outputs
+//   {"action": "query_version"}                       the protocol, the build, the search (the first build that
+//                                                     searched as this one), the model, the rules, trained outputs
 //   {"action": "load_model", "path"?, "name", "settings"}
 //                                                     a network: the file at "path" (the native engine), else the
 //                                                     model buffer; settings override the base settings
@@ -72,7 +73,11 @@ namespace nt = enclosure::notation;
 
 namespace {
 
-const char* PROTOCOL = "0.5";  // pre-1.0: any change takes the next minor version (design 04, "Versioning")
+const char* PROTOCOL = "0.6";  // pre-1.0: any change takes the next minor version (design 04, "Versioning")
+// The first build that searched as this one does (design 04, "The same search"), given as each reply's "search". A
+// change that can alter an analysis reply sets it to "", and the build then names itself. After that build's release,
+// it takes the released build's name. A change that leaves every analysis reply as it was keeps it.
+const char* SEARCH_SINCE = "fdfe5ad";
 const char* RULES = "online";  // the online variant (enclosure/README.md "Rules"), 19 x 19
 const int DEFAULT_VISITS = 500;
 
@@ -358,8 +363,13 @@ json play(const json& q) {
   };
 }
 
+string searchName() {
+  return SEARCH_SINCE[0] != '\0' ? string(SEARCH_SINCE) : P.build;
+}
+
 json engineTag() {
-  return {{"protocol", PROTOCOL}, {"build", P.build}, {"model", E.modelSha.empty() ? json(nullptr) : json(E.modelSha)}};
+  return {{"protocol", PROTOCOL}, {"build", P.build}, {"search", searchName()},
+          {"model", E.modelSha.empty() ? json(nullptr) : json(E.modelSha)}};
 }
 
 json modelInfo() {
@@ -368,7 +378,7 @@ json modelInfo() {
 
 json queryVersion(const json& q) {
   return {
-    {"id", q["id"]}, {"protocol", PROTOCOL}, {"build", P.build},
+    {"id", q["id"]}, {"protocol", PROTOCOL}, {"build", P.build}, {"search", searchName()},
     {"model", E.nnEval != nullptr ? modelInfo() : json(nullptr)}, {"rules", RULES},
     {"trained", {"winrate", "scoreSelfplay", "scoreStdev", "scoreLead", "policy", "ownership"}},
   };
