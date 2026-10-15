@@ -403,7 +403,7 @@ class NNEvaluator {
   void serve(Rand& rand, int gpuIdxForThisThread, int serverThreadIdx);
 
 #ifdef NNEVAL_SYNCHRONOUS
-  // Enclosure fork (the WebAssembly build, v2/wasm): one thread and no server threads. spawnServerThreads creates one
+  // Enclosure fork (the WebAssembly build, games/enclosure/wasm): one thread and no server threads. spawnServerThreads creates one
   // compute handle, and evaluate() runs the network on its own request, in the calling thread, with the server's
   // code for one row. Native builds do not define NNEVAL_SYNCHRONOUS.
  private:
@@ -412,7 +412,7 @@ class NNEvaluator {
   Rand* syncRand = NULL;
   void evaluateSynchronously(NNResultBuf* resultBuf);
 #ifdef ENCLOSURE_COOP_THREADS
-  // Enclosure fork (the practice bot, v2/docs/design/22-practice-bot.md): with cooperative threads an evaluation can
+  // Enclosure fork (the practice bot, games/enclosure/docs/design/22-practice-bot.md): with cooperative threads an evaluation can
   // wait inside the network's call while another starts, so each takes a lane of its own (a compute handle and its
   // buffers). The first lane is syncHandle and syncServerBuf, free from the start; more are made as evaluations overlap.
   std::vector<std::pair<ComputeHandle*, NNServerBuf*>> syncFreeLanes;

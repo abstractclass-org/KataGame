@@ -290,7 +290,7 @@ struct ScratchBuffers {
 // Layers --------------------------------------------------------------------------------------------------------------
 
 #ifdef ENCLOSURE_EIGEN_SIMD
-//Enclosure fork (the WebAssembly bot, v2/wasm): the hot loops in 4-wide vectors (GCC/Clang vector types: v128 in
+//Enclosure fork (the WebAssembly bot, games/enclosure/wasm): the hot loops in 4-wide vectors (GCC/Clang vector types: v128 in
 //WebAssembly). Eigen 3.4 has no WebAssembly SIMD, so its products and tensor expressions run one float at a time.
 typedef float SimdF4 __attribute__((vector_size(16)));
 static inline SimdF4 simdLoad(const float* p) { SimdF4 v; std::memcpy(&v, p, sizeof(v)); return v; }
@@ -3024,11 +3024,11 @@ bool NeuralNet::testEvaluateGlobalPoolingResidualBlock(
 }
 
 #ifdef ENCLOSURE_EVAL_RAW
-//Enclosure fork (the threaded practice bot's CPU evaluator, v2/docs/design/22-practice-bot.md; v2/wasm/evaluator.cpp):
+//Enclosure fork (the threaded practice bot's CPU evaluator, games/enclosure/docs/design/22-practice-bot.md; games/enclosure/wasm/evaluator.cpp):
 //the network on `rows` positions given in the ONNX graph's layouts, with getOutput's steps: the inputs NCHW, and the
 //raw outputs as the graph gives them (policyPass [rows, P], policy [rows, P * K, H, W] with channel = output * K +
 //offset, value [rows, 3], scoreValue [rows, 6], ownership [rows, 1, H, W]), so that the module decodes them as it
-//decodes the GPU's (v2/wasm/jsbackend.cpp).
+//decodes the GPU's (games/enclosure/wasm/jsbackend.cpp).
 void enclosureEigenRawOutput(
   ComputeHandle* computeHandle, InputBuffers* inputBuffers, int rows, const float* spatialNCHW, const float* global,
   float* policyPassOut, float* policyOut, float* valueOut, float* scoreValueOut, float* ownershipOut

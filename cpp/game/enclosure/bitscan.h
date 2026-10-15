@@ -1,5 +1,5 @@
 // Enclosure fork: the set bits of a std::bitset in order. libstdc++ has the fast _Find_first/_Find_next (GNU
-// extensions); libc++ (the WebAssembly build, v2/wasm) has neither, so it scans bit by bit. Walking a whole set in
+// extensions); libc++ (the WebAssembly build, games/enclosure/wasm) has neither, so it scans bit by bit. Walking a whole set in
 // order is linear in its size either way.
 #pragma once
 

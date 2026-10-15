@@ -7,7 +7,7 @@ positions.
 C++ lists a move between two of its player's own nodes only from the lower end, so a listing from the upper end is
 never a legal move and never a correct target. Until 2026-10-14 the trainer mapped policy channel 1 (the next move)
 with the mover's nodes, so in some symmetries it put the next mover's closing moves on such listings, and the
-networks learned that (v2/docs/decisions/build.md, "The training's symmetry handling"). For each checkpoint NAME
+networks learned that (games/enclosure/docs/decisions/build.md, "The training's symmetry handling"). For each checkpoint NAME
 (models/ or models_extra/, SWA weights) and symmetry: the main policy's mass on the mover's never-legal listings, and
 the next-move head's on the next mover's, split by who moves next (the opponent after a turn's last edge, the same
 player after its first). After the fix the next-move head's share should fall towards the main policy's.

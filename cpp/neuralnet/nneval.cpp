@@ -469,7 +469,7 @@ void NNEvaluator::spawnServerThreads() {
     throw StringError("NNEvaluator::spawnServerThreads called when threads were already running!");
 
 #ifdef NNEVAL_SYNCHRONOUS
-  //Enclosure fork (v2/wasm): no threads; one compute handle for evaluate() to use in the calling thread.
+  //Enclosure fork (games/enclosure/wasm): no threads; one compute handle for evaluate() to use in the calling thread.
   if(syncServerBuf != NULL)
     throw StringError("NNEvaluator::spawnServerThreads called twice in synchronous mode");
   serverThreadsIsUsingFP16.assign(1,0);
@@ -1104,7 +1104,7 @@ void NNEvaluator::serve(
 }
 
 #ifdef NNEVAL_SYNCHRONOUS
-//Enclosure fork (v2/wasm): serve()'s code for one row (no batching), in the calling thread.
+//Enclosure fork (games/enclosure/wasm): serve()'s code for one row (no batching), in the calling thread.
 void NNEvaluator::evaluateSynchronously(NNResultBuf* resultBuf) {
   if(syncServerBuf == NULL || syncHandle == NULL)
     throw StringError("NNEvaluator: synchronous evaluation needs a model and spawnServerThreads first");

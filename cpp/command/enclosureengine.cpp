@@ -1,6 +1,6 @@
 // Enclosure fork: the engine protocol (docs/design/04-notation-and-protocol.md) as a native command, for the analysis
 // site's offline jobs and our bots. The protocol is command/enclosureprotocol.cpp, the same code as the WebAssembly
-// module (v2/wasm/engine.cpp); this is its transport: one JSON request a line on standard input, one JSON reply a line
+// module (games/enclosure/wasm/engine.cpp); this is its transport: one JSON request a line on standard input, one JSON reply a line
 // on standard output, until standard input closes.
 //
 //   katago enclosure-engine -config configs/analysis_enclosure.cfg [-model MODEL] [-override-config "k=v,k=v"]

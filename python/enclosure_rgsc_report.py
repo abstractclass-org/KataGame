@@ -6,7 +6,7 @@
 
 Inputs: enclosure_regret_variants.py --json (regret's definitions, the value's accuracy, example games),
 enclosure_rgsc_selectors.py --json (the heads' picks: the paper's Figure 7), enclosure_rgsc_analysis.py --json (restart
-depths by model: the paper's Figures 16-18), and the buffer snapshots of v2/scripts/rgsc_snapshots.sh (regret at entry
+depths by model: the paper's Figures 16-18), and the buffer snapshots of pipeline/scripts/rgsc_snapshots.sh (regret at entry
 against the last update: the paper's Figure 8, the thesis's Figures 4.5-4.6). Needs matplotlib; the training
 environment does not carry it, so run it in an environment of its own.
 """
@@ -85,7 +85,7 @@ def fig_curriculum(a, out):
 
 
 def fig_premise(cache_path, out, run="v2a"):
-    """From the dashboard's per-folder RGSC sums (tools/dashboard.py _rgsc_stats, runs/dashboard_v2_games.json), in
+    """From the dashboard's per-folder RGSC sums (core/dashboard.py _rgsc_stats, runs/dashboard_v2_games.json), in
     bins of 500,000 data rows: the share of the games written that restarted, and the premise, the restart states'
     realized regret over that of games from the empty board at the same depths (1 = no harder than usual)."""
     if not cache_path or not os.path.exists(cache_path):

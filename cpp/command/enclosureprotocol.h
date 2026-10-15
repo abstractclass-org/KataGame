@@ -1,5 +1,5 @@
 // Enclosure fork: the engine protocol (docs/design/04-notation-and-protocol.md). The same code runs in the WebAssembly
-// module (v2/wasm/engine.cpp) and in the native command (command/enclosureengine.cpp, `katago enclosure-engine`); each
+// module (games/enclosure/wasm/engine.cpp) and in the native command (command/enclosureengine.cpp, `katago enclosure-engine`); each
 // gives it a transport. No exceptions leave it: a bad request gets an error reply.
 //
 // One engine (one search, its tree, its search in slices) for each thread that calls handle(). The WebAssembly module

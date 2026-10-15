@@ -2,7 +2,7 @@
 #define PROGRAM_RGSC_H_
 
 //Enclosure fork (owner, 2026-10-04): Regret-Guided Search Control (Tsai et al., ICLR 2026; the authors' MiniZero code,
-//minizero/actor/zero_actor.cpp), in KataGo's self-play. See v2/docs/decisions/rgsc.md, "RGSC: the authors' code
+//minizero/actor/zero_actor.cpp), in KataGo's self-play. See games/enclosure/docs/decisions/rgsc.md, "RGSC: the authors' code
 //read again", for the owner's decisions:
 // - a game's regret target (Eq. 2): at each of its positions, the mean over that position and every later one of
 //   (the search value of the move played - the game's outcome)^2, every move counting (full and cheap searches);
@@ -16,7 +16,7 @@
 //   whose start state left the buffer meanwhile is dropped, as in the authors' code;
 // - the first 1,000 games (the warm-up) fill the buffer and are kept out of the training data.
 //
-//Enclosure fork (2026-10-11): a second source, value swing (v2/docs/decisions/rgsc.md, "RGSC with two sources"; not
+//Enclosure fork (2026-10-11): a second source, value swing (games/enclosure/docs/decisions/rgsc.md, "RGSC with two sources"; not
 //published, a named departure). Its regret at a position is sum_k gamma^k (v_{t+k+1} - v_{t+k})^2 / sum_k gamma^k
 //over the rest of the game (v the search value of the move played, the outcome as the value after the last move),
 //times a scale that brings it to the vanilla regret's range, capped at 4 (the regret value head's range). It has its

@@ -60,7 +60,7 @@ int MainCmds::dumponnx(const vector<string>& args) {
       "", "skip-scale8",
       "Skip the 1/8 activation rescaling that keeps convnet activations inside the FP16 range. "
       "Matches onnxSkipScale8 = true in a config; the TensorRT backend always applies it.");
-    //Enclosure fork (v2/docs/design/19-webgpu-module.md): the GPU module's graph computes in FP32 and stores the weights
+    //Enclosure fork (games/enclosure/docs/design/19-webgpu-module.md): the GPU module's graph computes in FP32 and stores the weights
     //of a 16-bit network file in 16 bits, which needs them exactly as the file has them.
     TCLAP::SwitchArg keepWeightsArg(
       "", "no-reduce-activations",

@@ -104,7 +104,7 @@ static bool rgscAfterGame(
   if(restarted) {
     //Enclosure fork (2026-10-10), a departure from the authors' code, which drops a restarted game whose start
     //state left the buffer meanwhile. With 384 games in flight against one buffer (the authors run 32), about two
-    //thirds of the restarts were dropped (v2/docs/decisions/rgsc.md, "Why the share of restarted games fell").
+    //thirds of the restarts were dropped (games/enclosure/docs/decisions/rgsc.md, "Why the share of restarted games fell").
     //Such a game is ordinary self-play from a state that was in the buffer when it was drawn, so it is written.
     //Only its EMA update is skipped: its state is gone.
     const bool fromSwing = source == Rgsc::SOURCE_SWING;
@@ -541,7 +541,7 @@ int MainCmds::selfplay(const vector<string>& args) {
       (void)success;
 
       //Enclosure fork (2026-10-10): once a minute, the network rows evaluated by every model so far. The watchdog
-      //(v2/scripts/watchdog_selfplay.sh) tests that this count rises. Games log only when they start or end, and at
+      //(pipeline/scripts/watchdog_selfplay.sh) tests that this count rises. Games log only when they start or end, and at
       //high visits none ends for many minutes after a start, while a hang in the CUDA driver stops the evaluations.
       if(std::chrono::steady_clock::now() >= nextProgressLog) {
         logger.write("Progress: NN rows processed " + Global::uint64ToString(manager->getTotalNumRowsProcessed()));

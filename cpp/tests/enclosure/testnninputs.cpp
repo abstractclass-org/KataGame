@@ -3,7 +3,7 @@
 //
 //   testnninputs tests/data/enclosure_inputs.txt TURN_SAFE_FILE
 //
-// The file comes from the Enclosure repository's tools/export_katago_inputs.py
+// The file comes from the Enclosure repository's games/enclosure/tools/export_katago_inputs.py
 // (positions from archived and random games, with the input its Python
 // reference builds). Python's planes are channels last over 219 planes: the
 // observation's 192 edge planes, its 5 scalar planes, then the 22 feature

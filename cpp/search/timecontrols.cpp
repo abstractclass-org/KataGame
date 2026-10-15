@@ -184,7 +184,7 @@ static double applyLagBuffer(double time, double lagBuffer) {
 void TimeControls::getTime(const Board& board, const BoardHistory& hist, double lagBuffer, double& minTime, double& recommendedTime, double& maxTime) const {
   (void)hist;
 
-  //Enclosure fork: game-phase constants (v2/docs/design/08-time-horizons.md): the game-length area in place of the
+  //Enclosure fork: game-phase constants (games/enclosure/docs/design/08-time-horizons.md): the game-length area in place of the
   //board area, and the edges played in place of the stones. A whole game then allows for 0.75 x 132 + 15, about 114
   //edges, against the real 120. The halving below holds: each player places half the edges.
   double boardArea = Board::GAME_LENGTH_AREA;
@@ -286,7 +286,7 @@ void TimeControls::getTime(const Board& board, const BoardHistory& hist, double 
     if(mainTimeLimit < originalMainTime)
       throw StringError("TimeControls: mainTimeLimit is smaller than original mainTime");
 
-    //Enclosure fork (v2/docs/design/18-play-through-gtp.md): the increment comes once a turn, after the turn's last
+    //Enclosure fork (games/enclosure/docs/design/18-play-through-gtp.md): the increment comes once a turn, after the turn's last
     //edge, and a turn has two edges. So an edge counts half the increment, and the first edge of a two-edge turn keeps
     //at least half the time left for the second, since no increment comes between them.
     const double edgeIncrement = increment / 2.0;

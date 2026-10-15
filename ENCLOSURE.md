@@ -1,7 +1,7 @@
 # KataGo for Enclosure: the fork's design
 
 `katago/` (upstream `d91ea85` plus our changes) turns KataGo into an Enclosure bot. The plan, its build order and the
-approved departures are in `v2/docs/katago-fork-plan.md` of this repository. This file records the design decisions
+approved departures are in `games/enclosure/docs/katago-fork-plan.md` of this repository. This file records the design decisions
 inside the code. The "steps" below are the steps of that plan. The network itself, drawn and compared with KataGo's,
 is in [ENCLOSURE_NETWORK.md](ENCLOSURE_NETWORK.md).
 
@@ -35,10 +35,10 @@ A `Move` is still `(Loc, Player)`.
 - **`Rules` is unchanged.** It is plain data (ko, scoring and tax rules, komi), and Enclosure reads none of it. The
   configurations set komi to 0.
 - **`Board` holds an `enclosure::Position`** (`game/enclosure/engine.h`). It was generated from the Enclosure
-  repository's verified native engine by `v2/tools/extract_katago_engine.py`.
+  repository's verified native engine by `games/enclosure/tools/extract_katago_engine.py`.
   - The fork's copies are now edited here directly, and they are ahead of the native source. They hold V2's input
     options (no_maxflow, edges at both ends, the turn-safe plane), the income areas (`clipped_area`), and faster
-    feature planes ([speed.md](../v2/docs/decisions/speed.md) "Faster features").
+    feature planes ([speed.md](../games/enclosure/docs/decisions/speed.md) "Faster features").
   - A new extraction would drop these changes. So port a native change by hand.
 - Callers outside `game/` use a few members (from a survey of the callers): the size (`x_size`, `y_size` = 19),
   `colors` (74 uses), `pos_hash`, `ko_loc`, and Go's stone logic (`getNumLiberties`, `isSimpleEye`, captures).
@@ -81,7 +81,7 @@ player from the last mover break. A survey of the 29 `getOpp` calls in `search/`
 
 Outside `search/`, the self-play game loop (`program/play.cpp`, `playutils.cpp`) and the analysis engine
 (`command/analysis.cpp`) get the same change. GTP play got its own turn-order check later (`command/gtp.cpp`,
-`enclosureTurnError`, v2/docs/design/18-play-through-gtp.md). SGF, the book and the start-position tools are not on
+`enclosureTurnError`, games/enclosure/docs/design/18-play-through-gtp.md). SGF, the book and the start-position tools are not on
 our path, and they stay as they are.
 
 Training rows need no change for turn order. KataGo's opponent-policy target is the policy of the next move, whoever
@@ -148,11 +148,11 @@ A query of the analysis engine can start from a position instead of the standard
 `enclosurePosition` (`command/analysis.cpp`) carries `engine.Position`'s fields. These are the edges of each player,
 the protected and placed edges, the scores, the player to move, the edges left in the turn, the move count, and the
 history planes' turns. `Board::setPosition` sets the board from them, and the query's `moves` are played after it.
-meaf.us gives a board and not its moves, so the move server (`enclosure/v2/katagobot.py`) uses this field.
+meaf.us gives a board and not its moves, so the move server (`games/enclosure/katagame/katagobot.py`) uses this field.
 
 - **The same network inputs:** the history planes come from `Position::history`, not from KataGo's move history, and
   the cache hash includes them (`historyHash`). At symmetry 0, a position gives the same policy and value as its
-  move list, bit for bit (`tests/test_position_query.py`).
+  move list, bit for bit (`games/enclosure/tests/test_position_query.py`).
 - **One difference in the search:** the subtree value bias keys a node on the move before it (see "Subtree value
   bias"). A position has no move before the root, so the root's children get no bias entry. With
   `subtreeValueBiasFactor = 0`, the two searches are identical, visit for visit.
@@ -234,13 +234,13 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
     Plane 7 of each player holds the turn-safe plane (`planes.turn_safe_edges`), where V1 had held ground. Plane 8,
     V1's openings, stays empty.
   - Until 2026-10-08 these three were environment options (`ENCLOSURE_EDGE_BOTH_ENDS`, `ENCLOSURE_TURN_SAFE`,
-    `ENCLOSURE_NO_HELD_GROUND`), on in v2a since 2026-10-03 (v2/docs/design/03-network-inputs.md).
+    `ENCLOSURE_NO_HELD_GROUND`), on in v2a since 2026-10-03 (games/enclosure/docs/design/03-network-inputs.md).
 - **Global, 5** (`NUM_FEATURES_GLOBAL_V8`): the observation's scalars. These are the player to move, the edges left in
   the turn / 2, the move count / 120, and both scores / (18 · 18 · 61). The plan puts the scalars here, not in
   constant planes.
 - **Global, 7 in V9** (`NUM_FEATURES_GLOBAL_V9`, model version 18, 2026-10-13): V8's 5, then KataGo's playout
   doubling advantage as its V7 inputs 15 and 16: 1 when the advantage is nonzero, and half the advantage, from the
-  player to move's side (v2/docs/design/03-network-inputs.md).
+  player to move's side (games/enclosure/docs/design/03-network-inputs.md).
 - **Absolute colours,** as in the Enclosure network: plane k is Blue's for k = 0. The player to move is a global
   input. (KataGo's Go inputs are relative to the mover. The choice was "our feature planes, as KataGo uses its Go
   features".)
@@ -251,7 +251,7 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
   that differ only in their history planes.
 - `maxHistory <= 0` (KataGo's evaluations without history) drops the 4 history planes.
 - **Test:** `tests/enclosure/testnninputs.cpp` against `tests/data/enclosure_inputs.txt` (from the Enclosure
-  repository's `v2/tools/export_katago_inputs.py`: 336 positions from 40 archived and 40 random games, with Python's
+  repository's `games/enclosure/tools/export_katago_inputs.py`: 336 positions from 40 archived and 40 random games, with Python's
   reference inputs). Every spatial entry (NHWC and NCHW) and every global entry matches. A changed fixture entry
   fails.
 
@@ -270,7 +270,7 @@ exact scores. The feature planes also moved point by point.
 
 So the rules are symmetric under all 8. But only the identity and the mirror map real games to real games. Under the
 other 6, Blue starts on the right or on a vertical line, which never happens. The plan expected only the mirror, so
-the number to use became a decision (see `v2/docs/decisions/build.md`). **Decided: all 8.** The
+the number to use became a decision (see `games/enclosure/docs/decisions/build.md`). **Decided: all 8.** The
 labels are exact, it is KataGo's method, and it can be reversed without new data. An arena A/B test of 2 against 8
 can look at it again. The code handles all 8. `SymmetryHelpers::NUM_SYMMETRIES` sets the count, and KataGo's
 numbering puts flipY at 1. So a count of 2 means the identity and the mirror.
@@ -328,7 +328,7 @@ then: win/loss only).
 ## Score distribution bins
 
 842 bins, as in KataGo, each 12 points wide. They cover margins of ±5,052: every margin in `net1`'s self-play, and 99%
-of the full-length human games (the measurements are in `v2/docs/decisions/build.md`). Larger margins go to the end
+of the full-length human games (the measurements are in `games/enclosure/docs/decisions/build.md`). Larger margins go to the end
 bins. Only the training rows and the Python head use the distribution (step 6).
 
 ## The network's policy head, export and CPU backend (step 5)
@@ -370,7 +370,7 @@ bins. Only the training rows and the Python head use the distribution (step 6).
   - A model with other weights fails at every position.
   - Until 2026-10-11 PyTorch built its rows from the fixture. These rows stopped matching the C++ rows when the
     turn-safe plane, the edges at both ends and the removal of held ground became the only inputs, so the test
-    failed everywhere for every build (v2/docs/decisions/build.md "The FP32 check against PyTorch: stale inputs,
+    failed everywhere for every build (games/enclosure/docs/decisions/build.md "The FP32 check against PyTorch: stale inputs,
     not the network").
 - **Training augmentation** (`katago/train/enclosure_symmetry.py`, used by `data_processing_pytorch.py`):
   - point planes and the value targets move as pixels.
@@ -381,7 +381,7 @@ bins. Only the training rows and the Python head use the distribution (step 6).
     (the node feature planes), channel 1 (the next move) the next mover's after the row's move (valueTargetsNCHW
     C7, flagged by C75; rows written before C7 fall back to the next mover's node plane in the inputs, which lacks a
     node that the row's own move creates). Until 2026-10-14 channel 1 used the mover's nodes too
-    (v2/docs/decisions/build.md, "The training's symmetry handling").
+    (games/enclosure/docs/decisions/build.md, "The training's symmetry handling").
   - Symmetries have the same numbers as in C++.
   - Test: `katago/python/enclosure_symmetry_check.py` against `testsymmetry -dump`. For 40 positions × 8 symmetries,
     the augmented inputs equal the C++ inputs of the image position, and every legal move lands on the image from
@@ -437,7 +437,7 @@ and cdf 0.02 each, L2 3e-5.
 - **Tests:**
   - `katago runenclosurerowtests OUT [SEED]` plays one self-play game with the evaluator that uses no network, and
     writes its rows as text.
-  - The Enclosure repository's `v2/tools/check_katago_rows.py` replays the game in its engine and checks every row: the inputs equal
+  - The Enclosure repository's `games/enclosure/tools/check_katago_rows.py` replays the game in its engine and checks every row: the inputs equal
     `input_planes`, the policy targets are on legal moves, the ownership is right within the storage rounding, the
     result, the score and the mean of the score distribution are right, the q-values are in range, and the Go targets
     are zero. Three games, 360 rows: 0 failures.
@@ -451,7 +451,7 @@ and cdf 0.02 each, L2 3e-5.
 ## KataGo's training and self-play knobs: what V2 uses
 
 The fork runs KataGo's trainer and self-play as published. So most of these are KataGo's defaults, not decisions.
-This section lists them so that a reader sees them as choices. "On" and "off" describe v2a (`v2/runs/v2a.env`,
+This section lists them so that a reader sees them as choices. "On" and "off" describe v2a (`games/enclosure/runs/v2a.env`,
 `selfplay_enclosure.cfg`, `train.log`). To change one, use KataGo's own flag or key.
 
 - **Training** (`python/train.py`, `python/shuffle.py`):
@@ -470,7 +470,7 @@ This section lists them so that a reader sees them as choices. "On" and "off" de
   - **Weight-decay normalisation and gradient-norm clipping: on** (`wdnormal_batch`, `gnorm_cap_batch` 2,500).
   - **Training window: on.** It grows with the data (`-expand-window-per-row 0.4`, `-taper-window-exponent 0.65`).
   - **Training passes per row: 5** (`MAX_TRAIN_PER_DATA`). At 8, the outcome heads overfit
-    ([strength.md](../v2/docs/decisions/strength.md) "The outcome heads overfit").
+    ([strength.md](../games/enclosure/docs/decisions/strength.md) "The outcome heads overfit").
   - **Validation: on.** `shuffle.sh` keeps 1% of the files out of training (`VALIDATE=1`), and `metrics_val.json`
     holds their losses. (Upstream's `synchronous_loop.sh` turns validation off. Then the loss curves are training
     losses only, and they rise when the data gets harder, even while the network improves.)
@@ -486,7 +486,7 @@ This section lists them so that a reader sees them as choices. "On" and "off" de
   - **Search:** `cpuctExploration 1.1`, `fpuReductionMax 0.2`, `valueWeightExponent 0.5`, `subtreeValueBiasFactor
     0.30` ("Subtree value bias" above).
   - **Shortcuts: on.** `reduceVisits` at a winrate of 0.9 held for 3 turns, and `switchNetsMidGame`.
-  - **Komi randomisation: on** ([komi.md](../v2/docs/decisions/komi.md)). **Lead estimation: on**, as KataGo's
+  - **Komi randomisation: on** ([komi.md](../games/enclosure/docs/decisions/komi.md)). **Lead estimation: on**, as KataGo's
     (`estimateLeadProb 0.05`).
   - **Gatekeeper: off.** v2a runs no gatekeeper, so no new network is tested before self-play takes it. The
     gauntlet rates the networks afterwards.
@@ -512,7 +512,7 @@ their format, and old and new rows mix in the shuffle:
     edges ahead, and the ownership target covers the whole game.
 - **C7, not a target** (2026-10-14): the next mover's nodes after the row's move, flagged by C75, for the
   augmentation of policy channel 1 ("Symmetries" above). The shuffle and the trainer pad older rows to 8 planes.
-- `v2/tools/check_katago_rows.py` checks the rows (it computes all three again from the engine, and C7).
+- `games/enclosure/tools/check_katago_rows.py` checks the rows (it computes all three again from the engine, and C7).
   `enclosure_rows_check.py` checks KataGo's trainer (every loss finite).
 
 The design as first written:
@@ -669,4 +669,4 @@ exports.
 ## Build and resources
 
 The CPU build is in `~/ws/game-ai/enclosure/builds/eigen-base`, with the Eigen backend. The CUDA build and its use of the
-machine are in [v2/README.md](../v2/README.md) and [docs/toolchain.md](../docs/toolchain.md).
+machine are in [games/enclosure/docs/training.md](../games/enclosure/docs/training.md) and [docs/toolchain.md](../docs/toolchain.md).

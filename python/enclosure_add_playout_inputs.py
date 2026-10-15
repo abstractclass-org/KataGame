@@ -3,7 +3,7 @@
 
     python enclosure_add_playout_inputs.py CHECKPOINT
 
-The V9 inputs (2026-10-13; v2/docs/decisions/inputs-and-targets.md "The playout doubling advantage as inputs") are V8's
+The V9 inputs (2026-10-13; games/enclosure/docs/decisions/inputs-and-targets.md "The playout doubling advantage as inputs") are V8's
 with two more global inputs: 1 when the advantage is nonzero, and half the advantage, from the player to move's side
 (C++ NNInputs V9, model version 18). Self-play gives one side more visits in some games, and its rows record the
 advantage, so the network can learn what the advantage does. The trunk's first global layer (linear_global) reads the two inputs through two more weight columns.

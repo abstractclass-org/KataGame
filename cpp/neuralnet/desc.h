@@ -643,17 +643,17 @@ struct ModelDesc {
   //If expectedSha256 is nonempty, will also verify sha256 of the loaded data.
   //Enclosure fork: reduceActivations false keeps the weights as the file has them (katago dumponnx
   //-no-reduce-activations), with no transformToReduceActivations. shapesOnly keeps the layers' shapes and drops their
-  //weights as the model is read (the GPU module, v2/wasm/jsbackend.cpp, whose network runs outside it); the score
+  //weights as the model is read (the GPU module, games/enclosure/wasm/jsbackend.cpp, whose network runs outside it); the score
   //belief's small layers keep theirs, as NNEvaluator reads them.
   static void loadFromFileMaybeGZipped(
     const std::string& fileName, ModelDesc& descBuf, const std::string& expectedSha256, bool reduceActivations = true,
     bool shapesOnly = false);
 #ifdef MODEL_FROM_MEMORY
-  //Enclosure fork (v2/wasm): an uncompressed binary model (.bin) held in memory, which loadFromFileMaybeGZipped then
+  //Enclosure fork (games/enclosure/wasm): an uncompressed binary model (.bin) held in memory, which loadFromFileMaybeGZipped then
   //opens by the name "memory:NAME". The bytes must outlive every load.
   static void registerInMemoryModel(const std::string& name, const char* data, size_t len);
   //The same model held elsewhere: read(offset, dst, n) copies up to n of its len bytes from offset to dst and returns
-  //how many it copied (the GPU module's page holds the bytes, v2/wasm/engine.cpp).
+  //how many it copied (the GPU module's page holds the bytes, games/enclosure/wasm/engine.cpp).
   static void registerInMemoryModelReader(
     const std::string& name, size_t len, const std::function<size_t(size_t, char*, size_t)>& read);
 #endif

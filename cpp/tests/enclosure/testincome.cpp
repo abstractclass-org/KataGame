@@ -5,7 +5,7 @@
 //
 // For each position of the input fixture, replays its moves and compares each player's income per lattice point
 // (the enclosed area inside the unit square centred on the point) with the reference (planes.income_points,
-// tools/export_income_fixture.py), and checks that it sums to the enclosed area.
+// games/enclosure/tools/export_income_fixture.py), and checks that it sums to the enclosed area.
 
 #include <cmath>
 #include <cstdio>

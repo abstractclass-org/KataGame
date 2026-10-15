@@ -40,7 +40,7 @@ static float readFloatFast(istream& in, string& tmp) {
   return x;
 }
 
-//Enclosure fork (v2/wasm, the GPU module, whose network runs outside the module): a model read with shapesOnly
+//Enclosure fork (games/enclosure/wasm, the GPU module, whose network runs outside the module): a model read with shapesOnly
 //(loadFromFileMaybeGZipped) keeps its layers' shapes and drops their weights: readFloats reads past them and gives
 //none. The stream being read carries the mode, so it belongs to that one read.
 static int shapesOnlyIndex() {
@@ -86,7 +86,7 @@ static void readFloats(istream& in, size_t numFloats, bool binaryFloats, const s
       s += (char)in.get();
       s += (char)in.get();
       //Enclosure fork: "@BIN16@" is the same block in 16-bit floats (export_model_pytorch.py -float16), for the
-      //WebAssembly build's size limit (v2/wasm).
+      //WebAssembly build's size limit (games/enclosure/wasm).
       if(s == "BIN1") {
         s += (char)in.get();
         s += (char)in.get();
@@ -3092,7 +3092,7 @@ struct NonCopyingStreamBuf : public std::streambuf
 };
 
 #ifdef MODEL_FROM_MEMORY
-//Enclosure fork (the WebAssembly build, v2/wasm): models embedded in the module, opened by the name "memory:NAME":
+//Enclosure fork (the WebAssembly build, games/enclosure/wasm): models embedded in the module, opened by the name "memory:NAME":
 //bytes in memory, or a reader of bytes held elsewhere (the GPU module's page).
 struct InMemoryModel {
   const char* data = nullptr;

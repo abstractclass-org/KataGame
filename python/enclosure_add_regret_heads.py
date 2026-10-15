@@ -6,7 +6,7 @@
 With --swing (2026-10-11), it adds the second source's pair instead: the swing value and swing ranking heads (config
 swing_heads; the checkpoint must have the regret heads already), and keeps the original as CHECKPOINT.before-swing.
 
-RGSC (owner, 2026-10-04; v2/docs/decisions/rgsc.md) adds two heads to the value head (model_pytorch.RegretHead), present when
+RGSC (owner, 2026-10-04; games/enclosure/docs/decisions/rgsc.md) adds two heads to the value head (model_pytorch.RegretHead), present when
 the config has regret_heads. For a checkpoint trained before, this sets the flag and adds both heads with KataGo's
 initialization (Model.initialize), in the model and the SWA model. The heads read the detached trunk, so the rest
 of the network computes exactly what it did.

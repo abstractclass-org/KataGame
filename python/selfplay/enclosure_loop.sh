@@ -1,7 +1,7 @@
 #!/bin/bash -eu
 # Enclosure: KataGo's synchronous_loop.sh (self-play -> shuffle -> train -> export, no gating) for this
 # repository. Retired for v2a on 2026-10-05 in favour of the asynchronous setup (enclosure_async.sh, run by
-# v2/scripts/start.sh); kept for a run that wants the loop. Only these differ from upstream:
+# pipeline/scripts/start.sh); kept for a run that wants the loop. Only these differ from upstream:
 #   - KataGo lives in katago/ of this repository (upstream assumes the repository root);
 #   - Python is the project's .venv-katago; the binary is ~/ws/game-ai/enclosure/builds/cuda/katago (override KATAGO_BIN);
 #   - the self-play config is configs/training/selfplay_enclosure.cfg;
@@ -116,7 +116,7 @@ cycle=0
 while [[ "$CYCLES" -eq 0 || "$cycle" -lt "$CYCLES" ]]
 do
     cycle=$((cycle + 1))
-    # Enclosure (owner, 2026-10-03): refresh the start positions (our lost games, v2/tools/export_start_poses.py) before
+    # Enclosure (owner, 2026-10-03): refresh the start positions (our lost games, games/enclosure/tools/export_start_poses.py) before
     # each cycle's self-play, which reads them at its start (hintPosesDir in SELFPLAY_OVERRIDES).
     if [[ -n "${START_POSES_CMD:-}" ]]; then
         (cd "$REPO" && eval "$START_POSES_CMD") || echo "start positions: export failed, the previous file stays"

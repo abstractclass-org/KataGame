@@ -7,7 +7,7 @@
 
 The network is not built symmetric. Training shows each row in a random symmetry (katago/train/enclosure_symmetry.py),
 and the network learns the symmetry from that alone, so its outputs move with the board's orientation by less as it
-trains (v2/docs/decisions/build.md, "The network's spread over the 8 symmetries"). This measures that on fixed
+trains (games/enclosure/docs/decisions/build.md, "The network's spread over the 8 symmetries"). This measures that on fixed
 positions: each position goes through the network as it is and in each of the 7 other symmetries, with the trainer's
 own mapping and the SWA weights that the run exports. For each symmetry, the identity's policy is mapped into the
 symmetry's frame and compared with the network's own policy there.
@@ -18,7 +18,7 @@ symmetry's frame and compared with the network's own policy there.
 - topAgree: the share of (position, symmetry) pairs whose top move is the identity's top move. lightvector's study of
   KataGo's released networks (July 2026) finds 90 to 95%. topAgreeClear: the same, only on the positions where the
   identity's top move leads the second by more than CLEAR_GAP (counted in clearPositions): near ties decide topAgree
-  (v2/docs/decisions/build.md, "The training's symmetry handling").
+  (games/enclosure/docs/decisions/build.md, "The training's symmetry handling").
 - winSD: the standard deviation of the mover's win chance over the 8 symmetries, mean over the undecided positions
   (mean win chance 0.1 to 0.9, counted in winPositions). leadSD: the same for the lead in points, over all positions.
 - advWin, advLead: how far the playout doubling advantage's two inputs (V9, model version 18: input 5 is 1, input 6 half

@@ -11,7 +11,7 @@
 #   (the trainers and the parts' resources: enclosure_parts.sh; other settings in the environment, as
 #   enclosure_loop.sh: SELFPLAY_OVERRIDES, BATCHSIZE, ...)
 # Stop: bash katago/python/selfplay/enclosure_async_stop.sh NAMEPREFIX [PART...]
-# The body is one { ... } block (as v2/scripts/*.sh): bash reads all of it before running any, so an edit while
+# The body is one { ... } block (as pipeline/scripts/*.sh): bash reads all of it before running any, so an edit while
 # a copy starts cannot corrupt what it runs (2026-10-06 19:50: a restart read the file mid-edit, hit a syntax error
 # and left self-play down for 48 minutes).
 {
@@ -75,6 +75,8 @@ cp "$SELFPLAY_CONFIG" "$DATED_ARCHIVE"/selfplay.cfg
 printf '%s\n' "${SELFPLAY_OVERRIDES:-}" > "$DATED_ARCHIVE"/selfplay_overrides.txt
 git -C "$REPO" show --no-patch --no-color > "$DATED_ARCHIVE"/version.txt || true
 git -C "$REPO" diff --no-color > "$DATED_ARCHIVE"/diff.txt || true
+# KataGame is a submodule: the parent's diff shows only its commit, so record its own changes too.
+git -C "$KATAGO" diff --no-color > "$DATED_ARCHIVE"/diff-katago.txt || true
 cd "$DATED_ARCHIVE"
 # As enclosure_loop.sh (owner, 2026-10-04): the archived binary must read what the archived export script writes;
 # stop before starting anything if it cannot.

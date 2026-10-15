@@ -3,7 +3,7 @@
 This describes the networks V2 trains (run `v2a`) and how they differ from KataGo's. Everything not listed as a
 difference is KataGo's, as described in [docs/NetworkArchitectures.md](docs/NetworkArchitectures.md): the trunk, its
 residual and global pooling blocks, the normalisation, the activation, and the shapes of the policy and value heads.
-The reasons for each change are in [ENCLOSURE.md](ENCLOSURE.md) and in `v2/docs/decisions/` of the
+The reasons for each change are in [ENCLOSURE.md](ENCLOSURE.md) and in `games/enclosure/docs/decisions/` of the
 Enclosure repository. This file is the picture.
 
 * [Summary](#summary)
@@ -26,7 +26,7 @@ Enclosure repository. This file is the picture.
 | b6c96 | Convnet | (trainer: 1,178,765) | – | v2a's first network, until b10c128 took over (before the regret heads existed) |
 
 For comparison, V1's network (`net1`, `net1b`: 128 channels × 8 blocks, JAX) has about 2.8M parameters
-([v1/README.md](../v1/README.md)).
+([games/enclosure/v1/README.md](../games/enclosure/v1/README.md)).
 
 Notes on the table:
 * "Num params (C++)" is the engine's count when it loads the model (`selfplay.log`, "convnet, N params"). The
@@ -247,7 +247,7 @@ Offsets run dx, then dy, each from -3 to 3, skipping (0, 0):
 
 In C++ the NHWC output is read in place: channel k x 48 + offset at a point is entry k's logit for that edge. The
 CUDA backend's buffers and decode hold 48 channels per output, and the Eigen backend decodes the blocks the same way.
-The policy is now gathered on the GPU for the legal moves only ([speed.md](../v2/docs/decisions/speed.md), "The
+The policy is now gathered on the GPU for the legal moves only ([speed.md](../games/enclosure/docs/decisions/speed.md), "The
 policy gathered on the GPU"). This changes the backend, not the network.
 
 ### Value head and spatial targets
@@ -344,7 +344,7 @@ flowchart TD
 
 ### Regret heads (RGSC)
 
-Two heads added for Regret-Guided Search Control (see `v2/docs/decisions/rgsc.md`). The
+Two heads added for Regret-Guided Search Control (see `games/enclosure/docs/decisions/rgsc.md`). The
 paper does not describe its heads, and the authors' code copies its own value head for them, so V2 copies KataGo's
 value-head shape (a named deviation). Both read the trunk **detached**, as the authors' do: their losses train the
 heads only, never the trunk.

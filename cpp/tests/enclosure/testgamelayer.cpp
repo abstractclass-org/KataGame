@@ -3,7 +3,7 @@
 //
 //   testgamelayer tests/data/enclosure_games.txt
 //
-// The file comes from the Enclosure repository's tools/export_katago_fixture.py
+// The file comes from the Enclosure repository's games/enclosure/tools/export_katago_fixture.py
 // (archived and random games replayed in its Python engine, which is verified
 // against the sites). For every move: the player to move, the legal set (count
 // and hash), both scores after the move; then the result through BoardHistory.

@@ -171,7 +171,7 @@ class AsyncBot {
   void stopAndWaitAlreadyLocked(std::unique_lock<std::mutex>& lock);
   void waitForSearchToEndAlreadyLocked(std::unique_lock<std::mutex>& lock);
 
-  //Enclosure fork (v2/docs/design/18-play-through-gtp.md): the queued search starts in startQueuedSearch, which
+  //Enclosure fork (games/enclosure/docs/design/18-play-through-gtp.md): the queued search starts in startQueuedSearch, which
   //wakes the search thread or, built with ASYNCBOT_SYNCHRONOUS (the WebAssembly bot, one thread), runs the search in
   //the calling thread. runQueuedSearch is the search thread's work for one queued search, called with controlMutex
   //held by lock. In the synchronous build there is no pondering (ponder returns at once) and no periodic analysis

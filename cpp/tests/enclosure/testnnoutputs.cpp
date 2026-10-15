@@ -2,7 +2,7 @@
 //   - the export against PyTorch, every output: katago/python/enclosure_nn_outputs_check.py runs the checkpoint on the
 //     same inputs and compares (OUTPUTS search,ownership,training);
 //   - one build against another (backends, precisions, the WebAssembly bot against the CUDA build), on the outputs
-//     that both compute: v2/wasm/compare_dumps.py compares two dumps (OUTPUTS search,ownership).
+//     that both compute: games/enclosure/wasm/compare_dumps.py compares two dumps (OUTPUTS search,ownership).
 //
 //   testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC OUTPUTS
 //

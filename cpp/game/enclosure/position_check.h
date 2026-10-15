@@ -1,6 +1,6 @@
 // Enclosure fork: whether a position could occur in a game of the site's rules (learn-enclosure's request 16;
 // docs/design/04-notation-and-protocol.md, "The position check"). The same checks as the Python reference,
-// enclosure/position_check.py, in the same order and with the same words; its docstring gives why each holds in every
+// games/enclosure/position_check.py, in the same order and with the same words; its docstring gives why each holds in every
 // game. Only what every game makes certain: a board that a game reaches in a rare way passes.
 #pragma once
 

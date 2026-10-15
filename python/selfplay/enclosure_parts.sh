@@ -1,4 +1,4 @@
-# A V2 run's trainers and the resources of its parts, for enclosure_async.sh and v2/scripts/lib.sh (source this file).
+# A V2 run's trainers and the resources of its parts, for enclosure_async.sh and pipeline/scripts/lib.sh (source this file).
 #
 # Trainers: TRAINERS="b10c128 b15c192", each a folder train/NAME. The first trains the self-play network (train.sh's
 # main mode: it exports to models/); the others train alongside on the same data (extra mode: models_extra/, never

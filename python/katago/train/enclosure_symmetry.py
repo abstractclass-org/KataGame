@@ -187,7 +187,7 @@ def next_mover_nodes(binary_inputs, global_inputs, value_targets, global_targets
 def apply_symmetry_policy_targets(policy, symmetry, binary_inputs, global_inputs, value_targets, global_targets):
     """The trainer's policy targets (N, 2, NUM_ACTIONS + 1), for the positions before the symmetry: channel 0 is
     the mover's move, channel 1 the next move, which C++ lists for the next mover. Each channel maps with its own
-    player's nodes (v2/docs/decisions/build.md, "The training's symmetry handling")."""
+    player's nodes (games/enclosure/docs/decisions/build.md, "The training's symmetry handling")."""
     if symmetry == 0:
         return policy
     first = apply_symmetry_policy(policy[:, :1], symmetry, binary_inputs, global_inputs)

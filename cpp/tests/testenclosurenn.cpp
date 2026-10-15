@@ -94,7 +94,7 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
 // With NPZ_DIR, the same rows are also written as KataGo's .npz training files there (needs libzip).
 // Plays one self-play game with the no-network evaluator (random policy and values, exact results at the end),
 // writes every row through TrainingDataWriter's text output, and appends the game's moves ("moves <n> <action>
-// ..."). The Enclosure repository's tools/check_katago_rows.py replays the game in its engine and checks every row.
+// ..."). The Enclosure repository's games/enclosure/tools/check_katago_rows.py replays the game in its engine and checks every row.
 void Tests::runEnclosureRowTests(const string& outFile, const string& seed, const string& npzDir) {
   NeuralNet::globalInitialize();
   Logger logger(nullptr, false, false, false);

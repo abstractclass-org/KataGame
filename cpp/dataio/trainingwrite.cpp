@@ -897,7 +897,7 @@ void TrainingWriteBuffers::addRow(
 
   //Enclosure fork (owner, 2026-10-03): future nodes, KataGo's future-position target as it is: board.colors marks
   //each player's nodes and the boards are one edge apart, so C2-3 hold the nodes 8 and 32 edges later (KataGo's
-  //19x19 numbers, kept as decisions: v2/docs/decisions/build.md, "Time constants split"). ENCLOSURE.md, 1.
+  //19x19 numbers, kept as decisions: games/enclosure/docs/decisions/build.md, "Time constants split"). ENCLOSURE.md, 1.
   if(posHistForFutureBoards == NULL) {
     rowGlobal[33] = 0.0f;
     for(int i = 0; i<posArea; i++) {
@@ -938,7 +938,7 @@ void TrainingWriteBuffers::addRow(
 
   //Enclosure fork (2026-10-14): C7, not a target: the next mover's nodes in the position after this row's move
   //(boards[t+1], where policy channel 1's search ran), flagged by C75. The trainer's symmetries need them to list
-  //channel 1's moves between two of that player's nodes from their lower end (v2/docs/decisions/build.md, "The
+  //channel 1's moves between two of that player's nodes from their lower end (games/enclosure/docs/decisions/build.md, "The
   //training's symmetry handling"): the row's own inputs hold the mover's nodes before the move.
   rowGlobal[75] = 0.0f;
   for(int i = 0; i<posArea; i++)

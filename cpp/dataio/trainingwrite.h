@@ -311,7 +311,7 @@ struct TrainingWriteBuffers {
   //averaged over the turn ends after this row's position, x 120 ([0,120]). All 0 unless C69.
   //C7: Enclosure fork (2026-10-14): not a target. 1 on each node of the next mover (the player of policy channel 1)
   //in the position after this row's move, 0 elsewhere. The trainer's symmetries list policy channel 1's moves
-  //between two of that player's nodes from their lower end, as C++ does (v2/docs/decisions/build.md, "The
+  //between two of that player's nodes from their lower end, as C++ does (games/enclosure/docs/decisions/build.md, "The
   //training's symmetry handling"). All 0 unless C75.
   NumpyBuffer<int8_t> valueTargetsNCHW;
 

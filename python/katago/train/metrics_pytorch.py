@@ -1065,7 +1065,7 @@ class Metrics:
             # Enclosure fork (2026-10-04): the share of rows carrying each Enclosure spatial target (logged as the
             # mean over rows, like the losses), so a loss divided by its share reads per row that carries the target
             # (these targets started on rows written from 2026-10-03, so the plain losses rose as such rows filled
-            # the window; tools/dashboard.py divides).
+            # the window; core/dashboard.py divides).
             "fpw_sum": (target_weight_futurepos * global_weight).sum(),
             "sw_sum": (target_weight_scoring * global_weight).sum(),
             "skw_sum": (target_weight_ownership * target_global_nc[:, 68] * global_weight).sum(),

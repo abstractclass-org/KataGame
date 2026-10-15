@@ -19,7 +19,7 @@ import numpy as np
 import shapely
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-from enclosure.engine import SIZE, Position, decode_action  # noqa: E402
+from games.enclosure.engine import SIZE, Position, decode_action  # noqa: E402
 
 MOVE_LOC_BASE = (19 + 1) * (19 + 2) + 1
 PASS_LOC = 1

@@ -170,7 +170,7 @@ static int parseByoYomiPeriods(const vector<string>& args, int argIdx) {
 
 //Assumes that stones are worth 15 points area and 14 points territory, and that 7 komi is fair
 static double initialBlackAdvantage(const BoardHistory& hist) {
-  //Enclosure fork (v2/docs/design/18-play-through-gtp.md): no handicap stones, and an even game is at komi 0 (Go's
+  //Enclosure fork (games/enclosure/docs/design/18-play-through-gtp.md): no handicap stones, and an even game is at komi 0 (Go's
   //fair komi is 7), so Blue's starting advantage is the komi given to Red, negated.
   return -hist.rules.komi;
   BoardHistory histCopy = hist;
@@ -271,7 +271,7 @@ static void updateDynamicPDAHelper(
   }
 }
 
-//Enclosure fork (v2/docs/design/18-play-through-gtp.md): a move for a player who is not to move, or after the game's
+//Enclosure fork (games/enclosure/docs/design/18-play-through-gtp.md): a move for a player who is not to move, or after the game's
 //last edge, is refused. Go lets either colour play at any time; in Enclosure the turn order is fixed (Blue's first
 //turn of one edge, then turns of two), and the game ends after its last edge. Empty when the move may be played.
 static string enclosureTurnError(const Board& board, const BoardHistory& hist, Player pla) {
@@ -636,7 +636,7 @@ struct GTPEngine {
     return true;
   }
 
-  //Enclosure fork (v2/docs/design/22-practice-bot.md): a game from a set-up start, as clearBoard starts one from the
+  //Enclosure fork (games/enclosure/docs/design/22-practice-bot.md): a game from a set-up start, as clearBoard starts one from the
   //standard start. The start is the game's first position, so undo stops there. Its turn number is its edge count, so
   //the early phase of the move temperature is the game's, as in the engine protocol (command/enclosureprotocol.cpp).
   void setEnclosureStart(const enclosure::Position& start) {
@@ -2085,10 +2085,10 @@ static bool parseRawNNArgs(
 }
 
 
-//Enclosure fork (v2/docs/design/18-play-through-gtp.md): the GTP engine one command at a time. The command loop's
+//Enclosure fork (games/enclosure/docs/design/18-play-through-gtp.md): the GTP engine one command at a time. The command loop's
 //state, which were the locals of MainCmds::gtp, lives in a GTPSession: its constructor is the old set-up, handle runs
 //one input line as the loop's body did (it returns false after quit), and finish is the old ending. MainCmds::gtp reads
-//standard input into it, and a host without standard input or threads (the WebAssembly bot, v2/wasm/bot.cpp) passes
+//standard input into it, and a host without standard input or threads (the WebAssembly bot, games/enclosure/wasm/bot.cpp) passes
 //its commands one by one (gtpSessionStart and gtpSessionHandle).
 class GTPSession {
  public:

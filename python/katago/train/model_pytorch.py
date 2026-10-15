@@ -2863,7 +2863,7 @@ class ValueHead(torch.nn.Module):
         if regret_heads:
             self.regret_value = RegretHead(c_in, c_v1, c_v2, config, activation)
             self.regret_ranking = RegretHead(c_in, c_v1, c_v2, config, activation)
-        # Enclosure fork (2026-10-11): RGSC's second source, value swing (v2/docs/decisions/rgsc.md, "RGSC with two
+        # Enclosure fork (2026-10-11): RGSC's second source, value swing (games/enclosure/docs/decisions/rgsc.md, "RGSC with two
         # sources"): the same two heads for the swing regret, when the config has swing_heads (only with regret_heads;
         # enclosure_add_regret_heads.py --swing adds them).
         assert regret_heads or not swing_heads, "swing_heads needs regret_heads"
@@ -3067,7 +3067,7 @@ class RegretHead(torch.nn.Module):
     """Enclosure fork (owner, 2026-10-04): one of RGSC's two heads (Tsai et al., ICLR 2026: regret value, regret
     ranking) in KataGo's value-head shape: 1x1 conv, bias, activation, KataGo's value-head pooling (the mean and two
     board-size scalings of it; no max), a hidden layer, one output. The paper does not describe its heads; the authors' code copies its own value
-    head class for them, so V2 copies KataGo's (v2/docs/decisions/rgsc.md, "RGSC: the authors' code read again")."""
+    head class for them, so V2 copies KataGo's (games/enclosure/docs/decisions/rgsc.md, "RGSC: the authors' code read again")."""
     def __init__(self, c_in, c_v1, c_v2, config, activation):
         super(RegretHead, self).__init__()
         self.activation = activation

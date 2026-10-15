@@ -2,9 +2,9 @@
 //
 //   testnotation tests/data/enclosure_notation.txt
 //
-// The file comes from the Enclosure repository's tools/notation_vectors.py: archived games replayed in its Python
+// The file comes from the Enclosure repository's games/enclosure/tools/notation_vectors.py: archived games replayed in its Python
 // engine (verified against the sites), each game's moves in the notation, and the position after every edge. The
-// Python notation (enclosure/notation.py) is checked against the same file. For every position: the C++ replay
+// Python notation (games/enclosure/notation.py) is checked against the same file. For every position: the C++ replay
 // prints the same text, the text parses back to the same rules state and the same legal moves, and each move's name
 // reads back as the move. Then malformed positions are refused.
 #include <algorithm>

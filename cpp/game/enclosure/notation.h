@@ -1,5 +1,5 @@
 // The Enclosure notation: points, edges, moves and positions as text (docs/design/04-notation-and-protocol.md).
-// The C++ twin of enclosure/notation.py; both are checked against tests/data/enclosure_notation.txt.
+// The C++ twin of games/enclosure/notation.py; both are checked against tests/data/enclosure_notation.txt.
 //
 //   D10                       a point: column letter A-T without I (x 0-18), row 1-19 (y 0-18, from the bottom)
 //   D10-E11                   an edge: the lower point first (by column, then by row); either order is read
