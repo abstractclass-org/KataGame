@@ -669,5 +669,5 @@ exports.
 
 ## Build and resources
 
-The CPU build is in `~/ws/game-ai/engines/builds/eigen-base`, with the Eigen backend. The CUDA build and its use of the
+The CPU build is in `~/ws/abstractclass-org/engines/builds/eigen-base`, with the Eigen backend. The CUDA build and its use of the
 machine are in [games/enclosure/docs/training.md](../games/enclosure/docs/training.md) and [docs/toolchain.md](../docs/toolchain.md).
