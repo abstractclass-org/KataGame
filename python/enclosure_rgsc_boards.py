@@ -6,7 +6,7 @@
 Each buffer entry (program/rgsc.cpp's file: "entry REGRET RESTARTS LENGTH LOC PLAYER ...") is replayed in the Python
 engine and drawn as an SVG board: each player's edges, the last turn's edges (protected) thicker, each player's
 enclosed regions filled. Under each board: its regret, restarts drawn, depth in moves, the side to move and the
-scores. A move's Loc is MOVE_LOC_BASE + the engine's action index (katago/cpp/game/board.h), MOVE_LOC_BASE being
+scores. A move's Loc is MOVE_LOC_BASE + the engine's action index (katagame/cpp/game/board.h), MOVE_LOC_BASE being
 (19 + 1) * (19 + 2) + 1 = 421 for the 19-point board.
 """
 

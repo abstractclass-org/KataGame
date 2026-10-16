@@ -8,7 +8,7 @@
 
 `make` writes a randomly initialised model whose every parameter and normalisation statistic is then
 perturbed, so no layer is an identity (fixup initialises some to zero). `testnnoutputs` (the fork's test,
-katago/cpp/tests/enclosure/build.sh) evaluates the exported model and writes each position's input rows
+katagame/cpp/tests/enclosure/build.sh) evaluates the exported model and writes each position's input rows
 with the outputs. `compare` runs the checkpoint on those same rows and compares the outputs: the policy
 over the legal moves, the win/loss/no-result probabilities, the score mean and lead, and the ownership.
 So it checks the network alone. testnninputs checks the rows against the inputs fixture. Exit code 0 when

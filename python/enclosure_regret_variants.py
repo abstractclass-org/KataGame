@@ -121,7 +121,7 @@ def main():
 
 
 def write_json(args, r, picks, variants, n_games):
-    """The data of the report's figures (katago/python/enclosure_rgsc_report.py draws them)."""
+    """The data of the report's figures (katagame/python/enclosure_rgsc_report.py draws them)."""
     import json
 
     moves = np.arange(int(r["depth"].max()) + 1)

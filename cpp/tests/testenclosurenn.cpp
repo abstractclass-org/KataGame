@@ -9,7 +9,7 @@
 //   <label> <player to move 0 blue, 1 red> <win> <loss> <noresult> <scoremean> <lead>
 //     own <361 ownership values> pol <legal count> <action> <probability> ...
 // Values, scores and ownership are from the player to move's side, as the network outputs them.
-// The Enclosure repository's katago/python/enclosure_nn_check.py compares them with a PyTorch forward pass.
+// The Enclosure repository's katagame/python/enclosure_nn_check.py compares them with a PyTorch forward pass.
 
 #include "../tests/tests.h"
 

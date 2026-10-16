@@ -2,7 +2,7 @@
 // Extracted from the Enclosure repository's native engine (enclosure_native.cpp at a546e1a) and edited here since
 // (V2's input options, the income areas, the CPU work of 2026-10-06). This is the only copy of Enclosure's rules:
 // Python reaches it through the Enclosure repository's binding, games/enclosure/binding/rules.cpp
-// (katago/ENCLOSURE.md, "Board and Rules").
+// (katagame/ENCLOSURE.md, "Board and Rules").
 
 #include <cstdlib>
 

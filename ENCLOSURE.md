@@ -361,7 +361,7 @@ bins. Only the training rows and the Python head use the distribution (step 6).
 - **Score-belief bin centres** are in points: 12 × (bin − 421 + 0.5) (the Enclosure score bins).
 - **No result:** the fork never sets `isNoResult`. Its rules (area scoring, positional ko) take KataGo's branch that
   sets the no-result output to zero. So win and loss share the probability, as under Go's area rules.
-- **Test:** `katago/python/enclosure_nn_check.py` with the fork's test `testnnoutputs`. The test initialises a b6c96 at
+- **Test:** `katagame/python/enclosure_nn_check.py` with the fork's test `testnnoutputs`. The test initialises a b6c96 at
   random. Then it perturbs every parameter and statistic, so that no layer is an identity. It exports the model and
   evaluates it in C++ (`NNEvaluator`) on the 332 unfinished positions of `tests/data/enclosure_inputs.txt`.
   `testnnoutputs` writes the input rows that the network got with its outputs, and PyTorch evaluates the same rows.
@@ -384,7 +384,7 @@ bins. Only the training rows and the Python head use the distribution (step 6).
     node that the row's own move creates). Until 2026-10-14 channel 1 used the mover's nodes too
     (games/enclosure/docs/decisions/build.md, "The training's symmetry handling").
   - Symmetries have the same numbers as in C++.
-  - Test: `katago/python/enclosure_symmetry_check.py` against `testsymmetry -dump`. For 40 positions × 8 symmetries,
+  - Test: `katagame/python/enclosure_symmetry_check.py` against `testsymmetry -dump`. For 40 positions × 8 symmetries,
     the augmented inputs equal the C++ inputs of the image position, and every legal move lands on the image from
     `getSymAction`, in channel 0 and in channel 1 (with the position as the next position and another player as the
     row's mover; the old mapping fails 248 of the 280 cases with a symmetry). Scrambled symmetry labels fail.
@@ -442,7 +442,7 @@ and cdf 0.02 each, L2 3e-5.
     `input_planes`, the policy targets are on legal moves, the ownership is right within the storage rounding, the
     result, the score and the mean of the score distribution are right, the q-values are in range, and the Go targets
     are zero. Three games, 360 rows: 0 failures.
-  - `--npz` writes the rows for `katago/python/enclosure_rows_check.py`. It reads them with KataGo's
+  - `--npz` writes the rows for `katagame/python/enclosure_rows_check.py`. It reads them with KataGo's
     `read_npz_training_data` (symmetries and history dropout on). Then it runs the forward pass, the metrics and one
     backward pass (no optimizer step). 21 batches: the shapes are as expected, and every loss and gradient is finite.
     The losses that only Go has are 0.
@@ -669,5 +669,5 @@ exports.
 
 ## Build and resources
 
-The CPU build is in `~/ws/game-ai/enclosure/builds/eigen-base`, with the Eigen backend. The CUDA build and its use of the
+The CPU build is in `~/ws/game-ai/engines/builds/eigen-base`, with the Eigen backend. The CUDA build and its use of the
 machine are in [games/enclosure/docs/training.md](../games/enclosure/docs/training.md) and [docs/toolchain.md](../docs/toolchain.md).

@@ -1,5 +1,5 @@
 // Enclosure fork (owner, 2026-10-04): a model's outputs on fixed positions, for two checks:
-//   - the export against PyTorch, every output: katago/python/enclosure_nn_outputs_check.py runs the checkpoint on the
+//   - the export against PyTorch, every output: katagame/python/enclosure_nn_outputs_check.py runs the checkpoint on the
 //     same inputs and compares (OUTPUTS search,ownership,training);
 //   - one build against another (backends, precisions, the WebAssembly bot against the CUDA build), on the outputs
 //     that both compute: games/enclosure/wasm/compare_dumps.py compares two dumps (OUTPUTS search,ownership).

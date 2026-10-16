@@ -1,7 +1,7 @@
 // Enclosure fork (2026-10-05): the input row's clearing timed, the whole row (77,615 floats) against only the entries
 // the last fill set (fillRowV8's setEntries). One thread refills one row position after position, as a search thread
 // does, over the inputs fixture's positions. Built by tests/enclosure/build.sh
-// (TESTS=benchfillrow); from katago/cpp:
+// (TESTS=benchfillrow); from katagame/cpp:
 //   OUT/benchfillrow tests/data/enclosure_inputs.txt [ROUNDS [ROWS THREADS]]
 // With ROWS and THREADS: as self-play, THREADS threads each refill its share of ROWS rows in turn (self-play: 384 rows,
 // one a game, on 16 CPUs), so each row is cold when refilled; the wall time per fill over all threads.

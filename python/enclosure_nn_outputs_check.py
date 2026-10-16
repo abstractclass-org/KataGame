@@ -3,7 +3,7 @@
 
     python enclosure_nn_outputs_check.py CHECKPOINT DUMP [DUMP ...]
 
-Each DUMP comes from the fork's testnnoutputs (katago/cpp/tests/enclosure/testnnoutputs.cpp, with OUTPUTS
+Each DUMP comes from the fork's testnnoutputs (katagame/cpp/tests/enclosure/testnnoutputs.cpp, with OUTPUTS
 search,ownership,training), which evaluated a
 model exported from CHECKPOINT (export_model_pytorch.py, without -use-swa) on positions and wrote the input rows
 the network got with its outputs. This runs CHECKPOINT's model on the same rows and reports, per output, the

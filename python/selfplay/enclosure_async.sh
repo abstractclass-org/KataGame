@@ -7,10 +7,10 @@
 #   - the shuffle runs every SHUFFLE_EVERY seconds (600), not every 20: upstream's 20 s assumes the shuffler has its
 #     own machine ("as many threads as you have cores"); here it would take 8 cores from self-play all the time;
 #   - each part runs in its own memory cap (systemd scope), so one running out of memory never takes the others.
-# Usage: TRAINERS="b10c128 b15c192" bash katago/python/selfplay/enclosure_async.sh NAMEPREFIX BASEDIR
+# Usage: TRAINERS="b10c128 b15c192" bash katagame/python/selfplay/enclosure_async.sh NAMEPREFIX BASEDIR
 #   (the trainers and the parts' resources: enclosure_parts.sh; other settings in the environment, as
 #   enclosure_loop.sh: SELFPLAY_OVERRIDES, BATCHSIZE, ...)
-# Stop: bash katago/python/selfplay/enclosure_async_stop.sh NAMEPREFIX [PART...]
+# Stop: bash katagame/python/selfplay/enclosure_async_stop.sh NAMEPREFIX [PART...]
 # The body is one { ... } block (as pipeline/scripts/*.sh): bash reads all of it before running any, so an edit while
 # a copy starts cannot corrupt what it runs (2026-10-06 19:50: a restart read the file mid-edit, hit a syntax error
 # and left self-play down for 48 minutes).
@@ -26,8 +26,8 @@ BASEDIR="$(realpath -m "$2")"
 TRAINERS="${TRAINERS:?set TRAINERS, the trainers, the one for self-play first (enclosure_parts.sh)}"
 
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
-KATAGO="$REPO"/katago
-KATAGO_BIN="${KATAGO_BIN:-$HOME/ws/game-ai/enclosure/builds/cuda/katago}"
+KATAGO="$REPO"/katagame
+KATAGO_BIN="${KATAGO_BIN:-$HOME/ws/game-ai/engines/builds/cuda/katago}"
 export PATH="$REPO/.venv-katago/bin:$PATH"
 
 LOGSDIR="$BASEDIR"/logs
