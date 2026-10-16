@@ -4,8 +4,8 @@
 //The rules part of the game that this build plays (game/gameinterface.h), alone: the Python binding builds against
 //it. game/chosengame.h adds the network encoding part.
 //
-//KATAGAME_GAME names the game: its folder in game/ and its namespace. The CMake option GAME defines it. A build that
-//defines nothing (the WebAssembly module, the Python binding, the fork's standalone tests) gets Enclosure.
+//KATAGAME_GAME names the game: its folder in game/ and its namespace. The CMake option GAME and the Python binding's
+//build define it. A build that defines nothing (the WebAssembly module, the fork's standalone tests) gets Enclosure.
 //
 //`chosengame` is the chosen game's namespace. GameRules is its rules part.
 

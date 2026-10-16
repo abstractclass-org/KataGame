@@ -40,8 +40,9 @@ the WebAssembly build, the binding and the standalone tests need no new source f
   unknown name stops `cmake` with the list of games. The option defines `KATAGAME_GAME=<name>`.
 - **The headers:** `chosenrules.h` includes `<name>/gamerules.h` and makes `chosengame` the alias of the namespace
   `<name>`. `chosengame.h` includes `<name>/gameencoding.h`. A game's folder and its namespace have the same name.
-- **Other builds** (the WebAssembly module, the Python binding, the fork's standalone tests) define nothing and get
-  Enclosure. So every build command of today still works.
+- **Other builds** (the WebAssembly module, the fork's standalone tests) define nothing and get Enclosure. So every
+  build command of today still works. The Python binding defines `KATAGAME_GAME` for each game that it builds
+  (`core/binding/build.sh` in the engine repository).
 - **Every build of `katago` checks both parts:** `board.cpp` includes `chosenrules.h` alone, which also shows that the
   rules part compiles without the encoding part. `boardhistory.cpp` includes `chosengame.h`.
 
@@ -61,9 +62,9 @@ the WebAssembly build, the binding and the standalone tests need no new source f
 
 ## The rules part
 
-`struct GameRules`. The Python binding needs this part only. It needs KataGo's `core/hash.h` (`Hash128`). Enclosure's
-`hash` also needs `core/rand.h`: a program that calls `hash` links `core/rand.cpp`, `core/hash.cpp` and their
-dependencies.
+`struct GameRules`. The Python binding needs this part, and the encoding part's symmetries when the game has that
+part. It needs KataGo's `core/hash.h` (`Hash128`). Enclosure's `hash` also needs `core/rand.h`: a program that
+calls `hash` links `core/rand.cpp`, `core/hash.cpp` and their dependencies.
 
 | Member | Meaning | Enclosure |
 |---|---|---|
@@ -99,7 +100,8 @@ count and the edges left in the turn, which fix it in every position that a game
 
 ## The network encoding part
 
-`struct GameEncoding`. The search, self-play and the trainer need it. The binding does not.
+`struct GameEncoding`. The search, self-play and the trainer need it. The Python binding uses only its symmetries
+(`SYMMETRIES`, `sym_position`, `SymActionMap`), when the game has this part, for the conformance suite.
 
 | Member | Meaning | Enclosure |
 |---|---|---|
@@ -198,6 +200,10 @@ OUT_DIR/testgameinterface tests/data/enclosure_games.txt
    `gameencoding.h` (`struct GameEncoding`). End each with its check:
    `static_assert(GameInterface::checkRules<GameRules>(), "...")`.
 2. Build with `-DGAME=<game>`, in a build folder for that game and backend.
+3. In the engine repository, make `games/<game>/` a Python package and build the game's rules module with
+   `sh core/binding/build.sh <game>`. The module's common API needs no code of the game's own. The game's Python
+   extras, if any, go in `games/<game>/binding/extras.h`. The conformance suite (`core/tests/test_conformance.py`)
+   checks the module (design 07, "The Python binding").
 
 A second game builds only after the front reaches Enclosure through the members alone (the map below).
 

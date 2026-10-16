@@ -38,9 +38,9 @@ A `Move` is still `(Loc, Player)`.
   repository's verified native engine, and it has been edited here since: V2's input options (no_maxflow, edges at both
   ends, the turn-safe plane), the income areas (`clipped_area`), and faster feature planes
   ([speed.md](../games/enclosure/docs/decisions/speed.md) "Faster features").
-  - It is now the only copy of Enclosure's rules. Python reaches it through the Enclosure repository's binding
-    (`games/enclosure/binding/rules.cpp`, the module `games.enclosure.rules`), and the site check compares it with the
-    site's own rules code.
+  - It is now the only copy of Enclosure's rules. Python reaches it through the engine repository's binding of every
+    game (`core/binding/rules.cpp`, with Enclosure's extras `games/enclosure/binding/extras.h`: the module
+    `games.enclosure.rules`), and the site check compares it with the site's own rules code.
 - Callers outside `game/` use a few members (from a survey of the callers): the size (`x_size`, `y_size` = 19),
   `colors` (74 uses), `pos_hash`, `ko_loc`, and Go's stone logic (`getNumLiberties`, `isSimpleEye`, captures).
   - `colors[point]` is `C_BLACK` where the point is one of Blue's nodes, `C_WHITE` where it is one of Red's, and
