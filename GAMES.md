@@ -1,6 +1,6 @@
 # The game interface: the C++ reference
 
-**Status: draft, for review.** KataGame plays a game that supplies the game interface. The build chooses one game, as
+**Status: decided, being built.** KataGame plays a game that supplies the game interface. The build chooses one game, as
 it chooses one backend. This file is the C++ reference: the members, the conventions, the checks, and how to add a
 game. Its last part is the map of the code that still reaches Enclosure directly, with the member that replaces each
 reference. The decision and its reasons are design 07 of the engine repository
@@ -14,6 +14,7 @@ it step by step, and the map below gives the work of each step.
 * [Conventions](#conventions)
 * [The rules part](#the-rules-part)
 * [The network encoding part](#the-network-encoding-part)
+* [The members still to build](#the-members-still-to-build)
 * [The checks](#the-checks)
 * [Adding a game](#adding-a-game)
 * [The map: Enclosure outside the game layer](#the-map-enclosure-outside-the-game-layer)
@@ -129,8 +130,8 @@ count and the edges left in the turn, which fix it in every position that a game
 
 **The training targets** are the slots of KataGo's spatial targets (`valueTargetsNCHW`) and the two that the fork
 added. The game gives each slot that it writes its own meaning. The front writes 0, with weight 0, in each other slot.
-`TARGETS` declares the slots. The members that compute a game's own targets come with the step of the training rows
-(see the map).
+`TARGETS` declares the slots. The member that computes a game's own targets comes with the step of the training rows
+(see "The members still to build").
 
 | Flag | Slot | Enclosure's meaning (ENCLOSURE.md, "Spatial targets") |
 |---|---|---|
@@ -140,6 +141,21 @@ added. The game gives each slot that it writes its own meaning. The front writes
 | `TARGET_SCORING` | C4 | the region occupancy 4 rounds later |
 | `TARGET_INCOME` | C5-6 | the territory income of each player |
 | `TARGET_NEXT_PIECES` | C7 | the next mover's nodes after the row's move, for the symmetries of policy channel 1 (not a loss) |
+
+## The members still to build
+
+These are decided (design 07). Each comes with the step that first needs it.
+
+| Member | Part | What it gives | Enclosure | Without it | Step |
+|---|---|---|---|---|---|
+| The protocol's move text and its parser (optional) | rules | A move as the engine protocol writes and reads it (GTP, the analysis engine) | Today's form: column letters A to S, I included (`Location::toString`, `tryOfString`) | `action_text`, `parse_action` | The rules (abscls-mkd.2) |
+| The position near a point (optional) | rules | The hash of the position in a window around a point, for the local pattern hash | Today's hash of the edges in the window (`search/localpattern.cpp`), byte-identical | A hash of `pieces` in the window | The rules (abscls-mkd.2) |
+| The history planes | encoding | The first plane and the count of the planes that `InputOptions::history` leaves out | The last 4 feature planes | Every game has it | The inputs and the rows (abscls-mkd.3) |
+| A game's own training targets | encoding | The values per point of the slots that the game gives its own meaning, from the game's positions after the row, before KataGo's storage | Today's targets in `trainingwrite.cpp` | Every slot in `TARGETS` that the front does not compute from `pieces` needs it | The inputs and the rows (abscls-mkd.3) |
+
+**Optional members.** For each optional member, `gameinterface.h` gets a detector (as the checks have) and a helper
+that calls the game's member when the game has it, and the default when it does not. The front calls the helper, and
+the check does not require the member. The migrate step of the rules builds the first two.
 
 ## The checks
 
@@ -217,7 +233,7 @@ them onto the members.
 | `scoreUnit()` | `SCORE_UNIT` |
 | `TIME_SCALE`, `GAME_LENGTH_AREA` | `GAME_LENGTH / GO_GAME_LENGTH` (`GO_GAME_LENGTH` stays: it is Go's) |
 | `printBoard` (the position's fields) | `position_text` |
-| `Location::toString`, `tryOfString` (moves in letters A-S, with I) | Open: not `action_text`, whose letters skip I (see design 07, "Open for the review") |
+| `Location::toString`, `tryOfString` (moves in letters A-S, with I) | The protocol's move text and its parser (optional), which Enclosure fills with this form. Without it: `action_text`, `parse_action`. |
 | `BoardHistory::endAndScoreGameNow` (margin from `getScore`) | `score` |
 | `BoardHistory` `historyHash` (in `getSituationRulesAndKoHash`) | `input_hash` |
 | `COMPILE_MAX_BOARD_LEN` (default 19) | `MAX_BOARD_LEN` |
@@ -235,7 +251,7 @@ them onto the members.
 | `command/gtp.cpp` | `Board::GAME_LENGTH_AREA` (resignation), `NNPos::SCORE_SCALE` (the resignation bounds) | `GAME_LENGTH`, `SCORE_SCALE` (through the front's names) |
 | `command/gtpsession.h` | `setStart(enclosure::Position)` | `GameRules::Position` |
 | `search/timecontrols.cpp` | `GAME_LENGTH_AREA`, `board.pos.move_count`, `board.pos.moves_left == 2` | `GAME_LENGTH`, `moves_played`, `turn_moves_left(p) > 1` |
-| `search/localpattern.cpp`, `.h` | The pattern hash: Zobrist keys for each edge (`2 × enclosure::PASS`) and protected edge, `Board::edgeIndex`, the move's source point (`actionOfMoveLoc / NOFF`, `enclosure::SIZE`), `board.pos.edges`, `protected_`, `contains` | The move's point: `action_point`. The window's content: open (see design 07). |
+| `search/localpattern.cpp`, `.h` | The pattern hash: Zobrist keys for each edge (`2 × enclosure::PASS`) and protected edge, `Board::edgeIndex`, the move's source point (`actionOfMoveLoc / NOFF`, `enclosure::SIZE`), `board.pos.edges`, `protected_`, `contains` | The move's point: `action_point`. The window's content: the position near a point (optional), which Enclosure fills with this edge hash. Without it: a hash of `pieces` in the window. |
 | `search/search.cpp`, `search.h`, `searchhelpers.cpp`, `searchexplorehelpers.cpp`, `searchresults.cpp`, `patternbonustable.cpp`, `subtreevaluebiastable.cpp` | `Board::NUM_MOVE_LOCS`, `MOVE_LOC_BASE` | Front (stays) |
 | `search/search.cpp`, `searchhelpers.cpp`, `searchresults.cpp`, `reportedsearchvalues.cpp` | `rootBoard.scoreUnit()` | `SCORE_UNIT` (through `Board::scoreUnit`) |
 | `search/searchhelpers.cpp` | `Board::GAME_LENGTH_AREA` (the half-lives of `interpolateEarly`) | `GAME_LENGTH` |
@@ -262,7 +278,7 @@ them onto the members.
 | `neuralnet/nninputs.cpp`, `nneval.cpp` | `game/enclosure/bitscan.h` (`bitsFirst`, `bitsNext` over the legal set) | A front helper: it reads a bitset, not the game |
 | `neuralnet/nninputs.cpp` | `Board::playerOfIndex(board.pos.player)`, `assert(nnXLen == enclosure::SIZE)` | `next_player`, `x_size`/`MAX_BOARD_LEN` |
 | `neuralnet/nneval.cpp` | `enclosureInputs` (input versions 8 and 9), `board.pos.terminal`, `SymmetryHelpers::SymActionMap` | the game's input versions, `terminal`, `SymActionMap` |
-| `dataio/trainingwrite.cpp` | The future occupancy (C0) and the income (C5-6): `enclosure::enclosed_area` at each turn end | `TARGETS`, and a member that computes a game's own targets (open: design 07) |
+| `dataio/trainingwrite.cpp` | The future occupancy (C0) and the income (C5-6): `enclosure::enclosed_area` at each turn end | `TARGETS`, and the member that computes a game's own targets |
 | `dataio/trainingwrite.cpp` | The edges that get cut (C1: `Edge`, `igcd`, `contains`), the region occupancy 4 rounds later (C4) | The same |
 | `dataio/trainingwrite.cpp` | The future nodes (C2-3) and the next mover's nodes (C7): `colors`, `Board::playerOfIndex(nextBoard.pos.player)` | `pieces`, `next_player` |
 | `dataio/trainingwrite.cpp` | `enclosure::SIZE`, `N_POINTS`, `Board::indexOfPlayer` | `x_size`, `y_size`, `next_player` |
@@ -292,7 +308,7 @@ The trainer reads a game's facts from one module for that game. Each constant be
 | `SCORE_BIN_WIDTH`, `SCORE_SCALE = 12.0` | `model_pytorch.py` (the score bins, the output multipliers), `metrics_pytorch.py` (the Huber deltas, the loss weights, the q-value score's storage `60 / SCORE_SCALE`) | `SCORE_SCALE` |
 | `TIME_SCALE = 120 / 328` | `model_pytorch.py`, `metrics_pytorch.py` (the variance-time Huber delta) | `GAME_LENGTH / 328` |
 | 215 spatial inputs, 5 or 7 global inputs | `modelconfigs.get_num_bin_input_features`, `get_num_global_input_features` | `1 + NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS` (+ 2 in V9) |
-| `ENCLOSURE_HISTORY_PLANES_START = 211`, `ENCLOSURE_NUM_HISTORY_PLANES = 4` | `data_processing_pytorch.apply_history_dropout` | The history planes: the planes that `options.history = false` leaves out (open: a member that names them) |
+| `ENCLOSURE_HISTORY_PLANES_START = 211`, `ENCLOSURE_NUM_HISTORY_PLANES = 4` | `data_processing_pytorch.apply_history_dropout` | The member that names the history planes (the first plane and the count), the planes that `InputOptions::history = false` leaves out |
 | `enclosure_symmetry` (`SIZE`, `NUM_OFFSETS`, `OFFSETS`, the edge planes' anchors, `NUM_SYMMETRIES = 8`) | `data_processing_pytorch.py` (the augmentation) | `SYMMETRIES`, `sym_position`, `SymActionMap`, in Python |
 | `VALUE_TARGETS_NCHW_CHANNELS = 8`, the targets in C1, C4, C5-6, C7 and their flags C68, C69, C75 | `data_processing_pytorch.py`, `metrics_pytorch.py` | `TARGETS` |
 | The storage × 120 of C0, C4 and C5-6 | `metrics_pytorch.py` | `TARGETS` (the slot's storage: KataGo's for C0 and C4) |
