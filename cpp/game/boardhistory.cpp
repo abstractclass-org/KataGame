@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <cstring>
 
+//The chosen game's interface, both parts (game/gameinterface.h): so every build checks the network encoding part.
+#include "../game/chosengame.h"
+
 using namespace std;
 
 BoardHistoryModes::BoardHistoryModes()

@@ -19,6 +19,9 @@
 
 #include "../core/rand.h"
 #include "../core/test.h"
+//The chosen game's rules part (game/gameinterface.h), alone: so every build checks it, and that it compiles without
+//the network encoding part (boardhistory.cpp checks that part).
+#include "../game/chosenrules.h"
 
 using namespace std;
 

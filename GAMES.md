@@ -1,0 +1,330 @@
+# The game interface: the C++ reference
+
+**Status: draft, for review.** KataGame plays a game that supplies the game interface. The build chooses one game, as
+it chooses one backend. This file is the C++ reference: the members, the conventions, the checks, and how to add a
+game. Its last part is the map of the code that still reaches Enclosure directly, with the member that replaces each
+reference. The decision and its reasons are design 07 of the engine repository
+(`docs/design/07-game-interface.md`). Enclosure's own design stays in [ENCLOSURE.md](ENCLOSURE.md).
+
+The interface exists, and Enclosure implements it. No code outside the game layer calls it yet: the front moves onto
+it step by step, and the map below gives the work of each step.
+
+* [The files](#the-files)
+* [Choosing the game](#choosing-the-game)
+* [Conventions](#conventions)
+* [The rules part](#the-rules-part)
+* [The network encoding part](#the-network-encoding-part)
+* [The checks](#the-checks)
+* [Adding a game](#adding-a-game)
+* [The map: Enclosure outside the game layer](#the-map-enclosure-outside-the-game-layer)
+
+## The files
+
+| File | What it holds |
+|---|---|
+| `cpp/game/gameinterface.h` | The contract: every member with its meaning, the two static checks, `GameInterface::checkRules<R>()` and `checkEncoding<E>()`, and `GameInterface::symPoint`, KataGo's symmetry of a point. |
+| `cpp/game/chosenrules.h` | The choice of game, rules part only: the namespace alias `chosengame` and `GameRules`. The Python binding builds against it. |
+| `cpp/game/chosengame.h` | Both parts: `chosenrules.h` and `GameEncoding`. |
+| `cpp/game/<game>/gamerules.h` | The game's rules part: `struct GameRules` in the game's namespace, then its check. |
+| `cpp/game/<game>/gameencoding.h` | The game's network encoding part: `struct GameEncoding`, then its check. |
+| `cpp/game/board.*`, `cpp/game/boardhistory.*` | The front: KataGo's `Board` and `BoardHistory`, which the search calls. They will reach the game through the members only. |
+| `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members against the front's code of today. |
+
+All members are static, and every file is a header. So the compiler sees the same code as in a build for one game, and
+the WebAssembly build, the binding and the standalone tests need no new source file.
+
+## Choosing the game
+
+- **CMake:** `-DGAME=enclosure` (the default). The games are the folders of `cpp/game/` that hold a `gamerules.h`. An
+  unknown name stops `cmake` with the list of games. The option defines `KATAGAME_GAME=<name>`.
+- **The headers:** `chosenrules.h` includes `<name>/gamerules.h` and makes `chosengame` the alias of the namespace
+  `<name>`. `chosengame.h` includes `<name>/gameencoding.h`. A game's folder and its namespace have the same name.
+- **Other builds** (the WebAssembly module, the Python binding, the fork's standalone tests) define nothing and get
+  Enclosure. So every build command of today still works.
+- **Every build of `katago` checks both parts:** `board.cpp` includes `chosenrules.h` alone, which also shows that the
+  rules part compiles without the encoding part. `boardhistory.cpp` includes `chosengame.h`.
+
+## Conventions
+
+- **Players:** 0 is the first player (KataGo's Black), 1 the second (White). Enclosure's Blue is 0.
+- **Actions:** an `int` from 0 to `NUM_ACTIONS - 1`. Pass is the last, `PASS_ACTION`. Every game has pass. A game whose
+  rules have no pass never lists it as legal (Connect-4).
+- **Actions on the largest board:** a game numbers its actions on a board of `MAX_BOARD_LEN`. So an action keeps its
+  number on every board size, and the network's policy index of an action is
+  `(y * nnXLen + x) * POLICY_CHANNELS + channel` (pass last), with `(x, y, channel)` from `action_point`.
+- **Points:** `(x, y)`, `0 <= x < x_size`, `0 <= y < y_size`, with `y = 0` at the bottom (row 1 in the notation).
+  Arrays of points are `[y * x_size + x]`.
+- **Symmetries:** KataGo's 8 and its numbers: bit `0x2` flips x, bit `0x1` flips y, then bit `0x4` transposes
+  (`GameInterface::symPoint`). A game allows a subset. The identity is always in it.
+- **No exceptions:** the WebAssembly build has none. A parser returns `false` or `-1` and gives the reason.
+
+## The rules part
+
+`struct GameRules`. The Python binding needs this part only. It needs KataGo's `core/hash.h` (`Hash128`). Enclosure's
+`hash` also needs `core/rand.h`: a program that calls `hash` links `core/rand.cpp`, `core/hash.cpp` and their
+dependencies.
+
+| Member | Meaning | Enclosure |
+|---|---|---|
+| `NAME` | The game's name, as in `-DGAME` and the folder. | `"enclosure"` |
+| `Position` | A copyable value: the whole state that the rules read. | `enclosure::Position` (`engine.h`) |
+| `MAX_BOARD_LEN` | The longest side of the game's boards. The front will take the build's largest board (`COMPILE_MAX_BOARD_LEN`) from it. | 19 |
+| `NUM_ACTIONS` | The number of actions, pass included. | `PASS + 1` = 17,329 |
+| `PASS_ACTION` | Pass: `NUM_ACTIONS - 1`. | `PASS` = 17,328 |
+| `new_game(xSize, ySize, p)` | Sets the start position on a board of that size. False when the game is not played on it. | 19 × 19 only |
+| `x_size(p)`, `y_size(p)` | The board's size. | 19 |
+| `next_player(p)` | The player to move, from the position. A turn can have several moves. | `p.player` |
+| `turn_moves_left(p)` | The moves left in the mover's turn, this one included. 1 in a game that alternates. | `p.moves_left` (1-2-2) |
+| `moves_played(p)` | The moves since the start: the game's progress. | `p.move_count` |
+| `terminal(p)` | Whether the game is over. | after 120 edges |
+| `legal_actions(p, out)` | The legal actions, ascending. None when terminal. | `Position::legal_actions` (pass only when no edge is legal) |
+| `is_legal(p, action)` | One action's legality, false out of range. | `Position::is_legal` |
+| `play(p, action)` | Plays a legal action, unchecked. | `Position::play` (pass forfeits the rest of the turn) |
+| `result(p)` | At the end, the first player's return: 1, 0 or -1. | `Position::result` |
+| `score(p, player)` | The player's points in the game's units, final at the end. KataGo's margin is `score(p, 1) - score(p, 0)`, with the rules' komi added. | `p.scores[player]` |
+| `hash(p)` | A hash of the whole position, the player to move included, so that equal hashes mean equal positions. The front also mixes in KataGo's hash of the player to move. | Board's Zobrist hash, from the same seed (see below) |
+| `pieces(p, owner)` | `owner[y * x_size + x]`: the player whose piece is on the point, or -1. KataGo's `colors`. | each player's nodes |
+| `area(p, owner)` | `owner[y * x_size + x]`: the player who owns the point now, or -1. KataGo's area: the final ownership at the end. | the points that only one player's regions enclose |
+| `action_text(action)` | The action in the game's notation (design 04 of the engine repository). | `notation::move_name` |
+| `parse_action(p, text, why)` | The legal action of `p` that the text names, or -1 and the reason. | `notation::parse_move` |
+| `position_text(p)` | The one-line position. | `notation::position_string`: the five fields of design 04 |
+| `parse_position(text, p, why)` | Sets `p` from a one-line position, or returns false and the reason. | `notation::parse_position` (the history planes come back empty) |
+
+**Enclosure's hash.** `Board::syncFromPosition` hashes these fields with tables that `Board::initHash` draws: the
+edges by owner, the protected and the placed edges, the edge count, the edges left in the turn and the scores.
+`GameRules` keeps its own copy of those tables. It draws them from the same seed in the same order, so `hash(p)` gives
+the same values. Board's tables and `GameRules`' tables both exist until the front calls `hash`. The player to move is in the hash through the edge
+count and the edges left in the turn, which fix it in every position that a game reaches.
+
+## The network encoding part
+
+`struct GameEncoding`. The search, self-play and the trainer need it. The binding does not.
+
+| Member | Meaning | Enclosure |
+|---|---|---|
+| `Rules` | The game's rules part. | `GameRules` |
+| `NUM_SPATIAL_INPUTS` | The input planes that the game writes. The front puts KataGo's on-board plane first, so the network sees `1 + NUM_SPATIAL_INPUTS` planes. | 214: 4 × 48 edge planes, 22 feature planes (V8 has 215 with the on-board plane) |
+| `NUM_GLOBAL_INPUTS` | The global inputs that the game writes. | 5 (V9 adds KataGo's 2 playout inputs after them) |
+| `spatial_inputs(p, options, set)` | Calls `set(x, y, plane)` for each input that is 1, at the image under `options.symmetry`. A template on `set`, so that each writer of the front is inlined. | `fillRowV8`'s edge planes (both ends of each edge) and feature planes |
+| `global_inputs(p, options, out)` | Writes the global inputs. | the observation's scalars, with komi as a starting score |
+| `input_hash(p)` | What the inputs read beyond `hash(p)`. The front mixes it into the network cache's key. | the history planes' edges (`BoardHistory`'s history hash) |
+| `POLICY_CHANNELS` | Policy channels per point. | 48: one per offset |
+| `action_point(a, x, y, channel)` | The point and the channel of an action other than pass. | the edge's source point and offset |
+| `point_action(x, y, channel)` | The action at that point and channel. | `(y * 19 + x) * 48 + channel` |
+| `SYMMETRIES` | The allowed symmetries: bit s for KataGo's symmetry s. | `0xFF`: all 8 |
+| `sym_position(p, s)` | The image of the position. | every edge mapped: `SymmetryHelpers::getSymPosition` |
+| `SymActionMap` | `SymActionMap(p, s)(a)`: the image of a legal action of `p`, an action of `sym_position(p, s)`. Built once for each position and symmetry. | `SymmetryHelpers::SymActionMap` (the edge's direction can change) |
+| `TARGETS` | The optional training targets that the game writes. | all six (below) |
+| `SCORE_SCALE` | The game's score spread against Go's. KataGo's constants in points scale by it. | 12 (ENCLOSURE.md, "Score scale") |
+| `SCORE_UNIT` | The search's score utility unit, in points, where KataGo uses the square root of the board's area. | 140.5845 = √(18 · 18 · 61) |
+| `GAME_LENGTH` | A game's mean length in moves, for KataGo's game-phase constants. | 120 |
+
+`InputOptions` holds what the front gives the input members:
+
+| Field | Meaning |
+|---|---|
+| `symmetry` | An allowed symmetry. The inputs are those of the image. |
+| `history` | False: leave out what the position keeps of earlier turns (KataGo's `maxHistory <= 0`). |
+| `komi` | The rules' komi, for a game whose inputs encode it. |
+
+**The training targets** are the slots of KataGo's spatial targets (`valueTargetsNCHW`) and the two that the fork
+added. The game gives each slot that it writes its own meaning. The front writes 0, with weight 0, in each other slot.
+`TARGETS` declares the slots. The members that compute a game's own targets come with the step of the training rows
+(see the map).
+
+| Flag | Slot | Enclosure's meaning (ENCLOSURE.md, "Spatial targets") |
+|---|---|---|
+| `TARGET_OWNERSHIP` | C0 | the future occupancy: the mean over the turn ends after the row of +1 inside the mover's regions, -1 inside the opponent's |
+| `TARGET_SEKI` | C1 | the edges that get cut |
+| `TARGET_FUTURE_PIECES` | C2-3 | the nodes 8 and 32 edges later (KataGo's future positions, from `pieces`) |
+| `TARGET_SCORING` | C4 | the region occupancy 4 rounds later |
+| `TARGET_INCOME` | C5-6 | the territory income of each player |
+| `TARGET_NEXT_PIECES` | C7 | the next mover's nodes after the row's move, for the symmetries of policy channel 1 (not a loss) |
+
+## The checks
+
+**A game that lacks a member does not compile.** Each game's header ends with its part's check. A missing member gives
+one error that names it. This is the `katago` build with `next_player` removed from Enclosure's `GameRules`:
+
+```
+game/../game/enclosure/../gameinterface.h:177:35: error: static assertion failed: game interface, rules part: the
+game lacks next_player(const Position&) -> int
+make[3]: *** [CMakeFiles/katago.dir/build.make:429: CMakeFiles/katago.dir/game/board.cpp.o] Error 1
+```
+
+**The rules part compiles alone.** A program that includes `game/chosenrules.h` builds and runs in a copy of the game
+layer without `gameencoding.h`, `features.h` and `chosengame.h`.
+
+**Enclosure's members equal the front's code of today:** `testgameinterface` replays the 500 games of
+`tests/data/enclosure_games.txt` and 60 random games (with timeout passes and komi). A second position, played through
+`GameRules::play` only, follows each game. At each position it compares:
+
+- the rules part with `Board` and `BoardHistory`: the player to move and the edges left (against the 1-2-2 turn
+  order), terminal, the legal actions, `is_legal` (every action at each 200th position), the scores, the hash (with
+  the player's hash, `Board::pos_hash`), the pieces (`Board::colors`), the area (`Board::calculateArea`), the moves
+  and the position in the notation (each read back), and the result at the end.
+- the encoding part with `NNInputs` and `SymmetryHelpers`: the inputs (`fillRowV8` with and without history and at the
+  game's komi, and `fillRowV8Packed` at each symmetry), the input hash (the network cache's key), the policy index
+  (`NNPos::locToPos`), the image position and the action map (the images of the legal actions are the image's legal
+  actions).
+- the constants with `NNPos`, `NNInputs` and `Board`.
+
+Build and run it as the other standalone tests (`tests/enclosure/build.sh`), from `katagame/cpp`:
+
+```
+TESTS=testgameinterface bash tests/enclosure/build.sh BUILD_DIR OUT_DIR
+OUT_DIR/testgameinterface tests/data/enclosure_games.txt
+```
+
+## Adding a game
+
+1. Make the folder `cpp/game/<game>/` with `gamerules.h` (`struct GameRules` in the namespace `<game>`) and
+   `gameencoding.h` (`struct GameEncoding`). End each with its check:
+   `static_assert(GameInterface::checkRules<GameRules>(), "...")`.
+2. Build with `-DGAME=<game>`, in a build folder for that game and backend.
+
+A second game builds only after the front reaches Enclosure through the members alone (the map below).
+
+## The map: Enclosure outside the game layer
+
+Each reference to Enclosure outside `cpp/game/`, and each Enclosure constant in the trainer
+(`python/katago/train/`), with the member that replaces it. Most callers keep the front's names (`Board`,
+`BoardHistory`, `NNPos`, `NNInputs`, `SymmetryHelpers`). Only those names' definitions change. So KataGo's search keeps
+its calls, and upstream releases still merge with few conflicts. The fork's tests (`cpp/tests/enclosure/`,
+`cpp/tests/testenclosure*.cpp`) stay Enclosure's tests and are not in the map.
+
+### The front (`cpp/game/board.*`, `cpp/game/boardhistory.*`)
+
+These files are inside the game layer, but they hold Enclosure's code that the members replace. The search step moves
+them onto the members.
+
+| Front | Member |
+|---|---|
+| `Board(x, y)`, `Board::init`: 19 × 19 only, `enclosure::Position()` | `new_game` (the front's error names `NAME`) |
+| `x_size`, `y_size` | `x_size`, `y_size` |
+| `colors` (`syncFromPosition`) | `pieces` |
+| `pos_hash` (`syncFromPosition`), the Enclosure tables of `initHash` (`ZOBRIST_EDGE_HASH`, `_PROTECTED_`, `_PLACED_`, `_MOVE_COUNT_`, `_MOVES_LEFT_`), `edgeIndex` | `hash`, then `^ ZOBRIST_PLAYER_HASH[nextPla()]` as today. The tables move to the game, and `initHash` calls `hash` once, so that the first call in a search does not draw them. The situation hashes add the player's hash again, so the two cancel: that is today's behaviour, and a change of it changes the keys. |
+| `legalActions`, `getLegalMoveLocs`, `computeLegalActions`, `bitset<enclosure::PASS + 1>` | `legal_actions`, `bitset<NUM_ACTIONS>`. The cache of the legal set stays in the front. |
+| `isLegal` | `is_legal` before the legal set exists, as today |
+| `nextPla` | `next_player` |
+| `isGameOver` | `terminal` |
+| `isEmpty` | `moves_played(p) == 0` |
+| `playMoveAssumeLegal`, `playMoveRecorded`, `undo`, `MoveRecord::before` | `play`, and a copy of `Position` |
+| `getScore` | `score` |
+| `calculateArea`, `calculateIndependentLifeArea` | `area` |
+| `setPosition(enclosure::Position)` | `setPosition(GameRules::Position)` |
+| `MOVE_LOC_BASE`, `NUM_MOVE_LOCS`, `moveLocOfAction`, `actionOfMoveLoc` | Stay in the front: a move `Loc` is `MOVE_LOC_BASE` + action, with `NUM_MOVE_LOCS = MOVE_LOC_BASE + PASS_ACTION` and pass from `PASS_ACTION`. |
+| `scoreUnit()` | `SCORE_UNIT` |
+| `TIME_SCALE`, `GAME_LENGTH_AREA` | `GAME_LENGTH / GO_GAME_LENGTH` (`GO_GAME_LENGTH` stays: it is Go's) |
+| `printBoard` (the position's fields) | `position_text` |
+| `Location::toString`, `tryOfString` (moves in letters A-S, with I) | Open: not `action_text`, whose letters skip I (see design 07, "Open for the review") |
+| `BoardHistory::endAndScoreGameNow` (margin from `getScore`) | `score` |
+| `BoardHistory` `historyHash` (in `getSituationRulesAndKoHash`) | `input_hash` |
+| `COMPILE_MAX_BOARD_LEN` (default 19) | `MAX_BOARD_LEN` |
+
+### The search, self-play and the engines (the rules)
+
+| File | Reference | Member |
+|---|---|---|
+| `command/analysis.cpp` | The query field `enclosurePosition`: `enclosure::Position`'s fields, read with `enclosure::SIZE`, `MAX_MOVES`, `HISTORY_TURNS` and `make_edge`, then `Board::setPosition` | A generic position field read by `parse_position`. The history stays outside the one-line position (design 04). `enclosurePosition` stays as an alias: the move server sends it. Its parser becomes an Enclosure extra. |
+| `command/analysis.cpp` | `Board::NUM_MOVE_LOCS` (`avoidMoveUntilByLoc`) | Front (stays) |
+| `command/enclosureprotocol.cpp`, `.h` | Enclosure's engine protocol (design 04): `notation::move_name`, `parse_move`, `position_string` and `parse_position`, `position_check::check`, the `enclosed_area` polygons (the describe action), `snap(scores)` (the outcome), `board.pos.legal_actions` and `terminal`, `enclosure::SIZE` (the board's and the network's size) | `action_text`, `parse_action`, `position_text`, `parse_position`, `legal_actions`, `terminal`, `score`, `result`, `x_size`, `MAX_BOARD_LEN`. The position check and the describe action stay Enclosure's. |
+| `command/enclosureengine.cpp` | The command `enclosure-engine`, `configs/analysis_enclosure.cfg` | Names (see "Names that stay") |
+| `command/gtp.cpp` | `setEnclosureStart(enclosure::Position)`, `board.setPosition` | A start from `parse_position` (`GameRules::Position`) |
+| `command/gtp.cpp` | `board.pos.terminal`, `enclosureTurnError` (the player to move comes from the position) | `terminal`, `next_player` |
+| `command/gtp.cpp` | `Board::GAME_LENGTH_AREA` (resignation), `NNPos::SCORE_SCALE` (the resignation bounds) | `GAME_LENGTH`, `SCORE_SCALE` (through the front's names) |
+| `command/gtpsession.h` | `setStart(enclosure::Position)` | `GameRules::Position` |
+| `search/timecontrols.cpp` | `GAME_LENGTH_AREA`, `board.pos.move_count`, `board.pos.moves_left == 2` | `GAME_LENGTH`, `moves_played`, `turn_moves_left(p) > 1` |
+| `search/localpattern.cpp`, `.h` | The pattern hash: Zobrist keys for each edge (`2 × enclosure::PASS`) and protected edge, `Board::edgeIndex`, the move's source point (`actionOfMoveLoc / NOFF`, `enclosure::SIZE`), `board.pos.edges`, `protected_`, `contains` | The move's point: `action_point`. The window's content: open (see design 07). |
+| `search/search.cpp`, `search.h`, `searchhelpers.cpp`, `searchexplorehelpers.cpp`, `searchresults.cpp`, `patternbonustable.cpp`, `subtreevaluebiastable.cpp` | `Board::NUM_MOVE_LOCS`, `MOVE_LOC_BASE` | Front (stays) |
+| `search/search.cpp`, `searchhelpers.cpp`, `searchresults.cpp`, `reportedsearchvalues.cpp` | `rootBoard.scoreUnit()` | `SCORE_UNIT` (through `Board::scoreUnit`) |
+| `search/searchhelpers.cpp` | `Board::GAME_LENGTH_AREA` (the half-lives of `interpolateEarly`) | `GAME_LENGTH` |
+| `program/play.cpp` | `Board::GAME_LENGTH_AREA` (the earliest resignation, early forks) | `GAME_LENGTH` |
+| `program/play.cpp` | `NNPos::SCORE_SCALE` (the bounds of the komi spreads) | `SCORE_SCALE` |
+| `program/play.cpp` | `endAndScoreGameNow(board, finalOwnership)`, `calculateArea` (final full area) | `area` |
+| `program/playutils.cpp` | `NNPos::SCORE_SCALE`, `SCORE_TARGET_CAP` (score steps and caps), `Board::GAME_LENGTH_AREA` (the opening moves), `Board::NUM_MOVE_LOCS` | `SCORE_SCALE`, `GAME_LENGTH`, front |
+| `command/evalsgf.cpp`, `command/writetrainingdata.cpp`, `program/playutils.cpp` | `endAndScoreGameNow(board, area)`, `calculateArea` | `area` |
+| `search/search.cpp` | `rootBoard.calculateArea` (the root's safe area) | `area` |
+
+### The network inputs, the symmetries and the training rows
+
+| File | Reference | Member |
+|---|---|---|
+| `neuralnet/nninputs.h` | `#include "../game/enclosure/features.h"` | `game/chosengame.h` |
+| `neuralnet/nninputs.h` | `V8_EDGE_PLANES_START`, `V8_FEATURE_PLANES_START`, `NUM_FEATURES_SPATIAL_V8` (`4 * enclosure::NOFF + enclosure::FEATURE_PLANES`), `NUM_FEATURES_GLOBAL_V8`/`V9` (`enclosure::SCALARS`) | `1 + NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS` (+ 2 in V9) |
+| `neuralnet/nninputs.h` | `NUM_SPATIAL_ELTS_V8` (`enclosure::SIZE`) | `MAX_BOARD_LEN` |
+| `neuralnet/nninputs.h`, `.cpp` | `SymmetryHelpers::getSymEdge`, `getSymPosition`, `getSymBoard` | `sym_position`, and `SymActionMap` over the legal set (`getSymBoard` maps it) |
+| `neuralnet/nninputs.h`, `.cpp` | `SymmetryHelpers::getSymAction`, `SymActionMap` (its `node[enclosure::SIZE][...]`), `getSymMoveLoc`, `getSymMoveLocs` | `SymActionMap` |
+| `neuralnet/nninputs.h` | `SymmetryHelpers::NUM_SYMMETRIES` (the first N symmetries) | `SYMMETRIES` (a set, so that a game may allow symmetry 2 without 1) |
+| `neuralnet/nninputs.cpp` | `fillRowV8Entries`: `board.pos.observation`, `enclosure::feature_planes`, `PLANES`, `NOFF`, `OFFS`, `OFF_INDEX`, `PER_PLAYER`, `MAX_OBS_IDX`, `SCALARS`, the komi's score input (`18 * 18 * 61`), `maxHistory <= 0` | `spatial_inputs`, `global_inputs` (`options.komi`, `options.history`). The on-board plane stays the front's. |
+| `neuralnet/nninputs.cpp` | `getSymXY` (`enclosure::SIZE`) | The front's point map (KataGo's, on the board's size) |
+| `neuralnet/nninputs.cpp` | `markDuplicateMoveLocs`: the image's edges, protected and placed edges against the position's | `hash(sym_position(p, s)) == hash(p)` |
+| `neuralnet/nninputs.cpp`, `nneval.cpp` | `game/enclosure/bitscan.h` (`bitsFirst`, `bitsNext` over the legal set) | A front helper: it reads a bitset, not the game |
+| `neuralnet/nninputs.cpp` | `Board::playerOfIndex(board.pos.player)`, `assert(nnXLen == enclosure::SIZE)` | `next_player`, `x_size`/`MAX_BOARD_LEN` |
+| `neuralnet/nneval.cpp` | `enclosureInputs` (input versions 8 and 9), `board.pos.terminal`, `SymmetryHelpers::SymActionMap` | the game's input versions, `terminal`, `SymActionMap` |
+| `dataio/trainingwrite.cpp` | The future occupancy (C0) and the income (C5-6): `enclosure::enclosed_area` at each turn end | `TARGETS`, and a member that computes a game's own targets (open: design 07) |
+| `dataio/trainingwrite.cpp` | The edges that get cut (C1: `Edge`, `igcd`, `contains`), the region occupancy 4 rounds later (C4) | The same |
+| `dataio/trainingwrite.cpp` | The future nodes (C2-3) and the next mover's nodes (C7): `colors`, `Board::playerOfIndex(nextBoard.pos.player)` | `pieces`, `next_player` |
+| `dataio/trainingwrite.cpp` | `enclosure::SIZE`, `N_POINTS`, `Board::indexOfPlayer` | `x_size`, `y_size`, `next_player` |
+| `dataio/trainingwrite.cpp` | `NNPos::SCORE_SCALE` (score bins, the q-value score's storage), `SCORE_TARGET_CAP` | `SCORE_SCALE` |
+| `dataio/trainingwrite.h` | The row format's comments (C5-7, C68, C69, C75) | `TARGETS` |
+| `cpp/game/boardhistory.cpp` | `historyHash` | `input_hash` |
+
+### The policy layout and the backends
+
+| File | Reference | Member |
+|---|---|---|
+| `neuralnet/nninputs.h` | `NNPos::NUM_OFFSETS = enclosure::NOFF`, `MAX_NN_POLICY_SIZE` (`static_assert == enclosure::PASS + 1`), `locToPos` and `posToLoc` (`assert(... == enclosure::SIZE)`, the action as the policy index) | `POLICY_CHANNELS`, `NUM_ACTIONS`, `action_point`, `point_action` |
+| `neuralnet/nninputs.h` | `NNPos::SCORE_SCALE = 12.0`, `SCORE_TARGET_CAP` | `SCORE_SCALE` |
+| `neuralnet/desc.cpp`, `.h` | `NNPos::NUM_OFFSETS` (the policy convolution's channels per output) | `POLICY_CHANNELS` |
+| `neuralnet/cudaandrocmbackend.inc` | `NNPos::NUM_OFFSETS` (15 places), and the policy gather's `static_assert(enclosure::PASS < (1 << 15))` and `testAssert(a <= enclosure::PASS)` | `POLICY_CHANNELS`, `PASS_ACTION` |
+| `neuralnet/eigenbackend.cpp`, `trtbackend.cpp`, `onnxmodelbuilder.cpp` | `NNPos::NUM_OFFSETS` | `POLICY_CHANNELS` |
+| `neuralnet/nneval.cpp` | `enclosure::PASS` (the policy gather, the legal mask, `policySize == PASS + 1`), `board.legalActions()` | `PASS_ACTION`, `NUM_ACTIONS`, the front's legal set |
+| `neuralnet/openclbackend.cpp`, `onnxbackend.cpp`, `cudaandrocmhelpers.*`, `modelversion.*`, `onnxmodelbuilder.h` | Comments: the policy channels, the input versions | The same members. The model's game: the trainer's step. |
+
+### The trainer (`python/katago/train/`)
+
+The trainer reads a game's facts from one module for that game. Each constant below goes into Enclosure's module.
+
+| Constant | Where | Member it mirrors |
+|---|---|---|
+| `NUM_OFFSETS = 48`, `policy_len(pos_len)` | `model_pytorch.py` (the policy convolution and its reshape), `metrics_pytorch.py` (`policy_len`, the soft-policy mask), `enclosure_symmetry.py` | `POLICY_CHANNELS`, `NUM_ACTIONS` |
+| `SCORE_BIN_WIDTH`, `SCORE_SCALE = 12.0` | `model_pytorch.py` (the score bins, the output multipliers), `metrics_pytorch.py` (the Huber deltas, the loss weights, the q-value score's storage `60 / SCORE_SCALE`) | `SCORE_SCALE` |
+| `TIME_SCALE = 120 / 328` | `model_pytorch.py`, `metrics_pytorch.py` (the variance-time Huber delta) | `GAME_LENGTH / 328` |
+| 215 spatial inputs, 5 or 7 global inputs | `modelconfigs.get_num_bin_input_features`, `get_num_global_input_features` | `1 + NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS` (+ 2 in V9) |
+| `ENCLOSURE_HISTORY_PLANES_START = 211`, `ENCLOSURE_NUM_HISTORY_PLANES = 4` | `data_processing_pytorch.apply_history_dropout` | The history planes: the planes that `options.history = false` leaves out (open: a member that names them) |
+| `enclosure_symmetry` (`SIZE`, `NUM_OFFSETS`, `OFFSETS`, the edge planes' anchors, `NUM_SYMMETRIES = 8`) | `data_processing_pytorch.py` (the augmentation) | `SYMMETRIES`, `sym_position`, `SymActionMap`, in Python |
+| `VALUE_TARGETS_NCHW_CHANNELS = 8`, the targets in C1, C4, C5-6, C7 and their flags C68, C69, C75 | `data_processing_pytorch.py`, `metrics_pytorch.py` | `TARGETS` |
+| The storage × 120 of C0, C4 and C5-6 | `metrics_pytorch.py` | `TARGETS` (the slot's storage: KataGo's for C0 and C4) |
+| The future-position head's 4 outputs: KataGo's 2, then the income logits | `model_pytorch.py` (`conv_futurepos`), `metrics_pytorch.py` | `TARGET_INCOME` |
+| The score parity vector, kept at zero (Go's komi parity) | `model_pytorch.py` | None: Go's. A game whose last global input is komi would need KataGo's. |
+| `load_model(..., pos_len=19)` | `load_model.py` | `MAX_BOARD_LEN` |
+| `ENCLOSURE_ZERO_INPUT_CHANNELS` | `data_processing_pytorch.py` | None: an option for experiments (a name) |
+
+The RGSC heads and their targets (`model_pytorch.py`, `metrics_pytorch.py`, `cpp/program/rgsc.h`) come from the
+search, not from the game. They are not in the map.
+
+Two files beside the trainer also hold Enclosure's facts, for the trainer's step:
+
+- `python/export_model_pytorch.py`: the export of the policy convolution (`NUM_OFFSETS` channels for each output),
+  and the V9 inputs (7 global inputs) in the model version.
+- `python/shuffle.py`: the rows' C5-7 channels and V9's 7 global inputs (`pad_global_inputs_to_widest`).
+
+### Names that stay
+
+These name Enclosure but hold no game code. The step that removes the last game names decides which to rename:
+
+- the query field `enclosurePosition` (an alias, for the move server), the commands `enclosure-engine`,
+  `runenclosuretests`, `runenclosurerowtests` and `runenclosurenntests` (`main.cpp`, `main.h`,
+  `command/runtests.cpp`), and `configs/*_enclosure.cfg`.
+- the options of the fork's speed work: `ENCLOSURE_FUSED_CONV` (`cudaandrocmbackend.inc`), `ENCLOSURE_EIGEN_SIMD`,
+  `ENCLOSURE_WINOGRAD_NV`, `ENCLOSURE_WINOGRAD_NT`, `ENCLOSURE_DIRECT_CONV`, `ENCLOSURE_EVAL_RAW`
+  (`eigenbackend.cpp`), `ENCLOSURE_COOP_THREADS` (`nneval.*`), `ENCLOSURE_NO_POLICY_GATHER` (`nneval.cpp`).
+
+### Changes of the fork that are already generic
+
+These files mention Enclosure in comments only. Their code asks the position (the player to move, the end) through the
+front, or scales a constant through a front name in the tables above: `command/dumponnx.cpp`, `evalsgf.cpp`,
+`genbook.cpp`, `selfplay.cpp`, `writetrainingdata.cpp`, `core/os.h`, `core/threadaffinity.h`, `dataio/sgf.h`,
+`neuralnet/cudaandrocmhelpers.*`, `program/play.h`, `rgsc.h`, `selfplaymanager.cpp`, `setup.cpp`,
+`search/analysisdata.cpp`, `asyncbot.*`, `searchnnhelpers.cpp`, `searchupdatehelpers.cpp`.

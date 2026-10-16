@@ -584,6 +584,16 @@ set(USE_BACKEND CACHE STRING "Neural net backend")
 string(TOUPPER "${USE_BACKEND}" USE_BACKEND)
 set_property(CACHE USE_BACKEND PROPERTY STRINGS "" CUDA TENSORRT OPENCL EIGEN METAL ONNX ROCM)
 
+# KataGame: the game that the binary plays, a folder of game/ with gamerules.h (game/gameinterface.h,
+# game/chosenrules.h).
+file(GLOB KATAGAME_GAMES RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/game" "${CMAKE_CURRENT_SOURCE_DIR}/game/*/gamerules.h")
+list(TRANSFORM KATAGAME_GAMES REPLACE "/gamerules.h$" "")
+set(GAME "enclosure" CACHE STRING "The game that the binary plays")
+set_property(CACHE GAME PROPERTY STRINGS ${KATAGAME_GAMES})
+if(NOT GAME IN_LIST KATAGAME_GAMES)
+  message(FATAL_ERROR "Unknown game: -DGAME=${GAME}. The games (folders of game/ with gamerules.h): ${KATAGAME_GAMES}")
+endif()
+
 set(USE_TCMALLOC 0 CACHE BOOL "Use TCMalloc")
 set(NO_GIT_REVISION 0 CACHE BOOL "Disable embedding the git revision into the compiled exe")
 set(USE_AVX2 0 CACHE BOOL "Compile with AVX2")
@@ -1758,6 +1768,9 @@ endif()
 if(USE_BIGGER_BOARDS_EXPENSIVE)
   target_compile_definitions(katago PRIVATE COMPILE_MAX_BOARD_LEN=50)
 endif()
+
+target_compile_definitions(katago PRIVATE KATAGAME_GAME=${GAME})
+message(STATUS "-DGAME=${GAME}: the binary plays ${GAME}")
 
 if(NO_GIT_REVISION AND (NOT BUILD_DISTRIBUTED))
   target_compile_definitions(katago PRIVATE NO_GIT_REVISION)
