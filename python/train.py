@@ -133,7 +133,7 @@ if __name__ == "__main__":
     optional_args.add_argument('-initial-train-bucket-level', help='Train rows initially in the bucket when the checkpoint has no bucket state yet, default samples-per-epoch. No effect once the checkpoint has a bucket.', type=float, required=False)
     optional_args.add_argument('-max-train-steps-since-last-reload', help='Approx total of training allowed if shuffling stops', type=float, required=False)
     optional_args.add_argument('-stop-when-train-bucket-limited', help='Terminate due to train bucket rather than waiting for more', required=False, action='store_true')
-    optional_args.add_argument('-wait-for-data-seconds', help='Seconds to wait before looking again for new data, when the train bucket is spent or too few data files are left to fill a subepoch', type=float, default=300, required=False)
+    optional_args.add_argument('-wait-for-data-seconds', help='Seconds to wait before looking again for new data, when the train bucket is spent or too few data files are left to fill a subepoch, default 300', type=float, default=300, required=False)
     optional_args.add_argument('-max-val-samples', help='Approx max of validation samples per epoch', type=int, required=False)
     optional_args.add_argument('-data-prefetch-depth', help='Number of training data files to prefetch ahead of the one being consumed, to hide disk+decompress latency at file boundaries. Memory scales linearly with this (each in-flight file holds its full expanded arrays in RAM, per rank).', type=int, default=1, required=False)
     optional_args.add_argument('-randomize-val', help='Randomize order of validation files', required=False, action='store_true')
