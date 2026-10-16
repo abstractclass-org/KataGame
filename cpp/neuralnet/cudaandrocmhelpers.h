@@ -39,10 +39,10 @@ void customCudaCopyFromHalf(const half* in, float* out, int n, cudaStream_t stre
 void customCudaUnpackBits(const uint32_t* in, float* out, int nSize, int eltsPerRow, int wordsPerRow, cudaStream_t stream);
 void customCudaUnpackBits(const uint32_t* in, half* out, int nSize, int eltsPerRow, int wordsPerRow, cudaStream_t stream);
 
-//Enclosure fork (owner, 2026-10-06): the policy entries listed in entries[0, n), each (row << 15) | action (action
-//(y * xyLen + x) * K + offset, or xySize * K for pass), from the policy head's output (policy [rows, channels * K,
-//xy] or NHWC, pass [rows, channels]) into out[0, n): channel 0, or with useOptimism channel 0 mixed toward channel 1
-//by the row's optimism, rounded as the CPU's p + (pOpt - p) * optimism.
+//Enclosure fork (owner, 2026-10-06): the policy entries listed in entries[0, n), each (row << 15) | policy index
+//((y * xLen + x) * K + the policy channel, or xySize * K for pass), from the policy head's output (policy [rows,
+//channels * K, xy] or NHWC, pass [rows, channels]) into out[0, n): channel 0, or with useOptimism channel 0 mixed
+//toward channel 1 by the row's optimism, rounded as the CPU's p + (pOpt - p) * optimism.
 void customCudaGatherPolicy(const uint32_t* entries, int n, const float* policy, const float* pass, const float* optimism,
                             float* out, int numPolicyChannels, int K, int xySize, bool nhwc, bool useOptimism,
                             cudaStream_t stream);

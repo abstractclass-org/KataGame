@@ -6,8 +6,6 @@
 #include <bitset>
 #include <cstddef>
 
-namespace enclosure {
-
 template <std::size_t N>
 inline std::size_t bitsFirst(const std::bitset<N>& b) {
 #ifdef __GLIBCXX__
@@ -31,5 +29,3 @@ inline std::size_t bitsNext(const std::bitset<N>& b, std::size_t prev) {
   return i;
 #endif
 }
-
-}  // namespace enclosure

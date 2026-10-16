@@ -1269,7 +1269,7 @@ Result build(
       shape->add_dim()->set_dim_value(spatial ? nnXLen : 1);
     };
     markOutput(pass, "OutputPolicyPass", ph.policyOutChannels, false);
-    //Enclosure fork: NUM_OFFSETS channels per policy output (channel = output * NUM_OFFSETS + offset).
+    //Enclosure fork: POLICY_CHANNELS channels per policy output (channel = output * POLICY_CHANNELS + policy channel).
     markOutput(p2, "OutputPolicy", ph.p2Conv.outChannels, true);
     //Enclosure fork (owner, 2026-10-04), export stage 2: policy outputs 1-4 from the same features, and their pass
     //logits from the pass hidden layer (as the CUDA backend's PolicyHead).
@@ -1816,7 +1816,7 @@ LoadResult load(
 
     vector<ExpectedTensor> expectedOutputs;
     expectedOutputs.push_back({OUTPUT_POLICY_PASS, descBuf.numPolicyChannels, false});
-    expectedOutputs.push_back({OUTPUT_POLICY, descBuf.numPolicyChannels * NNPos::NUM_OFFSETS, true});  //Enclosure fork
+    expectedOutputs.push_back({OUTPUT_POLICY, descBuf.numPolicyChannels * NNPos::POLICY_CHANNELS, true});  //Enclosure fork
     expectedOutputs.push_back({OUTPUT_VALUE, descBuf.numValueChannels, false});
     expectedOutputs.push_back({OUTPUT_SCORE_VALUE, descBuf.numScoreValueChannels, false});
     expectedOutputs.push_back({OUTPUT_OWNERSHIP, descBuf.numOwnershipChannels, true});

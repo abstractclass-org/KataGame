@@ -8,25 +8,27 @@
 #include "../core/rand.h"
 #include "../game/board.h"
 #include "../game/boardhistory.h"
-#include "../game/enclosure/features.h"
+#include "../game/chosengame.h"
 #include "../game/rules.h"
 
-//Enclosure fork: the policy has one entry per edge, NUM_OFFSETS per point (the Enclosure action
-//index (y * 19 + x) * 48 + offset), plus pass last. Spatial planes (inputs, ownership) still use
-//xyToPos, one entry per point.
+//Enclosure fork: the network's board, policy layout and score scale are the game's (game/gameinterface.h). The
+//network's board is the game's largest board, which can be smaller than the build's (Board::MAX_LEN). The policy has
+//POLICY_CHANNELS entries per point, plus pass last, and a policy index is an action. Spatial planes (inputs,
+//ownership) still use xyToPos, one entry per point.
 namespace NNPos {
-  constexpr int MAX_BOARD_LEN = Board::MAX_LEN;
+  constexpr int MAX_BOARD_LEN = GameRules::MAX_BOARD_LEN;
+  static_assert(MAX_BOARD_LEN <= Board::MAX_LEN, "the game's largest board fits in the build's");
   constexpr int MAX_BOARD_AREA = MAX_BOARD_LEN * MAX_BOARD_LEN;
-  constexpr int NUM_OFFSETS = enclosure::NOFF;
-  //Policy output adds +1 for the pass move
-  constexpr int MAX_NN_POLICY_SIZE = MAX_BOARD_AREA * NUM_OFFSETS + 1;
-  static_assert(MAX_NN_POLICY_SIZE == enclosure::PASS + 1, "policy index = Enclosure action index");
+  constexpr int POLICY_CHANNELS = GameEncoding::POLICY_CHANNELS;
+  //Policy output adds +1 for the pass move: MAX_BOARD_AREA * POLICY_CHANNELS + 1 (the game interface checks it).
+  constexpr int MAX_NN_POLICY_SIZE = GameRules::NUM_ACTIONS;
+  constexpr int PASS_POS = GameRules::PASS_ACTION;
   //Extra score distribution radius, used for writing score in data rows and for the neural net score belief output
   constexpr int EXTRA_SCORE_DISTR_RADIUS = 60;
-  //Enclosure fork (owner): scores stay in points, and constants KataGo tuned for Go's point scale are scaled by
-  //SCORE_SCALE, Enclosure's score spread against Go's (the D1 bin width: 12-point bins against Go's 1-point ones).
-  //The score distribution keeps its 2 * (MAX_BOARD_AREA + EXTRA_SCORE_DISTR_RADIUS) bins, each SCORE_SCALE wide.
-  constexpr double SCORE_SCALE = 12.0;
+  //Enclosure fork: scores stay in points, and constants KataGo tuned for Go's point scale are scaled by SCORE_SCALE,
+  //the game's score spread against Go's (game/gameinterface.h). The score distribution keeps its
+  //2 * (MAX_BOARD_AREA + EXTRA_SCORE_DISTR_RADIUS) bins, each SCORE_SCALE wide.
+  constexpr double SCORE_SCALE = GameEncoding::SCORE_SCALE;
   //Score targets are capped at the distribution's range (KataGo: 361 + 60, "an upper bound for the plausible
   //final score difference").
   constexpr double SCORE_TARGET_CAP = (MAX_BOARD_AREA + EXTRA_SCORE_DISTR_RADIUS) * SCORE_SCALE;
@@ -39,12 +41,12 @@ namespace NNPos {
     assert(loc >= 0 && loc < Board::MAX_ARR_SIZE);
     return Location::getY(loc,boardXSize) * nnXLen + Location::getX(loc,boardXSize);
   }
-  //Moves (Board::moveLocOfAction) and policy indices. The board and the net are both 19x19.
-  inline int getPassPos(int nnXLen, int nnYLen) { return nnXLen * nnYLen * NUM_OFFSETS; }
+  //Moves (Board::moveLocOfAction) and policy indices. The net is the game's largest board, so the index is the action.
+  inline int getPassPos(int nnXLen, int nnYLen) { return nnXLen * nnYLen * POLICY_CHANNELS; }
   inline bool isPassPos(int pos, int nnXLen, int nnYLen) { return pos == getPassPos(nnXLen, nnYLen); }
-  inline int getPolicySize(int nnXLen, int nnYLen) { return nnXLen * nnYLen * NUM_OFFSETS + 1; }
+  inline int getPolicySize(int nnXLen, int nnYLen) { return nnXLen * nnYLen * POLICY_CHANNELS + 1; }
   inline int locToPos(Loc loc, int boardXSize, int nnXLen, int nnYLen) {
-    assert(boardXSize == enclosure::SIZE && nnXLen == enclosure::SIZE && nnYLen == enclosure::SIZE);
+    assert(boardXSize <= MAX_BOARD_LEN && nnXLen == MAX_BOARD_LEN && nnYLen == MAX_BOARD_LEN);
     (void)boardXSize;
     if(loc == Board::PASS_LOC)
       return getPassPos(nnXLen, nnYLen);
@@ -54,7 +56,8 @@ namespace NNPos {
     return Board::actionOfMoveLoc(loc);
   }
   inline Loc posToLoc(int pos, int boardXSize, int boardYSize, int nnXLen, int nnYLen) {
-    assert(boardXSize == enclosure::SIZE && boardYSize == enclosure::SIZE && nnXLen == enclosure::SIZE && nnYLen == enclosure::SIZE);
+    assert(boardXSize <= MAX_BOARD_LEN && boardYSize <= MAX_BOARD_LEN);
+    assert(nnXLen == MAX_BOARD_LEN && nnYLen == MAX_BOARD_LEN);
     (void)boardXSize; (void)boardYSize;
     if(pos == getPassPos(nnXLen, nnYLen))
       return Board::PASS_LOC;
@@ -217,10 +220,12 @@ namespace NNInputs {
 
 //Enclosure fork (owner, 2026-10-05/06: compact policy storage): a policy read by position, as upstream reads its dense
 //array: view[pos] is the probability of the move at pos, negative (-1) for an illegal move. Either dense
-//(MAX_NN_POLICY_SIZE entries: root noise) or compact, read through a rank bitmap: per point, mask has bit `offset` set
-//when that action is legal and start the slot of the point's first legal action, so action point * NUM_OFFSETS +
-//offset is at slot start[point] + popcount(mask[point] & ((1 << offset) - 1)) of prob; pass (the last position) at
+//(MAX_NN_POLICY_SIZE entries: root noise) or compact, read through a rank bitmap: per point, mask has bit `channel` set
+//when that action is legal and start the slot of the point's first legal action, so action point * POLICY_CHANNELS +
+//channel is at slot start[point] + popcount(mask[point] & ((1 << channel) - 1)) of prob; pass (the last position) at
 //passSlot, -1 when illegal. Both list the legal positions ascending in pos[0, n): legalPos(k), probAt(k) walk them.
+static_assert(NNPos::POLICY_CHANNELS <= 64, "a point's legal channels fit in one mask word");
+static_assert(NNPos::MAX_NN_POLICY_SIZE <= 65536, "a policy index and a slot fit in 16 bits");
 struct PolicyView {
   const float* dense;
   const uint64_t* mask;
@@ -233,13 +238,13 @@ struct PolicyView {
   inline float operator[](int p) const {
     if(dense != NULL)
       return dense[p];
-    if(p == NNPos::MAX_NN_POLICY_SIZE - 1)
+    if(p == NNPos::PASS_POS)
       return passSlot >= 0 ? prob[passSlot] : -1.0f;
-    const int point = p / NNPos::NUM_OFFSETS, offset = p - point * NNPos::NUM_OFFSETS;
+    const int point = p / NNPos::POLICY_CHANNELS, channel = p - point * NNPos::POLICY_CHANNELS;
     const uint64_t m = mask[point];
-    if(((m >> offset) & 1) == 0)
+    if(((m >> channel) & 1) == 0)
       return -1.0f;
-    return prob[start[point] + __builtin_popcountll(m & ((uint64_t(1) << offset) - 1))];
+    return prob[start[point] + __builtin_popcountll(m & ((uint64_t(1) << channel) - 1))];
   }
   inline int legalPos(int k) const { return pos[k]; }
   inline float probAt(int k) const { return dense != NULL ? dense[pos[k]] : prob[k]; }

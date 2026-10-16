@@ -2439,7 +2439,7 @@ struct Buffers {
     trunk(desc.trunk.trunkNumChannels, nnXLen, nnYLen, maxBatchSize),
 
     policyPass(desc.numPolicyChannels, maxBatchSize),
-    policy(desc.numPolicyChannels * NNPos::NUM_OFFSETS, nnXLen, nnYLen, maxBatchSize),  //Enclosure fork: channels per output
+    policy(desc.numPolicyChannels * NNPos::POLICY_CHANNELS, nnXLen, nnYLen, maxBatchSize),  //Enclosure fork: channels per output
 
     value(desc.numValueChannels, maxBatchSize),
     scoreValue(desc.numScoreValueChannels, maxBatchSize),
@@ -2479,7 +2479,7 @@ struct InputBuffers {
     singleInputMetaElts = m.numInputMetaChannels;
 
     singlePolicyPassResultElts = (size_t)(m.numPolicyChannels);
-    singlePolicyResultElts = (size_t)(m.numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen);
+    singlePolicyResultElts = (size_t)(m.numPolicyChannels * NNPos::POLICY_CHANNELS * nnXLen * nnYLen);
     singleValueResultElts = (size_t)m.numValueChannels;
     singleScoreValueResultElts = (size_t)m.numScoreValueChannels;
     singleOwnershipResultElts = (size_t)m.numOwnershipChannels * nnXLen * nnYLen;
@@ -2723,7 +2723,7 @@ void NeuralNet::getOutput(
   );
 
   assert(inputBuffers->singlePolicyPassResultElts == numPolicyChannels);
-  assert(inputBuffers->singlePolicyResultElts == numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen);
+  assert(inputBuffers->singlePolicyResultElts == numPolicyChannels * NNPos::POLICY_CHANNELS * nnXLen * nnYLen);
 
   assert(outputs.size() == batchSize);
 
@@ -2740,7 +2740,7 @@ void NeuralNet::getOutput(
     float policyOptimism = (float)inputBufs[row]->policyOptimism;
 
     const float* policyPassSrcBuf = policyPassData + row * numPolicyChannels;
-    const int K = NNPos::NUM_OFFSETS;
+    const int K = NNPos::POLICY_CHANNELS;
     const float* policySrcBuf = policyData + row * numPolicyChannels * K * nnXLen * nnYLen;
     float* policyProbs = output->policyDense;  //Enclosure fork: the in-flight dense policy (compact policy storage)
 
@@ -2748,8 +2748,8 @@ void NeuralNet::getOutput(
     // policy probabilities and white game outcome probabilities
     // Also we don't fill in the nnHash here either
     // Handle version >= 12 policy optimism
-    //Enclosure fork: channel = output * K + offset, and policy entry (y * nnXLen + x) * K + offset. Symmetries
-    //are applied by NNEvaluator, so the backend copies straight through.
+    //Enclosure fork: for the policy channel k, channel = output * K + k, and policy entry (y * nnXLen + x) * K + k.
+    //Symmetries are applied by NNEvaluator, so the backend copies straight through.
     if(numPolicyChannels == 2 || (numPolicyChannels == 4 && modelVersion >= 16)) {
       // Eigen is all NHWC
       for(int i = 0; i<nnXLen*nnYLen; i++) {
@@ -3027,8 +3027,8 @@ bool NeuralNet::testEvaluateGlobalPoolingResidualBlock(
 //Enclosure fork (the threaded practice bot's CPU evaluator, games/enclosure/docs/design/22-practice-bot.md; games/enclosure/wasm/evaluator.cpp):
 //the network on `rows` positions given in the ONNX graph's layouts, with getOutput's steps: the inputs NCHW, and the
 //raw outputs as the graph gives them (policyPass [rows, P], policy [rows, P * K, H, W] with channel = output * K +
-//offset, value [rows, 3], scoreValue [rows, 6], ownership [rows, 1, H, W]), so that the module decodes them as it
-//decodes the GPU's (games/enclosure/wasm/jsbackend.cpp).
+//policy channel, value [rows, 3], scoreValue [rows, 6], ownership [rows, 1, H, W]), so that the module decodes them as
+//it decodes the GPU's (games/enclosure/wasm/jsbackend.cpp).
 void enclosureEigenRawOutput(
   ComputeHandle* computeHandle, InputBuffers* inputBuffers, int rows, const float* spatialNCHW, const float* global,
   float* policyPassOut, float* policyOut, float* valueOut, float* scoreValueOut, float* ownershipOut
@@ -3041,7 +3041,7 @@ void enclosureEigenRawOutput(
   const int C = computeHandle->model->numInputChannels;
   const int G = (int)inputBuffers->singleInputGlobalElts;
   const int P = computeHandle->model->numPolicyChannels;
-  const int K = NNPos::NUM_OFFSETS;
+  const int K = NNPos::POLICY_CHANNELS;
   const int batchSize = rows;
   //The Eigen backend is all NHWC.
   for(int n = 0; n < rows; n++)

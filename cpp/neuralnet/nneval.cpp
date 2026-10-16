@@ -2,7 +2,7 @@
 #include "../neuralnet/modelversion.h"
 #include "../core/test.h"
 #include "../core/threadaffinity.h"
-#include "../game/enclosure/bitscan.h"
+#include "../core/bitscan.h"
 
 #include <algorithm>
 #include <chrono>
@@ -132,6 +132,9 @@ NNEvaluator::NNEvaluator(
     throw StringError("Maximum supported nnEval board size is " + Global::intToString(NNPos::MAX_BOARD_LEN));
   if(nnYLen > NNPos::MAX_BOARD_LEN)
     throw StringError("Maximum supported nnEval board size is " + Global::intToString(NNPos::MAX_BOARD_LEN));
+  //Enclosure fork: a policy index is an action, so the network's board is the game's largest board (NNPos).
+  if(nnXLen != NNPos::MAX_BOARD_LEN || nnYLen != NNPos::MAX_BOARD_LEN)
+    throw StringError("The nnEval board size must be the game's largest board, " + Global::intToString(NNPos::MAX_BOARD_LEN));
   if(maxBatchSize <= 0)
     throw StringError("maxBatchSize is negative: " + Global::intToString(maxBatchSize));
   if(gpuIdxByServerThread.size() != numThreads)
@@ -1244,7 +1247,7 @@ static void mapOutputBack(NNOutput& output, const Board& board, const SymmetryHe
   if(mapPolicy) {
     buf.assign(policySize, 0.0f);
     for(int i = 0; i < policySize; i++)
-      if(i == enclosure::PASS || board.legalActions()[i])
+      if(i == NNPos::PASS_POS || board.legalActions()[i])
         buf[i] = output.policyDense[symAction(i)];
     std::copy(buf.begin(), buf.end(), output.policyDense);
   }
@@ -1278,7 +1281,7 @@ static void mapOutputBack(NNOutput& output, const Board& board, const SymmetryHe
       float* policy = output.auxPolicy + (size_t)a * NNPos::MAX_NN_POLICY_SIZE;
       buf.assign(policySize, 0.0f);
       for(int i = 0; i < policySize; i++)
-        if(i == enclosure::PASS || board.legalActions()[i])
+        if(i == NNPos::PASS_POS || board.legalActions()[i])
           buf[i] = policy[symAction(i)];
       std::copy(buf.begin(), buf.end(), policy);
     }
@@ -1490,11 +1493,11 @@ void NNEvaluator::evaluate(
   buf.policyGather.clear();
   //ENCLOSURE_NO_POLICY_GATHER=1 (tests only): no list, so the backends copy the whole policy as before the gather.
   static const bool noPolicyGather = getenv("ENCLOSURE_NO_POLICY_GATHER") != NULL;
-  if(!debugSkipNeuralNet && !noPolicyGather && policySize == enclosure::PASS + 1) {
-    const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
-    for(size_t i = enclosure::bitsFirst(legalBits); i < (size_t)enclosure::PASS; i = enclosure::bitsNext(legalBits, i))
+  if(!debugSkipNeuralNet && !noPolicyGather) {
+    const auto& legalBits = board.legalActions();
+    for(size_t i = bitsFirst(legalBits); i < (size_t)NNPos::PASS_POS; i = bitsNext(legalBits, i))
       buf.policyGather.push_back((uint16_t)symAction((int)i));
-    buf.policyGather.push_back((uint16_t)enclosure::PASS);
+    buf.policyGather.push_back((uint16_t)NNPos::PASS_POS);
   }
 
   buf.symmetry = 0;
@@ -1566,7 +1569,7 @@ void NNEvaluator::evaluate(
     const std::vector<uint16_t>& gather = buf.policyGather;
     const float* dense = buf.result->policyDense;
     const int n = (int)gather.size();
-    testAssert(n >= 1 && gather[n-1] == enclosure::PASS && policySize == enclosure::PASS + 1);
+    testAssert(n >= 1 && gather[n-1] == NNPos::PASS_POS);
     static thread_local std::vector<float> vals;
     static thread_local std::vector<uint16_t> listedPos;
     static thread_local std::vector<char> legal;
@@ -1575,12 +1578,12 @@ void NNEvaluator::evaluate(
     legal.resize(n);
     testAssert(nextPlayer == history.presumedNextMovePla);
     {
-      const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
+      const auto& legalBits = board.legalActions();
       const bool canMove = !history.isGameFinished && nextPlayer == board.nextPla() && !board.pos.terminal();
       int j = 0;
-      for(size_t i = enclosure::bitsFirst(legalBits); i < (size_t)enclosure::PASS; i = enclosure::bitsNext(legalBits, i))
+      for(size_t i = bitsFirst(legalBits); i < (size_t)NNPos::PASS_POS; i = bitsNext(legalBits, i))
         listedPos[j++] = (uint16_t)i;
-      listedPos[j++] = (uint16_t)enclosure::PASS;
+      listedPos[j++] = (uint16_t)NNPos::PASS_POS;
       testAssert(j == n);
       for(j = 0; j < n; j++)
         legal[j] = canMove && legalBits.test(listedPos[j]);
@@ -1655,9 +1658,8 @@ void NNEvaluator::evaluate(
     //the last one pass (NNPos::posToLoc), so history.isLegal(board, posToLoc(i), nextPlayer) is the game-state
     //check (the same for every i) and bit i of the list; per entry it was 17,329 full calls per evaluation.
     {
-      const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
+      const auto& legalBits = board.legalActions();
       const bool canMove = !history.isGameFinished && nextPlayer == board.nextPla() && !board.pos.terminal();
-      testAssert(policySize == enclosure::PASS + 1);
       for(int i = 0; i<policySize; i++)
         isLegal[i] = canMove && legalBits.test(i);
     }
@@ -1957,11 +1959,11 @@ void NNEvaluator::evaluate(
   //Export stage 2: policy outputs 1-4 raw with the output scale, 0 at illegal actions (as mapOutputBack leaves them
   //under a symmetry); the score belief finished here.
   if(buf.result->auxPolicy != NULL) {
-    const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
+    const auto& legalBits = board.legalActions();
     for(int a = 0; a<NNOutput::NUM_AUX_POLICIES; a++) {
       float* policy = buf.result->auxPolicy + (size_t)a * NNPos::MAX_NN_POLICY_SIZE;
       for(int i = 0; i<policySize; i++)
-        policy[i] = (i == enclosure::PASS || legalBits.test(i)) ? policy[i] * (float)postProcessParams.outputScaleMultiplier : 0.0f;
+        policy[i] = (i == NNPos::PASS_POS || legalBits.test(i)) ? policy[i] * (float)postProcessParams.outputScaleMultiplier : 0.0f;
     }
   }
   if(buf.result->scoreBeliefRaw != NULL)

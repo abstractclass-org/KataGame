@@ -21,7 +21,8 @@
  * - Players are 0 (the first player, KataGo's Black) and 1 (the second, KataGo's White).
  * - An action is an int from 0 to NUM_ACTIONS - 1. Pass is the last, PASS_ACTION. Every game has it, and a game whose
  *   rules have no pass never lists it as legal. Actions are numbered on the largest board (MAX_BOARD_LEN), so an
- *   action keeps its number on every board size.
+ *   action keeps its number on every board size. An action is its policy index (point_action), so NUM_ACTIONS is
+ *   MAX_BOARD_LEN * MAX_BOARD_LEN * POLICY_CHANNELS + 1. The network's board is the largest board.
  * - A point is (x, y), with 0 <= x < x_size and 0 <= y < y_size, and y = 0 at the bottom (row 1 in the notation).
  * - Symmetries are KataGo's 8 (bit 0x2 flips x, bit 0x1 flips y, bit 0x4 then transposes): symPoint below.
  * - No member throws: the WebAssembly build has no exceptions. A parser returns false or -1 and says why.
@@ -78,8 +79,8 @@
  *   action_point(action, x, y, channel)
  *                           void: the point and the channel of an action other than pass.
  *   point_action(x, y, channel)
- *                           int: the action at that point and channel. The policy's index of an action is
- *                           (y * nnXLen + x) * POLICY_CHANNELS + channel, and pass is last.
+ *                           int: the action at that point and channel, (y * MAX_BOARD_LEN + x) * POLICY_CHANNELS +
+ *                           channel, which is also its policy index. Pass is last.
  *   SYMMETRIES              unsigned: the allowed subset of KataGo's 8 symmetries, bit s for symmetry s. Bit 0 (the
  *                           identity) is always set.
  *   sym_position(p, symmetry)
@@ -288,6 +289,13 @@ template<class E> constexpr bool checkEncoding() {
   if constexpr(HasSymmetries<E>::value)
     static_assert((E::SYMMETRIES & 1u) != 0 && E::SYMMETRIES <= 0xFFu,
                   "game interface, encoding part: SYMMETRIES is a subset of KataGo's 8 with the identity");
+  if constexpr(HasRules<E>::value && HasPolicyChannels<E>::value) {
+    using R = typename E::Rules;
+    if constexpr(rules::HasMaxBoardLen<R>::value && rules::HasNumActions<R>::value)
+      static_assert(R::NUM_ACTIONS == R::MAX_BOARD_LEN * R::MAX_BOARD_LEN * E::POLICY_CHANNELS + 1,
+                    "game interface, encoding part: an action is its policy index, so NUM_ACTIONS is MAX_BOARD_LEN * "
+                    "MAX_BOARD_LEN * POLICY_CHANNELS + 1");
+  }
   return true;
 }
 

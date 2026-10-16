@@ -30,11 +30,8 @@ using namespace std;
 using R = GameRules;
 using E = GameEncoding;
 
-static_assert(R::NUM_ACTIONS == NNPos::MAX_NN_POLICY_SIZE, "one policy entry per action");
 static_assert(E::NUM_SPATIAL_INPUTS + 1 == NNInputs::NUM_FEATURES_SPATIAL_V8, "the on-board plane, then the game's");
 static_assert(E::NUM_GLOBAL_INPUTS == NNInputs::NUM_FEATURES_GLOBAL_V8, "the game's global inputs are V8's");
-static_assert(E::POLICY_CHANNELS == NNPos::NUM_OFFSETS, "the policy's channels per point");
-static_assert(R::MAX_BOARD_LEN == Board::MAX_LEN, "the build's largest board");
 
 static int failures = 0;
 static void fail(const string& what) {

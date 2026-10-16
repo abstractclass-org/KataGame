@@ -149,7 +149,7 @@ ComputeContext* NeuralNet::createComputeContext(
   // nvonnxparser (the default). trtDisableOnnx=true falls back to the hand-built ModelParser, which
   // supports convnets only (transformer models will error in createComputeHandle).
   context->useOnnx = !(cfg.contains("trtDisableOnnx") ? cfg.getBool("trtDisableOnnx") : false);
-  //Enclosure fork (owner, 2026-10-04): only the ONNX emitter knows the fork's heads (the policy's NUM_OFFSETS
+  //Enclosure fork (owner, 2026-10-04): only the ONNX emitter knows the fork's heads (the policy's POLICY_CHANNELS
   //channels per output, RGSC's heads, the aux outputs); the hand-built ModelParser does not.
   if(!context->useOnnx)
     throw StringError("TensorRT backend (Enclosure fork): trtDisableOnnx is not supported, the ModelParser path lacks the fork's heads");
@@ -1996,7 +1996,7 @@ struct InputBuffers {
   vector<float> auxTrunkResults;      // 8 channels, NCHW
   vector<float> auxScoringResults;    // 1 channel
   vector<float> auxValueResults;      // 12 values
-  vector<float> policyAuxResults;     // NUM_AUX_POLICIES * NUM_OFFSETS channels, NCHW
+  vector<float> policyAuxResults;     // NUM_AUX_POLICIES * POLICY_CHANNELS channels, NCHW
   vector<float> policyPassAuxResults; // NUM_AUX_POLICIES
   vector<float> sbS2Results;
   vector<float> sbMixResults;
@@ -2022,7 +2022,7 @@ struct InputBuffers {
     singleInputMetaBytes = singleInputMetaElts * sizeof(float);
     singlePolicyPassResultElts = (size_t)m.numPolicyChannels;
     singlePolicyPassResultBytes = singlePolicyPassResultElts * sizeof(float);
-    singlePolicyResultElts = (size_t)m.numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen;  //Enclosure fork
+    singlePolicyResultElts = (size_t)m.numPolicyChannels * NNPos::POLICY_CHANNELS * nnXLen * nnYLen;  //Enclosure fork
     singlePolicyResultBytes = singlePolicyResultElts * sizeof(float);
     singleValueResultElts = m.numValueChannels;
     singleValueResultBytes = singleValueResultElts * sizeof(float);
@@ -2146,7 +2146,7 @@ void NeuralNet::getOutput(
   assert(inputBuffers->ownershipResultBufferBytes == gpuHandle->getBufferBytes("OutputOwnership"));
 
   const int numPolicyChannels = inputBuffers->singlePolicyPassResultElts;
-  assert(inputBuffers->singlePolicyResultElts == numPolicyChannels * NNPos::NUM_OFFSETS * nnXLen * nnYLen);
+  assert(inputBuffers->singlePolicyResultElts == numPolicyChannels * NNPos::POLICY_CHANNELS * nnXLen * nnYLen);
 
   // Transfers from host memory to device memory are asynchronous with respect to the host
   CUDA_ERR(
@@ -2267,7 +2267,7 @@ void NeuralNet::getOutput(
     copyOut(inputBuffers->auxScoringResults, "OutputAuxScoring", xy);
     copyOut(inputBuffers->auxValueResults, "OutputAuxValue", 12);
     if(hasPolicyAux) {
-      copyOut(inputBuffers->policyAuxResults, "OutputPolicyAux", (size_t)PolicyHeadDesc::NUM_AUX_POLICIES * NNPos::NUM_OFFSETS * xy);
+      copyOut(inputBuffers->policyAuxResults, "OutputPolicyAux", (size_t)PolicyHeadDesc::NUM_AUX_POLICIES * NNPos::POLICY_CHANNELS * xy);
       copyOut(inputBuffers->policyPassAuxResults, "OutputPolicyPassAux", PolicyHeadDesc::NUM_AUX_POLICIES);
     }
     if(hasScoreBelief) {
@@ -2301,10 +2301,11 @@ void NeuralNet::getOutput(
     // policy probabilities and white game outcome probabilities
     // Also we don't fill in the nnHash here either
     // Handle version >= 12 policy optimism
-    //Enclosure fork: channel c = output * K + offset (TRT is all NCHW); policy entry (y * nnXLen + x) * K + offset.
+    //Enclosure fork: for the policy channel k, channel c = output * K + k (TRT is all NCHW); policy entry
+    //(y * nnXLen + x) * K + k.
     //Symmetries are applied by NNEvaluator, so this copies straight through (as the CUDA backend).
     (void)policyProbsTmp;
-    const int K = NNPos::NUM_OFFSETS;
+    const int K = NNPos::POLICY_CHANNELS;
     auto src = [&](int out, int pos, int k) { return policySrcBuf[(out * K + k) * xy + pos]; };
     if(numPolicyChannels == 2 || (numPolicyChannels == 4 && modelVersion >= 16)) {
       for(int pos = 0; pos < xy; pos++)

@@ -6,9 +6,9 @@ game. Its last part is the map of the code that still reaches Enclosure directly
 reference. The decision and its reasons are design 07 of the engine repository
 (`docs/design/07-game-interface.md`). Enclosure's own design stays in [ENCLOSURE.md](ENCLOSURE.md).
 
-The interface exists. Enclosure implements both parts. Connect-4 (`cpp/game/connect4/`) implements its rules part. No
-code outside the game layer calls the interface yet: the front moves onto it step by step, and the map below gives the
-work of each step.
+The interface exists. Enclosure implements both parts. Connect-4 (`cpp/game/connect4/`) implements its rules part. The
+policy layout and the backends read the interface (`NNPos`). The rest of the front moves onto it step by step, and the
+map below gives the work of each step.
 
 * [The files](#the-files)
 * [Choosing the game](#choosing-the-game)
@@ -54,9 +54,13 @@ the WebAssembly build, the binding and the standalone tests need no new source f
 - **Players:** 0 is the first player (KataGo's Black), 1 the second (White). Enclosure's Blue is 0.
 - **Actions:** an `int` from 0 to `NUM_ACTIONS - 1`. Pass is the last, `PASS_ACTION`. Every game has pass. A game whose
   rules have no pass never lists it as legal (Connect-4).
-- **Actions on the largest board:** a game numbers its actions on a board of `MAX_BOARD_LEN`. So an action keeps its
-  number on every board size, and the network's policy index of an action is
-  `(y * nnXLen + x) * POLICY_CHANNELS + channel` (pass last), with `(x, y, channel)` from `action_point`.
+- **Actions on the largest board:** a game numbers its actions on a board of `MAX_BOARD_LEN`, point by point:
+  `(y * MAX_BOARD_LEN + x) * POLICY_CHANNELS + channel`, pass last. So an action keeps its number on every board size,
+  and `NUM_ACTIONS` is `MAX_BOARD_LEN² × POLICY_CHANNELS + 1`.
+- **An action is its policy index:** the network's board is the game's largest board (`nnXLen = nnYLen =
+  MAX_BOARD_LEN`). So the network's policy index of an action's point and channel is the action itself. The search,
+  the evaluator and the backends use an action as its policy index and need no map. The encoding part's check refuses
+  a `NUM_ACTIONS` that breaks this rule.
 - **Points:** `(x, y)`, `0 <= x < x_size`, `0 <= y < y_size`, with `y = 0` at the bottom (row 1 in the notation).
   Arrays of points are `[y * x_size + x]`.
 - **Symmetries:** KataGo's 8 and its numbers: bit `0x2` flips x, bit `0x1` flips y, then bit `0x4` transposes
@@ -73,7 +77,7 @@ calls `hash` links `core/rand.cpp`, `core/hash.cpp` and their dependencies.
 |---|---|---|
 | `NAME` | The game's name, as in `-DGAME` and the folder. | `"enclosure"` |
 | `Position` | A copyable value: the whole state that the rules read. | `enclosure::Position` (`engine.h`) |
-| `MAX_BOARD_LEN` | The longest side of the game's boards. The front will take the build's largest board (`COMPILE_MAX_BOARD_LEN`) from it. | 19 |
+| `MAX_BOARD_LEN` | The longest side of the game's boards, and the network's board (`NNPos::MAX_BOARD_LEN`). The front will take the build's largest board (`COMPILE_MAX_BOARD_LEN`) from it. | 19 |
 | `NUM_ACTIONS` | The number of actions, pass included. | `PASS + 1` = 17,329 |
 | `PASS_ACTION` | Pass: `NUM_ACTIONS - 1`. | `PASS` = 17,328 |
 | `new_game(xSize, ySize, p)` | Sets the start position on a board of that size. False when the game is not played on it. | 19 × 19 only |
@@ -116,7 +120,7 @@ count and the edges left in the turn, which fix it in every position that a game
 | `input_hash(p)` | What the inputs read beyond `hash(p)`. The front mixes it into the network cache's key. | the history planes' edges (`BoardHistory`'s history hash) |
 | `POLICY_CHANNELS` | Policy channels per point. | 48: one per offset |
 | `action_point(a, x, y, channel)` | The point and the channel of an action other than pass. | the edge's source point and offset |
-| `point_action(x, y, channel)` | The action at that point and channel. | `(y * 19 + x) * 48 + channel` |
+| `point_action(x, y, channel)` | The action at that point and channel: `(y * MAX_BOARD_LEN + x) * POLICY_CHANNELS + channel`, which is also its policy index. | `(y * 19 + x) * 48 + channel` |
 | `SYMMETRIES` | The allowed symmetries: bit s for KataGo's symmetry s. | `0xFF`: all 8 |
 | `sym_position(p, s)` | The image of the position. | every edge mapped: `SymmetryHelpers::getSymPosition` |
 | `SymActionMap` | `SymActionMap(p, s)(a)`: the image of a legal action of `p`, an action of `sym_position(p, s)`. Built once for each position and symmetry. | `SymmetryHelpers::SymActionMap` (the edge's direction can change) |
@@ -175,6 +179,14 @@ make[3]: *** [CMakeFiles/katago.dir/build.make:429: CMakeFiles/katago.dir/game/b
 
 **The rules part compiles alone.** A program that includes `game/chosenrules.h` builds and runs in a copy of the game
 layer without `gameencoding.h`, `features.h` and `chosengame.h`.
+
+**An action is its policy index.** The encoding part's check refuses a game whose `NUM_ACTIONS` is not
+`MAX_BOARD_LEN² × POLICY_CHANNELS + 1`. This is Enclosure with `POLICY_CHANNELS = NOFF - 1`:
+
+```
+game/enclosure/../gameinterface.h:295:36: error: static assertion failed: game interface, encoding part: an action is
+its policy index, so NUM_ACTIONS is MAX_BOARD_LEN * MAX_BOARD_LEN * POLICY_CHANNELS + 1
+```
 
 **Enclosure's members equal the front's code of today:** `testgameinterface` replays the 500 games of
 `tests/data/enclosure_games.txt` and 60 random games (with timeout passes and komi). A second position, played through
@@ -276,7 +288,7 @@ them onto the members.
 
 | File | Reference | Member |
 |---|---|---|
-| `neuralnet/nninputs.h` | `#include "../game/enclosure/features.h"` | `game/chosengame.h` |
+| `neuralnet/nninputs.h` | `#include "../game/enclosure/features.h"` | Done (abscls-mkd.4, for `NNPos`): `game/chosengame.h` |
 | `neuralnet/nninputs.h` | `V8_EDGE_PLANES_START`, `V8_FEATURE_PLANES_START`, `NUM_FEATURES_SPATIAL_V8` (`4 * enclosure::NOFF + enclosure::FEATURE_PLANES`), `NUM_FEATURES_GLOBAL_V8`/`V9` (`enclosure::SCALARS`) | `1 + NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS` (+ 2 in V9) |
 | `neuralnet/nninputs.h` | `NUM_SPATIAL_ELTS_V8` (`enclosure::SIZE`) | `MAX_BOARD_LEN` |
 | `neuralnet/nninputs.h`, `.cpp` | `SymmetryHelpers::getSymEdge`, `getSymPosition`, `getSymBoard` | `sym_position`, and `SymActionMap` over the legal set (`getSymBoard` maps it) |
@@ -285,7 +297,7 @@ them onto the members.
 | `neuralnet/nninputs.cpp` | `fillRowV8Entries`: `board.pos.observation`, `enclosure::feature_planes`, `PLANES`, `NOFF`, `OFFS`, `OFF_INDEX`, `PER_PLAYER`, `MAX_OBS_IDX`, `SCALARS`, the komi's score input (`18 * 18 * 61`), `maxHistory <= 0` | `spatial_inputs`, `global_inputs` (`options.komi`, `options.history`). The on-board plane stays the front's. |
 | `neuralnet/nninputs.cpp` | `getSymXY` (`enclosure::SIZE`) | The front's point map (KataGo's, on the board's size) |
 | `neuralnet/nninputs.cpp` | `markDuplicateMoveLocs`: the image's edges, protected and placed edges against the position's | `hash(sym_position(p, s)) == hash(p)` |
-| `neuralnet/nninputs.cpp`, `nneval.cpp` | `game/enclosure/bitscan.h` (`bitsFirst`, `bitsNext` over the legal set) | A front helper: it reads a bitset, not the game |
+| `neuralnet/nninputs.cpp`, `nneval.cpp` | `game/enclosure/bitscan.h` (`bitsFirst`, `bitsNext` over the legal set) | Done (abscls-mkd.4, for the evaluator's gather): `core/bitscan.h`, a helper that reads a bitset, not the game |
 | `neuralnet/nninputs.cpp` | `Board::playerOfIndex(board.pos.player)`, `assert(nnXLen == enclosure::SIZE)` | `next_player`, `x_size`/`MAX_BOARD_LEN` |
 | `neuralnet/nneval.cpp` | `enclosureInputs` (input versions 8 and 9), `board.pos.terminal`, `SymmetryHelpers::SymActionMap` | the game's input versions, `terminal`, `SymActionMap` |
 | `dataio/trainingwrite.cpp` | The future occupancy (C0) and the income (C5-6): `enclosure::enclosed_area` at each turn end | `TARGETS`, and the member that computes a game's own targets |
@@ -298,15 +310,19 @@ them onto the members.
 
 ### The policy layout and the backends
 
+Done (abscls-mkd.4). `NNPos` takes the network's board, the policy's channels and size, and the score scale from the
+game. The evaluator, the model description and the backends name no game. An action is its policy index (see
+"Conventions"), so none of them needs `action_point` or `point_action`.
+
 | File | Reference | Member |
 |---|---|---|
-| `neuralnet/nninputs.h` | `NNPos::NUM_OFFSETS = enclosure::NOFF`, `MAX_NN_POLICY_SIZE` (`static_assert == enclosure::PASS + 1`), `locToPos` and `posToLoc` (`assert(... == enclosure::SIZE)`, the action as the policy index) | `POLICY_CHANNELS`, `NUM_ACTIONS`, `action_point`, `point_action` |
-| `neuralnet/nninputs.h` | `NNPos::SCORE_SCALE = 12.0`, `SCORE_TARGET_CAP` | `SCORE_SCALE` |
-| `neuralnet/desc.cpp`, `.h` | `NNPos::NUM_OFFSETS` (the policy convolution's channels per output) | `POLICY_CHANNELS` |
-| `neuralnet/cudaandrocmbackend.inc` | `NNPos::NUM_OFFSETS` (15 places), and the policy gather's `static_assert(enclosure::PASS < (1 << 15))` and `testAssert(a <= enclosure::PASS)` | `POLICY_CHANNELS`, `PASS_ACTION` |
-| `neuralnet/eigenbackend.cpp`, `trtbackend.cpp`, `onnxmodelbuilder.cpp` | `NNPos::NUM_OFFSETS` | `POLICY_CHANNELS` |
-| `neuralnet/nneval.cpp` | `enclosure::PASS` (the policy gather, the legal mask, `policySize == PASS + 1`), `board.legalActions()` | `PASS_ACTION`, `NUM_ACTIONS`, the front's legal set |
-| `neuralnet/openclbackend.cpp`, `onnxbackend.cpp`, `cudaandrocmhelpers.*`, `modelversion.*`, `onnxmodelbuilder.h` | Comments: the policy channels, the input versions | The same members. The model's game: the trainer's step. |
+| `neuralnet/nninputs.h` | `NNPos::NUM_OFFSETS = enclosure::NOFF`, `MAX_NN_POLICY_SIZE` (`static_assert == enclosure::PASS + 1`), `locToPos` and `posToLoc` (`assert(... == enclosure::SIZE)`, the action as the policy index) | Done: `NNPos::POLICY_CHANNELS`, `MAX_NN_POLICY_SIZE = NUM_ACTIONS`, and `NNPos::MAX_BOARD_LEN = MAX_BOARD_LEN` (the network's board, which can be smaller than the build's `Board::MAX_LEN`). `locToPos` and `posToLoc` assert that the network is the largest board. |
+| `neuralnet/nninputs.h` | `NNPos::SCORE_SCALE = 12.0`, `SCORE_TARGET_CAP` | Done: `SCORE_SCALE`. The cap comes from the game's largest board. |
+| `neuralnet/desc.cpp`, `.h` | `NNPos::NUM_OFFSETS` (the policy convolution's channels per output) | Done: `NNPos::POLICY_CHANNELS` |
+| `neuralnet/cudaandrocmbackend.inc` | `NNPos::NUM_OFFSETS` (15 places), and the policy gather's `static_assert(enclosure::PASS < (1 << 15))` and `testAssert(a <= enclosure::PASS)` | Done: `NNPos::POLICY_CHANNELS`, and the gather's checks on `MAX_NN_POLICY_SIZE` |
+| `neuralnet/eigenbackend.cpp`, `trtbackend.cpp`, `onnxmodelbuilder.cpp` | `NNPos::NUM_OFFSETS` | Done: `NNPos::POLICY_CHANNELS` (and in the WebAssembly module's `evaluator.cpp` and `jsbackend.cpp`) |
+| `neuralnet/nneval.cpp` | `enclosure::PASS` (the policy gather, the legal mask, `policySize == PASS + 1`), `board.legalActions()` | Done: `NNPos::PASS_POS` (`PASS_ACTION`), the front's legal set read by policy index. The evaluator refuses a network board other than the largest board when it starts. |
+| `neuralnet/openclbackend.cpp`, `onnxbackend.cpp`, `cudaandrocmhelpers.*`, `modelversion.*`, `onnxmodelbuilder.h` | Comments: the policy channels, the input versions | Done for `cudaandrocmhelpers.h`. Not done for `openclbackend.cpp` and `onnxbackend.cpp`: they never took the fork's policy. They copy one policy channel per point, size their buffers for it, and apply the symmetry themselves. Neither builds on the training machine, so their change waits for a machine with their toolchains (abscls-bd7). The input versions: the inputs' step. The model's game: the trainer's step. |
 
 ### The trainer (`python/katago/train/`)
 

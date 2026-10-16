@@ -1,7 +1,7 @@
 #include "../neuralnet/nninputs.h"
 
 #include "../core/test.h"
-#include "../game/enclosure/bitscan.h"
+#include "../core/bitscan.h"
 
 using namespace std;
 
@@ -311,18 +311,17 @@ void PolicyView::toDense(float* out) const {
 }
 
 void NNOutput::setPolicyFromDense(const float* dense) {
-  static_assert(NNPos::NUM_OFFSETS <= 64, "a point's legal offsets fit in one mask word");
   legalPos.clear();
   legalProbs.clear();
   std::fill(policyMask, policyMask + NNPos::MAX_BOARD_AREA, uint64_t(0));
   policyPassSlot = -1;
-  const int passPos = NNPos::MAX_NN_POLICY_SIZE - 1;
+  const int passPos = NNPos::PASS_POS;
   for(int point = 0; point < NNPos::MAX_BOARD_AREA; point++) {
     policyStart[point] = (uint16_t)legalPos.size();
-    for(int offset = 0; offset < NNPos::NUM_OFFSETS; offset++) {
-      const int p = point * NNPos::NUM_OFFSETS + offset;
+    for(int channel = 0; channel < NNPos::POLICY_CHANNELS; channel++) {
+      const int p = point * NNPos::POLICY_CHANNELS + channel;
       if(dense[p] >= 0) {
-        policyMask[point] |= uint64_t(1) << offset;
+        policyMask[point] |= uint64_t(1) << channel;
         legalPos.push_back((uint16_t)p);
         legalProbs.push_back(dense[p]);
       }
@@ -338,7 +337,7 @@ void NNOutput::setPolicyFromDense(const float* dense) {
 }
 
 void NNOutput::setPolicyFromLegal(const uint16_t* pos, const float* probs, const char* legal, int n) {
-  const int passPos = NNPos::MAX_NN_POLICY_SIZE - 1;
+  const int passPos = NNPos::PASS_POS;
   int count = 0;
   for(int j = 0; j<n; j++)
     count += legal[j] ? 1 : 0;
@@ -360,10 +359,10 @@ void NNOutput::setPolicyFromLegal(const uint16_t* pos, const float* probs, const
       policyPassSlot = (int)legalPos.size();
     }
     else {
-      const int pt = p / NNPos::NUM_OFFSETS;
+      const int pt = p / NNPos::POLICY_CHANNELS;
       while(point <= pt)
         policyStart[point++] = (uint16_t)legalPos.size();
-      policyMask[pt] |= uint64_t(1) << (p - pt * NNPos::NUM_OFFSETS);
+      policyMask[pt] |= uint64_t(1) << (p - pt * NNPos::POLICY_CHANNELS);
     }
     legalPos.push_back((uint16_t)p);
     legalProbs.push_back(probs[j]);
@@ -865,7 +864,7 @@ Board SymmetryHelpers::getSymBoard(const Board& board, int symmetry) {
   bool node[enclosure::SIZE][enclosure::SIZE] = {};
   for(const enclosure::Edge& e : symBoard.pos.edges[symBoard.pos.player])
     node[e.ax][e.ay] = node[e.bx][e.by] = true;
-  for(size_t a = enclosure::bitsFirst(bits); a < (size_t)enclosure::PASS; a = enclosure::bitsNext(bits, a)) {
+  for(size_t a = bitsFirst(bits); a < (size_t)enclosure::PASS; a = bitsNext(bits, a)) {
     const int cell = (int)a / enclosure::NOFF, k = (int)a % enclosure::NOFF;
     int ax = cell % enclosure::SIZE, ay = cell / enclosure::SIZE;
     int bx = ax + enclosure::OFFS[k].dx, by = ay + enclosure::OFFS[k].dy;
