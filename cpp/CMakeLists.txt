@@ -593,6 +593,11 @@ set_property(CACHE GAME PROPERTY STRINGS ${KATAGAME_GAMES})
 if(NOT GAME IN_LIST KATAGAME_GAMES)
   message(FATAL_ERROR "Unknown game: -DGAME=${GAME}. The games (folders of game/ with gamerules.h): ${KATAGAME_GAMES}")
 endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/game/${GAME}/gameencoding.h")
+  message(FATAL_ERROR "-DGAME=${GAME}: ${GAME} has its rules part only (game/${GAME}/gamerules.h). The katago binary "
+                      "also needs its network encoding part, game/${GAME}/gameencoding.h. The Python binding builds "
+                      "from the rules part alone.")
+endif()
 
 set(USE_TCMALLOC 0 CACHE BOOL "Use TCMalloc")
 set(NO_GIT_REVISION 0 CACHE BOOL "Disable embedding the git revision into the compiled exe")

@@ -6,8 +6,9 @@ game. Its last part is the map of the code that still reaches Enclosure directly
 reference. The decision and its reasons are design 07 of the engine repository
 (`docs/design/07-game-interface.md`). Enclosure's own design stays in [ENCLOSURE.md](ENCLOSURE.md).
 
-The interface exists, and Enclosure implements it. No code outside the game layer calls it yet: the front moves onto
-it step by step, and the map below gives the work of each step.
+The interface exists. Enclosure implements both parts. Connect-4 (`cpp/game/connect4/`) implements its rules part. No
+code outside the game layer calls the interface yet: the front moves onto it step by step, and the map below gives the
+work of each step.
 
 * [The files](#the-files)
 * [Choosing the game](#choosing-the-game)
@@ -37,7 +38,9 @@ the WebAssembly build, the binding and the standalone tests need no new source f
 ## Choosing the game
 
 - **CMake:** `-DGAME=enclosure` (the default). The games are the folders of `cpp/game/` that hold a `gamerules.h`. An
-  unknown name stops `cmake` with the list of games. The option defines `KATAGAME_GAME=<name>`.
+  unknown name stops `cmake` with the list of games. A game without `gameencoding.h` (Connect-4 for now) also stops
+  it: `katago` needs both parts, and the Python binding needs only the rules part. The option defines
+  `KATAGAME_GAME=<name>`.
 - **The headers:** `chosenrules.h` includes `<name>/gamerules.h` and makes `chosengame` the alias of the namespace
   `<name>`. `chosengame.h` includes `<name>/gameencoding.h`. A game's folder and its namespace have the same name.
 - **Other builds** (the WebAssembly module, the fork's standalone tests) define nothing and get Enclosure. So every
@@ -87,7 +90,7 @@ calls `hash` links `core/rand.cpp`, `core/hash.cpp` and their dependencies.
 | `hash(p)` | A hash of the whole position, the player to move included, so that equal hashes mean equal positions. The front also mixes in KataGo's hash of the player to move. | Board's Zobrist hash, from the same seed (see below) |
 | `pieces(p, owner)` | `owner[y * x_size + x]`: the player whose piece is on the point, or -1. KataGo's `colors`. | each player's nodes |
 | `area(p, owner)` | `owner[y * x_size + x]`: the player who owns the point now, or -1. KataGo's area: the final ownership at the end. | the points that only one player's regions enclose |
-| `action_text(action)` | The action in the game's notation (design 04 of the engine repository). | `notation::move_name` |
+| `action_text(action)` | The action in the game's notation (design 04 of the engine repository), for a legal action or pass. | `notation::move_name` (an edge that leaves the board has no name) |
 | `parse_action(p, text, why)` | The legal action of `p` that the text names, or -1 and the reason. | `notation::parse_move` |
 | `position_text(p)` | The one-line position. | `notation::position_string`: the five fields of design 04 |
 | `parse_position(text, p, why)` | Sets `p` from a one-line position, or returns false and the reason. | `notation::parse_position` (the history planes come back empty) |
@@ -198,7 +201,8 @@ OUT_DIR/testgameinterface tests/data/enclosure_games.txt
 
 1. Make the folder `cpp/game/<game>/` with `gamerules.h` (`struct GameRules` in the namespace `<game>`) and
    `gameencoding.h` (`struct GameEncoding`). End each with its check:
-   `static_assert(GameInterface::checkRules<GameRules>(), "...")`.
+   `static_assert(GameInterface::checkRules<GameRules>(), "...")`. Connect-4's `gamerules.h` is a short example of
+   the rules part.
 2. Build with `-DGAME=<game>`, in a build folder for that game and backend.
 3. In the engine repository, make `games/<game>/` a Python package and build the game's rules module with
    `sh core/binding/build.sh <game>`. The module's common API needs no code of the game's own. The game's Python
