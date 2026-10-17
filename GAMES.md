@@ -274,7 +274,9 @@ row's player to move.
 The trainer reads a game's facts from the game's module, `python/katago/train/games/<game>.py`, which mirrors the
 encoding part. `python/katago/train/games/__init__.py` lists the members, and `games.get(name)` refuses a module that
 lacks one. A model config names its game (`"game"`, Enclosure's without it), and `modelconfigs.get_game(config)` gives
-its module.
+its module. The config's `"inputs_version"` (8 without it, or 9) gives the game's global inputs, and V9 adds KataGo's
+two playout inputs. `train.py -inputs-version 9` gives a new model V9's inputs (Connect-4's run). A checkpoint keeps
+its version.
 
 | Member | Meaning | Enclosure (`games/enclosure.py`) | Connect-4 (`games/connect4.py`) |
 |---|---|---|---|
@@ -410,9 +412,10 @@ targets. The network check against PyTorch (the random test network of `python/e
    makes a model of the game, and its exported files name the game. The network check against PyTorch takes the game
    (`python/enclosure_nn_check.py make -game <game>`) and the game's positions for `testnnoutputs`.
 6. For a run, add the game's self-play config `cpp/configs/training/selfplay_<game>.cfg` and its analysis config
-   `cpp/configs/analysis_<game>.cfg` (the load check). In the engine repository, a run's settings go in
+   `cpp/configs/analysis_<game>.cfg` (the load check, and the engine repository's network bot, `core/networkbot.py`,
+   which plays the game's networks in its arena). In the engine repository, a run's settings go in
    `games/<game>/runs/RUN.env`, with `KATAGO_BIN` set to a build of the game. The pipeline's scripts then start, watch
-   and stop the run ("The training scripts").
+   and stop the run ("The training scripts"). Connect-4's run (`games/connect4/runs/c4a.env`) is an example.
 
 The front reaches the game through the members alone (the map below), and the check of the game layer keeps it so.
 So a second game's binary builds from its folder, with the front as it is.
@@ -568,7 +571,7 @@ pipeline").
 
 | File | Reference | Now |
 |---|---|---|
-| `enclosure_async.sh` | Enclosure's asynchronous setup: `configs/training/selfplay_enclosure.cfg`, the load check's `configs/analysis_enclosure.cfg`, the binary's default `builds/cuda/katago` of the engine repository's work space | Done: `async_start.sh`, for the game `GAME`: `selfplay_GAME.cfg` (`SELFPLAY_CONFIG`), `analysis_GAME.cfg` (`ANALYSIS_CONFIG`), and `KATAGO_BIN`, which the caller sets. It refuses a binary of another game, a game without a self-play config and a game without a trainer's module, before it makes a folder. The shuffle's row counts stay Enclosure's defaults, with their reason. |
+| `enclosure_async.sh` | Enclosure's asynchronous setup: `configs/training/selfplay_enclosure.cfg`, the load check's `configs/analysis_enclosure.cfg`, the binary's default `builds/cuda/katago` of the engine repository's work space | Done: `async_start.sh`, for the game `GAME`: `selfplay_GAME.cfg` (`SELFPLAY_CONFIG`), `analysis_GAME.cfg` (`ANALYSIS_CONFIG`), and `KATAGO_BIN`, which the caller sets. It refuses a binary of another game, a game without a self-play config and a game without a trainer's module, before it makes a folder. The shuffle's row counts stay Enclosure's defaults, with their reason. Done (abscls-mkd.14): a run of another game sets KataGo's in its settings (Connect-4's rows are small), and `analysis_connect4.cfg` is Connect-4's load check. |
 | `enclosure_async_stop.sh`, `enclosure_parts.sh` | The parts' stop, the trainers and the parts' limits | Done: `async_stop.sh`, `async_parts.sh`. They held no game's code, and the limits' defaults are the same. |
 | `train.sh` | `-pos-len 19` | Done: `-pos-len` from `POS_LEN`, which `async_start.sh` sets to the game's `MAX_BOARD_LEN` (the trainer's module). Upstream's 19 without it. `async_start.sh` gives every trainer `-game GAME`. |
 | `main.cpp` (`katago version`) | The binary's game was not visible from outside | Done: the line `Game: NAME` (`GameRules::NAME`), which `async_start.sh` checks against the run's game |

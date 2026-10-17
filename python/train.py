@@ -86,6 +86,7 @@ if __name__ == "__main__":
     optional_args.add_argument('-samples-per-epoch', help='Number of data samples to consider as one epoch', type=int, required=False)
     optional_args.add_argument('-model-kind', help='String name for what model config to use', required=False)
     optional_args.add_argument('-game', help='The game of a new model (katago/train/games, default enclosure). A checkpoint keeps its game, which must be this one if given', required=False)
+    optional_args.add_argument('-inputs-version', help='The inputs of a new model: 8, or 9 with KataGo\'s playout doubling advantage (modelconfigs.get_inputs_version; default the model kind\'s, 8). A checkpoint keeps its inputs, which must be these if given', type=int, choices=[8, 9], required=False)
     optional_args.add_argument('-lr-scale', help='LR multiplier on the hardcoded schedule', type=float, required=False)
     optional_args.add_argument('-lr-scale-auto', help='LR auto scaling', required=False, action='store_true')
     optional_args.add_argument('-lr-scale-auto2', help='LR auto scaling 2', required=False, type=float)
@@ -359,6 +360,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     samples_per_epoch = args["samples_per_epoch"]
     model_kind = args["model_kind"]
     game_name = args["game"]
+    inputs_version = args["inputs_version"]
     lr_scale = args["lr_scale"]
     lr_scale_auto = args["lr_scale_auto"]
     lr_scale_auto2 = args["lr_scale_auto2"]
@@ -911,6 +913,8 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
             logging.info("Initializing new model!")
             assert model_kind is not None, "Model kind is none or unspecified but the model is being created fresh"
             model_config = modelconfigs.with_game(modelconfigs.config_of_name[model_kind], game_name)
+            if inputs_version is not None:
+                model_config = dict(model_config, inputs_version=inputs_version)
             logging.info(str(model_config))
             raw_model = Model(model_config,pos_len)
             raw_model.initialize()
@@ -965,6 +969,8 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
             logging.info(str(model_config))
             if game_name is not None and modelconfigs.get_game_name(model_config) != game_name:
                 raise Exception(f"-game {game_name}, but the checkpoint's model is {modelconfigs.get_game_name(model_config)}'s: {path_to_load_from}")
+            if inputs_version is not None and modelconfigs.get_inputs_version(model_config) != inputs_version:
+                raise Exception(f"-inputs-version {inputs_version}, but the checkpoint's model reads version {modelconfigs.get_inputs_version(model_config)}: {path_to_load_from}")
             raw_model = Model(model_config,pos_len)
             raw_model.initialize()
 
