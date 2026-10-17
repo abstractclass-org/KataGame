@@ -85,6 +85,7 @@ if __name__ == "__main__":
     required_args.add_argument('-batch-size', help='Per-GPU batch size to use for training', type=int, required=True)
     optional_args.add_argument('-samples-per-epoch', help='Number of data samples to consider as one epoch', type=int, required=False)
     optional_args.add_argument('-model-kind', help='String name for what model config to use', required=False)
+    optional_args.add_argument('-game', help='The game of a new model (katago/train/games, default enclosure). A checkpoint keeps its game, which must be this one if given', required=False)
     optional_args.add_argument('-lr-scale', help='LR multiplier on the hardcoded schedule', type=float, required=False)
     optional_args.add_argument('-lr-scale-auto', help='LR auto scaling', required=False, action='store_true')
     optional_args.add_argument('-lr-scale-auto2', help='LR auto scaling 2', required=False, type=float)
@@ -357,6 +358,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     batch_size = args["batch_size"]
     samples_per_epoch = args["samples_per_epoch"]
     model_kind = args["model_kind"]
+    game_name = args["game"]
     lr_scale = args["lr_scale"]
     lr_scale_auto = args["lr_scale_auto"]
     lr_scale_auto2 = args["lr_scale_auto2"]
@@ -908,7 +910,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
         if path_to_load_from is None:
             logging.info("Initializing new model!")
             assert model_kind is not None, "Model kind is none or unspecified but the model is being created fresh"
-            model_config = modelconfigs.config_of_name[model_kind]
+            model_config = modelconfigs.with_game(modelconfigs.config_of_name[model_kind], game_name)
             logging.info(str(model_config))
             raw_model = Model(model_config,pos_len)
             raw_model.initialize()
@@ -961,6 +963,8 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
 
             model_config = state_dict["config"] if "config" in state_dict else modelconfigs.config_of_name[model_kind]
             logging.info(str(model_config))
+            if game_name is not None and modelconfigs.get_game_name(model_config) != game_name:
+                raise Exception(f"-game {game_name}, but the checkpoint's model is {modelconfigs.get_game_name(model_config)}'s: {path_to_load_from}")
             raw_model = Model(model_config,pos_len)
             raw_model.initialize()
 

@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 import torch
 import torch.nn.functional
 
+from ..train import games
 from ..train import modelconfigs
-from ..train import enclosure_symmetry
 
 # Needs to be kept in sync with GLOBAL_TARGET_NUM_CHANNELS in trainingwrite.cpp C++ code among other places.
 # Data format version 2 files (recorded in channel 63 of each row) had only 64 channels; they are zero-padded
@@ -26,9 +26,10 @@ def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     padded[:, :num_channels] = globalTargetsNC
     return padded
 
-# Enclosure fork (2026-10-13): the C++ V9 rows add the playout doubling advantage as 2 global inputs after V8's 5
-# (modelconfigs.get_inputs_version). Rows written before have 5 and are zero-padded, as rows with no advantage are. A
-# model with 5 global inputs reads the first 5 of a V9 row: it has no inputs for the advantage.
+# Enclosure fork (2026-10-13): the C++ V9 rows add the playout doubling advantage as 2 global inputs after the game's
+# (Enclosure: 5, modelconfigs.get_inputs_version). Rows written before have the game's alone and are zero-padded, as
+# rows with no advantage are. A model with the game's inputs alone reads the first ones of a V9 row: it has no inputs
+# for the advantage.
 def fit_global_input_nc(globalInputNC: np.ndarray, num_global_features: int) -> np.ndarray:
     num_channels = globalInputNC.shape[1]
     if num_channels == num_global_features:
@@ -69,7 +70,9 @@ def read_npz_training_data(
     rand = np.random.default_rng(seed=list(os.urandom(12)))
     num_bin_features = modelconfigs.get_num_bin_input_features(model_config)
     num_global_features = modelconfigs.get_num_global_input_features(model_config)
-    # Enclosure fork: history dropout acts on the Enclosure history planes (apply_history_dropout), not Go's.
+    # Enclosure fork: the history dropout and the symmetries are the game's (apply_history_dropout, katago/train/games).
+    game = modelconfigs.get_game(model_config)
+    symmetries = games.symmetries(game)
 
     # Version 16 always predicts q values; version 17+ does so only when configured.
     include_qvalues = model_config["version"] == 16 or (
@@ -179,18 +182,18 @@ def read_npz_training_data(
                 if include_qvalues:
                     batch_qValueTargetsNCMove = torch.from_numpy(qValueTargetsNCMove[start:end]).to(device)
 
-                batch_binaryInputNCHW = apply_history_dropout(model_config, batch_binaryInputNCHW)
+                batch_binaryInputNCHW = apply_history_dropout(game, batch_binaryInputNCHW)
 
                 if randomize_symmetries:
-                    # Enclosure fork: edges move as edges (enclosure_symmetry); the policy mapping reads each
-                    # channel's player's nodes before the symmetry: the mover's from the inputs, the next mover's
-                    # (channel 1) from valueTargetsNCHW C7.
-                    symm = int(rand.integers(0,enclosure_symmetry.NUM_SYMMETRIES))
-                    batch_policyTargetsNCMove = enclosure_symmetry.apply_symmetry_policy_targets(batch_policyTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC, batch_valueTargetsNCHW, batch_globalTargetsNC)
+                    # Enclosure fork: one of the game's allowed symmetries, applied by the game (katago/train/games).
+                    # The policy targets map with the row before the symmetry (Enclosure: an edge moves as an edge,
+                    # with each channel's player's nodes, the next mover's from valueTargetsNCHW C7).
+                    symm = symmetries[int(rand.integers(0,len(symmetries)))]
+                    batch_policyTargetsNCMove = game.apply_symmetry_policy_targets(batch_policyTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC, batch_valueTargetsNCHW, batch_globalTargetsNC)
                     if include_qvalues:
-                        batch_qValueTargetsNCMove = enclosure_symmetry.apply_symmetry_policy(batch_qValueTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC)
-                    batch_binaryInputNCHW = enclosure_symmetry.apply_symmetry_inputs(batch_binaryInputNCHW, symm)
-                    batch_valueTargetsNCHW = enclosure_symmetry.apply_symmetry_points(batch_valueTargetsNCHW, symm)
+                        batch_qValueTargetsNCMove = game.apply_symmetry_policy(batch_qValueTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC)
+                    batch_binaryInputNCHW = game.apply_symmetry_inputs(batch_binaryInputNCHW, symm)
+                    batch_valueTargetsNCHW = games.apply_symmetry_points(batch_valueTargetsNCHW, symm)
 
                 batch_binaryInputNCHW = batch_binaryInputNCHW.contiguous()
                 batch_policyTargetsNCMove = batch_policyTargetsNCMove.contiguous()
@@ -328,27 +331,27 @@ def build_history_matrices(model_config: modelconfigs.ModelConfig, device):
     return (h_base, h_builder)
 
 
-# Enclosure fork: KataGo's random history masking (apply_history_matrices, the same draws) on the Enclosure
-# history planes, the feature planes marking the edges placed 2-5 turns ago, newest first. History item k is
-# kept only if none of k+1 independent draws stops it (each with probability 0.02), so older history is
-# dropped more often, and never a newer item without the older ones. The observation's current- and
-# previous-turn edge planes carry the rules' protection and are never dropped. The C++ evaluation without
-# history (maxHistory <= 0) drops all four.
+# Enclosure fork: KataGo's random history masking (apply_history_matrices, the same draws) on the game's history
+# planes (katago/train/games: Enclosure's feature planes marking the edges placed 2-5 turns ago), newest first. History
+# item k is kept only if none of k+1 independent draws stops it (each with probability 0.02), so older history is
+# dropped more often, and never a newer item without the older ones. The C++ evaluation without history
+# (maxHistory <= 0) drops them all. A game without history planes draws nothing.
 # Enclosure fork, for input-plane comparisons (2026-10-02): ENCLOSURE_ZERO_INPUT_CHANNELS="200,201,209,210" blanks
 # those spatial input channels in every row read, training and validation alike (feature planes start at 193; per
 # player 9: node, enclosed, solid, reach 1-3, unreached, held ground, its openings). Unset: no change.
 ENCLOSURE_ZERO_INPUT_CHANNELS = [int(c) for c in os.environ.get("ENCLOSURE_ZERO_INPUT_CHANNELS", "").split(",") if c]
 
-ENCLOSURE_HISTORY_PLANES_START = 211
-ENCLOSURE_NUM_HISTORY_PLANES = 4
-
-def apply_history_dropout(model_config, batch_binaryInputNCHW):
-    assert modelconfigs.get_num_bin_input_features(model_config) == ENCLOSURE_HISTORY_PLANES_START + ENCLOSURE_NUM_HISTORY_PLANES
+def apply_history_dropout(game, batch_binaryInputNCHW):
+    num_history = game.NUM_HISTORY_PLANES
+    if num_history == 0:
+        return batch_binaryInputNCHW
+    start = 1 + game.HISTORY_PLANE  # after KataGo's on-board plane
+    assert start + num_history <= 1 + game.NUM_SPATIAL_INPUTS
     n = batch_binaryInputNCHW.shape[0]
-    should_stop_history = torch.rand((n, ENCLOSURE_NUM_HISTORY_PLANES), device=batch_binaryInputNCHW.device) >= 0.98
+    should_stop_history = torch.rand((n, num_history), device=batch_binaryInputNCHW.device) >= 0.98
     include_history = (torch.cumsum(should_stop_history, axis=1, dtype=torch.float32) <= 0.1).to(batch_binaryInputNCHW.dtype)
     out = batch_binaryInputNCHW.clone()
-    out[:, ENCLOSURE_HISTORY_PLANES_START:] *= include_history.view(n, ENCLOSURE_NUM_HISTORY_PLANES, 1, 1)
+    out[:, start:start + num_history] *= include_history.view(n, num_history, 1, 1)
     return out
 
 def apply_history_matrices(model_config, batch_binaryInputNCHW, batch_globalInputNC, batch_globalTargetsNC, h_base, h_builder):

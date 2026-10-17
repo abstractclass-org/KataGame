@@ -1,4 +1,5 @@
-"""Enclosure fork: board symmetries of training rows (KataGo's random symmetry augmentation).
+"""Enclosure's module for the trainer (katago/train/games/__init__.py lists the members): its facts, then the board
+symmetries of its training rows (KataGo's random symmetry augmentation).
 
 KataGo mirrors and rotates every plane as pixels. In Enclosure an edge is stored at its lower end (the
 canonical endpoint, lexicographic in (x, y)) in the plane of its offset, so under a flip an edge can move
@@ -11,12 +12,15 @@ move from the source), told apart row by row by any entry in a downward offset, 
 old and new rows share the training window.
 
 Symmetries are numbered as the C++ SymmetryHelpers: bit 0 flips y, bit 1 flips x, bit 2 transposes, applied
-in that order. The images agree with SymmetryHelpers::getSymPosition and getSymAction (checked by
-enclosure_symmetry_check.py against testsymmetry -dump).
+in that order. The images agree with the C++ game's sym_position and SymActionMap (SymmetryHelpers::getSymBoard
+and getSymMoveLoc, checked by enclosure_symmetry_check.py against testsymmetry -dump).
 """
 
 import numpy as np
 import torch
+
+from . import (TARGET_FUTURE_PIECES, TARGET_INCOME, TARGET_NEXT_PIECES, TARGET_OWNERSHIP, TARGET_SCORING,
+               TARGET_SEKI, apply_symmetry_points)
 
 SIZE = 19
 NUM_SYMMETRIES = 8
@@ -30,7 +34,27 @@ NUM_ACTIONS = SIZE * SIZE * NUM_OFFSETS   # Pass is the next index.
 EDGE_PLANES_START = 1
 NUM_EDGE_GROUPS = 4
 FEATURE_PLANES_START = EDGE_PLANES_START + NUM_EDGE_GROUPS * NUM_OFFSETS
+NUM_FEATURE_PLANES = 22
 FEATURES_PER_PLAYER = 9
+
+# The members of the game's module (C++ game/enclosure/gameencoding.h).
+NAME = "enclosure"
+MAX_BOARD_LEN = SIZE
+POLICY_CHANNELS = NUM_OFFSETS   # a move is an edge: its source point and its offset
+NUM_SPATIAL_INPUTS = NUM_EDGE_GROUPS * NUM_OFFSETS + NUM_FEATURE_PLANES   # 214, 215 with the on-board plane
+NUM_GLOBAL_INPUTS = 5
+# The last 4 feature planes mark the edges placed 2-5 turns ago, newest first. The observation's current- and
+# previous-turn edge planes carry the rules' protection and are not history.
+NUM_HISTORY_PLANES = 4
+HISTORY_PLANE = NUM_SPATIAL_INPUTS - NUM_HISTORY_PLANES
+SYMMETRIES = 0xFF
+# C0 holds the future occupancy, C1 the edges that get cut, C5-6 the territory income (ENCLOSURE.md, "Spatial
+# targets").
+TARGETS = (TARGET_OWNERSHIP | TARGET_SEKI | TARGET_FUTURE_PIECES | TARGET_SCORING | TARGET_INCOME |
+           TARGET_NEXT_PIECES)
+# The score scale (ENCLOSURE.md, "Score scale"): Enclosure's score spread against Go's, from the measured margins.
+SCORE_SCALE = 12.0
+GAME_LENGTH = 120.0   # edges in a game
 
 
 def sym_xy(x, y, symmetry):
@@ -83,17 +107,6 @@ def tables(symmetry, device):
     if key not in _TABLES:
         _TABLES[key] = tuple(torch.from_numpy(t).to(device) for t in _tables(symmetry))
     return _TABLES[key]
-
-
-def apply_symmetry_points(tensor, symmetry):
-    """Point planes (..., y, x): the value at a point moves to the point's image."""
-    if symmetry & 2:
-        tensor = tensor.flip(-1)
-    if symmetry & 1:
-        tensor = tensor.flip(-2)
-    if symmetry & 4:
-        tensor = tensor.transpose(-2, -1)
-    return tensor
 
 
 # Offsets toward a lexicographically lower point: only an edge's upper end is stored in them.

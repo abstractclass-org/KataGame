@@ -59,7 +59,8 @@ def load_checkpoint(checkpoint_file, map_location="cpu"):
         raise
 
 
-def load_model(checkpoint_file, use_swa, device, pos_len=19, verbose=False):
+def load_model(checkpoint_file, use_swa, device, pos_len=None, verbose=False):
+    from ..train import modelconfigs
     from ..train.model_pytorch import Model
     from torch.optim.swa_utils import AveragedModel
 
@@ -74,6 +75,8 @@ def load_model(checkpoint_file, use_swa, device, pos_len=19, verbose=False):
             model_config = json.load(f)
 
     logging.info(str(model_config))
+    if pos_len is None:
+        pos_len = modelconfigs.get_game(model_config).MAX_BOARD_LEN  # Enclosure fork: the game's board
     model = Model(model_config,pos_len)
     model.initialize()
 

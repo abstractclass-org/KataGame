@@ -15,7 +15,8 @@ import os
 
 import numpy as np
 
-from katago.train.model_pytorch import SCORE_BIN_WIDTH, EXTRA_SCORE_DISTR_RADIUS
+from katago.train.games.enclosure import SCORE_SCALE
+from katago.train.model_pytorch import EXTRA_SCORE_DISTR_RADIUS
 
 
 def main():
@@ -33,7 +34,7 @@ def main():
             g.append(z["globalTargetsNC"])
             sd = z["scoreDistrN"].astype(np.float64)
             mid = sd.shape[1] // 2
-            centres = SCORE_BIN_WIDTH * (np.arange(sd.shape[1]) - mid + 0.5)
+            centres = SCORE_SCALE * (np.arange(sd.shape[1]) - mid + 0.5)
             margins.append((sd * centres).sum(axis=1) / np.maximum(sd.sum(axis=1), 1e-9))
         g = np.concatenate(g)
         m = np.concatenate(margins)

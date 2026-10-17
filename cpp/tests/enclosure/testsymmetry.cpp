@@ -17,7 +17,7 @@
 //   testsymmetry -dump INPUTS_FILE OUT_FILE [POSITIONS]
 //
 // Writes the reference for the Python training augmentation
-// (katagame/python/katago/train/enclosure_symmetry.py): for the first POSITIONS
+// (katagame/python/katago/train/games/enclosure.py): for the first POSITIONS
 // (default 40) positions of INPUTS_FILE (tests/data/enclosure_inputs.txt) and
 // each symmetry, the V8 inputs of the position and of its image, and each legal
 // move with its image (the game's SymActionMap):

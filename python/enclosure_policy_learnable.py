@@ -15,6 +15,7 @@ import torch
 
 from katago.train.data_processing_pytorch import read_npz_training_data
 from katago.train.load_model import load_model
+from katago.train.games.enclosure import POLICY_CHANNELS
 from katago.train.model_pytorch import policy_len
 
 SIZE = 19
@@ -56,7 +57,7 @@ def main():
     train_files, held_out = files[:-2], files[-2:]
     torch.manual_seed(0)
     model, _, _ = load_model(checkpoint, use_swa=False, device=DEVICE)
-    print(f"policy size {policy_len(SIZE)}, ln = {math.log(policy_len(SIZE)):.3f}; "
+    print(f"policy size {policy_len(SIZE, POLICY_CHANNELS)}, ln = {math.log(policy_len(SIZE, POLICY_CHANNELS)):.3f}; "
           f"{len(train_files)} training files, {len(held_out)} held out")
     ce, h, mass = score(model, held_out)
     print(f"before: held-out policy CE {ce:.3f}, target entropy {h:.3f}, model mass on target moves {mass:.4f}")

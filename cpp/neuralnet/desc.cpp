@@ -2758,6 +2758,20 @@ ModelDesc::ModelDesc()
     archSummary()
 {}
 
+//Enclosure fork: the model's game is the name in its option H, the name that the build option GAME gives the game, or
+//0 for Enclosure's, as in every file from before the game interface. A binary plays one game, so it refuses another
+//game's network.
+static void checkModelGame(const string& modelName, const string& option) {
+  const bool unnamed = option == "0";
+  if(!unnamed && (Global::isDigit(option[0]) || option[0] == '-'))
+    throw StringError(modelName + ": unknown/unsupported model option H: " + option);
+  const string game = unnamed ? string(GameInterface::UNNAMED_MODEL_GAME) : option;
+  if(game != GameRules::NAME)
+    throw StringError(
+      modelName + ": the network is for the game " + game + (unnamed ? " (0 in its file)" : "") +
+      ", and this binary plays " + GameRules::NAME);
+}
+
 ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
   in >> name;
   sha256 = sha256_;
@@ -2885,16 +2899,21 @@ ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
     if(unused != 0) throw StringError(name + ": unknown/unsupported model option F: " + Global::intToString(unused));
     in >> unused;
     if(unused != 0) throw StringError(name + ": unknown/unsupported model option G: " + Global::intToString(unused));
-    in >> unused;
-    if(unused != 0) throw StringError(name + ": unknown/unsupported model option H: " + Global::intToString(unused));
+    //Enclosure fork: option H holds the model's game (design 07 of the engine repository, "The model file's game"). The
+    //ONNX metadata does not carry it yet (GAMES.md), so a .onnx model is not checked.
+    string modelGame;
+    in >> modelGame;
     if(in.fail())
       throw StringError(name + ": model failed to parse unused params");
+    checkModelGame(name, modelGame);
   }
   else {
     metaEncoderVersion = 0;
     numInputMetaChannels = 0;
     preferPassAliveUnderSuicideRules = false;
     preferExcludeTerritoryAdjacentToAtari = false;
+    //Enclosure fork: a model of this version has no option H, so it is Enclosure's.
+    checkModelGame(name, "0");
   }
 
   trunk = TrunkDesc(in, modelVersion, binaryFloats, metaEncoderVersion);

@@ -42,29 +42,24 @@ FUSED_ROPE_BACKWARD = env_flag("KATAGO_FUSED_ROPE_BACKWARD", default=True)
 
 EXTRA_SCORE_DISTR_RADIUS = 60
 
-# Enclosure fork: a move is an edge, (y * 19 + x) * NUM_OFFSETS + offset, plus pass last. Each policy
-# output has NUM_OFFSETS channels per point; channel = output * NUM_OFFSETS + offset.
-NUM_OFFSETS = 48
-def policy_len(pos_len):
-    return pos_len * pos_len * NUM_OFFSETS + 1
+# Enclosure fork: a move is an action of the game (katago/train/games), (y * pos_len + x) * policy_channels + channel,
+# plus pass last. Each policy output has the game's POLICY_CHANNELS channels per point, channel = output *
+# POLICY_CHANNELS + policy channel.
+def policy_len(pos_len, policy_channels):
+    return pos_len * pos_len * policy_channels + 1
 
-# Enclosure fork (D1, owner): the score distribution keeps KataGo's 2 * (19 * 19 + 60) = 842 bins, each
-# SCORE_BIN_WIDTH points of final margin wide (margins of +-5,052; larger ones fall in the end bins).
-SCORE_BIN_WIDTH = 12.0
-
-# Enclosure fork (owner): scores stay in raw points, and every constant that KataGo tuned for Go's point scale
-# is scaled by SCORE_SCALE, the ratio of Enclosure's score spread to Go's (the D1 bin width against KataGo's
-# 1-point bins, from the measured margins). Quantities in points scale by SCORE_SCALE (output multipliers,
-# Huber deltas, target caps), squared points by SCORE_SCALE^2, and the loss weights by the inverse of their
-# loss's scaling, so that training weighs every score term as KataGo does on Go-sized scores.
-SCORE_SCALE = SCORE_BIN_WIDTH
-
-# Enclosure fork (owner): an Enclosure game has 120 edges against 328 moves, the measured mean of KataGo's own 19x19
-# self-play games (C++ Board::GO_GAME_LENGTH has the source). Game-phase constants scale by TIME_SCALE; look-ahead
-# horizons stay KataGo's (see the C++ Board::TIME_SCALE). Used here for the variance-time head only, provisionally:
-# its multiplier keeps outputs near unit scale and should be set from the measured size of its target once self-play
-# data exists.
-TIME_SCALE = 120.0 / 328.0
+# Enclosure fork: scores stay in the game's raw points, and every constant that KataGo tuned for Go's point scale is
+# scaled by the game's SCORE_SCALE, the ratio of its score spread to Go's (Enclosure: 12, from the measured margins).
+# Quantities in points scale by it (output multipliers, Huber deltas, target caps), squared points by its square, and
+# the loss weights by the inverse of their loss's scaling, so that training weighs every score term as KataGo does on
+# Go-sized scores. The score distribution keeps KataGo's 2 * (pos_len^2 + 60) bins, each SCORE_SCALE points of final
+# margin wide (Enclosure: 842 bins, margins of +-5,052; larger ones fall in the end bins).
+#
+# Game-phase constants scale by the game's time scale, its GAME_LENGTH against Go's: 328 moves, the measured mean of
+# KataGo's own 19x19 self-play games (C++ Board::GO_GAME_LENGTH has the source). Look-ahead horizons stay KataGo's (see
+# the C++ Board::TIME_SCALE). Used here for the variance-time head only, provisionally: its multiplier keeps outputs
+# near unit scale and should be set from the measured size of its target once self-play data exists.
+GO_GAME_LENGTH = 328.0
 
 def enumerate_tensor(tensor):
     """Iterate over (idx_tuple, value) for all values in a tensor"""
@@ -2777,8 +2772,9 @@ class PolicyHead(torch.nn.Module):
             is_after_batchnorm=True,
         )
         self.act2 = act(activation)
-        # Enclosure fork: NUM_OFFSETS channels per policy output.
-        self.conv2p = torch.nn.Conv2d(c_p1, self.num_policy_outputs * NUM_OFFSETS, kernel_size=1, padding="same", bias=False)
+        # Enclosure fork: the game's POLICY_CHANNELS channels per policy output.
+        self.policy_channels = modelconfigs.get_game(config).POLICY_CHANNELS
+        self.conv2p = torch.nn.Conv2d(c_p1, self.num_policy_outputs * self.policy_channels, kernel_size=1, padding="same", bias=False)
 
 
     def initialize(self):
@@ -2845,9 +2841,9 @@ class PolicyHead(torch.nn.Module):
 
         # mask out parts outside the board by making them a huge neg number, so that they're 0 after softmax
         outpolicy = outpolicy - (1.0 - mask) * 5000.0
-        # Enclosure fork: N(O*K)HW -> NO(HW*K), so that entry (y * W + x) * K + offset is that edge's move.
+        # Enclosure fork: N(O*K)HW -> NO(HW*K), so that entry (y * W + x) * K + channel is that action's move.
         n, _, h, w = outpolicy.shape
-        outpolicy = outpolicy.view(n, self.num_policy_outputs, NUM_OFFSETS, h * w).permute(0, 1, 3, 2).reshape(n, self.num_policy_outputs, h * w * NUM_OFFSETS)
+        outpolicy = outpolicy.view(n, self.num_policy_outputs, self.policy_channels, h * w).permute(0, 1, 3, 2).reshape(n, self.num_policy_outputs, h * w * self.policy_channels)
         # NC(HW) concat with NC1
         return torch.cat((outpolicy, outpass.unsqueeze(-1)),dim=2)
 
@@ -2890,6 +2886,7 @@ class ValueHead(torch.nn.Module):
         self.conv_scoring = torch.nn.Conv2d(c_v1, 1, kernel_size=1, padding="same", bias=False)
         # Enclosure fork (owner, 2026-10-03): 4 outputs, KataGo's 2 future positions, then the territory income
         # logits (mover's, opponent's; metrics_pytorch). Training-only, like the future positions: not exported.
+        # Every game has them: a target that a game does not write trains nothing.
         self.conv_futurepos = torch.nn.Conv2d(c_in, 4, kernel_size=1, padding="same", bias=False)
         self.conv_seki = torch.nn.Conv2d(c_in, 4, kernel_size=1, padding="same", bias=False)
 
@@ -2905,9 +2902,10 @@ class ValueHead(torch.nn.Module):
         self.linear_s3 = torch.nn.Linear(c_sv2, num_scorebeliefs, bias=True)
         self.linear_smix = torch.nn.Linear(3 * c_v1, num_scorebeliefs, bias=True)
 
-        # Enclosure fork (D1): bin centres in points of margin, SCORE_BIN_WIDTH apart.
+        # Enclosure fork: bin centres in points of margin, the game's SCORE_SCALE apart.
+        score_bin_width = modelconfigs.get_game(config).SCORE_SCALE
         self.register_buffer("score_belief_offset_vector", torch.tensor(
-            data=[SCORE_BIN_WIDTH * (float(i-self.scorebelief_mid)+0.5) for i in range(self.scorebelief_len)],
+            data=[score_bin_width * (float(i-self.scorebelief_mid)+0.5) for i in range(self.scorebelief_len)],
             dtype=torch.float32,
             requires_grad=False,
         ), persistent=False)
@@ -2917,7 +2915,8 @@ class ValueHead(torch.nn.Module):
             requires_grad=False,
         ), persistent=False)
         # Enclosure fork: Go's score parity (with the komi feature, the last global input) has no meaning in
-        # Enclosure, whose last global input is a score. Kept as a no-op: the vector is zero.
+        # Enclosure, whose last global input is a score. Kept as a no-op: the vector is zero. A game whose last
+        # global input is komi would need KataGo's.
         self.register_buffer("score_belief_parity_vector", torch.tensor(
             [0.0 for i in range(self.scorebelief_len)],
             dtype=torch.float32,
@@ -3290,14 +3289,20 @@ class Model(torch.nn.Module):
             self.variance_time_multiplier = 40.0
             self.shortterm_value_error_multiplier = 0.25
             self.shortterm_score_error_multiplier = 150.0
-        # Enclosure fork: see SCORE_SCALE. (KataGo's 20: "so that on typical data the neural net would only need
-        # to output values around unit scale"; Enclosure's typical margins are about 12 times Go's.)
-        self.td_score_multiplier *= SCORE_SCALE
-        self.scoremean_multiplier *= SCORE_SCALE
-        self.scorestdev_multiplier *= SCORE_SCALE
-        self.lead_multiplier *= SCORE_SCALE
-        self.shortterm_score_error_multiplier *= SCORE_SCALE ** 2  # a squared score error
-        self.variance_time_multiplier *= TIME_SCALE  # moves (see TIME_SCALE)
+        # Enclosure fork: the game's scales (see GO_GAME_LENGTH). (KataGo's 20: "so that on typical data the neural
+        # net would only need to output values around unit scale"; Enclosure's typical margins are about 12 times
+        # Go's.)
+        game = modelconfigs.get_game(config)
+        if pos_len != game.MAX_BOARD_LEN:  # the network's board is the game's largest board (design 07)
+            raise ValueError(f"pos_len {pos_len}, but the game {game.NAME}'s board is {game.MAX_BOARD_LEN}")
+        self.score_scale = game.SCORE_SCALE
+        self.time_scale = game.GAME_LENGTH / GO_GAME_LENGTH
+        self.td_score_multiplier *= self.score_scale
+        self.scoremean_multiplier *= self.score_scale
+        self.scorestdev_multiplier *= self.score_scale
+        self.lead_multiplier *= self.score_scale
+        self.shortterm_score_error_multiplier *= self.score_scale ** 2  # a squared score error
+        self.variance_time_multiplier *= self.time_scale  # moves
 
         self.trunk_normless = "trunk_normless" in config and config["trunk_normless"]
         self.trunk_final_rmsnorm = "trunk_final_rmsnorm" in config and config["trunk_final_rmsnorm"]
@@ -3311,7 +3316,7 @@ class Model(torch.nn.Module):
 
         self.activation = "relu" if "activation" not in config else config["activation"]
 
-        # Enclosure fork: the input sizes come from modelconfigs (the Enclosure inputs), not Go's 22 and 19.
+        # Enclosure fork: the input sizes come from modelconfigs (the game's inputs), not Go's 22 and 19.
         num_bin_features = modelconfigs.get_num_bin_input_features(config)
         num_global_features = modelconfigs.get_num_global_input_features(config)
         if config["initial_conv_1x1"]:

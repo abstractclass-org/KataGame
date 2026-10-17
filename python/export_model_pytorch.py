@@ -19,9 +19,10 @@ import torch.nn
 from torch.optim.swa_utils import AveragedModel
 from katago.train.model_pytorch import RMSNormMask
 
+from katago.train import games
 from katago.train import modelconfigs
 from katago.train.model_pytorch import Model, ResBlock, NestedBottleneckResBlock, TransformerAttentionBlock, TransformerFFNBlock, NestedBottleneckTransformerBlock
-from katago.train.model_pytorch import compute_attn_logit_dataless_bounds, NUM_OFFSETS
+from katago.train.model_pytorch import compute_attn_logit_dataless_bounds
 from katago.train.load_model import load_model
 
 # A transformer FFN hidden channel is pruned when no weight touching it exceeds this in
@@ -183,6 +184,7 @@ Export neural net weights to file for KataGo engine.
 parser = argparse.ArgumentParser(description=description)
 parser.add_argument('-checkpoint', help='Checkpoint to test', required=False)
 parser.add_argument('-export-random-initialized-model', help='Instead of loading a checkpoint, export a freshly random-initialized model of the given model config name (e.g. b15c512h8nbttflrs-fson-silu-rsnh)', required=False)
+parser.add_argument('-game', help="Enclosure fork: the game of a random-initialized model (katago/train/games, default enclosure). A checkpoint's config names its game.", required=False)
 parser.add_argument('-export-dir', help='model file dir to save to', required=True)
 parser.add_argument('-model-name', help='name to record in model file', required=True)
 parser.add_argument('-filename-prefix', help='filename prefix to save to within dir', required=True)
@@ -212,6 +214,8 @@ def main(args):
         raise Exception("Exactly one of -checkpoint or -export-random-initialized-model must be specified")
     if export_random_initialized_model is not None and use_swa:
         raise Exception("-use-swa cannot be used with -export-random-initialized-model")
+    if args["game"] is not None and export_random_initialized_model is None:
+        raise Exception("-game is for -export-random-initialized-model: a checkpoint's config names its game")
 
     os.makedirs(export_dir,exist_ok=True)
 
@@ -232,10 +236,10 @@ def main(args):
     if export_random_initialized_model is not None:
         if export_random_initialized_model not in modelconfigs.config_of_name:
             raise Exception(f"Unknown model config name: {export_random_initialized_model}")
-        model_config = modelconfigs.config_of_name[export_random_initialized_model]
+        model_config = modelconfigs.with_game(modelconfigs.config_of_name[export_random_initialized_model], args["game"])
         logging.info(f"Exporting freshly random-initialized model with config: {export_random_initialized_model}")
         logging.info(str(model_config))
-        model = Model(model_config, pos_len=19)
+        model = Model(model_config, pos_len=modelconfigs.get_game(model_config).MAX_BOARD_LEN)
         model.initialize()
         model.to("cpu")
         swa_model = None
@@ -335,6 +339,13 @@ def main(args):
         assert version == 17, version
         version = 18
 
+    # Enclosure fork: the model's game, in the header's model option H (below): 0 for Enclosure, as in every file from
+    # before, so that every binary loads its networks; another game's name for another game.
+    game_name = modelconfigs.get_game_name(model_config)
+    option_h = "0" if game_name == games.DEFAULT else game_name
+    if version < 15 and option_h != "0":
+        raise Exception(f"model version {version} has no option H, so its file cannot name the game {game_name}")
+
     writeln(model_name)
     writeln(version)
     writeln(modelconfigs.get_num_bin_input_features(model_config))
@@ -382,7 +393,9 @@ def main(args):
         writeln(0)
         writeln(0)
         writeln(0)
-        writeln(0)
+        # Enclosure fork: the last placeholder (model option H, neuralnet/desc.cpp) holds the model's game. A binary
+        # refuses a network of another game.
+        writeln(option_h)
 
 
     def write_weights(weights):
@@ -743,9 +756,10 @@ def main(args):
 
     def write_policy_head(name,policyhead):
         writeln(name)
-        # Enclosure fork: conv2p has NUM_OFFSETS channels per policy output (channel = output * NUM_OFFSETS +
-        # offset). conv2p_w[k] is output k's block, and the chosen outputs are written in blocks, in order.
-        conv2p_w = policyhead.conv2p.weight.view(-1, NUM_OFFSETS, *policyhead.conv2p.weight.shape[1:])
+        # Enclosure fork: conv2p has the game's policy channels for each policy output (channel = output *
+        # POLICY_CHANNELS + policy channel). conv2p_w[k] is output k's block, and the chosen outputs are written in
+        # blocks, in order.
+        conv2p_w = policyhead.conv2p.weight.view(-1, policyhead.policy_channels, *policyhead.conv2p.weight.shape[1:])
         if version >= 17:
             assert conv2p_w.shape[0] == 6 or conv2p_w.shape[0] == 8
             if conv2p_w.shape[0] == 6:
@@ -814,7 +828,7 @@ def main(args):
         if version >= 17:
             # Enclosure fork (owner, 2026-10-04), export stage 2: the policy outputs not written above, raw: 1 the
             # opponent's reply, 2 the soft policy, 3 the soft opponent reply, 4 the long-term optimistic policy
-            # (model_pytorch.PolicyHead), in NUM_OFFSETS blocks as conv2p, and their pass logits.
+            # (model_pytorch.PolicyHead), in blocks of the policy channels as conv2p, and their pass logits.
             assert policyhead.linear_pass2 is not None and policyhead.linear_pass2.bias is None
             write_conv_weight(name+".conv2p_aux", torch.stack((conv2p_w[1], conv2p_w[2], conv2p_w[3], conv2p_w[4]), dim=0).flatten(0, 1))
             write_matmul(name+".linear_pass2_aux", policyhead.linear_pass2.weight[1:5])

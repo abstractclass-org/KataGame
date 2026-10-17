@@ -21,6 +21,8 @@ well or best: "-fson-mish-rvgl-bnh"
 
 from typing import Dict, Any, Union
 
+from ..train import games
+
 ModelConfig = Dict[str,Any]
 
 # version = 0 # V1 features, with old head architecture using crelus (no longer supported)
@@ -45,16 +47,32 @@ ModelConfig = Dict[str,Any]
 def get_version(config: ModelConfig):
     return config["version"]
 
-# Enclosure fork: every version reads the Enclosure inputs (the C++ NNInputs V8): on board, 4 * 48 edge
-# planes, 22 feature planes; 5 global inputs. The config's "inputs_version" 9 (2026-10-13; absent: 8) adds KataGo's
-# playout doubling advantage as 2 more global inputs (C++ NNInputs V9, exported as model version 18).
+# Enclosure fork: the config's "game" names the model's game (katago/train/games), which gives its facts. A config
+# without one is Enclosure's, as every model before the game interface.
+def get_game_name(config: ModelConfig) -> str:
+    return config.get("game", games.DEFAULT)
+
+def get_game(config: ModelConfig):
+    return games.get(get_game_name(config))
+
+# A copy of the config with its game named (None: the default game, Enclosure).
+def with_game(config: ModelConfig, game_name: Union[str,None]) -> ModelConfig:
+    game_name = game_name or games.DEFAULT
+    games.get(game_name)
+    return dict(config, game=game_name)
+
+# Enclosure fork: every version reads the game's inputs (the C++ NNInputs V8): KataGo's on-board plane, then the game's
+# planes; the game's global inputs. The config's "inputs_version" 9 (2026-10-13; absent: 8) adds KataGo's playout
+# doubling advantage as 2 more global inputs (C++ NNInputs V9, exported as model version 18).
+PLAYOUT_GLOBAL_INPUTS = 2
+
 def get_inputs_version(config: ModelConfig):
     return config.get("inputs_version", 8)
 
 def get_num_bin_input_features(config: ModelConfig):
     version = get_version(config)
     if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16 or version == 17:
-        return 215
+        return 1 + get_game(config).NUM_SPATIAL_INPUTS
     else:
         assert(False)
 
@@ -62,7 +80,8 @@ def get_num_global_input_features(config: ModelConfig):
     version = get_version(config)
     if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16 or version == 17:
         assert get_inputs_version(config) in (8, 9)
-        return 7 if get_inputs_version(config) == 9 else 5
+        playout_inputs = PLAYOUT_GLOBAL_INPUTS if get_inputs_version(config) == 9 else 0
+        return get_game(config).NUM_GLOBAL_INPUTS + playout_inputs
     else:
         assert(False)
 

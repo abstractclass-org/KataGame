@@ -1,7 +1,9 @@
 from typing import Any, Dict, List
 import math
 
-from ..train.model_pytorch import EXTRA_SCORE_DISTR_RADIUS, NUM_OFFSETS, SCORE_SCALE, TIME_SCALE, policy_len, Model, compute_gain, ExtraOutputs, MetadataEncoder
+from ..train import games
+from ..train import modelconfigs
+from ..train.model_pytorch import EXTRA_SCORE_DISTR_RADIUS, policy_len, Model, compute_gain, ExtraOutputs, MetadataEncoder
 from ..train.trainloop_helpers import env_flag
 
 import torch
@@ -27,7 +29,13 @@ class Metrics:
         self.world_size = world_size
         self.pos_len = raw_model.pos_len
         self.pos_area = raw_model.pos_len * raw_model.pos_len
-        self.policy_len = policy_len(raw_model.pos_len)  # Enclosure fork: one entry per edge, plus pass
+        # Enclosure fork: the game's facts (katago/train/games). One policy entry per action, plus pass.
+        game = modelconfigs.get_game(raw_model.config)
+        self.policy_channels = game.POLICY_CHANNELS
+        self.policy_len = policy_len(raw_model.pos_len, self.policy_channels)
+        self.score_scale = raw_model.score_scale
+        self.time_scale = raw_model.time_scale
+        self.writes_ownership = bool(game.TARGETS & games.TARGET_OWNERSHIP)
         self.value_len = 3
         self.num_td_values = 3
         self.num_futurepos_values = 2
@@ -109,13 +117,13 @@ class Metrics:
         ) / (sum_sqrtvisits + 1.0)  # Add 1.0 to sum of sqrt visits so that we don't divide by 0 if we have no such data.
 
         pred_score = pred_score_prescaled * mask * self.scoremean_multiplier
-        loss_qvalues_score_by_move = huber_loss(pred_score, target_score, delta = 12.0 * SCORE_SCALE) * sqrtvisits  # Enclosure fork: SCORE_SCALE
+        loss_qvalues_score_by_move = huber_loss(pred_score, target_score, delta = 12.0 * self.score_scale) * sqrtvisits  # Enclosure fork: the game's score scale
         loss_qvalues_score = torch.sum(
             loss_qvalues_score_by_move * sqrtvisits,
             dim=1,
         ) / (sum_sqrtvisits + 1.0)  # Add 1.0 to sum of sqrt visits so that we don't divide by 0 if we have no such data.
 
-        return 1.5 * global_weight * loss_qvalues_winloss, 0.0008 / SCORE_SCALE ** 2 * global_weight * loss_qvalues_score
+        return 1.5 * global_weight * loss_qvalues_winloss, 0.0008 / self.score_scale ** 2 * global_weight * loss_qvalues_score
 
 
     def loss_value_samplewise(self, pred_logits, target_probs, weight, global_weight):
@@ -139,8 +147,8 @@ class Metrics:
         n = pred.shape[0]
         assert pred.shape == (n, self.num_td_values)
         assert target.shape == (n, self.num_td_values)
-        loss = torch.sum(huber_loss(pred, target, delta = 12.0 * SCORE_SCALE), dim=1)  # Enclosure fork: SCORE_SCALE
-        return 0.0004 / SCORE_SCALE ** 2 * global_weight * weight * loss
+        loss = torch.sum(huber_loss(pred, target, delta = 12.0 * self.score_scale), dim=1)  # Enclosure fork: the game's score scale
+        return 0.0004 / self.score_scale ** 2 * global_weight * weight * loss
 
 
     def loss_ownership_samplewise(self, pred_pretanh, target, weight, mask, mask_sum_hw, global_weight):
@@ -315,8 +323,8 @@ class Metrics:
         # be what users want.
         assert pred.shape == target.shape
         assert pred.ndim == 1
-        loss = huber_loss(pred, target, delta = 12.0 * SCORE_SCALE)  # Enclosure fork: SCORE_SCALE
-        return 0.0015 / SCORE_SCALE ** 2 * global_weight * weight * loss
+        loss = huber_loss(pred, target, delta = 12.0 * self.score_scale)  # Enclosure fork: the game's score scale
+        return 0.0015 / self.score_scale ** 2 * global_weight * weight * loss
 
 
     def loss_scorebelief_cdf_samplewise(self, pred_logits, target_probs, weight, global_weight):
@@ -345,8 +353,8 @@ class Metrics:
             ),
             dim=1
         ))
-        loss = huber_loss(pred, stdev_of_belief, delta = 10.0 * SCORE_SCALE)  # Enclosure fork: SCORE_SCALE
-        return 0.001 / SCORE_SCALE ** 2 * global_weight * loss
+        loss = huber_loss(pred, stdev_of_belief, delta = 10.0 * self.score_scale)  # Enclosure fork: the game's score scale
+        return 0.001 / self.score_scale ** 2 * global_weight * loss
 
     def loss_lead_samplewise(self, pred, target, weight, global_weight):
         # Huber will incentivize this to not actually converge to the mean,
@@ -355,15 +363,15 @@ class Metrics:
         # be what users want.
         assert pred.shape == target.shape
         assert pred.ndim == 1
-        loss = huber_loss(pred, target, delta = 8.0 * SCORE_SCALE)  # Enclosure fork: SCORE_SCALE
-        return 0.0060 / SCORE_SCALE ** 2 * global_weight * weight * loss
+        loss = huber_loss(pred, target, delta = 8.0 * self.score_scale)  # Enclosure fork: the game's score scale
+        return 0.0060 / self.score_scale ** 2 * global_weight * weight * loss
 
     def loss_variance_time_samplewise(self, pred, target, weight, global_weight):
         assert pred.shape == target.shape
         assert pred.ndim == 1
         # Even if the training target is 0, add a tiny bit of irreducible error for regularizing the prediction.
-        loss = huber_loss(pred, target + 1.0e-5, delta = 50.0 * TIME_SCALE)  # Enclosure fork: moves, see TIME_SCALE
-        return 0.0003 / TIME_SCALE ** 2 * global_weight * weight * loss
+        loss = huber_loss(pred, target + 1.0e-5, delta = 50.0 * self.time_scale)  # Enclosure fork: moves, the game's time scale
+        return 0.0003 / self.time_scale ** 2 * global_weight * weight * loss
 
 
     def loss_shortterm_value_error_samplewise(self, pred, td_value_pred_logits, td_value_target_probs, weight, global_weight):
@@ -379,9 +387,9 @@ class Metrics:
         predscore = td_score_pred[:,2].detach()
         realscore = td_score_target[:,2]
         # Even if the training target is 0, add a tiny bit of irreducible error for regularizing the prediction, one hundredth of a point.
-        sqerror = torch.square(predscore-realscore) + 1.0e-4 * SCORE_SCALE ** 2  # Enclosure fork: SCORE_SCALE
-        loss = huber_loss(pred, sqerror, delta = 100.0 * SCORE_SCALE ** 2)
-        return 0.00002 / SCORE_SCALE ** 4 * global_weight * weight * loss
+        sqerror = torch.square(predscore-realscore) + 1.0e-4 * self.score_scale ** 2  # Enclosure fork: the game's score scale
+        loss = huber_loss(pred, sqerror, delta = 100.0 * self.score_scale ** 2)
+        return 0.00002 / self.score_scale ** 4 * global_weight * weight * loss
 
     def accuracy1(self, pred_logits, target_probs, weight, global_weight):
         return torch.sum(global_weight * weight * (torch.argmax(pred_logits,dim=1) == torch.argmax(target_probs,dim=1)))
@@ -656,8 +664,8 @@ class Metrics:
         h = input_binary_nchw.shape[2]
         w = input_binary_nchw.shape[3]
 
-        # Enclosure fork: a move is on the board when its source point is; each point has NUM_OFFSETS moves.
-        policymask = torch.cat((mask.view(n,h*w).repeat_interleave(NUM_OFFSETS, dim=1),mask.new_ones((n,1))),dim=1)
+        # Enclosure fork: a move is on the board when its point is; each point has the game's policy channels.
+        policymask = torch.cat((mask.view(n,h*w).repeat_interleave(self.policy_channels, dim=1),mask.new_ones((n,1))),dim=1)
 
         target_policy_player = target_policy_ncmove[:, 0, :]
         target_policy_player = target_policy_player / torch.sum(target_policy_player, dim=1, keepdim=True)
@@ -686,14 +694,23 @@ class Metrics:
         global_weight = target_global_nc[:, 25]
         target_weight_ownership = target_global_nc[:, 27]
         target_weight_lead = target_global_nc[:, 29]
-        target_weight_futurepos = target_global_nc[:, 33]
-        target_weight_scoring = target_global_nc[:, 34]
         target_weight_value = 1.0 - target_global_nc[:, 35]
         target_weight_td_value = 1.0 - target_global_nc[:, 24]
+        target_weight_futurepos = target_global_nc[:, 33]
+        target_weight_scoring = target_global_nc[:, 34]
+        # Enclosure fork: the rows give a spatial target that the game does not write the weight 0, by its weight or
+        # its flag (C68 for the edges that get cut in the seki slot, C69 for the income), but for C0, which C27 weighs
+        # with the score's targets. So C0 trains only in a game that writes it (katago/train/games, TARGETS).
+        target_weight_ownership_slot = (
+            target_weight_ownership if self.writes_ownership else torch.zeros_like(target_weight_ownership)
+        )
+        target_weight_seki = target_weight_ownership * target_global_nc[:, 68]
+        target_weight_income = target_weight_ownership * target_global_nc[:, 69]
 
         target_score_distribution = score_distribution_ns / 100.0
 
-        # Enclosure fork (D2): the future occupancy, stored x 120 as the scoring target (trainingwrite.cpp).
+        # Enclosure fork: C0 holds a value in [-1, 1] stored x 120, as the scoring target (C++ TargetValues):
+        # Enclosure's future occupancy.
         target_ownership = target_value_nchw[:, 0, :, :] / 120.0
         target_seki = target_value_nchw[:, 1, :, :]
         target_futurepos = target_value_nchw[:, 2:4, :, :]
@@ -872,7 +889,7 @@ class Metrics:
         loss_ownership = self.loss_ownership_samplewise(
             ownership_pretanh,
             target_ownership,
-            target_weight_ownership,
+            target_weight_ownership_slot,
             mask,
             mask_sum_hw,
             global_weight,
@@ -899,7 +916,7 @@ class Metrics:
         loss_seki = self.loss_edgecut_samplewise(
             seki_logits,
             target_seki,
-            target_weight_ownership * target_global_nc[:, 68],
+            target_weight_seki,
             mask,
             mask_sum_hw,
             global_weight,
@@ -924,7 +941,7 @@ class Metrics:
         loss_income = self.loss_income_samplewise(
             income_logits,
             target_income,
-            target_weight_ownership * target_global_nc[:, 69],
+            target_weight_income,
             mask,
             mask_sum_hw,
             global_weight,
@@ -990,7 +1007,7 @@ class Metrics:
                 policy_logits[:, 6, :],
                 policy_logits[:, 7, :],
                 target_qvalue_ncmove[:, 0, :] / 32000.0,
-                target_qvalue_ncmove[:, 1, :] / (60.0 / SCORE_SCALE),  # Enclosure fork: stored as score * 60 / SCORE_SCALE
+                target_qvalue_ncmove[:, 1, :] / (60.0 / self.score_scale),  # Enclosure fork: stored as score * 60 / the score scale
                 target_qvalue_ncmove[:, 2, :],
                 global_weight
             )
@@ -1068,8 +1085,8 @@ class Metrics:
             # the window; core/dashboard.py divides).
             "fpw_sum": (target_weight_futurepos * global_weight).sum(),
             "sw_sum": (target_weight_scoring * global_weight).sum(),
-            "skw_sum": (target_weight_ownership * target_global_nc[:, 68] * global_weight).sum(),
-            "iw_sum": (target_weight_ownership * target_global_nc[:, 69] * global_weight).sum(),
+            "skw_sum": (target_weight_seki * global_weight).sum(),
+            "iw_sum": (target_weight_income * global_weight).sum(),
             "skloss_sum": loss_seki,
             "smloss_sum": loss_scoremean,
             "sbcdfloss_sum": loss_scorebelief_cdf,

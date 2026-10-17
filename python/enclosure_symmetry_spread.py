@@ -5,7 +5,7 @@
     python enclosure_symmetry_spread.py measure RUN_DIR [--every-rows 250000] [--watch SECONDS] [--threads 2]
     python enclosure_symmetry_spread.py measure RUN_DIR --only NAME [NAME ...]
 
-The network is not built symmetric. Training shows each row in a random symmetry (katago/train/enclosure_symmetry.py),
+The network is not built symmetric. Training shows each row in a random symmetry (katago/train/games/enclosure.py),
 and the network learns the symmetry from that alone, so its outputs move with the board's orientation by less as it
 trains (games/enclosure/docs/decisions/build.md, "The network's spread over the 8 symmetries"). This measures that on fixed
 positions: each position goes through the network as it is and in each of the 7 other symmetries, with the trainer's
@@ -49,7 +49,7 @@ import torch
 
 from katago.train import modelconfigs
 from katago.train.data_processing_pytorch import fit_global_input_nc
-from katago.train.enclosure_symmetry import NUM_SYMMETRIES, apply_symmetry_inputs, apply_symmetry_policy
+from katago.train.games.enclosure import NUM_SYMMETRIES, apply_symmetry_inputs, apply_symmetry_policy
 from katago.train.load_model import load_checkpoint, load_model_state_dict, load_swa_model_state_dict
 from katago.train.model_pytorch import Model
 

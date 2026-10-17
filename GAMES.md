@@ -10,8 +10,9 @@ The interface exists. Enclosure implements both parts. Connect-4 (`cpp/game/conn
 front (`Board`, `BoardHistory`), the search, self-play, GTP and the analysis engine reach the rules through the rules
 part. The network code reaches the encoding part: the policy layout and the backends (`NNPos`), the inputs
 (`NNInputs`), the symmetries (`SymmetryHelpers`) and the training rows (`TrainingWriteBuffers`). No C++ code outside
-the game layer names a game, and a check keeps it so ("The game layer"). The map below gives each step's work. The
-trainer's step is still to do.
+the game layer names a game, and a check keeps it so ("The game layer"). The trainer reads a game's facts from the
+game's module (`python/katago/train/games/`), and a model file names its game ("The model file's game"). The map below
+gives each step's work.
 
 * [The files](#the-files)
 * [Choosing the game](#choosing-the-game)
@@ -246,6 +247,35 @@ of C4. C27 stays KataGo's weight of C0, C1 and the score's targets: it is set wh
 | `TARGET_INCOME` | C5-6 | the territory income of each player |
 | `TARGET_NEXT_PIECES` | C7 | the next mover's nodes after the row's move, for the symmetries of policy channel 1 (not a loss) |
 
+### The trainer's module
+
+The trainer reads a game's facts from the game's module, `python/katago/train/games/<game>.py`, which mirrors the
+encoding part. `python/katago/train/games/__init__.py` lists the members, and `games.get(name)` refuses a module that
+lacks one. A model config names its game (`"game"`, Enclosure's without it), and `modelconfigs.get_game(config)` gives
+its module.
+
+| Member | Meaning | Enclosure (`games/enclosure.py`) |
+|---|---|---|
+| `NAME`, `MAX_BOARD_LEN`, `POLICY_CHANNELS`, `NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS`, `SYMMETRIES`, `TARGETS`, `SCORE_SCALE`, `GAME_LENGTH` | As in C++. `MAX_BOARD_LEN` is the trainer's `pos_len` (the model refuses another), and the score distribution's bins are `SCORE_SCALE` points wide. | As in C++ |
+| `HISTORY_PLANE`, `NUM_HISTORY_PLANES` | As in C++ (the game's planes, newest first), for the history dropout. | The last 4 feature planes: 210, 4 |
+| `apply_symmetry_inputs`, `apply_symmetry_policy_targets`, `apply_symmetry_policy` | The augmentation of the input planes, the policy targets (both channels) and a policy of the mover's moves (the q-values), at an allowed symmetry. The value targets move as pixels in every game (`games.apply_symmetry_points`). | An edge moves as an edge, with each channel's player's nodes |
+
+The model's heads are the same in every game. The rows give each slot that the game does not write the weight 0, but
+not C0 (above). So the trainer leaves out C0 for a game without `TARGET_OWNERSHIP`.
+
+### The model file's game
+
+The export (`python/export_model_pytorch.py`) writes the config's game into the model file, in the header's model
+option H, the last spare option: 0 for Enclosure, as every file from before holds, and the game's name for another
+game. The loader (`neuralnet/desc.cpp`, `checkModelGame`) reads 0 as Enclosure (`GameInterface::UNNAMED_MODEL_GAME`).
+It also reads a file of a version below 15, which has no option H, as Enclosure's. It refuses a network of another
+game than the build's: `NAME: the network is for the game connect4, and this binary plays enclosure`. So every binary,
+from before too, loads every Enclosure network, and a binary from before refuses another game's network ("model failed
+to parse unused params"). A file that writes `enclosure` there (no export writes it) loads in an Enclosure build. The
+ONNX metadata (`neuralnet/onnxmodelbuilder.cpp`) does not carry the game yet, so a `.onnx` file is not checked: its
+change waits for the TensorRT and ONNX backends (abscls-bd7). Design 07 of the engine repository, "The model file's
+game", gives the reasons.
+
 ## The bot part
 
 `struct GameBot`, optional. The alpha-beta search (`cpp/search/alphabeta.h`) needs it with the rules part. The Python
@@ -346,6 +376,9 @@ OUT_DIR/testgameinterface tests/data/enclosure_games.txt
 4. For the alpha-beta search, add `cpp/game/<game>/gamebot.h` (`struct GameBot`, a heuristic), ending with
    `static_assert(GameInterface::checkBot<GameBot>(), "...")`. The binding then gives the search, and the arena's
    player `ab` plays the game.
+5. For training, add the trainer's module `python/katago/train/games/<game>.py` with the members of
+   `games/__init__.py` ("The trainer's module"), the values of the game's encoding part. `train.py -game <game>` then
+   makes a model of the game, and its exported files name the game.
 
 The front reaches the game through the members alone (the map below), and the check of the game layer keeps it so.
 So a second game's binary builds from its folder, with the front as it is.
@@ -460,35 +493,38 @@ game. The evaluator, the model description and the backends name no game. An act
 | `neuralnet/cudaandrocmbackend.inc` | `NNPos::NUM_OFFSETS` (15 places), and the policy gather's `static_assert(enclosure::PASS < (1 << 15))` and `testAssert(a <= enclosure::PASS)` | Done: `NNPos::POLICY_CHANNELS`, and the gather's checks on `MAX_NN_POLICY_SIZE` |
 | `neuralnet/eigenbackend.cpp`, `trtbackend.cpp`, `onnxmodelbuilder.cpp` | `NNPos::NUM_OFFSETS` | Done: `NNPos::POLICY_CHANNELS` (and in the WebAssembly module's `evaluator.cpp` and `jsbackend.cpp`) |
 | `neuralnet/nneval.cpp` | `enclosure::PASS` (the policy gather, the legal mask, `policySize == PASS + 1`), `board.legalActions()` | Done: `NNPos::PASS_POS` (`PASS_ACTION`), the front's legal set read by policy index. The evaluator refuses a network board other than the largest board when it starts. |
-| `neuralnet/openclbackend.cpp`, `onnxbackend.cpp`, `cudaandrocmhelpers.*`, `modelversion.*`, `onnxmodelbuilder.h` | Comments: the policy channels, the input versions | Done for `cudaandrocmhelpers.h`. Not done for `openclbackend.cpp` and `onnxbackend.cpp`: they never took the fork's policy. They copy one policy channel per point, size their buffers for it, and apply the symmetry themselves. Neither builds on the training machine, so their change waits for a machine with their toolchains (abscls-bd7). The input versions: done (`modelversion.*` say that versions 8 and 9 are the game's inputs, abscls-mkd.3). The model's game: the trainer's step. |
+| `neuralnet/openclbackend.cpp`, `onnxbackend.cpp`, `cudaandrocmhelpers.*`, `modelversion.*`, `onnxmodelbuilder.h` | Comments: the policy channels, the input versions | Done for `cudaandrocmhelpers.h`. Not done for `openclbackend.cpp` and `onnxbackend.cpp`: they never took the fork's policy. They copy one policy channel per point, size their buffers for it, and apply the symmetry themselves. Neither builds on the training machine, so their change waits for a machine with their toolchains (abscls-bd7). The input versions: done (`modelversion.*` say that versions 8 and 9 are the game's inputs, abscls-mkd.3). The model's game: in the model file's header since the trainer's step ("The model file's game"). The ONNX metadata does not carry it yet (abscls-bd7). |
 
 ### The trainer (`python/katago/train/`)
 
-The trainer reads a game's facts from one module for that game. Each constant below goes into Enclosure's module.
+Done (abscls-mkd.5). The trainer reads a game's facts from the game's module ("The trainer's module"), and a model
+file names its game ("The model file's game"). The model and data code hold no Enclosure constant.
 
-| Constant | Where | Member it mirrors |
+| Constant | Where | Member |
 |---|---|---|
-| `NUM_OFFSETS = 48`, `policy_len(pos_len)` | `model_pytorch.py` (the policy convolution and its reshape), `metrics_pytorch.py` (`policy_len`, the soft-policy mask), `enclosure_symmetry.py` | `POLICY_CHANNELS`, `NUM_ACTIONS` |
-| `SCORE_BIN_WIDTH`, `SCORE_SCALE = 12.0` | `model_pytorch.py` (the score bins, the output multipliers), `metrics_pytorch.py` (the Huber deltas, the loss weights, the q-value score's storage `60 / SCORE_SCALE`) | `SCORE_SCALE` |
-| `TIME_SCALE = 120 / 328` | `model_pytorch.py`, `metrics_pytorch.py` (the variance-time Huber delta) | `GAME_LENGTH / 328` |
-| 215 spatial inputs, 5 or 7 global inputs | `modelconfigs.get_num_bin_input_features`, `get_num_global_input_features` | `1 + NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS` (+ 2 in V9) |
-| `ENCLOSURE_HISTORY_PLANES_START = 211`, `ENCLOSURE_NUM_HISTORY_PLANES = 4` | `data_processing_pytorch.apply_history_dropout` | `1 + HISTORY_PLANE`, `NUM_HISTORY_PLANES` (the network's planes count the on-board plane) |
-| `enclosure_symmetry` (`SIZE`, `NUM_OFFSETS`, `OFFSETS`, the edge planes' anchors, `NUM_SYMMETRIES = 8`) | `data_processing_pytorch.py` (the augmentation) | `SYMMETRIES`, `sym_position`, `SymActionMap`, in Python |
-| `VALUE_TARGETS_NCHW_CHANNELS = 8`, the targets in C1, C4, C5-6, C7 and their flags C68, C69, C75 | `data_processing_pytorch.py`, `metrics_pytorch.py` | `TARGETS` |
-| The storage × 120 of C0, C4 and C5-6 | `metrics_pytorch.py` | `TARGETS` (the slot's storage: KataGo's for C0 and C4) |
-| The future-position head's 4 outputs: KataGo's 2, then the income logits | `model_pytorch.py` (`conv_futurepos`), `metrics_pytorch.py` | `TARGET_INCOME` |
+| `NUM_OFFSETS = 48`, `policy_len(pos_len)` | `model_pytorch.py` (the policy convolution and its reshape), `metrics_pytorch.py` (`policy_len`, the soft-policy mask), `enclosure_symmetry.py` | Done: `POLICY_CHANNELS`, and `policy_len(pos_len, policy_channels)`. `enclosure_symmetry.py` is now Enclosure's module, `games/enclosure.py`. |
+| `SCORE_BIN_WIDTH`, `SCORE_SCALE = 12.0` | `model_pytorch.py` (the score bins, the output multipliers), `metrics_pytorch.py` (the Huber deltas, the loss weights, the q-value score's storage `60 / SCORE_SCALE`) | Done: `SCORE_SCALE`, also the bins' width |
+| `TIME_SCALE = 120 / 328` | `model_pytorch.py`, `metrics_pytorch.py` (the variance-time Huber delta) | Done: `GAME_LENGTH / GO_GAME_LENGTH` (`GO_GAME_LENGTH` = 328 stays: it is Go's) |
+| 215 spatial inputs, 5 or 7 global inputs | `modelconfigs.get_num_bin_input_features`, `get_num_global_input_features` | Done: `1 + NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS` (+ 2 in V9, `PLAYOUT_GLOBAL_INPUTS`) |
+| `ENCLOSURE_HISTORY_PLANES_START = 211`, `ENCLOSURE_NUM_HISTORY_PLANES = 4` | `data_processing_pytorch.apply_history_dropout` | Done: `1 + HISTORY_PLANE`, `NUM_HISTORY_PLANES` (the network's planes count the on-board plane) |
+| `enclosure_symmetry` (`SIZE`, `NUM_OFFSETS`, `OFFSETS`, the edge planes' anchors, `NUM_SYMMETRIES = 8`) | `data_processing_pytorch.py` (the augmentation) | Done: `SYMMETRIES`, and the module's `apply_symmetry_inputs`, `apply_symmetry_policy_targets` and `apply_symmetry_policy` |
+| `VALUE_TARGETS_NCHW_CHANNELS = 8`, the targets in C1, C4, C5-6, C7 and their flags C68, C69, C75 | `data_processing_pytorch.py`, `metrics_pytorch.py` | Done: `TARGETS` leaves out C0 for a game without `TARGET_OWNERSHIP`, and the rows' weights and flags leave out the other slots. The 8 slots and the flags are the rows' format, which every game shares. |
+| The storage × 120 of C0, C4 and C5-6 | `metrics_pytorch.py` | Done: the rows' storage for every game (`TargetValues::STORAGE_SCALE`) |
+| The future-position head's 4 outputs: KataGo's 2, then the income logits | `model_pytorch.py` (`conv_futurepos`), `metrics_pytorch.py` | Done: every game has the 4 outputs. The last 2 train only with `TARGET_INCOME`. |
 | The score parity vector, kept at zero (Go's komi parity) | `model_pytorch.py` | None: Go's. A game whose last global input is komi would need KataGo's. |
-| `load_model(..., pos_len=19)` | `load_model.py` | `MAX_BOARD_LEN` |
+| `load_model(..., pos_len=19)` | `load_model.py` | Done: `MAX_BOARD_LEN` |
 | `ENCLOSURE_ZERO_INPUT_CHANNELS` | `data_processing_pytorch.py` | None: an option for experiments (a name) |
 
 The RGSC heads and their targets (`model_pytorch.py`, `metrics_pytorch.py`, `cpp/program/rgsc.h`) come from the
 search, not from the game. They are not in the map.
 
-Two files beside the trainer also hold Enclosure's facts, for the trainer's step:
+Two files beside the trainer also held Enclosure's facts:
 
-- `python/export_model_pytorch.py`: the export of the policy convolution (`NUM_OFFSETS` channels for each output),
-  and the V9 inputs (7 global inputs) in the model version.
-- `python/shuffle.py`: the rows' C5-7 channels and V9's 7 global inputs (`pad_global_inputs_to_widest`).
+- `python/export_model_pytorch.py`: the export of the policy convolution (`NUM_OFFSETS` channels for each output), and
+  the V9 inputs (7 global inputs) in the model version. Done: the policy head's channels, the game's inputs, and the
+  game in the model file. `-game` names the game of a random-initialized model.
+- `python/shuffle.py`: the rows' C5-7 channels and V9's 7 global inputs (`pad_global_inputs_to_widest`). No change:
+  both are the rows' format, which every game shares, and the padding takes the widest file's width.
 
 ### The last references (the contract step)
 

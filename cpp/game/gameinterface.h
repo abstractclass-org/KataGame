@@ -224,6 +224,10 @@ template<unsigned SET> constexpr std::array<int, numSymmetries(SET)> symmetryLis
   return list;
 }
 
+//The game of a network whose model file holds 0 in option H (neuralnet/desc.cpp): Enclosure's files hold 0 there, as
+//every file from before the game interface, so that every binary loads them.
+constexpr const char* UNNAMED_MODEL_GAME = "enclosure";
+
 //A writer for spatial_inputs, for the detection below.
 struct SetEntry {
   void operator()(int x, int y, int plane) const;

@@ -23,7 +23,7 @@ import torch
 from enclosure_symmetry_spread import SIZE, checkpoint_dirs, load, load_positions
 from katago.train import modelconfigs
 from katago.train.data_processing_pytorch import fit_global_input_nc
-from katago.train.enclosure_symmetry import NUM_ACTIONS, NUM_OFFSETS, NUM_SYMMETRIES, OFFSETS, apply_symmetry_inputs, player_nodes
+from katago.train.games.enclosure import NUM_ACTIONS, NUM_OFFSETS, NUM_SYMMETRIES, OFFSETS, apply_symmetry_inputs, player_nodes
 
 
 def never_legal_tables():

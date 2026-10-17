@@ -342,7 +342,8 @@ bins. Only the training rows and the Python head use the distribution (step 6).
 - **Policy layout:** every policy output has 48 channels per point, channel = output × 48 + offset. So the policy
   entry (y · 19 + x) · 48 + offset (the action index) reads the NHWC output in place. Pass stays one logit per output.
   - PyTorch (`model_pytorch.py`): `conv2p` has `num_policy_outputs × 48` channels. The head returns (N, outputs,
-    17,329) with pass last. `NUM_OFFSETS` and `policy_len` hold the numbers.
+    17,329) with pass last. `policy_len` and `POLICY_CHANNELS` of Enclosure's trainer module
+    (`katago/train/games/enclosure.py`) hold the numbers.
   - Export (`export_model_pytorch.py`): the chosen outputs (regular and optimistic, as upstream) are written as blocks
     of 48 channels.
   - C++ (`desc.cpp`): `p2Conv.outChannels` must be `policyOutChannels × 48`. The Eigen backend sizes its buffers and
@@ -378,7 +379,8 @@ bins. Only the training rows and the Python head use the distribution (step 6).
     turn-safe plane, the edges at both ends and the removal of held ground became the only inputs, so the test
     failed everywhere for every build (games/enclosure/docs/decisions/build.md "The FP32 check against PyTorch: stale inputs,
     not the network").
-- **Training augmentation** (`katago/train/enclosure_symmetry.py`, used by `data_processing_pytorch.py`):
+- **Training augmentation** (Enclosure's trainer module `katago/train/games/enclosure.py`, used by
+  `data_processing_pytorch.py`):
   - point planes and the value targets move as pixels.
   - the edge planes and the policy and q-value targets go through index maps. A stored edge goes to the lower end of
     its image. A move between two of its player's nodes goes to the lower end of its image. Any other move goes to
@@ -397,9 +399,9 @@ bins. Only the training rows and the Python head use the distribution (step 6).
 ## Score scale (step 6)
 
 **Decided:** scores stay in raw points, and every constant that KataGo tuned to Go's point scale is scaled by
-`SCORE_SCALE` = 12 (C++ `NNPos::SCORE_SCALE`, Python `model_pytorch.SCORE_SCALE`). This is the width of the
-Enclosure score bins against KataGo's bins of 1 point, from the measured margins. Training then weighs every score
-term exactly as KataGo does on scores of Go's size ("scale-invariant retune"). The rule:
+`SCORE_SCALE` = 12 (C++ `NNPos::SCORE_SCALE`, Python `SCORE_SCALE` in `katago/train/games/enclosure.py`). This is
+the width of the Enclosure score bins against KataGo's bins of 1 point, from the measured margins. Training then
+weighs every score term exactly as KataGo does on scores of Go's size ("scale-invariant retune"). The rule:
 
 - quantities in points: × s.
 - squared points: × s².
@@ -612,8 +614,9 @@ about one turn, was too short, and this led to the division.
 
 Game-phase constants:
 
-- `Board::TIME_SCALE` (Python `model_pytorch.TIME_SCALE`) = 120 / 328 ≈ 0.366: Enclosure's 120 edges against the
-  measured mean length of KataGo's own 19×19 self-play games without handicap or setup stones.
+- `Board::TIME_SCALE` (Python: the model's `time_scale`, `GAME_LENGTH / GO_GAME_LENGTH`) = 120 / 328 ≈ 0.366:
+  Enclosure's 120 edges against the measured mean length of KataGo's own 19×19 self-play games without handicap or
+  setup stones.
   - Source: the kata1 training games on katagoarchive.org. A sample of 732 games: mean 328.7, median 329, 10th-90th
     percentile 294-363. A later sample of 51,094 games: mean 328.1, median 327, 292-366.
   - KataGo plays games to the end and does not resign, so its games are longer than human games.

@@ -6,7 +6,7 @@
 
 For each position and symmetry in SYM_FILE: the augmented V8 inputs must equal the C++ inputs of the
 image position (fillRowV8 of getSymBoard), and every legal move's policy entry must land on the C++
-image move (getSymAction), in both policy channels:
+image move (getSymMoveLoc, the game's SymActionMap), in both policy channels:
 
 - channel 0 (the mover's move), mapped with the mover's nodes from the row's inputs;
 - channel 1 (the next move, which C++ lists for the next mover; 2026-10-14): the position stands for the next
@@ -22,9 +22,9 @@ import sys
 import numpy as np
 import torch
 
-from katago.train.enclosure_symmetry import (FEATURE_PLANES_START, FEATURES_PER_PLAYER, NEXT_NODES_FLAG, NEXT_NODES_PLANE,
-                                             NUM_ACTIONS, SIZE, apply_symmetry_inputs, apply_symmetry_policy,
-                                             apply_symmetry_policy_targets)
+from katago.train.games.enclosure import (FEATURE_PLANES_START, FEATURES_PER_PLAYER, NEXT_NODES_FLAG, NEXT_NODES_PLANE,
+                                          NUM_ACTIONS, SIZE, apply_symmetry_inputs, apply_symmetry_policy,
+                                          apply_symmetry_policy_targets)
 
 CHANNELS = 215
 GLOBALS = 5

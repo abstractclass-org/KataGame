@@ -19,6 +19,7 @@ from katago.train import modelconfigs
 from katago.train.data_processing_pytorch import read_npz_training_data
 from katago.train.load_model import load_model
 from katago.train.metrics_pytorch import Metrics
+from katago.train.games.enclosure import POLICY_CHANNELS
 from katago.train.model_pytorch import policy_len
 
 SIZE = 19
@@ -37,7 +38,7 @@ def main():
         assert batch["binaryInputNCHW"].shape == (n, 215, SIZE, SIZE)
         # 5 global inputs, or 7 with the V9 inputs (inputs_version 9, 2026-10-13); the loader fits the rows to the model.
         assert batch["globalInputNC"].shape == (n, modelconfigs.get_num_global_input_features(model.config))
-        assert batch["policyTargetsNCMove"].shape == (n, 2, policy_len(SIZE))
+        assert batch["policyTargetsNCMove"].shape == (n, 2, policy_len(SIZE, POLICY_CHANNELS))
         assert batch["scoreDistrN"].shape == (n, 842)
         # 8 planes since the next mover's nodes (C7, 2026-10-14); the loader pads files written before (5 or 7).
         assert batch["valueTargetsNCHW"].shape == (n, 8, SIZE, SIZE)
