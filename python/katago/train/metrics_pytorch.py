@@ -22,6 +22,12 @@ def huber_loss(x, y, delta):
 def constant_like(data, other_tensor):
     return torch.tensor(data, dtype=other_tensor.dtype, device=other_tensor.device, requires_grad=False)
 
+# The loss scales of Enclosure's auxiliary targets (abscls-kcu): 1 each by default, so the loss stays as it was.
+# train.py's -ownership-loss-scale, -futurepos-loss-scale, -income-loss-scale and -scoring-loss-scale set them. The
+# seki slot (the edges that get cut) keeps KataGo's -seki-loss-scale.
+AUX_LOSS_SCALES = {"ownership": 1.0, "futurepos": 1.0, "income": 1.0, "scoring": 1.0}
+
+
 class Metrics:
     def __init__(self, world_size: int, raw_model: Model):
         self.world_size = world_size
@@ -549,6 +555,7 @@ class Metrics:
         main_loss_scale,
         intermediate_loss_scale,
         include_model_norms=True,
+        aux_loss_scales=None,
     ):
         results = self.metrics_dict_batchwise_single_heads_output(
             raw_model,
@@ -564,6 +571,7 @@ class Metrics:
             variance_time_loss_scale=variance_time_loss_scale,
             is_intermediate=False,
             include_model_norms=include_model_norms,
+            aux_loss_scales=aux_loss_scales,
         )
         if main_loss_scale is not None:
             results["loss_sum"] = main_loss_scale * results["loss_sum"]
@@ -590,6 +598,7 @@ class Metrics:
                     seki_loss_scale=seki_loss_scale,
                     variance_time_loss_scale=variance_time_loss_scale,
                     is_intermediate=True,
+                    aux_loss_scales=aux_loss_scales,
                 )
                 for key,value in iresults.items():
                     if key != "loss_sum":
@@ -619,7 +628,9 @@ class Metrics:
         variance_time_loss_scale,
         is_intermediate,
         include_model_norms=True,
+        aux_loss_scales=None,
     ):
+        aux = {**AUX_LOSS_SCALES, **(aux_loss_scales or {})}
         (
             policy_logits,
             value_logits,
@@ -1009,10 +1020,10 @@ class Metrics:
             + loss_td_value2 * td_value_loss_scales[1]
             + loss_td_value3 * td_value_loss_scales[2]
             + loss_td_score
-            + loss_ownership
-            + loss_scoring * 0.25
-            + loss_futurepos
-            + loss_income
+            + loss_ownership * aux["ownership"]
+            + loss_scoring * 0.25 * aux["scoring"]
+            + loss_futurepos * aux["futurepos"]
+            + loss_income * aux["income"]
             + loss_regret_value
             + loss_regret_ranking
             + loss_swing_value

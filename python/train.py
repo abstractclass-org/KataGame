@@ -160,6 +160,9 @@ if __name__ == "__main__":
     optional_args.add_argument('-td-value-loss-scales', type=str, default="0.6,0.6,0.6", help='Additional td value loss coeffs, 3 comma separated values', required=False)
     optional_args.add_argument('-seki-loss-scale', type=float, default=1.0, help='Additional seki loss coeff', required=False)
     optional_args.add_argument('-variance-time-loss-scale', type=float, default=1.0, help='Additional variance time loss coeff', required=False)
+    # Enclosure's auxiliary targets (abscls-kcu): 0 takes a target out of the loss, to measure what it does to the trunk
+    for aux in ("ownership", "futurepos", "income", "scoring"):
+        optional_args.add_argument(f'-{aux}-loss-scale', type=float, default=1.0, help=f'Scale of the {aux} target in the loss (default 1)', required=False)
 
     optional_args.add_argument('-main-loss-scale', type=float, help='Loss factor scale for main head', required=False)
     optional_args.add_argument('-intermediate-loss-scale', type=float, help='Loss factor scale for intermediate head', required=False)
@@ -447,6 +450,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     td_value_loss_scales = [float(x) for x in args["td_value_loss_scales"].split(",")]
     seki_loss_scale = args["seki_loss_scale"]
     variance_time_loss_scale = args["variance_time_loss_scale"]
+    aux_loss_scales = {aux: args[f"{aux}_loss_scale"] for aux in ("ownership", "futurepos", "income", "scoring")}
 
     main_loss_scale = args["main_loss_scale"]
     intermediate_loss_scale = args["intermediate_loss_scale"]
@@ -1168,6 +1172,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     logging.info(f"td_value_loss_scales {td_value_loss_scales}")
     logging.info(f"seki_loss_scale {seki_loss_scale}")
     logging.info(f"variance_time_loss_scale {variance_time_loss_scale}")
+    logging.info(f"aux_loss_scales {aux_loss_scales}")
     logging.info(f"main_loss_scale {main_loss_scale}")
     logging.info(f"intermediate_loss_scale {intermediate_loss_scale}")
     logging.info(f"head_lr_factor {head_lr_factor}")
@@ -1728,6 +1733,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                     main_loss_scale=main_loss_scale,
                     intermediate_loss_scale=intermediate_loss_scale,
                     include_model_norms=not model_norms_only_at_print,
+                    aux_loss_scales=aux_loss_scales,
                 )
                 if model_norms_only_at_print and is_print_batch:
                     metrics.update(metrics_obj.get_model_norm_metrics(raw_model))
@@ -1995,6 +2001,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                             variance_time_loss_scale=variance_time_loss_scale,
                             main_loss_scale=main_loss_scale,
                             intermediate_loss_scale=intermediate_loss_scale,
+                            aux_loss_scales=aux_loss_scales,
                         )
                         metrics = trainloop_helpers.detensorify_metrics(metrics)
                         accumulate_metrics(val_metric_sums, val_metric_weights, metrics, batch_size, decay=1.0, new_weight=1.0)
