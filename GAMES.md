@@ -7,12 +7,13 @@ each reference. The decision and its reasons are design 07 of the engine reposit
 (`docs/design/07-game-interface.md`). Enclosure's own design stays in [ENCLOSURE.md](ENCLOSURE.md).
 
 The interface exists. Enclosure and Connect-4 (`cpp/game/connect4/`) implement both parts, and each game has its
-`katago` binary. The front (`Board`, `BoardHistory`), the search, self-play, GTP and the analysis engine reach the rules
-through the rules part. The network code reaches the encoding part: the policy layout and the backends (`NNPos`), the
-inputs (`NNInputs`), the symmetries (`SymmetryHelpers`) and the training rows (`TrainingWriteBuffers`). No C++ code
-outside the game layer names a game, and a check keeps it so ("The game layer"). The trainer reads a game's facts from
-the game's module (`python/katago/train/games/`), and a model file names its game ("The model file's game"). The map
-below gives each step's work.
+`katago` binary. The front (`Board`, `BoardHistory`), the search, self-play, GTP and the analysis engine reach the
+rules through the rules part. The network code reaches the encoding part: the policy layout and the backends
+(`NNPos`), the inputs (`NNInputs`), the symmetries (`SymmetryHelpers`) and the training rows (`TrainingWriteBuffers`).
+No C++ code outside the game layer names a game, and a check keeps it so ("The game layer"). The trainer reads a
+game's facts from the game's module (`python/katago/train/games/`), and a model file names its game ("The model file's
+game"). The training scripts (`python/selfplay/`) run a run of any game, and `katago version` names the binary's game
+("The training scripts"). The map below gives each step's work.
 
 * [The files](#the-files)
 * [Choosing the game](#choosing-the-game)
@@ -408,6 +409,10 @@ targets. The network check against PyTorch (the random test network of `python/e
    `games/__init__.py` ("The trainer's module"), the values of the game's encoding part. `train.py -game <game>` then
    makes a model of the game, and its exported files name the game. The network check against PyTorch takes the game
    (`python/enclosure_nn_check.py make -game <game>`) and the game's positions for `testnnoutputs`.
+6. For a run, add the game's self-play config `cpp/configs/training/selfplay_<game>.cfg` and its analysis config
+   `cpp/configs/analysis_<game>.cfg` (the load check). In the engine repository, a run's settings go in
+   `games/<game>/runs/RUN.env`, with `KATAGO_BIN` set to a build of the game. The pipeline's scripts then start, watch
+   and stop the run ("The training scripts").
 
 The front reaches the game through the members alone (the map below), and the check of the game layer keeps it so.
 So a second game's binary builds from its folder, with the front as it is.
@@ -555,6 +560,20 @@ Two files beside the trainer also held Enclosure's facts:
 - `python/shuffle.py`: the rows' C5-7 channels and V9's 7 global inputs (`pad_global_inputs_to_widest`). No change:
   both are the rows' format, which every game shares, and the padding takes the widest file's width.
 
+### The training scripts (`python/selfplay/`)
+
+Done (abscls-mkd.7). The asynchronous setup runs a run of any game. The engine repository's pipeline gives it the
+run's game (`GAME`) from the run's settings, `games/GAME/runs/RUN.env` (design 07 of the engine repository, "The
+pipeline").
+
+| File | Reference | Now |
+|---|---|---|
+| `enclosure_async.sh` | Enclosure's asynchronous setup: `configs/training/selfplay_enclosure.cfg`, the load check's `configs/analysis_enclosure.cfg`, the binary's default `builds/cuda/katago` of the engine repository's work space | Done: `async_start.sh`, for the game `GAME`: `selfplay_GAME.cfg` (`SELFPLAY_CONFIG`), `analysis_GAME.cfg` (`ANALYSIS_CONFIG`), and `KATAGO_BIN`, which the caller sets. It refuses a binary of another game, a game without a self-play config and a game without a trainer's module, before it makes a folder. The shuffle's row counts stay Enclosure's defaults, with their reason. |
+| `enclosure_async_stop.sh`, `enclosure_parts.sh` | The parts' stop, the trainers and the parts' limits | Done: `async_stop.sh`, `async_parts.sh`. They held no game's code, and the limits' defaults are the same. |
+| `train.sh` | `-pos-len 19` | Done: `-pos-len` from `POS_LEN`, which `async_start.sh` sets to the game's `MAX_BOARD_LEN` (the trainer's module). Upstream's 19 without it. `async_start.sh` gives every trainer `-game GAME`. |
+| `main.cpp` (`katago version`) | The binary's game was not visible from outside | Done: the line `Game: NAME` (`GameRules::NAME`), which `async_start.sh` checks against the run's game |
+| `enclosure_loop.sh` | v2a's synchronous loop, retired on 2026-10-05 | Stays Enclosure's (the engine repository's `games/enclosure/runs/ownscripts.txt`) |
+
 ### The last references (the contract step)
 
 The last step of design 07's order of the work (expand, migrate, contract) is the contract step (abscls-mkd.8). It did
@@ -618,7 +637,8 @@ These name Enclosure but hold no game code. Each stays, for its reason:
 - The options of the fork's speed work: `ENCLOSURE_FUSED_CONV` (`cudaandrocmbackend.inc`), `ENCLOSURE_EIGEN_SIMD`,
   `ENCLOSURE_WINOGRAD_NV`, `ENCLOSURE_WINOGRAD_NT`, `ENCLOSURE_DIRECT_CONV`, `ENCLOSURE_EVAL_RAW`
   (`eigenbackend.cpp`), `ENCLOSURE_COOP_THREADS` (`nneval.*`), `ENCLOSURE_NO_POLICY_GATHER` (`nneval.cpp`). The build
-  scripts and the runs' settings set them. A rename needs the old names as fallbacks, as the pipeline's renames have.
+  scripts and the runs' settings set them. A rename needs the old names as fallbacks, as the pipeline's renames have
+  (`ENGINES_*`, with `ENCLOSURE_*` and `V2*` as fallbacks).
 
 ### Changes of the fork that are already generic
 

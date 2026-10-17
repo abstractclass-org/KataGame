@@ -2,6 +2,7 @@
 
 #include "core/os.h"
 #include "core/mainargs.h"
+#include "game/chosenrules.h"
 
 #ifdef NO_GIT_REVISION
 #define GIT_REVISION "<omitted>"
@@ -279,6 +280,9 @@ string Version::getKataGoVersionForHelp() {
 string Version::getKataGoVersionFullInfo() {
   ostringstream out;
   out << Version::getKataGoVersionForHelp() << endl;
+  //Enclosure fork: the game that the binary plays (the CMake option GAME), so that a script can check a binary
+  //against a run's game (python/selfplay/async_start.sh).
+  out << "Game: " << GameRules::NAME << endl;
   out << "Git revision: " << Version::getGitRevision() << endl;
   out << "Compile Time: " << __DATE__ << " " << __TIME__ << endl;
 #if defined(USE_CUDA_BACKEND)

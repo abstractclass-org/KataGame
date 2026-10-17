@@ -80,12 +80,13 @@ else
     exit 1
 fi
 
+# Enclosure fork: the game's largest board (POS_LEN, which async_start.sh sets from the game), upstream's 19 without it.
 time $PYTHON ./train.py \
      -traindir "$BASEDIR"/train/"$TRAININGNAME" \
      -latestdatadir "$BASEDIR"/shuffleddata/ \
      -exportdir "$BASEDIR"/"$EXPORT_SUBDIR" \
      -exportprefix "$TRAININGNAME" \
-     -pos-len 19 \
+     -pos-len "${POS_LEN:-19}" \
      -batch-size "$BATCHSIZE" \
      -model-kind "$MODELKIND" \
      $EXTRAFLAG \

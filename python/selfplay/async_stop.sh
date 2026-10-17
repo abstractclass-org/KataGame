@@ -1,6 +1,6 @@
 #!/bin/bash
-# Stops enclosure_async.sh's parts (their systemd scopes, by name; each process gets SIGTERM: self-play exits
-# cleanly, a trainer loses only the samples since its last save). Usage: enclosure_async_stop.sh NAMEPREFIX [PART...]
+# Stops async_start.sh's parts (their systemd scopes, by name; each process gets SIGTERM: self-play exits
+# cleanly, a trainer loses only the samples since its last save). Usage: async_stop.sh NAMEPREFIX [PART...]
 # With no PART, every running scope of the run (NAMEPREFIX-*.scope): its parts, whatever their names.
 NAMEPREFIX="$1"; shift
 if [[ $# -gt 0 ]]; then

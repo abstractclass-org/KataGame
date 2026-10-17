@@ -1,4 +1,5 @@
-# A V2 run's trainers and the resources of its parts, for enclosure_async.sh and pipeline/scripts/lib.sh (source this file).
+# A run's trainers and the resources of its parts, for async_start.sh and the engine repository's
+# pipeline/scripts/lib.sh (source this file). Every game's runs use it.
 #
 # Trainers: TRAINERS="b10c128 b15c192", each a folder train/NAME. The first trains the self-play network (train.sh's
 # main mode: it exports to models/); the others train alongside on the same data (extra mode: models_extra/, never
@@ -10,7 +11,8 @@
 # for a group of parts (selfplay, shuffle, export, train: every trainer) and LIMITS_PART for one part (LIMITS_train_b10c128
 # for train-b10c128), each over the defaults below, e.g. LIMITS_train="mem=16G cpu=20".
 
-# Defaults: self-play at 512 games peaked at 20.9 GB; a trainer at 6 GB was killed (2026-10-03, at 5.9 GB).
+# Defaults, measured in the run v2a (Enclosure's rows, 186 KB each): self-play at 512 games peaked at 20.9 GB; a
+# trainer at 6 GB was killed (2026-10-03, at 5.9 GB). A game with smaller rows can set lower caps in its run's settings.
 PART_DEFAULTS_selfplay="mem=24G cpu=100 nice=10"
 PART_DEFAULTS_shuffle="mem=10G cpu=100 nice=15"
 PART_DEFAULTS_export="mem=4G cpu=100 nice=10"
