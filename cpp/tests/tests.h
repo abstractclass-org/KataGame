@@ -51,7 +51,6 @@ namespace Tests {
 
   //testsearchnonn.cpp
   void runNNLessSearchTests();
-  void runEnclosureSearchTests();
   void runEnclosureRowTests(const std::string& outFile, const std::string& seed, const std::string& npzDir);
   void runEnclosureNNTests(const std::string& modelFile, const std::string& inputsFile, const std::string& outFile, bool useFP16, bool useNHWC, int symmetry = 0);
   //testsearch.cpp
@@ -152,7 +151,7 @@ namespace TestCommon {
 
   constexpr int MIN_BENCHMARK_SGF_DATA_SIZE = 7;
   constexpr int MAX_BENCHMARK_SGF_DATA_SIZE = 19;
-  constexpr int DEFAULT_BENCHMARK_SGF_DATA_SIZE = std::min(Board::DEFAULT_LEN,MAX_BENCHMARK_SGF_DATA_SIZE);
+  constexpr int DEFAULT_BENCHMARK_SGF_DATA_SIZE = std::min(std::min(Board::DEFAULT_X_SIZE,Board::DEFAULT_Y_SIZE),MAX_BENCHMARK_SGF_DATA_SIZE);
   std::string getBenchmarkSGFData(int boardSize);
 
   std::vector<std::string> getMultiGameSize9Data();

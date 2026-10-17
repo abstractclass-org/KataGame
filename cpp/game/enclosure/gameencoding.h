@@ -96,15 +96,10 @@ struct GameEncoding {
     return h;
   }
 
-  // A move is an edge from its source point, (y * 19 + x) * NOFF + offset: one channel per offset.
+  // A move is an edge from its source point, one channel per offset (engine.h, action_at).
   static constexpr int POLICY_CHANNELS = NOFF;
-  static void action_point(int action, int& x, int& y, int& channel) {
-    const int cell = action / NOFF;
-    channel = action % NOFF;
-    x = cell % SIZE;
-    y = cell / SIZE;
-  }
-  static int point_action(int x, int y, int channel) { return (y * SIZE + x) * NOFF + channel; }
+  static void action_point(int action, int& x, int& y, int& channel) { action_source(action, x, y, channel); }
+  static int point_action(int x, int y, int channel) { return action_at(x, y, channel); }
 
   // All 8: the rules respect each, and the network trains on each (ENCLOSURE.md, "Symmetries").
   static constexpr unsigned SYMMETRIES = 0xFFu;
@@ -152,8 +147,8 @@ struct GameEncoding {
       sym_point(bx, by, symmetry);
       const bool fromB = farNode && (bx < ax || (bx == ax && by < ay));
       if(fromB)
-        return point_action(bx, by, OFF_INDEX[ax - bx + 3][ay - by + 3]);
-      return point_action(ax, ay, OFF_INDEX[bx - ax + 3][by - ay + 3]);
+        return action_between(bx, by, ax, ay);
+      return action_between(ax, ay, bx, by);
     }
   };
 

@@ -752,7 +752,7 @@ void TrainingWriteBuffers::addRow(
   int8_t* rowScoreDistr = scoreDistrN.data + curRows * scoreDistrLen;
   int8_t* rowOwnership = valueTargetsNCHW.data + curRows * VALUE_SPATIAL_TARGET_NUM_CHANNELS * posArea;
 
-  //KataGame fork: the slots that the game's own training targets hold in this row (GameEncoding::training_targets),
+  //KataGame fork: the slots that the game's own training targets hold in this row (GameInterface::trainingTargets),
   //all 0 until the game writes them.
   unsigned gameTargets = 0;
   for(int c : GameInterface::TargetValues::GAME_CHANNELS)

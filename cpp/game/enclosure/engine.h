@@ -24,6 +24,7 @@ namespace enclosure {
 
 constexpr int SIZE = 19;
 constexpr int MAX_MOVES = 120;
+constexpr int TURN_EDGES = 2;  // a turn's edges (the first player's first turn has 1)
 constexpr int HISTORY_TURNS = 4;  // engine.HISTORY_TURNS
 constexpr int NOFF = 48;
 constexpr int PASS = SIZE * SIZE * NOFF;
@@ -34,9 +35,24 @@ constexpr double EPSILON = 1e-9;
 constexpr int PAD = 6;
 constexpr int GRID = SIZE + 2 * PAD;
 
+// An action other than pass is the edge from its source point (x, y) at offset k, numbered point by point:
+// (y * SIZE + x) * NOFF + k. This is the game interface's rule, an action is its policy index, with one policy channel
+// for each offset (GameEncoding::point_action). The only copy of the formula: action_source reads it back.
+constexpr int action_at(int x, int y, int k) { return (y * SIZE + x) * NOFF + k; }
+inline void action_source(int action, int& x, int& y, int& k) {
+  const int cell = action / NOFF;
+  k = action % NOFF;
+  x = cell % SIZE;
+  y = cell / SIZE;
+}
+
 struct Off { int dx, dy; };
 inline Off OFFS[NOFF];
 inline int OFF_INDEX[7][7];
+// The action of the edge from (ax, ay) to (bx, by), from its end a (not canonical), within the reach of an edge.
+inline int action_between(int ax, int ay, int bx, int by) {
+  return action_at(ax, ay, OFF_INDEX[bx - ax + 3][by - ay + 3]);
+}
 inline int INTERIOR_N[NOFF];
 inline Off INTERIOR[NOFF][2];
 inline std::vector<int> CROSSINGS[NOFF];  // Per enemy-edge offset: relative candidate indices.
@@ -450,7 +466,7 @@ struct Position {
           if (blocked_node) continue;
           int idx = ((ax + PAD) * GRID + ay + PAD) * NOFF + k;
           if (hits[idx] > 1 || blocked[idx] > 0) continue;
-          out.push_back((ay * SIZE + ax) * NOFF + k);
+          out.push_back(action_at(ax, ay, k));
         }
       }
     for (int idx : touched) hits[idx] = blocked[idx] = 0;
@@ -467,8 +483,8 @@ struct Position {
       legal_actions(all);
       return all.size() == 1 && all[0] == PASS;
     }
-    const int cell = action / NOFF, k = action % NOFF;
-    const int ax = cell % SIZE, ay = cell / SIZE;
+    int ax, ay, k;
+    action_source(action, ax, ay, k);
     const int bx = ax + OFFS[k].dx, by = ay + OFFS[k].dy;
     if (bx < 0 || bx >= SIZE || by < 0 || by >= SIZE) return false;
     bool a_node = false, b_node = false, a_inside = false, b_inside = false, mid_node = false;
@@ -508,7 +524,7 @@ struct Position {
     protected_ = placed;
     placed.clear();
     player = 1 - player;
-    moves_left = std::min(2, MAX_MOVES - move_count);
+    moves_left = std::min(TURN_EDGES, MAX_MOVES - move_count);
   }
 
   void forfeit_turn() {
@@ -519,8 +535,8 @@ struct Position {
   // Plays a legal action (legality is not re-checked).
   void play(int action) {
     if (action == PASS) { forfeit_turn(); return; }
-    int cell = action / NOFF, k = action % NOFF;
-    int ax = cell % SIZE, ay = cell / SIZE;
+    int ax, ay, k;
+    action_source(action, ax, ay, k);
     int bx = ax + OFFS[k].dx, by = ay + OFFS[k].dy;
     auto& own = edges[player];
     auto& enemy = edges[1 - player];

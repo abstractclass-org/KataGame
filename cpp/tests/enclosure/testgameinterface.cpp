@@ -272,6 +272,11 @@ struct GameRules {
   }
 };
 static_assert(GameInterface::checkRules<GameRules>(), "the stub game's rules part");
+//The stub game with a standard board of its own, 3 x 2 (the optional pair STANDARD_X_SIZE, STANDARD_Y_SIZE).
+struct WithStandardBoard : GameRules {
+  static constexpr int STANDARD_X_SIZE = 3, STANDARD_Y_SIZE = 2;
+};
+static_assert(GameInterface::checkRules<WithStandardBoard>(), "the stub game with a standard board");
 }  // namespace stub
 
 //The hashes of before the interface, pinned: the values that KataGame main (192acb41) gives in the fixture's first
@@ -403,9 +408,40 @@ static void checkOptionalMembers() {
                   !GameInterface::rules::HasParseQueryPosition<S>::value,
                 "the stub game has none");
 
+  //The turn, the replay and the standard board. Enclosure: two edges a turn, a replay that passes at any time (its
+  //timeout pass), and the default standard board, its largest. The stub game: the defaults (one move a turn, a replay
+  //of the legal moves only, the largest board), and its standard board when it gives one.
+  static_assert(GameInterface::turnMoves<R>() == 2 && GameInterface::standardXSize<R>() == 19 &&
+                  GameInterface::standardYSize<R>() == 19,
+                "Enclosure's turn and standard board");
+  static_assert(GameInterface::turnMoves<S>() == 1 && GameInterface::standardXSize<S>() == 3 &&
+                  GameInterface::standardYSize<S>() == 3,
+                "the defaults: one move a turn, the largest board");
+  static_assert(GameInterface::standardXSize<stub::WithStandardBoard>() == 3 &&
+                  GameInterface::standardYSize<stub::WithStandardBoard>() == 2,
+                "the game's standard board");
+  {
+    const R::Position start = R::Position();
+    vector<int> legal;
+    R::legal_actions(start, legal);
+    const int edge = legal.front();
+    if(!GameInterface::replayTolerates<R>(start, R::PASS_ACTION) || GameInterface::replayTolerates<R>(start, edge) ||
+       GameInterface::replayTolerates<R>(start, -1) ||
+       GameInterface::replayTolerates<S>(stub::Position(), S::PASS_ACTION))
+      fail("the replay's tolerance: Enclosure's pass at any time, nothing else, and none for the stub game");
+    //The front: Board() is the standard board, and a replayed game passes at any time, while an edge is legal.
+    Board board;
+    BoardHistory hist(board, P_BLACK, Rules(), 0);
+    if(board.x_size != 19 || board.y_size != 19)
+      fail("Board() is not Enclosure's standard board, 19 x 19");
+    if(hist.isLegal(board, Board::PASS_LOC, P_BLACK) || !hist.isLegalTolerant(board, Board::PASS_LOC, P_BLACK) ||
+       !hist.isLegalTolerant(board, Board::moveLocOfAction(edge), P_BLACK))
+      fail("a replayed game of Enclosure does not pass at any time, or does not play a legal edge");
+  }
+
   //Enclosure: the protocol's moves as before the interface (letters A to S, with I), and its own window keys.
-  const int a10d10 = (9 * 19 + 0) * enclosure::NOFF + enclosure::OFF_INDEX[3 + 3][0 + 3];
-  const int s19 = (18 * 19 + 18) * enclosure::NOFF + enclosure::OFF_INDEX[-3 + 3][-3 + 3];
+  const int a10d10 = enclosure::action_between(0, 9, 3, 9);
+  const int s19 = enclosure::action_between(18, 18, 15, 15);
   int read = -1;
   Loc loc;
   if(GameInterface::protocolText<R>(a10d10) != "A10-D10" || GameInterface::protocolText<R>(s19) != "S19-P16" ||

@@ -113,7 +113,9 @@ struct Board
 
   static constexpr int MAX_LEN = COMPILE_MAX_BOARD_LEN;  //Maximum edge length allowed for the board
   static_assert(MAX_LEN >= GameRules::MAX_BOARD_LEN, "the build's largest board holds the game's");
-  static constexpr int DEFAULT_LEN = std::min(MAX_LEN,19); //Default edge length for board if unspecified
+  //KataGame fork: the default board, if unspecified, is the game's standard board (KataGo: DEFAULT_LEN, 19 x 19).
+  static constexpr int DEFAULT_X_SIZE = GameInterface::standardXSize<GameRules>();
+  static constexpr int DEFAULT_Y_SIZE = GameInterface::standardYSize<GameRules>();
   static constexpr int MAX_PLAY_SIZE = MAX_LEN * MAX_LEN;  //Maximum number of playable spaces
 
   //Enclosure fork: KataGo sets its time constants from the board area, which in Go sets both the game's
@@ -186,7 +188,7 @@ struct Board
   };
 
   //Constructors---------------------------------
-  Board();  //The game's start on a DEFAULT_LEN x DEFAULT_LEN board
+  Board();  //The game's start on its standard board, DEFAULT_X_SIZE x DEFAULT_Y_SIZE
   Board(int x, int y); //The game's start on that board (GameRules::new_game); throws if the game is not played on it
   Board(const Board& other);
 

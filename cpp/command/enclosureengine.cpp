@@ -259,9 +259,7 @@ class Parallel {
   }
 };
 
-}  // namespace
-
-int MainCmds::enclosureEngine(const vector<string>& args) {
+int enclosureEngine(const vector<string>& args) {
   Board::initHash();
   ScoreValue::initTables();
 
@@ -325,3 +323,10 @@ int MainCmds::enclosureEngine(const vector<string>& args) {
   }
   return 0;
 }
+
+//Enclosure's own command (game/enclosure/ownfiles.txt): only Enclosure's binary has it.
+const MainCmds::GameCommand ENCLOSURE_ENGINE(
+  "enclosure-engine", "Enclosure's engine protocol (design 04): JSON lines on standard input and output",
+  enclosureEngine);
+
+}  // namespace

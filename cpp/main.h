@@ -2,7 +2,6 @@
 
 namespace MainCmds {
   int analysis(const std::vector<std::string>& args);
-  int enclosureEngine(const std::vector<std::string>& args);  //Enclosure fork: the engine protocol (command/enclosureengine.cpp)
   int benchmark(const std::vector<std::string>& args);
   int benchmarknn(const std::vector<std::string>& args);
   int contribute(const std::vector<std::string>& args);
@@ -23,7 +22,6 @@ namespace MainCmds {
   int runnnontinyboardtest(const std::vector<std::string>& args);
   int runnnsymmetriestest(const std::vector<std::string>& args);
   int runoutputtests(const std::vector<std::string>& args);
-  int runenclosuretests(const std::vector<std::string>& args);
   int runenclosurerowtests(const std::vector<std::string>& args);
   int runenclosurenntests(const std::vector<std::string>& args);
   int runsearchtests(const std::vector<std::string>& args);
@@ -66,6 +64,15 @@ namespace MainCmds {
   int selfplaysurprisedump(const std::vector<std::string>& args);
 
   int sandbox();
+
+  //KataGame fork: a command of the game's own (game/<game>/ownfiles.txt), which only that game's binary compiles.
+  //Its file registers it with a static GameCommand, so that main names no game.
+  struct GameCommand {
+    GameCommand(const char* name, const char* help, int (*run)(const std::vector<std::string>& args));
+    const char* name;
+    const char* help;  //its line in the help, after "name : "
+    int (*run)(const std::vector<std::string>& args);
+  };
 }
 
 namespace Version {

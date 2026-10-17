@@ -789,15 +789,6 @@ int MainCmds::runconfigtests(const vector<string>& args) {
 }
 
 
-int MainCmds::runenclosuretests(const vector<string>& args) {
-  (void)args;
-  Board::initHash();
-  ScoreValue::initTables();
-  Tests::runEnclosureSearchTests();
-  ScoreValue::freeTables();
-  return 0;
-}
-
 int MainCmds::runenclosurerowtests(const vector<string>& args) {
   if(args.size() < 2 || args.size() > 4) {
     cerr << "usage: " << args[0] << " OUT_FILE [SEED [NPZ_DIR]]" << endl;

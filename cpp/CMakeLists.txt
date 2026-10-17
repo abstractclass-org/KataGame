@@ -598,6 +598,14 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/game/${GAME}/gameencoding.h")
                       "also needs its network encoding part, game/${GAME}/gameencoding.h. The Python binding builds "
                       "from the rules part alone.")
 endif()
+# The game's own code outside the game layer (game/<game>/ownfiles.txt): only the game's binary compiles its .cpp files.
+set(GAME_OWN_SOURCES "")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/game/${GAME}/ownfiles.txt")
+  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/game/${GAME}/ownfiles.txt" GAME_OWN_SOURCES)
+  list(TRANSFORM GAME_OWN_SOURCES REPLACE "#.*" "")
+  list(TRANSFORM GAME_OWN_SOURCES STRIP)
+  list(FILTER GAME_OWN_SOURCES INCLUDE REGEX "[.]cpp$")
+endif()
 
 set(USE_TCMALLOC 0 CACHE BOOL "Use TCMalloc")
 set(NO_GIT_REVISION 0 CACHE BOOL "Disable embedding the git revision into the compiled exe")
@@ -1100,7 +1108,6 @@ add_executable(katago
   tests/testownership.cpp
   tests/testsearchcommon.cpp
   tests/testsearchnonn.cpp
-  tests/testenclosuresearch.cpp
   tests/testenclosurenn.cpp
   tests/testsearch.cpp
   tests/testsearchv3.cpp
@@ -1116,8 +1123,7 @@ add_executable(katago
   distributed/client.cpp
   command/commandline.cpp
   command/analysis.cpp
-  command/enclosureengine.cpp
-  command/enclosureprotocol.cpp
+  ${GAME_OWN_SOURCES}
   command/benchmark.cpp
   command/benchmarknn.cpp
   command/contribute.cpp
@@ -1775,7 +1781,19 @@ if(USE_BIGGER_BOARDS_EXPENSIVE)
 endif()
 
 target_compile_definitions(katago PRIVATE KATAGAME_GAME=${GAME})
-message(STATUS "-DGAME=${GAME}: the binary plays ${GAME}")
+message(STATUS "-DGAME=${GAME}: the binary plays ${GAME}, with its own sources: ${GAME_OWN_SOURCES}")
+
+# KataGame: no code outside the game layer names a game (tests/checkgamelayer.py). Each build runs the check first.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+  add_custom_target(checkgamelayer
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/checkgamelayer.py" "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "KataGame: no code outside the game layer names a game (tests/checkgamelayer.py)"
+    VERBATIM)
+  add_dependencies(katago checkgamelayer)
+else()
+  message(WARNING "No Python 3: the build cannot run tests/checkgamelayer.py, the check of the game layer")
+endif()
 
 if(NO_GIT_REVISION AND (NOT BUILD_DISTRIBUTED))
   target_compile_definitions(katago PRIVATE NO_GIT_REVISION)

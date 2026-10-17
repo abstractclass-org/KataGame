@@ -1,19 +1,21 @@
 # The game interface: the C++ reference
 
 **Status: decided, being built.** KataGame plays a game that supplies the game interface. The build chooses one game, as
-it chooses one backend. This file is the C++ reference: the members, the conventions, the checks, and how to add a
-game. Its last part is the map of the code that still reaches Enclosure directly, with the member that replaces each
-reference. The decision and its reasons are design 07 of the engine repository
+it chooses one backend. This file is the C++ reference: the members, the conventions, the game layer, the checks, and
+how to add a game. Its last part is the map of the code that reached Enclosure directly, with the member that replaced
+each reference. The decision and its reasons are design 07 of the engine repository
 (`docs/design/07-game-interface.md`). Enclosure's own design stays in [ENCLOSURE.md](ENCLOSURE.md).
 
 The interface exists. Enclosure implements both parts. Connect-4 (`cpp/game/connect4/`) implements its rules part. The
 front (`Board`, `BoardHistory`), the search, self-play, GTP and the analysis engine reach the rules through the rules
 part. The network code reaches the encoding part: the policy layout and the backends (`NNPos`), the inputs
-(`NNInputs`), the symmetries (`SymmetryHelpers`) and the training rows (`TrainingWriteBuffers`). The map below gives
-each step's work. The trainer's step is still to do.
+(`NNInputs`), the symmetries (`SymmetryHelpers`) and the training rows (`TrainingWriteBuffers`). No C++ code outside
+the game layer names a game, and a check keeps it so ("The game layer"). The map below gives each step's work. The
+trainer's step is still to do.
 
 * [The files](#the-files)
 * [Choosing the game](#choosing-the-game)
+* [The game layer](#the-game-layer)
 * [Conventions](#conventions)
 * [The rules part](#the-rules-part)
 * [The network encoding part](#the-network-encoding-part)
@@ -35,6 +37,8 @@ each step's work. The trainer's step is still to do.
 | `cpp/game/<game>/gamebot.h` | The game's bot part (optional): `struct GameBot`, then its check. |
 | `cpp/search/alphabeta.h` | The alpha-beta search for every game with a bot part. Only the Python binding compiles it. |
 | `cpp/game/board.*`, `cpp/game/boardhistory.*` | The front: KataGo's `Board` and `BoardHistory`, which the search calls. They reach the game's rules through the members only. |
+| `cpp/game/<game>/ownfiles.txt` | The game's own code outside the game layer (optional): the files that only the game's binary compiles, and that may name the game. |
+| `cpp/tests/checkgamelayer.py` | The check that no code outside the game layer names a game. Each build of `katago` and `tests/enclosure/build.sh` run it. |
 | `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, and the defaults of the optional members with a stub game. |
 
 All members are static, and every file is a header. So the compiler sees the same code as in a build for one game, and
@@ -54,6 +58,59 @@ the WebAssembly build, the binding and the standalone tests need no new source f
 - **Every build of `katago` checks both parts:** `board.h` and `rules.h` include `chosengame.h`, so each file that
   uses the front checks both parts. `rules.cpp`, which includes no `Board`, includes `chosenrules.h` first, before
   `rules.h`: it shows that the rules part compiles without the encoding part.
+- **The game's own sources:** CMake compiles the `.cpp` files that `game/<name>/ownfiles.txt` lists into the binary of
+  that game only ("The game layer").
+
+## The game layer
+
+The game layer is what a game supplies, and the only code that names a game:
+
+- **The game's folder, `cpp/game/<game>/`:** its rules part, its encoding part, its bot part, and the code of its own
+  that they call (Enclosure's `engine.h`, `features.h`, `notation.h`). This code reaches no code of the front: the
+  front calls it.
+- **The choice of game,** `cpp/game/chosen*.h`. They name the default game, Enclosure, for a build that names none.
+
+Every other file of `cpp/` (except `external/`) reaches the game through the interface only: `GameRules`,
+`GameEncoding` and `GameBot`, and their members. The front (`Board`, `BoardHistory`, `rules.*`), the interface's
+headers (`gameinterface.h`, `botinterface.h`), the search, the network code, the commands and the tests of every game
+are in this part.
+
+**A game's own code outside the game layer.** Some code is a game's own, and it uses the front, so it cannot be in the
+game's folder: a game's own commands and its tests of the search. The game lists these files in
+`game/<game>/ownfiles.txt`, one path a line, with the reason for each. Only these files may name the game, and only
+that game's binary compiles them. A command of the game's own registers itself with a static `MainCmds::GameCommand`
+(`main.h`): `main.cpp` then dispatches and lists it, and names no game. Enclosure's own files:
+
+| File | What it is |
+|---|---|
+| `command/enclosureprotocol.cpp`, `.h` | Enclosure's engine protocol (design 04 of the engine repository): the describe action with its edges, nodes and regions, the cut edge, the outcome's text, the position check, the history planes' edges. The WebAssembly module builds it too. |
+| `command/enclosureengine.cpp` | The protocol's native command, `katago enclosure-engine` (a `GameCommand`). |
+| `tests/testenclosuresearch.cpp` | The search under two-edge turns, `katago runenclosuretests` (a `GameCommand`). |
+| `tests/enclosure/` | The standalone tests of Enclosure's members through the front (`tests/enclosure/build.sh`). |
+
+**The check** (`cpp/tests/checkgamelayer.py`, Python's standard library only) fails when a file outside the game layer:
+
+- names a game's namespace (`enclosure::`, `namespace enclosure`, `using namespace enclosure`, an alias such as
+  `namespace e = enclosure`).
+- includes a header of a game's folder (an `#include` path with `enclosure/` in it), or a header of a game's own code
+  outside the game layer (`command/enclosureprotocol.h`), whose code only that game's binary has.
+- names the chosen game's namespace (`chosengame::`) beyond the aliases of `chosen*.h`.
+- names a member of `GameRules`, `GameEncoding` or `GameBot` that the interface does not have (Enclosure's
+  `GameEncoding::sym_edge`). The interface's members are the names that its checks detect: `G::<member>` in
+  `gameinterface.h` and `botinterface.h`.
+- names an optional member directly, beside its helper: a game may lack it. The optional members are those that a
+  helper of `gameinterface.h` or `botinterface.h` calls after its `if constexpr` on the member's detector.
+- reads a field of the game's position (`board.pos.edges` names Enclosure's `Position`).
+
+A game's own file may name its own game, and no other: `tests/enclosure/` cannot include Connect-4's headers. The
+check also fails when a game's list names a file that does not exist. Each build of `katago` runs it before it
+compiles (the CMake target `checkgamelayer`, when CMake finds Python 3), and so does `tests/enclosure/build.sh`. On
+the drive of the training machine (`/mnt/f` in WSL), it reads the 266 files in about 2 s. A second game's binary
+does not build yet (Connect-4 has no encoding part), so the check stands in for it.
+
+```
+python3 tests/checkgamelayer.py            # from katagame/cpp
+```
 
 ## Conventions
 
@@ -63,6 +120,10 @@ the WebAssembly build, the binding and the standalone tests need no new source f
 - **Actions on the largest board:** a game numbers its actions on a board of `MAX_BOARD_LEN`, point by point:
   `(y * MAX_BOARD_LEN + x) * POLICY_CHANNELS + channel`, pass last. So an action keeps its number on every board size,
   and `NUM_ACTIONS` is `MAX_BOARD_LEN² × POLICY_CHANNELS + 1`.
+- **One copy of the formula in each game:** the front never writes it. It uses an action as its policy index, and it
+  asks `action_point` for a move's point. A game writes its numbering once, and its members and its own code call
+  that copy: Enclosure's `action_at` and `action_source` (`engine.h`), Connect-4's `action_at`, `action_x` and
+  `action_y`. `testgameinterface` checks Enclosure's `point_action` and `action_point` against the policy index.
 - **An action is its policy index:** the network's board is the game's largest board (`nnXLen = nnYLen =
   MAX_BOARD_LEN`). So the network's policy index of an action's point and channel is the action itself. The search,
   the evaluator and the backends use an action as its policy index and need no map. The encoding part's check refuses
@@ -124,6 +185,9 @@ the helper. The rules part's check requires only that the members of a pair come
 | `protocol_text(action)`, `parse_protocol_text(text, action)` | An action other than pass as the engine protocol (GTP, the analysis engine) writes and reads it. The parser reads trimmed text in any case, does not check legality, and returns false for text that names no action. The front reads and writes pass (`pass`). | `action_text`, and the action whose `action_text` is the text, ignoring case (`protocolText`, `parseProtocolText`). The parser tries each action, so it suits games with few actions. | The form of the move server and the sites: column letters A to S (I included, unlike the notation), such as `D10-D13` |
 | `NUM_LOCAL_KEYS`, `LOCAL_WINDOW`, `local_hash(p, cx, cy, xRadius, yRadius, flipPlayers, keys)` | The position near the point (cx, cy), in the window of xRadius and yRadius: the search's local pattern hash (the subtree value bias, the pattern bonus). The front draws `NUM_LOCAL_KEYS` random keys for it, after KataGo's keys. `flipPlayers` swaps the players. `LOCAL_WINDOW` is the side of the subtree value bias's window (odd), large enough for a move's reach. | Each point of the window on the board hashed with its piece (`pieces`), as KataGo hashes stones: KataGo's keys `zobristLocalPattern` by its colors (empty, the first player, the second), without its atari flag. KataGo's window of 5 (`localHash`, `localWindow`). | The edges of either player with an end in the window, and whether each is protected: the hash of before the interface, byte for byte (3 × 17,328 keys, in the order that the hasher drew them). The window of 7, which covers a whole edge from its source. |
 | `QUERY_POSITION_FIELD`, `parse_query_position(value, p, why)` | A position field of the game's own in an analysis query, beside the generic field `position` (the one-line position): its key, and the reader of its value. The reader is a template on the JSON type, so that the rules part does not need the JSON library. It may throw the JSON library's exceptions, which the analysis engine catches. | None: the analysis engine takes `position` only (`queryPositionField`, `parseQueryPosition`) | `enclosurePosition` (`queryposition.h`): the fields of `Position` as JSON, with the last turns' edges for the history planes, which the one-line position leaves out. The move server sends it. |
+| `STANDARD_X_SIZE`, `STANDARD_Y_SIZE` | The game's standard board, on which `new_game` succeeds: the front's default board (`Board()`, `Board::DEFAULT_X_SIZE` and `DEFAULT_Y_SIZE`, GTP's board when its config names none) and the Python binding's `Position()`. | The largest board, `MAX_BOARD_LEN` × `MAX_BOARD_LEN` (`standardXSize`, `standardYSize`) | None: the default gives 19 × 19. Connect-4 gives 7 × 6. |
+| `TURN_MOVES` | The moves of a full turn, after which the clock's increment comes. The time controls give each move its share of the increment (`increment / TURN_MOVES`), and a move with more of its turn to come takes at most the time left divided by the moves left (`turn_moves_left`). | 1, a game that alternates (`turnMoves`) | 2: the site's increment comes once a turn of two edges (games/enclosure/docs/design/18-play-through-gtp.md) |
+| `replay_tolerates(p, action)` | Whether a replayed game (GTP, the analysis engine, SGF files, start positions: `BoardHistory::isLegalTolerant`) also plays this action of `p` where it is not legal: what a site plays beside the legal actions. `play` must accept it. Any `int` (false out of range). The search still plays the legal actions only. | None: a replay plays the legal actions only (`replayTolerates`) | A pass at any time: the site's pass on a clock's timeout, which forfeits the rest of the turn |
 
 ## The network encoding part
 
@@ -206,6 +270,16 @@ game lacks next_player(const Position&) -> int
 make[3]: *** [CMakeFiles/katago.dir/build.make:429: CMakeFiles/katago.dir/game/board.cpp.o] Error 1
 ```
 
+**No code outside the game layer names a game** (`tests/checkgamelayer.py`, "The game layer"). Each build of `katago`
+runs it first. Here the check fails on a test that every game's binary compiles. Enclosure's board is put back in
+the test:
+
+```
+checkgamelayer: 1 references to a game outside the game layer (game/<game>/, game/chosen*.h). Reach the game through
+GameRules, GameEncoding or GameBot, or list a file of the game's own in game/<game>/ownfiles.txt:
+  tests/testenclosurenn.cpp:35: names the namespace enclosure: const int nnLen = enclosure::SIZE;
+```
+
 **The rules part compiles alone.** A program that includes `game/chosenrules.h` builds and runs in a copy of the game
 layer without `gameencoding.h`, `features.h` and `chosengame.h`.
 
@@ -243,7 +317,12 @@ values are checked to lie in each slot's range at every row of that game.
 symmetry against the image board's row. `testsymmetry` plays random games on a board and on its image at once, each
 move mapped by the action map: the image game stays the image of the game.
 
-Build and run it as the other standalone tests (`tests/enclosure/build.sh`), from `katagame/cpp`:
+It also checks the members of the turn, the pass and the standard board: Enclosure's values (two edges a turn, a pass
+at any time and nothing else in a replay, 19 × 19) through the front too (`Board()`, `BoardHistory::isLegalTolerant`),
+and the defaults with the stub game, also with a standard board of its own.
+
+Build and run it as the other standalone tests (`tests/enclosure/build.sh`, which runs the check of the game layer
+first), from `katagame/cpp`:
 
 ```
 TESTS=testgameinterface bash tests/enclosure/build.sh BUILD_DIR OUT_DIR
@@ -255,8 +334,11 @@ OUT_DIR/testgameinterface tests/data/enclosure_games.txt
 1. Make the folder `cpp/game/<game>/` with `gamerules.h` (`struct GameRules` in the namespace `<game>`) and
    `gameencoding.h` (`struct GameEncoding`). End each with its check:
    `static_assert(GameInterface::checkRules<GameRules>(), "...")`. Connect-4's `gamerules.h` is a short example of
-   the rules part.
-2. Build with `-DGAME=<game>`, in a build folder for that game and backend.
+   the rules part. Give the optional members where the defaults do not fit ("Optional members": the standard board,
+   the turn, the pass).
+2. Build with `-DGAME=<game>`, in a build folder for that game and backend. Code of the game's own that uses the front
+   (a command or a test of the search) goes outside the folder, in a file named after the game, and the game lists it
+   in `cpp/game/<game>/ownfiles.txt` ("The game layer").
 3. In the engine repository, make `games/<game>/` a Python package and build the game's rules module with
    `sh core/binding/build.sh <game>`. The module's common API needs no code of the game's own. The game's Python
    extras, if any, go in `games/<game>/binding/extras.h`. The conformance suite (`core/tests/test_conformance.py`)
@@ -265,7 +347,8 @@ OUT_DIR/testgameinterface tests/data/enclosure_games.txt
    `static_assert(GameInterface::checkBot<GameBot>(), "...")`. The binding then gives the search, and the arena's
    player `ab` plays the game.
 
-A second game builds only after the front reaches Enclosure through the members alone (the map below).
+The front reaches the game through the members alone (the map below), and the check of the game layer keeps it so.
+So a second game's binary builds from its folder, with the front as it is.
 
 ## The map: Enclosure outside the game layer
 
@@ -277,8 +360,9 @@ its calls, and upstream releases still merge with few conflicts. The fork's test
 
 ### The front (`cpp/game/board.*`, `cpp/game/boardhistory.*`)
 
-These files are inside the game layer, but they held Enclosure's code that the members replace. The step of the rules
-(abscls-mkd.2) moved them onto the members and deleted their copies of the members' code: every row is done.
+These files are in `cpp/game/`, outside the game layer, but they held Enclosure's code that the members replace. The
+step of the rules (abscls-mkd.2) moved them onto the members and deleted their copies of the members' code: every row
+is done.
 
 | Front | Member |
 |---|---|
@@ -406,38 +490,55 @@ Two files beside the trainer also hold Enclosure's facts, for the trainer's step
   and the V9 inputs (7 global inputs) in the model version.
 - `python/shuffle.py`: the rows' C5-7 channels and V9's 7 global inputs (`pad_global_inputs_to_widest`).
 
+### The last references (the contract step)
+
+The last step of design 07's order of the work (expand, migrate, contract) is the contract step (abscls-mkd.8). It did
+this section and added the check of the game layer. It also decided the three
+assumptions of Enclosure in the search that the step of the rules left, and the action's formula, written out in 12
+places of Enclosure's code.
+
+| File | Reference | Member |
+|---|---|---|
+| `command/enclosureprotocol.cpp`, `.h`, `command/enclosureengine.cpp` | Enclosure's engine protocol and its command `enclosure-engine`, built into every `katago` binary | Done: Enclosure's own files (`game/enclosure/ownfiles.txt`), in Enclosure's binary only. `enclosure-engine` is a `MainCmds::GameCommand`. |
+| `tests/testenclosuresearch.cpp`, `command/runtests.cpp`, `tests/tests.h` | Enclosure's search tests (its edges, `enclosure::`) and their command `runenclosuretests` | Done: Enclosure's own file, which now holds the command (a `GameCommand`). `runtests.cpp` and `tests.h` no longer name them. |
+| `main.cpp`, `main.h` | `MainCmds::enclosureEngine`, `runenclosuretests` | Done: the game's own commands, which register themselves (`MainCmds::GameCommand`). `main.cpp` dispatches them and lists them in its help. |
+| `tests/testenclosurenn.cpp` | Enclosure's board, 19: the network's board, the ownership's 361 points, the rows' board | Done: `NNPos::MAX_BOARD_LEN`, so `runenclosurenntests` and `runenclosurerowtests` work for any game |
+| `search/timecontrols.cpp` | `increment / 2`: an edge counts half the increment, which comes once a turn of two edges. The first edge of a turn takes at most half the time left. | Done: `increment / TURN_MOVES` (optional, `turnMoves`: 1 by default, Enclosure's 2), and at most the time left divided by `turn_moves_left` |
+| `game/boardhistory.cpp` | `isLegalTolerant`: a pass at any time, as Enclosure's timeout pass | Done: what the game's `replay_tolerates` accepts beside the legal moves (optional, `replayTolerates`: nothing by default, Enclosure's pass). Without it a replay plays the legal moves only, so Connect-4's GTP and analysis engine refuse a pass. |
+| `game/board.*`, `command/gtp.cpp`, `tests/tests.h` | `Board::DEFAULT_LEN`: the default board is square, 19 or the largest board | Done: `Board::DEFAULT_X_SIZE`, `DEFAULT_Y_SIZE`, the game's standard board (optional `STANDARD_X_SIZE`, `STANDARD_Y_SIZE`: the largest board by default, Connect-4's 7 × 6). The Python binding's `Position()` starts on it too, so Connect-4 needs no extras. |
+| `game/enclosure/engine.h`, `features.h`, `notation.h`, `gamerules.h`, `gameencoding.h`, Enclosure's tests and binding extras | The action's formula, `(y * SIZE + x) * NOFF + k` and its inverse | Done: one copy, `action_at` and `action_source` (`engine.h`), which `point_action` and `action_point` call, and `action_between` for the edge between two points. The turn's two edges are one constant, `TURN_EDGES`. |
+
 ### Enclosure's assumptions that stay in the front and the search
 
 These do not name Enclosure, but they hold for Enclosure's rules only. Each waits for the step of a second game that
 needs it:
 
-- `search/timecontrols.cpp`: an edge counts half the time increment (`increment / 2`), since Enclosure's increment
-  comes once a turn of two edges. A game whose turns have one move needs its own count of moves for a turn.
-- `BoardHistory::isLegalTolerant`: a pass is allowed at any time, as Enclosure's timeout pass. A game whose rules have
-  no pass needs the front to refuse it in GTP and the analysis engine.
 - `Board::simpleRepetitionBoundGt` and `KoHashTable`: a position never recurs (Enclosure's edge count only rises), so
   the graph search merges transposed turns. A game whose positions can recur needs KataGo's repetition handling.
-- `Board::DEFAULT_LEN`: the default board (`Board()`) is square, 19 or the largest board. A game whose standard board
-  is not square (Connect-4's 7 × 6) needs a default size of its own.
+  Connect-4's positions do not recur either (a disc stays).
 - All 8 symmetries, where a feature that Enclosure does not use loops over them: the pattern bonus and the avoided
   patterns (`search/patternbonustable.cpp`), the analysis engine's `symHash` (`search/searchresults.cpp`), the opening
   books (`book/book.cpp`, `command/genbook.cpp`) and `command/startposes.cpp` and `dataio/sgf.cpp`. A game with a
   subset of the symmetries needs them to skip the others (`SymmetryHelpers::isAllowed`). `getSymBoard` asserts that
   its symmetry is allowed.
-- `command/enclosureprotocol.cpp`, `enclosureengine.cpp`: Enclosure's engine protocol (design 04), built into every
-  `katago` binary. It reaches the rules through the members, and its own parts are Enclosure's, so a build of another
-  game must leave it out.
 
 ### Names that stay
 
-These name Enclosure but hold no game code. The step that removes the last game names decides which to rename:
+These name Enclosure but hold no game code. Each stays, for its reason:
 
-- the query field `enclosurePosition` (an alias, for the move server), the commands `enclosure-engine`,
-  `runenclosuretests`, `runenclosurerowtests` and `runenclosurenntests` (`main.cpp`, `main.h`,
-  `command/runtests.cpp`), and `configs/*_enclosure.cfg`.
-- the options of the fork's speed work: `ENCLOSURE_FUSED_CONV` (`cudaandrocmbackend.inc`), `ENCLOSURE_EIGEN_SIMD`,
+- The query field `enclosurePosition`: the protocol, which the live move server sends. The analysis engine reads it
+  through the game's own query field (`QUERY_POSITION_FIELD`), so the engine names no game.
+- The commands `enclosure-engine` and `runenclosuretests`, and `configs/*_enclosure.cfg`: Enclosure's own commands and
+  settings. Only Enclosure's binary has the commands.
+- The commands `runenclosurerowtests` and `runenclosurenntests` (`main.cpp`, `main.h`, `command/runtests.cpp`, and
+  their functions `Tests::runEnclosureRowTests`, `runEnclosureNNTests`): generic code with Enclosure's name.
+  `build_verify.sh` runs them on the production binary too, which knows these names only, and the engine
+  repository's tools call them. A generic name, with the old one as an alias, can come with the first checks of a
+  second game's network (abscls-mkd.13).
+- The options of the fork's speed work: `ENCLOSURE_FUSED_CONV` (`cudaandrocmbackend.inc`), `ENCLOSURE_EIGEN_SIMD`,
   `ENCLOSURE_WINOGRAD_NV`, `ENCLOSURE_WINOGRAD_NT`, `ENCLOSURE_DIRECT_CONV`, `ENCLOSURE_EVAL_RAW`
-  (`eigenbackend.cpp`), `ENCLOSURE_COOP_THREADS` (`nneval.*`), `ENCLOSURE_NO_POLICY_GATHER` (`nneval.cpp`).
+  (`eigenbackend.cpp`), `ENCLOSURE_COOP_THREADS` (`nneval.*`), `ENCLOSURE_NO_POLICY_GATHER` (`nneval.cpp`). The build
+  scripts and the runs' settings set them. A rename needs the old names as fallbacks, as the pipeline's renames have.
 
 ### Changes of the fork that are already generic
 

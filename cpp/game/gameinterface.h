@@ -85,6 +85,18 @@
  *                           library). The reader may throw the JSON library's exceptions, which the analysis engine
  *                           catches (the WebAssembly build has no analysis engine). A game gives both or neither.
  *                           Default: none.
+ *   STANDARD_X_SIZE, STANDARD_Y_SIZE
+ *                           int, int: the game's standard board, on which new_game succeeds: the front's default board
+ *                           (Board(), GTP's board when its config names none) and the Python binding's Position(). A
+ *                           game gives both or neither. Default: the largest board, MAX_BOARD_LEN x MAX_BOARD_LEN
+ *                           (standardXSize, standardYSize).
+ *   TURN_MOVES              int: the moves of a full turn, after which the clock's increment comes: the time controls
+ *                           give each move its share of the increment. Default: 1, a game that alternates (turnMoves).
+ *   replay_tolerates(p, action)
+ *                           bool: whether a replayed game (GTP, the analysis engine, SGF files, start positions) also
+ *                           plays this action of p where it is not legal: what a site plays beside the legal actions,
+ *                           such as a pass on a clock's timeout. play must accept it. Any int (false out of range).
+ *                           The search still plays the legal actions only. Default: none (replayTolerates).
  *
  * The network encoding part (struct E):
  *   Rules                   the game's rules part (its GameRules).
@@ -274,6 +286,10 @@ namespace rules {
   GAMEINTERFACE_DETECT(HasParseQueryPosition, bool,
                        G::template parse_query_position<QueryValue>(std::declval<const QueryValue&>(),
                                                                     std::declval<P<G>&>(), std::declval<std::string&>()))
+  GAMEINTERFACE_DETECT(HasStandardXSize, int, std::integral_constant<int, G::STANDARD_X_SIZE>::value)
+  GAMEINTERFACE_DETECT(HasStandardYSize, int, std::integral_constant<int, G::STANDARD_Y_SIZE>::value)
+  GAMEINTERFACE_DETECT(HasTurnMoves, int, std::integral_constant<int, G::TURN_MOVES>::value)
+  GAMEINTERFACE_DETECT(HasReplayTolerates, bool, G::replay_tolerates(std::declval<const P<G>&>(), 0))
 }
 
 template<class R> constexpr bool checkRules() {
@@ -330,6 +346,15 @@ template<class R> constexpr bool checkRules() {
   static_assert(HasQueryPositionField<R>::value == HasParseQueryPosition<R>::value,
                 "game interface, rules part: the game gives QUERY_POSITION_FIELD (const char*) and the template "
                 "parse_query_position(const Json&, Position&, std::string& why) -> bool together, or neither");
+  static_assert(HasStandardXSize<R>::value == HasStandardYSize<R>::value,
+                "game interface, rules part: the game gives STANDARD_X_SIZE and STANDARD_Y_SIZE (constexpr int) "
+                "together, or neither");
+  if constexpr(HasStandardXSize<R>::value && HasStandardYSize<R>::value && HasMaxBoardLen<R>::value)
+    static_assert(R::STANDARD_X_SIZE >= 1 && R::STANDARD_X_SIZE <= R::MAX_BOARD_LEN && R::STANDARD_Y_SIZE >= 1 &&
+                    R::STANDARD_Y_SIZE <= R::MAX_BOARD_LEN,
+                  "game interface, rules part: the standard board fits the largest board");
+  if constexpr(HasTurnMoves<R>::value)
+    static_assert(R::TURN_MOVES >= 1, "game interface, rules part: a turn has at least one move (TURN_MOVES)");
   return true;
 }
 
@@ -424,6 +449,39 @@ template<class R, class Json> bool parseQueryPosition(const Json& value, typenam
     (void)value;
     (void)p;
     why = "the game has no position field of its own";
+    return false;
+  }
+}
+
+//The game's standard board: the game's, else its largest board.
+template<class R> constexpr int standardXSize() {
+  if constexpr(rules::HasStandardXSize<R>::value)
+    return R::STANDARD_X_SIZE;
+  else
+    return R::MAX_BOARD_LEN;
+}
+template<class R> constexpr int standardYSize() {
+  if constexpr(rules::HasStandardYSize<R>::value)
+    return R::STANDARD_Y_SIZE;
+  else
+    return R::MAX_BOARD_LEN;
+}
+
+//The moves of a full turn, which share the clock's increment: the game's, else 1.
+template<class R> constexpr int turnMoves() {
+  if constexpr(rules::HasTurnMoves<R>::value)
+    return R::TURN_MOVES;
+  else
+    return 1;
+}
+
+//Whether a replayed game also plays this action where it is not legal: the game's, else none.
+template<class R> bool replayTolerates(const typename R::Position& p, int action) {
+  if constexpr(rules::HasReplayTolerates<R>::value)
+    return R::replay_tolerates(p, action);
+  else {
+    (void)p;
+    (void)action;
     return false;
   }
 }

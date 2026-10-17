@@ -6,6 +6,7 @@
 set -e
 B=${1:-$HOME/ws/abstractclass-org/engines/builds/debug}; OUT=${2:-$HOME/ws/abstractclass-org/engines/v2scratch/enctests}
 SRC=$(cd "$(dirname "$0")/../.." && pwd); mkdir -p "$OUT"
+python3 "$SRC/tests/checkgamelayer.py" "$SRC"  # no code outside the game layer names a game
 cd "$B"
 flags=$(grep -E "^CXX_FLAGS" CMakeFiles/katago.dir/flags.make | cut -d= -f2-)
 defs=$(grep -E "^CXX_DEFINES" CMakeFiles/katago.dir/flags.make | cut -d= -f2-)

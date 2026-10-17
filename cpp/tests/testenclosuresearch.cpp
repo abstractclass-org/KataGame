@@ -10,6 +10,7 @@
 #include <set>
 
 #include "../game/graphhash.h"
+#include "../main.h"
 #include "../neuralnet/nninputs.h"
 #include "../search/search.h"
 #include "../search/searchnode.h"
@@ -74,7 +75,7 @@ int64_t childVisits(const SearchNode* node, Loc moveLoc) {
 }
 
 Loc moveOf(int x, int y, int dx, int dy) {
-  return Board::moveLocOfAction((y * enclosure::SIZE + x) * enclosure::NOFF + enclosure::OFF_INDEX[dx + 3][dy + 3]);
+  return Board::moveLocOfAction(enclosure::action_between(x, y, x + dx, y + dy));
 }
 
 SearchParams testParams(int64_t maxVisits) {
@@ -87,9 +88,10 @@ SearchParams testParams(int64_t maxVisits) {
   return params;
 }
 
-}  // namespace
-
-void Tests::runEnclosureSearchTests() {
+int runenclosuretests(const vector<string>& args) {
+  (void)args;
+  Board::initHash();
+  ScoreValue::initTables();
   cout << "Running Enclosure search tests" << endl;
   NeuralNet::globalInitialize();
   Logger logger(nullptr, false, false, false);
@@ -292,4 +294,12 @@ void Tests::runEnclosureSearchTests() {
   delete nnEval;
   NeuralNet::globalCleanup();
   cout << "Enclosure search tests passed" << endl;
+  ScoreValue::freeTables();
+  return 0;
 }
+
+//Enclosure's own command (game/enclosure/ownfiles.txt): only Enclosure's binary has it.
+const MainCmds::GameCommand RUN_ENCLOSURE_TESTS(
+  "runenclosuretests", "Enclosure fork: the search under two-edge turns (no network needed)", runenclosuretests);
+
+}  // namespace

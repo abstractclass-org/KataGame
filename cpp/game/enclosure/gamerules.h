@@ -24,7 +24,7 @@ namespace enclosure {
 
 // An edge as the action that places it from its end a (the lower end, for a canonical Edge): below PASS.
 inline int edge_action(const Edge& e) {
-  return (e.ay * SIZE + e.ax) * NOFF + OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
+  return action_between(e.ax, e.ay, e.bx, e.by);
 }
 
 struct GameRules {
@@ -156,8 +156,8 @@ struct GameRules {
     return true;
   }
   static std::string protocol_text(int action) {
-    const int cell = action / NOFF, k = action % NOFF;
-    const int ax = cell % SIZE, ay = cell / SIZE;
+    int ax, ay, k;
+    action_source(action, ax, ay, k);
     return protocol_point(ax, ay) + "-" + protocol_point(ax + OFFS[k].dx, ay + OFFS[k].dy);
   }
   static bool parse_protocol_text(const std::string& text, int& action) {
@@ -205,6 +205,13 @@ struct GameRules {
   static bool parse_query_position(const Json& value, Position& p, std::string& why) {
     return read_query_position(value, p, why);
   }
+
+  // A turn has two edges (the first player's first turn has one). The site's increment comes once a turn, so the time
+  // controls give each edge half of it (games/enclosure/docs/design/18-play-through-gtp.md).
+  static constexpr int TURN_MOVES = TURN_EDGES;
+  // The site's pass forfeits the rest of the turn and is allowed at any time (online it comes from a clock's
+  // timeout), so a replayed game accepts it anywhere. The search passes only when no edge is legal (is_legal).
+  static bool replay_tolerates(const Position&, int action) { return action == PASS; }
 };
 
 static_assert(GameInterface::checkRules<GameRules>(), "Enclosure's rules part");

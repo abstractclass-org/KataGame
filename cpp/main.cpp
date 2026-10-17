@@ -23,6 +23,17 @@
 #include "core/using.h"
 //------------------------
 
+//KataGame fork: the game's own commands (MainCmds::GameCommand), registered by their files.
+static vector<const MainCmds::GameCommand*>& gameCommands() {
+  static vector<const MainCmds::GameCommand*> commands;
+  return commands;
+}
+
+MainCmds::GameCommand::GameCommand(const char* n, const char* h, int (*r)(const vector<string>&))
+  : name(n), help(h), run(r) {
+  gameCommands().push_back(this);
+}
+
 static void printHelp(const vector<string>& args) {
   cout << endl;
   if(args.size() >= 1)
@@ -70,7 +81,6 @@ runnnsymmetriestest : Run neural net on a hardcoded rectangle board and dump sym
 runownershiptests : Run neural net search on some hardcoded positions and print avg ownership
 
 runoutputtests : Run a bunch of things and dump details to stdout
-runenclosuretests : Enclosure fork: the search under two-edge turns (no network needed)
 runenclosurerowtests : Enclosure fork: OUT [SEED], training rows of one self-play game (no network needed)
 runenclosurenntests : Enclosure fork: MODEL INPUTS OUT, a network's outputs for comparison with PyTorch
 runsearchtests : Run a bunch of things using a neural net and dump details to stdout
@@ -80,15 +90,23 @@ runsearchtestsv9 : Run a bunch more things using a neural net and dump details t
 runselfplayinittests : Run some tests involving selfplay training init using a neural net and dump details to stdout
 runsekitrainwritetests : Run some tests involving seki train output
 
-)%%" << endl;
+)%%";
+  if(!gameCommands().empty()) {
+    cout << "---The game's own subcommands-----------" << endl;
+    for(const MainCmds::GameCommand* c : gameCommands())
+      cout << c->name << " : " << c->help << endl;
+    cout << endl;
+  }
+  cout << endl;
 }
 
 static int handleSubcommand(const string& subcommand, const vector<string>& args) {
   vector<string> subArgs(args.begin()+1,args.end());
+  for(const MainCmds::GameCommand* c : gameCommands())
+    if(subcommand == c->name)
+      return c->run(subArgs);
   if(subcommand == "analysis")
     return MainCmds::analysis(subArgs);
-  else if(subcommand == "enclosure-engine")
-    return MainCmds::enclosureEngine(subArgs);
   else if(subcommand == "benchmark")
     return MainCmds::benchmark(subArgs);
   else if(subcommand == "benchmarknn")
@@ -125,8 +143,6 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::runnnsymmetriestest(subArgs);
   else if(subcommand == "runownershiptests")
     return MainCmds::runownershiptests(subArgs);
-  else if(subcommand == "runenclosuretests")
-    return MainCmds::runenclosuretests(subArgs);
   else if(subcommand == "runenclosurerowtests")
     return MainCmds::runenclosurerowtests(subArgs);
   else if(subcommand == "runenclosurenntests")

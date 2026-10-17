@@ -188,7 +188,7 @@ vector<Loc> Location::parseSequence(const string& str, const Board& board) {
 
 Board::Board()
 {
-  init(DEFAULT_LEN,DEFAULT_LEN);
+  init(DEFAULT_X_SIZE,DEFAULT_Y_SIZE);
 }
 
 Board::Board(int x, int y)

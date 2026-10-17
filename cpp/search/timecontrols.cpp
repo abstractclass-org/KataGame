@@ -286,26 +286,28 @@ void TimeControls::getTime(const Board& board, const BoardHistory& hist, double 
     if(mainTimeLimit < originalMainTime)
       throw StringError("TimeControls: mainTimeLimit is smaller than original mainTime");
 
-    //Enclosure fork (games/enclosure/docs/design/18-play-through-gtp.md): the increment comes once a turn, after the turn's last
-    //edge, and a turn has two edges. So an edge counts half the increment, and the first edge of a two-edge turn keeps
-    //at least half the time left for the second, since no increment comes between them.
-    const double edgeIncrement = increment / 2.0;
+    //KataGame fork (games/enclosure/docs/design/18-play-through-gtp.md): the increment comes once a turn, after the
+    //turn's last move, and a full turn has the game's TURN_MOVES (Enclosure: two edges). So a move counts its share of
+    //the increment, and a move with more of its turn to come leaves each of them its share of the time left, since no
+    //increment comes between them.
+    const double moveIncrement = increment / GameInterface::turnMoves<GameRules>();
     //Note that some GTP controllers might give us a negative mainTimeLeft in weird cases. We tolerate this and do the best we can.
-    if(mainTimeLeft <= edgeIncrement) {
-      minTime = std::min(std::max(0.0, mainTimeLeft * 0.5), std::max(0.0, mainTimeLeft + edgeIncrement - mainTimeLimit));
+    if(mainTimeLeft <= moveIncrement) {
+      minTime = std::min(std::max(0.0, mainTimeLeft * 0.5), std::max(0.0, mainTimeLeft + moveIncrement - mainTimeLimit));
       //Apply lagbuffer an extra time to the mainTimeLeft, ensuring we get extra buffering
       recommendedTime = applyLagBuffer(mainTimeLeft, lagBufferToUse);
       maxTime = mainTimeLeft;
     }
     else {
       //Apply lagbuffer an extra time to the excessMainTime, ensuring we get extra buffering
-      double excessMainTime = applyLagBuffer(mainTimeLeft - edgeIncrement, lagBufferToUse);
-      minTime = std::min(std::max(0.0, mainTimeLeft * 0.5), std::max(0.0, mainTimeLeft + edgeIncrement - mainTimeLimit));
-      recommendedTime = edgeIncrement + divideTimeEvenlyForGame(excessMainTime,true,false);
-      maxTime = std::min(mainTimeLeft, edgeIncrement + excessMainTime / 5.0);
+      double excessMainTime = applyLagBuffer(mainTimeLeft - moveIncrement, lagBufferToUse);
+      minTime = std::min(std::max(0.0, mainTimeLeft * 0.5), std::max(0.0, mainTimeLeft + moveIncrement - mainTimeLimit));
+      recommendedTime = moveIncrement + divideTimeEvenlyForGame(excessMainTime,true,false);
+      maxTime = std::min(mainTimeLeft, moveIncrement + excessMainTime / 5.0);
     }
-    if(GameRules::turn_moves_left(board.pos) > 1)
-      maxTime = std::min(maxTime, mainTimeLeft * 0.5);  //the first edge of a turn (the clamps below follow)
+    const int turnMovesLeft = GameRules::turn_moves_left(board.pos);
+    if(turnMovesLeft > 1)
+      maxTime = std::min(maxTime, mainTimeLeft / turnMovesLeft);  //more of the turn to come (the clamps below follow)
   }
   //Byo yomi or canadian time handling
   else {

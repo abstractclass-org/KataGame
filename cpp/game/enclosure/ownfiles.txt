@@ -1,0 +1,11 @@
+# Enclosure's own code outside the game layer (GAMES.md, "The game layer"). It is Enclosure's, and it uses the front
+# (Board, the search, the network), so it cannot be in game/enclosure/, which reaches no code of the front. Only
+# Enclosure's binary compiles it, and only these files may name Enclosure (tests/checkgamelayer.py).
+#
+# One path a line, relative to katagame/cpp. A folder ends with /. CMakeLists.txt compiles each .cpp file of this list
+# (not the folders) into katago.
+command/enclosureprotocol.cpp  # its engine protocol (design 04 of the engine repository), also in WebAssembly
+command/enclosureprotocol.h
+command/enclosureengine.cpp    # the protocol's native command, katago enclosure-engine
+tests/testenclosuresearch.cpp  # the search under two-edge turns, katago runenclosuretests
+tests/enclosure/               # the standalone tests of its members through the front (tests/enclosure/build.sh)

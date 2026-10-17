@@ -71,8 +71,8 @@ inline bool parse_edge(const std::string& text, Edge& e, std::string* why = null
 
 inline std::string move_name(int action) {
   if (action == PASS) return "pass";
-  const int cell = action / NOFF, k = action % NOFF;
-  const int ax = cell % SIZE, ay = cell / SIZE;
+  int ax, ay, k;
+  action_source(action, ax, ay, k);
   return edge_name(make_edge(ax, ay, ax + OFFS[k].dx, ay + OFFS[k].dy));
 }
 
@@ -107,7 +107,7 @@ inline int parse_move(const std::string& text, const Position& p, std::string* w
     const int dx = d[2] - d[0], dy = d[3] - d[1];
     const int k = OFF_INDEX[dx + 3][dy + 3];
     if (k < 0) continue;
-    const int action = (d[1] * SIZE + d[0]) * NOFF + k;
+    const int action = action_at(d[0], d[1], k);
     if (!p.is_legal(action)) continue;
     if (marked && !cuts(action, p)) {
       if (why) *why = "marked as a cut, but it cuts nothing: " + text;

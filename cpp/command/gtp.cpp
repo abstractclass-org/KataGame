@@ -477,8 +477,8 @@ struct GTPEngine {
   void setOrResetBoardSize(ConfigParser& cfg, Logger& logger, Rand& seedRand, int boardXSize, int boardYSize, bool loggingToStderr) {
     bool wasDefault = false;
     if(boardXSize == -1 || boardYSize == -1) {
-      boardXSize = Board::DEFAULT_LEN;
-      boardYSize = Board::DEFAULT_LEN;
+      boardXSize = Board::DEFAULT_X_SIZE;
+      boardYSize = Board::DEFAULT_Y_SIZE;
       wasDefault = true;
     }
 

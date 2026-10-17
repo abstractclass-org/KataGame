@@ -7,7 +7,7 @@
 // Replays each position of INPUTS_FILE (tests/data/enclosure_inputs.txt), evaluates it with NNEvaluator
 // (symmetry 0) and writes one line per position to OUT_FILE:
 //   <label> <player to move 0 blue, 1 red> <win> <loss> <noresult> <scoremean> <lead>
-//     own <361 ownership values> pol <legal count> <action> <probability> ...
+//     own <ownership values, one per point of the network's board> pol <legal count> <action> <probability> ...
 // Values, scores and ownership are from the player to move's side, as the network outputs them.
 // The Enclosure repository's katagame/python/enclosure_nn_check.py compares them with a PyTorch forward pass.
 
@@ -31,7 +31,9 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
   Logger logger(nullptr, false, false, false);
   logger.addOStream(cerr);
   //Enclosure fork: the inputs in the backend's layout (2026-10-04: TensorRT takes NCHW only; it was NHWC always).
-  NNEvaluator* nnEval = startNNEval(modelFile, logger, "", 19, 19, 0, useNHWC, useNHWC, useFP16, false, true);
+  //The network's board is the game's largest board (Enclosure: 19 x 19).
+  const int nnLen = NNPos::MAX_BOARD_LEN;
+  NNEvaluator* nnEval = startNNEval(modelFile, logger, "", nnLen, nnLen, 0, useNHWC, useNHWC, useFP16, false, true);
 
   ifstream in(inputsFile);
   if(!in)
@@ -70,13 +72,13 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
     out << label << " " << Board::indexOfPlayer(pla) << " "
         << (white ? o.whiteWinProb : o.whiteLossProb) << " " << (white ? o.whiteLossProb : o.whiteWinProb) << " "
         << o.whiteNoResultProb << " " << sign * o.whiteScoreMean << " " << sign * o.whiteLead << " own";
-    for(int i = 0; i < 19 * 19; i++)
+    for(int i = 0; i < nnLen * nnLen; i++)
       out << " " << sign * o.whiteOwnerMap[i];
     vector<Loc> legal;
     board.getLegalMoveLocs(legal);
     out << " pol " << legal.size();
     for(Loc loc : legal) {
-      int pos = NNPos::locToPos(loc, 19, 19, 19);
+      int pos = NNPos::locToPos(loc, board.x_size, nnLen, nnLen);
       out << " " << Board::actionOfMoveLoc(loc) << " " << o.policy()[pos];
     }
     out << "\n";
@@ -99,14 +101,15 @@ void Tests::runEnclosureRowTests(const string& outFile, const string& seed, cons
   NeuralNet::globalInitialize();
   Logger logger(nullptr, false, false, false);
   logger.addOStream(cerr);
-  NNEvaluator* nnEval = startNNEval("/dev/null", logger, seed, 19, 19, 0, true, false, false, true, false);
+  const int nnLen = NNPos::MAX_BOARD_LEN;
+  NNEvaluator* nnEval = startNNEval("/dev/null", logger, seed, nnLen, nnLen, 0, true, false, false, true, false);
 
   ofstream out(outFile);
   const int inputsVersion = NNModelVersion::getInputsVersion(NNModelVersion::defaultModelVersion);
   const int maxRows = 256;
   const double firstFileMinRandProp = 1.0;
   const int debugOnlyWriteEvery = 1;
-  TrainingDataWriter dataWriter(&out, inputsVersion, maxRows, firstFileMinRandProp, 19, 19, debugOnlyWriteEvery, seed + "dwriter");
+  TrainingDataWriter dataWriter(&out, inputsVersion, maxRows, firstFileMinRandProp, nnLen, nnLen, debugOnlyWriteEvery, seed + "dwriter");
 
   SearchParams params;
   params.maxVisits = 20;
@@ -144,7 +147,7 @@ void Tests::runEnclosureRowTests(const string& outFile, const string& seed, cons
   dataWriter.writeGame(*gameData);
   dataWriter.flushIfNonempty();
   if(npzDir != "") {
-    TrainingDataWriter npzWriter(npzDir, inputsVersion, maxRows, firstFileMinRandProp, 19, 19, seed + "dwriter");
+    TrainingDataWriter npzWriter(npzDir, inputsVersion, maxRows, firstFileMinRandProp, nnLen, nnLen, seed + "dwriter");
     npzWriter.writeGame(*gameData);
     npzWriter.flushIfNonempty();
   }

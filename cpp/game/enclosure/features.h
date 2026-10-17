@@ -135,7 +135,7 @@ inline int coming_turn(const Position& p, int player, std::vector<Edge>& guarded
   const std::vector<Edge>& marked = p.player == player ? p.placed : p.protected_;
   for (const Edge& e : marked)
     if (contains(p.edges[player], e)) guarded.push_back(e);
-  return p.player == player ? std::min(2, MAX_MOVES - p.move_count - p.moves_left) : p.moves_left;
+  return p.player == player ? std::min(TURN_EDGES, MAX_MOVES - p.move_count - p.moves_left) : p.moves_left;
 }
 
 // Sets to `value` the entries of the candidate segments crossing any of `edges`, in a crossing-count-shaped array.
@@ -237,13 +237,13 @@ inline Position mirror_position(const Position& p) {
 // and the flip can change which, so the reverse direction is tried too.
 inline int mirror_action(int action, const std::vector<int>& legal) {
   if (action == PASS) return std::binary_search(legal.begin(), legal.end(), PASS) ? PASS : -1;
-  const int cell = action / NOFF, k = action % NOFF;
-  const int ax = cell % SIZE, ay = cell / SIZE;
+  int ax, ay, k;
+  action_source(action, ax, ay, k);
   const int bx = ax + OFFS[k].dx, by = ay + OFFS[k].dy;
   const int m_ax = ax, m_ay = SIZE - 1 - ay, m_bx = bx, m_by = SIZE - 1 - by;
-  const int forward = (m_ay * SIZE + m_ax) * NOFF + OFF_INDEX[m_bx - m_ax + 3][m_by - m_ay + 3];
+  const int forward = action_between(m_ax, m_ay, m_bx, m_by);
   if (std::binary_search(legal.begin(), legal.end(), forward)) return forward;
-  const int reverse = (m_by * SIZE + m_bx) * NOFF + OFF_INDEX[m_ax - m_bx + 3][m_ay - m_by + 3];
+  const int reverse = action_between(m_bx, m_by, m_ax, m_ay);
   if (std::binary_search(legal.begin(), legal.end(), reverse)) return reverse;
   return -1;
 }

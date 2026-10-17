@@ -30,7 +30,7 @@ static enclosure::Edge edge(int ax, int ay, int bx, int by) {
 
 //The move from (x, y) to (x + dx, y + dy).
 static Loc move(int x, int y, int dx, int dy) {
-  return Board::moveLocOfAction((y * enclosure::SIZE + x) * enclosure::NOFF + enclosure::OFF_INDEX[dx + 3][dy + 3]);
+  return Board::moveLocOfAction(enclosure::action_between(x, y, x + dx, y + dy));
 }
 
 //A board with no edges but these (index 0 blue, 1 red).

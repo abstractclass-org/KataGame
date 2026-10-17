@@ -181,10 +181,11 @@ bool BoardHistory::isLegal(const Board& board, Loc moveLoc, Player movePla) cons
 }
 
 bool BoardHistory::isLegalTolerant(const Board& board, Loc moveLoc, Player movePla) const {
-  //Enclosure fork (owner, 2026-10-04): the site's pass forfeits the rest of the turn and is allowed at any time (its
-  //rules' pass_; online it comes from clock timeouts), so a replayed game (analysis queries, GTP, SGF and start
-  //positions) accepts it anywhere. The search and self-play still offer it only without a legal edge (isLegal).
-  if(moveLoc == Board::PASS_LOC && !isGameFinished && movePla == board.nextPla())
+  //KataGame fork: a replayed game (analysis queries, GTP, SGF and start positions) also plays what a site
+  //plays beside the legal moves (GameInterface::replayTolerates: Enclosure's pass at any time, on a clock's timeout,
+  //which forfeits the rest of the turn). The search and self-play offer the legal moves only (isLegal).
+  if(!isGameFinished && movePla == board.nextPla() &&
+     GameInterface::replayTolerates<GameRules>(board.pos, Board::actionOfMoveLoc(moveLoc)))
     return true;
   return isLegal(board, moveLoc, movePla);
 }

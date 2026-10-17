@@ -97,6 +97,8 @@ struct GameRules {
   // The landing points (action_at), then pass, which is never legal.
   static constexpr int NUM_ACTIONS = MAX_LEN * MAX_LEN + 1;
   static constexpr int PASS_ACTION = MAX_LEN * MAX_LEN;
+  // The standard board, 7 x 6: the front's default board and the binding's Position().
+  static constexpr int STANDARD_X_SIZE = connect4::STANDARD_X_SIZE, STANDARD_Y_SIZE = connect4::STANDARD_Y_SIZE;
 
   static bool new_game(int xSize, int ySize, Position& p) {
     if(xSize < 1 || xSize > MAX_LEN || ySize < 1 || ySize > MAX_LEN)

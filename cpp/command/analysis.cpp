@@ -966,7 +966,7 @@ int MainCmds::analysis(const vector<string>& args) {
       //page gives a board, not its moves). The moves, if any, are played after it. "position" is the game's one-line
       //position (GameRules::parse_position). It holds no history: the network reads the earlier turns from the moves
       //after it, as in KataGo (design 04 of the engine repository). A game can also have a position field of its own
-      //(GameRules::QUERY_POSITION_FIELD, read by GameRules::parse_query_position): Enclosure's "enclosurePosition",
+      //(GameInterface::queryPositionField, read by parseQueryPosition): Enclosure's "enclosurePosition",
       //which the move server sends, carries the edges of the last turns too.
       const char* gamePositionField = GameInterface::queryPositionField<GameRules>();
       const bool haveGenericPosition = input.find("position") != input.end();
