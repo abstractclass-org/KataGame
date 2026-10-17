@@ -2162,7 +2162,8 @@ bool Search::getAnalysisJson(
 
     Hash128 thisHash;
     Hash128 symHash;
-    for(int symmetry = 0; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
+    //KataGame fork: the smallest hash over the game's symmetries (the identity first)
+    for(int symmetry : SymmetryHelpers::ALLOWED) {
       Board symBoard = SymmetryHelpers::getSymBoard(board,symmetry);
       Hash128 hash = symBoard.getSitHashWithSimpleKo(rootPla);
       if(symmetry == 0) {

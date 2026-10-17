@@ -140,10 +140,14 @@ void BookHash::getHashAndSymmetry(const BoardHistory& hist, int repBound, BookHa
   // Don't consider symmetries that change the lengths of x and y.
   // This also lets us be fairly lazy in the rest of the book implementation and not have to carefully consider every case whether
   // we need to swap xSize and ySize when passing into getSymLoc.
-  int numSymmetries = (hist.getRecentBoard(0).x_size != hist.getRecentBoard(0).y_size) ?
-    SymmetryHelpers::NUM_SYMMETRIES_WITHOUT_TRANSPOSE : SymmetryHelpers::NUM_SYMMETRIES;
+  //KataGame fork: only the game's symmetries (SymmetryHelpers::ALLOWED, the identity first).
+  const bool square = hist.getRecentBoard(0).x_size == hist.getRecentBoard(0).y_size;
+  vector<int> bookSymmetries;
+  for(int symmetry : SymmetryHelpers::ALLOWED)
+    if(square || !SymmetryHelpers::isTranspose(symmetry))
+      bookSymmetries.push_back(symmetry);
 
-  for(int symmetry = 0; symmetry < numSymmetries; symmetry++) {
+  for(int symmetry : bookSymmetries) {
     boardsBySym[symmetry] = SymmetryHelpers::getSymBoard(hist.initialBoard,symmetry);
     //Replay and hash under the same BoardHistoryModes as the history we're hashing.
     histsBySym[symmetry] = BoardHistory(boardsBySym[symmetry], hist.initialPla, hist.rules, hist.initialEncorePhase, hist.modes);
@@ -151,7 +155,7 @@ void BookHash::getHashAndSymmetry(const BoardHistory& hist, int repBound, BookHa
   }
 
   for(size_t i = 0; i<hist.moveHistory.size(); i++) {
-    for(int symmetry = 0; symmetry < numSymmetries; symmetry++) {
+    for(int symmetry : bookSymmetries) {
       Loc moveLoc = SymmetryHelpers::getSymLoc(hist.moveHistory[i].loc, boardsBySym[symmetry], symmetry);
       Player movePla = hist.moveHistory[i].pla;
       // Add the next
@@ -180,7 +184,7 @@ void BookHash::getHashAndSymmetry(const BoardHistory& hist, int repBound, BookHa
   }
 
   BookHash hashes[SymmetryHelpers::NUM_SYMMETRIES];
-  for(int symmetry = 0; symmetry < numSymmetries; symmetry++) {
+  for(int symmetry : bookSymmetries) {
     Player nextPlayer = hist.presumedNextMovePla;
     constexpr double drawEquivalentWinsForWhite = 0.5;
     Hash128 stateHash = GraphHash::getStateHash(histsBySym[symmetry],nextPlayer,drawEquivalentWinsForWhite);
@@ -188,7 +192,7 @@ void BookHash::getHashAndSymmetry(const BoardHistory& hist, int repBound, BookHa
   }
 
   if(bookVersion >= 2) {
-    for(int symmetry = 0; symmetry < numSymmetries; symmetry++) {
+    for(int symmetry : bookSymmetries) {
       hashes[symmetry].historyHash.hash0 = Hash::murmurMix(hashes[symmetry].historyHash.hash0);
       hashes[symmetry].historyHash.hash1 = Hash::murmurMix(hashes[symmetry].historyHash.hash1);
       hashes[symmetry].stateHash.hash0 = Hash::murmurMix(hashes[symmetry].stateHash.hash0);
@@ -199,7 +203,7 @@ void BookHash::getHashAndSymmetry(const BoardHistory& hist, int repBound, BookHa
   // Use the smallest symmetry that gives us the same hash
   int smallestSymmetry = 0;
   BookHash smallestHash;
-  for(int symmetry = 0; symmetry < numSymmetries; symmetry++) {
+  for(int symmetry : bookSymmetries) {
     if(symmetry == 0 || hashes[symmetry] < smallestHash) {
       smallestSymmetry = symmetry;
       smallestHash = hashes[symmetry];
@@ -211,7 +215,7 @@ void BookHash::getHashAndSymmetry(const BoardHistory& hist, int repBound, BookHa
 
   // Find all symmetries that preserve the smallestHash.
   symmetriesRet.clear();
-  for(int symmetry = 0; symmetry < numSymmetries; symmetry++) {
+  for(int symmetry : bookSymmetries) {
     if(hashes[SymmetryHelpers::compose(smallestSymmetry,symmetry)] == smallestHash)
       symmetriesRet.push_back(symmetry);
   }

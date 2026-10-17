@@ -140,7 +140,8 @@ public:
 namespace SearchChildrenSizes {
   constexpr int SIZE0TOTAL = 8;
   constexpr int SIZE1TOTAL = 64;
-  constexpr int SIZE2TOTAL = NNPos::MAX_NN_POLICY_SIZE;
+  //KataGame fork: a game with fewer moves than the second size (Connect-4: 50) never grows to the third.
+  constexpr int SIZE2TOTAL = std::max(NNPos::MAX_NN_POLICY_SIZE, SIZE1TOTAL);
   constexpr int SIZE0OVERFLOW = SIZE0TOTAL;
   constexpr int SIZE1OVERFLOW = SIZE1TOTAL - SIZE0TOTAL;
   constexpr int SIZE2OVERFLOW = SIZE2TOTAL - SIZE1TOTAL;

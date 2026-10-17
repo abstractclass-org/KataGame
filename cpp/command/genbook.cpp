@@ -86,7 +86,8 @@ static void optimizeSymmetriesInplace(std::vector<SymBookNode>& nodes, Rand* ran
       const Board& otherBoard = *(boards[perm[j]]);
       int otherBoardBestSymmetry = bestSymmetries[perm[j]];
       SymmetryHelpers::getSymmetryDifferences(nodeBoard, otherBoard, maxDifferenceToReport, diffBuf);
-      for(int symmetry = 0; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
+      //KataGame fork: only the game's symmetries, a group, so the compositions are the game's too
+      for(int symmetry : SymmetryHelpers::ALLOWED) {
         // diffBuff[symmetry] has the similarity between nodeBoard * symmetry  and otherBoard.
         // Which is the same as the similarity between nodeboard * compose(symmetry,otherBoardBestSymmetry) and otherBoard * otherBoardBestSymmetry.
         // The latter is what we want, since that's what otherBoard will actually end up as after this whole function is done.
@@ -97,7 +98,7 @@ static void optimizeSymmetriesInplace(std::vector<SymBookNode>& nodes, Rand* ran
 
     double bestSimilarity = similaritySumBuf[0];
     int bestSymmetry = 0;
-    for(int symmetry = 1; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
+    for(int symmetry : SymmetryHelpers::ALLOWED) {
       if(similaritySumBuf[symmetry] > bestSimilarity) {
         bestSimilarity = similaritySumBuf[symmetry];
         bestSymmetry = symmetry;
@@ -1965,7 +1966,9 @@ int MainCmds::booktoposes(const vector<string>& args) {
 
       BookHash hash = iter->first;
       int depth = iter->second;
-      ConstSymBookNode node = book->getByHash(hash).applySymmetry(rand.nextInt(0,7));
+      //KataGame fork: one of the game's symmetries (with all 8 allowed, the index is the symmetry)
+      ConstSymBookNode node = book->getByHash(hash).applySymmetry(
+        SymmetryHelpers::ALLOWED[rand.nextInt(0,SymmetryHelpers::NUM_ALLOWED_SYMMETRIES-1)]);
 
       Player pla = node.pla();
       BoardHistory hist;
@@ -2027,7 +2030,8 @@ int MainCmds::booktoposes(const vector<string>& args) {
       double valueSurpriseIrreducible = 0.0;
       double valueSurpriseTotal = 0.0;
       const Board& board = hist.getRecentBoard(0);
-      for(int sym = 0; sym<SymmetryHelpers::NUM_SYMMETRIES; sym++) {
+      //KataGame fork: the mean over the game's symmetries
+      for(int sym : SymmetryHelpers::ALLOWED) {
         MiscNNInputParams nnInputParams;
         nnInputParams.symmetry = sym;
         NNResultBuf buf;
@@ -2040,7 +2044,7 @@ int MainCmds::booktoposes(const vector<string>& args) {
           if(bestMove != Board::NULL_LOC) {
             double policyProb = buf.result->policy()[NNPos::locToPos(bestMove,board.x_size,nnEval->getNNXLen(),nnEval->getNNYLen())];
             testAssert(policyProb >= 0.0 && policyProb <= 1.0);
-            policySurprise += -1.0 / (double)SymmetryHelpers::NUM_SYMMETRIES * log(policyProb + 1e-30);
+            policySurprise += -1.0 / (double)SymmetryHelpers::NUM_ALLOWED_SYMMETRIES * log(policyProb + 1e-30);
           }
         }
 
@@ -2049,10 +2053,10 @@ int MainCmds::booktoposes(const vector<string>& args) {
           double winChance = std::max(0.0, std::min(1.0, 0.5 * (wlValue + 1.0)));
           double lossChance = std::max(0.0, std::min(1.0, 0.5 * (-wlValue + 1.0)));
 
-          valueSurpriseIrreducible += -1.0 / (double)SymmetryHelpers::NUM_SYMMETRIES * (
+          valueSurpriseIrreducible += -1.0 / (double)SymmetryHelpers::NUM_ALLOWED_SYMMETRIES * (
             bookWinChance * log(bookWinChance + 1e-30) + bookLossChance * log(bookLossChance + 1e-30)
           );
-          valueSurpriseTotal += -1.0 / (double)SymmetryHelpers::NUM_SYMMETRIES * (
+          valueSurpriseTotal += -1.0 / (double)SymmetryHelpers::NUM_ALLOWED_SYMMETRIES * (
             bookWinChance * log(winChance + 1e-30) + bookLossChance * log(lossChance + 1e-30)
           );
         }

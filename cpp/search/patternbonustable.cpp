@@ -91,7 +91,7 @@ void PatternBonusTable::addBonus(Player pla, Loc moveLoc, const Board& board, do
     return;
 
   Hash128 hash = patternHasher.getHashWithSym(board,moveLoc,pla,symmetry,flipColors);
-  hash ^= ZOBRIST_MOVE_LOCS[SymmetryHelpers::getSymLoc(moveLoc,board,symmetry)];
+  hash ^= ZOBRIST_MOVE_LOCS[SymmetryHelpers::getSymMoveLoc(moveLoc,board,symmetry)];  //KataGame fork: the move's image
   if(SymmetryHelpers::isTranspose(symmetry)) {
     hash ^= Board::ZOBRIST_SIZE_X_HASH[board.y_size];
     hash ^= Board::ZOBRIST_SIZE_Y_HASH[board.x_size];
@@ -129,7 +129,7 @@ void PatternBonusTable::addBonusForGameMoves(const BoardHistory& game, double bo
       break;
     if(onlyPla == C_EMPTY || onlyPla == pla) {
       for(int flipColors = 0; flipColors < 2; flipColors++) {
-        for(int symmetry = 0; symmetry < 8; symmetry++) {
+        for(int symmetry : SymmetryHelpers::ALLOWED) {  //KataGame fork: the game's symmetries
           //getRecentBoard(1) - the convention is to pattern match on the board BEFORE the move is played.
           //This is also more pricipled than convening on the board after since with different captures, moves
           //may have different effects even while leading to the same position.
@@ -189,7 +189,7 @@ void PatternBonusTable::avoidRepeatedSgfMoves(
         return;
 
       for(int flipColorsInt = 0; flipColorsInt < 2; flipColorsInt++) {
-        for(int symmetry = 0; symmetry < 8; symmetry++) {
+        for(int symmetry : SymmetryHelpers::ALLOWED) {  //KataGame fork: the game's symmetries
           //getRecentBoard(1) - the convention is to pattern match on the board BEFORE the move is played.
           //This is also more pricipled than convening on the board after since with different captures, moves
           //may have different effects even while leading to the same position.
@@ -266,7 +266,7 @@ void PatternBonusTable::avoidRepeatedPosMovesAndDeleteExcessFiles(
         }
 
         for(int flipColorsInt = 0; flipColorsInt < 2; flipColorsInt++) {
-          for(int symmetry = 0; symmetry < 8; symmetry++) {
+          for(int symmetry : SymmetryHelpers::ALLOWED) {  //KataGame fork: the game's symmetries
             //getRecentBoard(1) - the convention is to pattern match on the board BEFORE the move is played.
             //This is also more pricipled than convening on the board after since with different captures, moves
             //may have different effects even while leading to the same position.

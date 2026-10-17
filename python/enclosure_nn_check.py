@@ -1,16 +1,21 @@
 #!/usr/bin/python3
-"""Enclosure fork: the C++ network evaluation against a PyTorch forward pass (plan step 5).
+"""Enclosure fork: the C++ network evaluation against a PyTorch forward pass (plan step 5), for any game.
 
-    python enclosure_nn_check.py make CHECKPOINT [-config b6c96] [-seed 0]
+    python enclosure_nn_check.py make CHECKPOINT [-config b6c96] [-seed 0] [-game enclosure]
     python export_model_pytorch.py -checkpoint CHECKPOINT -export-dir DIR -model-name NAME -filename-prefix NAME
     testnnoutputs DIR/NAME.bin ../cpp/tests/data/enclosure_inputs.txt DUMP FP16 NHWC search,ownership
     python enclosure_nn_check.py compare CHECKPOINT DUMP [-tolerance 1e-3]
+
+KataGame fork: -game names the test network's game (katago/train/games). The checkpoint's config keeps it, so
+`compare` reads the game from there, and the export names it in the model file. testnnoutputs then runs on that
+game's build, on that game's positions (Connect-4: ../cpp/tests/data/connect4_positions.txt).
 
 `make` writes a randomly initialised model whose every parameter and normalisation statistic is then
 perturbed, so no layer is an identity (fixup initialises some to zero). `testnnoutputs` (the fork's test,
 katagame/cpp/tests/enclosure/build.sh) evaluates the exported model and writes each position's input rows
 with the outputs. `compare` runs the checkpoint on those same rows and compares the outputs: the policy
-over the legal moves, the win/loss/no-result probabilities, the score mean and lead, and the ownership.
+over the legal moves, the win/loss/no-result probabilities, the score mean and lead, and the ownership on the
+board's points (the on-board input plane).
 So it checks the network alone. testnninputs checks the rows against the inputs fixture. Exit code 0 when
 all agree within the tolerance.
 """
@@ -26,13 +31,11 @@ from katago.train import modelconfigs
 from katago.train.load_model import load_model
 from katago.train.model_pytorch import Model
 
-SIZE = 19
-
 
 def make(args):
     torch.manual_seed(args.seed)
-    config = modelconfigs.config_of_name[args.config]
-    model = Model(config, SIZE)
+    config = modelconfigs.with_game(modelconfigs.config_of_name[args.config], args.game)
+    model = Model(config, modelconfigs.get_game(config).MAX_BOARD_LEN)
     model.initialize()
     with torch.no_grad():
         for name, p in model.named_parameters():
@@ -43,7 +46,7 @@ def make(args):
             elif name.endswith("running_var") or name.endswith("running_std"):
                 b.mul_(torch.exp(0.1 * torch.randn_like(b)))
     torch.save({"config": config, "model": model.state_dict()}, args.checkpoint)
-    print(f"wrote {args.checkpoint} ({args.config}, seed {args.seed})")
+    print(f"wrote {args.checkpoint} ({args.config}, seed {args.seed}, {modelconfigs.get_game_name(config)})")
 
 
 def compare(args):
@@ -51,22 +54,23 @@ def compare(args):
     if args.use_swa:  # the weights that the run's exports carry (export_model_for_selfplay.sh -use-swa)
         model = swa_model
     model.eval()
-    c_in = getattr(model, "num_bin_input_features", 215)
+    size = modelconfigs.get_game(model.config).MAX_BOARD_LEN  # the network's board
+    c_in = modelconfigs.get_num_bin_input_features(model.config)
     positions = read_dump(args.dump)
     worst = dict(policy=0.0, value=0.0, score=0.0, own=0.0)
     failures = 0
     with torch.no_grad():
         for start in range(0, len(positions), 32):
             batch = positions[start:start + 32]
-            spatial = torch.zeros(len(batch), c_in, SIZE * SIZE)
+            spatial = torch.zeros(len(batch), c_in, size * size)
             for n, p in enumerate(batch):
                 for i, v in p["spatial"]:
                     if p["nhwc"]:
                         spatial[n, i % c_in, i // c_in] = v
                     else:
-                        spatial[n, i // (SIZE * SIZE), i % (SIZE * SIZE)] = v
+                        spatial[n, i // (size * size), i % (size * size)] = v
             glob = torch.tensor(np.stack([p["global"] for p in batch]), dtype=torch.float32)
-            outputs = model.postprocess_output(model(spatial.view(-1, c_in, SIZE, SIZE), glob))[0]
+            outputs = model.postprocess_output(model(spatial.view(-1, c_in, size, size), glob))[0]
             policy_logits, value_logits = outputs[0], outputs[1]
             ownership_pretanh, scoremean, lead = outputs[4], outputs[8], outputs[10]
             for i, p in enumerate(batch):
@@ -80,7 +84,9 @@ def compare(args):
                 # so its probability is 0 and win and loss are renormalised.
                 value = np.zeros(3)
                 value[:2] = torch.softmax(value_logits[i, :2].double(), dim=0).numpy()
-                own = np.tanh(ownership_pretanh[i, 0].double().numpy().reshape(-1))
+                # The C++ ownership is 0 off the board (a board smaller than the network's).
+                on_board = spatial[i, 0].numpy() > 0
+                own = np.where(on_board, np.tanh(ownership_pretanh[i, 0].double().numpy().reshape(-1)), 0.0)
                 # The dump's value, score and ownership are in white's view, PyTorch's in the mover's.
                 white = p["pla"] == WHITE
                 sign = 1.0 if white else -1.0
@@ -110,6 +116,7 @@ def main():
     m.add_argument("checkpoint")
     m.add_argument("-config", default="b6c96")
     m.add_argument("-seed", type=int, default=0)
+    m.add_argument("-game", default=None, help="the test network's game (katago/train/games, default enclosure)")
     c = sub.add_parser("compare")
     c.add_argument("checkpoint")
     c.add_argument("dump", help="testnnoutputs' output, with OUTPUTS search,ownership")

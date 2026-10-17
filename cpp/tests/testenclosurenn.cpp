@@ -31,9 +31,11 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
   Logger logger(nullptr, false, false, false);
   logger.addOStream(cerr);
   //Enclosure fork: the inputs in the backend's layout (2026-10-04: TensorRT takes NCHW only; it was NHWC always).
-  //The network's board is the game's largest board (Enclosure: 19 x 19).
+  //The network's board is the game's largest board (Enclosure: 19 x 19). The positions start on the game's standard
+  //board, which need not fill it (Connect-4: 7 x 6).
   const int nnLen = NNPos::MAX_BOARD_LEN;
-  NNEvaluator* nnEval = startNNEval(modelFile, logger, "", nnLen, nnLen, 0, useNHWC, useNHWC, useFP16, false, true);
+  NNEvaluator* nnEval = startNNEval(modelFile, logger, "", nnLen, nnLen, 0, useNHWC, useNHWC, useFP16, false,
+                                    NNPos::fillsNNBoard(Board::DEFAULT_X_SIZE, Board::DEFAULT_Y_SIZE));
 
   ifstream in(inputsFile);
   if(!in)

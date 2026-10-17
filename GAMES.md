@@ -6,13 +6,13 @@ how to add a game. Its last part is the map of the code that reached Enclosure d
 each reference. The decision and its reasons are design 07 of the engine repository
 (`docs/design/07-game-interface.md`). Enclosure's own design stays in [ENCLOSURE.md](ENCLOSURE.md).
 
-The interface exists. Enclosure implements both parts. Connect-4 (`cpp/game/connect4/`) implements its rules part. The
-front (`Board`, `BoardHistory`), the search, self-play, GTP and the analysis engine reach the rules through the rules
-part. The network code reaches the encoding part: the policy layout and the backends (`NNPos`), the inputs
-(`NNInputs`), the symmetries (`SymmetryHelpers`) and the training rows (`TrainingWriteBuffers`). No C++ code outside
-the game layer names a game, and a check keeps it so ("The game layer"). The trainer reads a game's facts from the
-game's module (`python/katago/train/games/`), and a model file names its game ("The model file's game"). The map below
-gives each step's work.
+The interface exists. Enclosure and Connect-4 (`cpp/game/connect4/`) implement both parts, and each game has its
+`katago` binary. The front (`Board`, `BoardHistory`), the search, self-play, GTP and the analysis engine reach the rules
+through the rules part. The network code reaches the encoding part: the policy layout and the backends (`NNPos`), the
+inputs (`NNInputs`), the symmetries (`SymmetryHelpers`) and the training rows (`TrainingWriteBuffers`). No C++ code
+outside the game layer names a game, and a check keeps it so ("The game layer"). The trainer reads a game's facts from
+the game's module (`python/katago/train/games/`), and a model file names its game ("The model file's game"). The map
+below gives each step's work.
 
 * [The files](#the-files)
 * [Choosing the game](#choosing-the-game)
@@ -48,9 +48,8 @@ the WebAssembly build, the binding and the standalone tests need no new source f
 ## Choosing the game
 
 - **CMake:** `-DGAME=enclosure` (the default). The games are the folders of `cpp/game/` that hold a `gamerules.h`. An
-  unknown name stops `cmake` with the list of games. A game without `gameencoding.h` (Connect-4 for now) also stops
-  it: `katago` needs both parts, and the Python binding needs only the rules part. The option defines
-  `KATAGAME_GAME=<name>`.
+  unknown name stops `cmake` with the list of games. A game without `gameencoding.h` also stops it: `katago` needs
+  both parts, and the Python binding needs only the rules part. The option defines `KATAGAME_GAME=<name>`.
 - **The headers:** `chosenrules.h` includes `<name>/gamerules.h` and makes `chosengame` the alias of the namespace
   `<name>`. `chosengame.h` includes `<name>/gameencoding.h`. A game's folder and its namespace have the same name.
 - **Other builds** (the WebAssembly module, the fork's standalone tests) define nothing and get Enclosure. So every
@@ -106,8 +105,8 @@ that game's binary compiles them. A command of the game's own registers itself w
 A game's own file may name its own game, and no other: `tests/enclosure/` cannot include Connect-4's headers. The
 check also fails when a game's list names a file that does not exist. Each build of `katago` runs it before it
 compiles (the CMake target `checkgamelayer`, when CMake finds Python 3), and so does `tests/enclosure/build.sh`. On
-the drive of the training machine (`/mnt/f` in WSL), it reads the 266 files in about 2 s. A second game's binary
-does not build yet (Connect-4 has no encoding part), so the check stands in for it.
+the drive of the training machine (`/mnt/f` in WSL), it reads the 266 files in about 2 s. Connect-4's binary
+(`-DGAME=connect4`) builds from the same files as Enclosure's, its own folder aside.
 
 ```
 python3 tests/checkgamelayer.py            # from katagame/cpp
@@ -247,6 +246,28 @@ of C4. C27 stays KataGo's weight of C0, C1 and the score's targets: it is set wh
 | `TARGET_INCOME` | C5-6 | the territory income of each player |
 | `TARGET_NEXT_PIECES` | C7 | the next mover's nodes after the row's move, for the symmetries of policy channel 1 (not a loss) |
 
+### Connect-4's encoding part
+
+`game/connect4/gameencoding.h` is a short example of the part. The engine repository's `games/connect4/README.md`,
+"The network", gives the reasons.
+
+| Member | Connect-4 |
+|---|---|
+| `NUM_SPATIAL_INPUTS`, `spatial_inputs` | 3: the mover's discs, the opponent's discs and the landing points (the point where a column's next disc lands, for each column that is not full). The network sees 4 planes. |
+| `NUM_GLOBAL_INPUTS`, `global_inputs` | 1: 1 when the mover is the first player. Komi is not an input: Connect-4 plays at komi 0. |
+| `HISTORY_PLANE`, `NUM_HISTORY_PLANES`, `input_hash` | 0, 0 and an empty hash: a position holds the whole state of the game |
+| `POLICY_CHANNELS`, `action_point`, `point_action` | 1: a move is its landing point (`action_at`). Pass is never legal. |
+| `SYMMETRIES`, `sym_position`, `SymActionMap` | `0x5`: the identity and the mirror (symmetry 2, flip x), which keep gravity. The mirror moves column x to column `x_size - 1 - x`, the discs and the moves alike. |
+| `TARGETS`, `training_targets` | C0 only: the final board as ownership (`area` of the game's last position), +1 on the mover's discs and -1 on the opponent's |
+| `SCORE_SCALE` | 1: the score is the solver's, in discs (`score`, Pascal Pons's convention, gamesolver.org) |
+| `SCORE_UNIT` | 6.4807 = √(7 · 6): KataGo's rule, the square root of the board's area, on the standard board |
+| `GAME_LENGTH` | 41: a game of perfect play on 7 × 6, where the first player wins with its last disc |
+
+The value and score targets are KataGo's, from the rules' result and score. A draw counts as half a win: self-play's
+`drawEquivalentWinsForWhite` is 0.5, with no random radius (`configs/training/selfplay_connect4.cfg`), since the
+inputs do not show a draw's value. A row's score target is the solver's score of the game's end, from the view of the
+row's player to move.
+
 ### The trainer's module
 
 The trainer reads a game's facts from the game's module, `python/katago/train/games/<game>.py`, which mirrors the
@@ -254,11 +275,11 @@ encoding part. `python/katago/train/games/__init__.py` lists the members, and `g
 lacks one. A model config names its game (`"game"`, Enclosure's without it), and `modelconfigs.get_game(config)` gives
 its module.
 
-| Member | Meaning | Enclosure (`games/enclosure.py`) |
-|---|---|---|
-| `NAME`, `MAX_BOARD_LEN`, `POLICY_CHANNELS`, `NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS`, `SYMMETRIES`, `TARGETS`, `SCORE_SCALE`, `GAME_LENGTH` | As in C++. `MAX_BOARD_LEN` is the trainer's `pos_len` (the model refuses another), and the score distribution's bins are `SCORE_SCALE` points wide. | As in C++ |
-| `HISTORY_PLANE`, `NUM_HISTORY_PLANES` | As in C++ (the game's planes, newest first), for the history dropout. | The last 4 feature planes: 210, 4 |
-| `apply_symmetry_inputs`, `apply_symmetry_policy_targets`, `apply_symmetry_policy` | The augmentation of the input planes, the policy targets (both channels) and a policy of the mover's moves (the q-values), at an allowed symmetry. The value targets move as pixels in every game (`games.apply_symmetry_points`). | An edge moves as an edge, with each channel's player's nodes |
+| Member | Meaning | Enclosure (`games/enclosure.py`) | Connect-4 (`games/connect4.py`) |
+|---|---|---|---|
+| `NAME`, `MAX_BOARD_LEN`, `POLICY_CHANNELS`, `NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS`, `SYMMETRIES`, `TARGETS`, `SCORE_SCALE`, `GAME_LENGTH` | As in C++. `MAX_BOARD_LEN` is the trainer's `pos_len` (the model refuses another), and the score distribution's bins are `SCORE_SCALE` points wide. | As in C++ | As in C++ |
+| `HISTORY_PLANE`, `NUM_HISTORY_PLANES` | As in C++ (the game's planes, newest first), for the history dropout. | The last 4 feature planes: 210, 4 | None: 0, 0 |
+| `apply_symmetry_inputs`, `apply_symmetry_policy_targets`, `apply_symmetry_policy` | The augmentation of the input planes, the policy targets (both channels) and a policy of the mover's moves (the q-values), at an allowed symmetry. The value targets move as pixels in every game (`games.apply_symmetry_points`). | An edge moves as an edge, with each channel's player's nodes | Every plane and the policy move as pixels, as KataGo's do. The mirror flips x on the network's 7 × 7 board, which a row of the standard board fills in width. |
 
 The model's heads are the same in every game. The rows give each slot that the game does not write the weight 0, but
 not C0 (above). So the trainer leaves out C0 for a game without `TARGET_OWNERSHIP`.
@@ -359,13 +380,20 @@ TESTS=testgameinterface bash tests/enclosure/build.sh BUILD_DIR OUT_DIR
 OUT_DIR/testgameinterface tests/data/enclosure_games.txt
 ```
 
+**Connect-4's encoding part.** The conformance suite checks that its mirror maps the legal moves onto the image's.
+With a Connect-4 binary and network, the engine repository's `games/connect4/tests/test_network.py` checks two more
+things. The network at the mirror gives the outputs of the mirrored position exactly, mapped back, so the inputs, the
+policy and the ownership map alike. And the rows of one self-play game hold each position's inputs and its game's
+targets. The network check against PyTorch (the random test network of `python/enclosure_nn_check.py` with
+`-game connect4`, and `testnnoutputs` on `tests/data/connect4_positions.txt`) names the game.
+
 ## Adding a game
 
 1. Make the folder `cpp/game/<game>/` with `gamerules.h` (`struct GameRules` in the namespace `<game>`) and
    `gameencoding.h` (`struct GameEncoding`). End each with its check:
-   `static_assert(GameInterface::checkRules<GameRules>(), "...")`. Connect-4's `gamerules.h` is a short example of
-   the rules part. Give the optional members where the defaults do not fit ("Optional members": the standard board,
-   the turn, the pass).
+   `static_assert(GameInterface::checkRules<GameRules>(), "...")`. Connect-4's `gamerules.h` and `gameencoding.h` are
+   short examples of the two parts. Give the optional members where the defaults do not fit ("Optional members": the
+   standard board, the turn, the pass).
 2. Build with `-DGAME=<game>`, in a build folder for that game and backend. Code of the game's own that uses the front
    (a command or a test of the search) goes outside the folder, in a file named after the game, and the game lists it
    in `cpp/game/<game>/ownfiles.txt` ("The game layer").
@@ -378,7 +406,8 @@ OUT_DIR/testgameinterface tests/data/enclosure_games.txt
    player `ab` plays the game.
 5. For training, add the trainer's module `python/katago/train/games/<game>.py` with the members of
    `games/__init__.py` ("The trainer's module"), the values of the game's encoding part. `train.py -game <game>` then
-   makes a model of the game, and its exported files name the game.
+   makes a model of the game, and its exported files name the game. The network check against PyTorch takes the game
+   (`python/enclosure_nn_check.py make -game <game>`) and the game's positions for `testnnoutputs`.
 
 The front reaches the game through the members alone (the map below), and the check of the game layer keeps it so.
 So a second game's binary builds from its folder, with the front as it is.
@@ -552,11 +581,23 @@ needs it:
 - `Board::simpleRepetitionBoundGt` and `KoHashTable`: a position never recurs (Enclosure's edge count only rises), so
   the graph search merges transposed turns. A game whose positions can recur needs KataGo's repetition handling.
   Connect-4's positions do not recur either (a disc stays).
-- All 8 symmetries, where a feature that Enclosure does not use loops over them: the pattern bonus and the avoided
-  patterns (`search/patternbonustable.cpp`), the analysis engine's `symHash` (`search/searchresults.cpp`), the opening
-  books (`book/book.cpp`, `command/genbook.cpp`) and `command/startposes.cpp` and `dataio/sgf.cpp`. A game with a
-  subset of the symmetries needs them to skip the others (`SymmetryHelpers::isAllowed`). `getSymBoard` asserts that
-  its symmetry is allowed.
+- A move as a point: the opening books (`book/book.cpp`, `command/genbook.cpp`) and the moves of a start position
+  (`command/startposes.cpp`) map a move with `getSymLoc`, as Go's moves are points. A game's move is a move `Loc`
+  (`MOVE_LOC_BASE` plus the action), so a game that uses them needs the game's images of moves there
+  (`getSymMoveLoc`). They use the allowed symmetries only ("The second game's build", below). `dataio/sgf.cpp`
+  transposes a Go handicap on a 19 × 19 board, which no game of the fork reaches.
+
+### The second game's build (abscls-mkd.13)
+
+Connect-4's binary showed four assumptions of the front that Enclosure's boards and policy hide. Each is done, and
+Enclosure's outputs do not change:
+
+| File | Assumption | Change |
+|---|---|---|
+| `search/searchnode.h` | A node's children are in three arrays of 8, 56 and the policy's size less 64 (`SearchChildrenSizes`). A policy smaller than 64 (Connect-4: 50) gives a negative size. | Done: the third size is at least the second, so a game with fewer moves never grows to it. |
+| `program/setup.cpp`, `command/gtp.cpp` | A command sizes the network by the boards that it plays (self-play's, a match's, GTP's), and asks for that size exactly (`requireExactNNLen`). Connect-4's board, 7 × 6, is smaller than its network's, and the evaluator refuses a network board other than the game's largest. | Done: a board up to the game's largest gets the largest board, and only a board that fills it asks for the exact size. GTP keeps the game's standard board as its default board, and makes its network again only when the board changes that. |
+| `tests/testenclosurenn.cpp`, `tests/enclosure/testnnoutputs.cpp` | The positions' board fills the network's. | Done: the exact size only when the standard board fills the network's board. |
+| `search/patternbonustable.cpp`, `search/searchresults.cpp`, `book/book.cpp`, `command/genbook.cpp`, `command/startposes.cpp` | All 8 symmetries, where a feature that Enclosure does not use loops over them. `getSymBoard` asserts that its symmetry is allowed. | Done: the allowed symmetries (`SymmetryHelpers::ALLOWED`): the pattern bonus and the avoided patterns (with the move's image from `getSymMoveLoc`, as the table's keys are moves), the analysis engine's `symHash`, the book's hash, its choice of a node's symmetry and its sampled positions (`genbook`'s random symmetry and its mean over the symmetries), and the random symmetry of a start position. With all 8 allowed, the loops are the same. |
 
 ### Names that stay
 
@@ -569,8 +610,11 @@ These name Enclosure but hold no game code. Each stays, for its reason:
 - The commands `runenclosurerowtests` and `runenclosurenntests` (`main.cpp`, `main.h`, `command/runtests.cpp`, and
   their functions `Tests::runEnclosureRowTests`, `runEnclosureNNTests`): generic code with Enclosure's name.
   `build_verify.sh` runs them on the production binary too, which knows these names only, and the engine
-  repository's tools call them. A generic name, with the old one as an alias, can come with the first checks of a
-  second game's network (abscls-mkd.13).
+  repository's tools call them, Connect-4's checks too (`games/connect4/tests/test_network.py`). A generic name,
+  with the old one as an alias, is later work.
+- The network check against PyTorch, `python/enclosure_nn_check.py` and `tests/enclosure/testnnoutputs.cpp`: generic
+  code with Enclosure's name. `verify_build.sh` calls them by these names, and the WebAssembly build includes
+  `testnnoutputs.cpp` by its path.
 - The options of the fork's speed work: `ENCLOSURE_FUSED_CONV` (`cudaandrocmbackend.inc`), `ENCLOSURE_EIGEN_SIMD`,
   `ENCLOSURE_WINOGRAD_NV`, `ENCLOSURE_WINOGRAD_NT`, `ENCLOSURE_DIRECT_CONV`, `ENCLOSURE_EVAL_RAW`
   (`eigenbackend.cpp`), `ENCLOSURE_COOP_THREADS` (`nneval.*`), `ENCLOSURE_NO_POLICY_GATHER` (`nneval.cpp`). The build

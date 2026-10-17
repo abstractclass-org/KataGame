@@ -172,7 +172,15 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
         nnYLen = cfg.getInt("maxBoardSizeForNNBuffer", 2, NNPos::MAX_BOARD_LEN);
     }
 
-    bool requireExactNNLen = defaultRequireExactNNLen;
+    //KataGame fork: the network's board is the game's largest board (NNPos::MAX_BOARD_LEN), and a smaller board plays
+    //inside it (Connect-4's 7 x 6 in 7 x 7). So a smaller board gets the largest board, which it does not fill.
+    const bool boardFillsNNBoard = NNPos::fillsNNBoard(nnXLen, nnYLen);
+    if(nnXLen <= NNPos::MAX_BOARD_LEN && nnYLen <= NNPos::MAX_BOARD_LEN) {
+      nnXLen = NNPos::MAX_BOARD_LEN;
+      nnYLen = NNPos::MAX_BOARD_LEN;
+    }
+
+    bool requireExactNNLen = defaultRequireExactNNLen && boardFillsNNBoard;
     if(setupFor != SETUP_FOR_DISTRIBUTED) {
       if(cfg.contains("requireMaxBoardSize" + idxStr))
         requireExactNNLen = cfg.getBool("requireMaxBoardSize" + idxStr);

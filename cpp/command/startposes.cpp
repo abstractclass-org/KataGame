@@ -2574,7 +2574,8 @@ int MainCmds::genposesfromselfplayinit(const vector<string>& args) {
       Sgf::PositionSample::writePosOfHist(sampleToWrite, data->startHist, data->startPla);
 
       // Random symmetry
-      int symmetry = (int)rand.nextInt(0,7);
+      //KataGame fork: one of the game's (with all 8 allowed, the index is the symmetry)
+      int symmetry = SymmetryHelpers::ALLOWED[rand.nextInt(0,SymmetryHelpers::NUM_ALLOWED_SYMMETRIES-1)];
       Board symBoard = SymmetryHelpers::getSymBoard(sampleToWrite.board, symmetry);
       sampleToWrite.board = symBoard;
       for(size_t i = 0; i<sampleToWrite.moves.size(); i++) {

@@ -1,0 +1,77 @@
+# Connect-4's positions for testnnoutputs (tests/enclosure/testnnoutputs.cpp) and the network check against
+# PyTorch (python/enclosure_nn_check.py). Each line: position LABEL N ACTION_1 ... ACTION_N, the actions from
+# the start of the 7 x 6 board (an action is its landing point, y * 7 + x). The positions are the start and 12
+# random games (random.Random(seed), seeds 0 to 11) at plies 1, 5, 9 and so on. A mirror* position (seeds 0 and 1)
+# is the image of the random* position of the same seed and ply under the mirror (column x to 6 - x).
+position start 0
+position random0@1 1 6
+position mirror0@1 1 0
+position random0@5 5 6 3 13 4 0
+position mirror0@5 5 0 3 7 2 6
+position random0@9 9 6 3 13 4 0 5 11 10 12
+position mirror0@9 9 0 3 7 2 6 1 9 10 8
+position random0@13 13 6 3 13 4 0 5 11 10 12 20 27 7 17
+position mirror0@13 13 0 3 7 2 6 1 9 10 8 14 21 13 17
+position random1@1 1 1
+position mirror1@1 1 5
+position random1@5 5 1 5 12 19 26
+position mirror1@5 5 5 1 8 15 22
+position random1@9 9 1 5 12 19 26 0 4 2 8
+position mirror1@9 9 5 1 8 15 22 6 2 4 12
+position random1@13 13 1 5 12 19 26 0 4 2 8 33 9 11 18
+position mirror1@13 13 5 1 8 15 22 6 2 4 12 29 11 9 16
+position random1@17 17 1 5 12 19 26 0 4 2 8 33 9 11 18 15 40 6 3
+position mirror1@17 17 5 1 8 15 22 6 2 4 12 29 11 9 16 19 36 0 3
+position random1@21 21 1 5 12 19 26 0 4 2 8 33 9 11 18 15 40 6 3 16 7 22 23
+position mirror1@21 21 5 1 8 15 22 6 2 4 12 29 11 9 16 19 36 0 3 18 13 26 25
+position random2@1 1 6
+position random2@5 5 6 13 0 1 2
+position random2@9 9 6 13 0 1 2 5 20 4 12
+position random2@13 13 6 13 0 1 2 5 20 4 12 27 19 34 8
+position random2@17 17 6 13 0 1 2 5 20 4 12 27 19 34 8 9 16 7 23
+position random2@21 21 6 13 0 1 2 5 20 4 12 27 19 34 8 9 16 7 23 3 26 33 11
+position random2@25 25 6 13 0 1 2 5 20 4 12 27 19 34 8 9 16 7 23 3 26 33 11 18 40 25 41
+position random3@1 1 1
+position random3@5 5 1 5 6 2 4
+position random3@9 9 1 5 6 2 4 11 9 16 13
+position random3@13 13 1 5 6 2 4 11 9 16 13 0 18 3 25
+position random3@17 17 1 5 6 2 4 11 9 16 13 0 18 3 25 12 10 20 8
+position random3@21 21 1 5 6 2 4 11 9 16 13 0 18 3 25 12 10 20 8 15 27 22 29
+position random3@25 25 1 5 6 2 4 11 9 16 13 0 18 3 25 12 10 20 8 15 27 22 29 36 32 23 30
+position random4@1 1 1
+position random4@5 5 1 3 0 8 6
+position random4@9 9 1 3 0 8 6 7 4 2 5
+position random4@13 13 1 3 0 8 6 7 4 2 5 9 13 15 12
+position random5@1 1 4
+position random5@5 5 4 2 9 3 16
+position random5@9 9 4 2 9 3 16 11 23 18 25
+position random5@13 13 4 2 9 3 16 11 23 18 25 10 0 32 7
+position random5@17 17 4 2 9 3 16 11 23 18 25 10 0 32 7 39 5 30 1
+position random6@1 1 6
+position random6@5 5 6 4 13 0 5
+position random6@9 9 6 4 13 0 5 20 3 1 2
+position random6@13 13 6 4 13 0 5 20 3 1 2 8 15 12 11
+position random6@17 17 6 4 13 0 5 20 3 1 2 8 15 12 11 27 22 10 17
+position random6@21 21 6 4 13 0 5 20 3 1 2 8 15 12 11 27 22 10 17 34 7 18 24
+position random7@1 1 2
+position random7@5 5 2 1 5 9 0
+position random7@9 9 2 1 5 9 0 3 16 10 4
+position random7@13 13 2 1 5 9 0 3 16 10 4 8 15 6 17
+position random8@1 1 1
+position random8@5 5 1 3 5 2 4
+position random8@9 9 1 3 5 2 4 11 0 6 8
+position random8@13 13 1 3 5 2 4 11 0 6 8 9 18 15 10
+position random8@17 17 1 3 5 2 4 11 0 6 8 9 18 15 10 16 23 7 17
+position random8@21 21 1 3 5 2 4 11 0 6 8 9 18 15 10 16 23 7 17 22 24 25 29
+position random8@25 25 1 3 5 2 4 11 0 6 8 9 18 15 10 16 23 7 17 22 24 25 29 31 13 38 30
+position random8@29 29 1 3 5 2 4 11 0 6 8 9 18 15 10 16 23 7 17 22 24 25 29 31 13 38 30 12 32 19 14
+position random9@1 1 3
+position random9@5 5 3 5 2 4 1
+position random10@1 1 4
+position random10@5 5 4 0 5 6 11
+position random10@9 9 4 0 5 6 11 1 3 10 18
+position random11@1 1 3
+position random11@5 5 3 10 5 17 24
+position random11@9 9 3 10 5 17 24 4 6 12 31
+position random11@13 13 3 10 5 17 24 4 6 12 31 13 1 2 38
+position random11@17 17 3 10 5 17 24 4 6 12 31 13 1 2 38 19 11 26 20

@@ -19,6 +19,9 @@ namespace NNPos {
   constexpr int MAX_BOARD_LEN = GameRules::MAX_BOARD_LEN;
   static_assert(MAX_BOARD_LEN <= Board::MAX_LEN, "the game's largest board fits in the build's");
   constexpr int MAX_BOARD_AREA = MAX_BOARD_LEN * MAX_BOARD_LEN;
+  //KataGame fork: whether a board fills the network's board. A smaller board plays inside it (Connect-4's 7 x 6), so
+  //the backends cannot skip the board's mask (requireExactNNLen).
+  constexpr bool fillsNNBoard(int xSize, int ySize) { return xSize == MAX_BOARD_LEN && ySize == MAX_BOARD_LEN; }
   constexpr int POLICY_CHANNELS = GameEncoding::POLICY_CHANNELS;
   //Policy output adds +1 for the pass move: MAX_BOARD_AREA * POLICY_CHANNELS + 1 (the game interface checks it).
   constexpr int MAX_NN_POLICY_SIZE = GameRules::NUM_ACTIONS;

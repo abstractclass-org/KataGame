@@ -43,11 +43,38 @@ def test_enclosure_gives_its_inputs_policy_and_scales():
     assert games.symmetries(game) == list(range(8))
 
 
+def test_connect4_gives_its_inputs_policy_and_scales():
+    game = games.get("connect4")
+    config = modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "connect4")
+    assert modelconfigs.get_num_bin_input_features(config) == 4
+    assert modelconfigs.get_num_global_input_features(config) == 1
+    assert modelconfigs.get_num_global_input_features(dict(config, inputs_version=9)) == 3
+    assert (game.MAX_BOARD_LEN, game.POLICY_CHANNELS, game.SCORE_SCALE) == (7, 1, 1.0)
+    assert game.NUM_HISTORY_PLANES == 0
+    assert games.symmetries(game) == [0, 2]
+    assert game.TARGETS == games.TARGET_OWNERSHIP
+
+
+def test_connect4s_mirror_moves_each_point_to_its_column_mirror():
+    # A row of the standard board, 7 x 6 on the network's 7 x 7: the policy at (x, y) moves to (6 - x, y), pass stays.
+    game = games.get("connect4")
+    policy = torch.arange(2 * 50, dtype=torch.float32).view(1, 2, 50)
+    inputs = torch.rand(1, 4, 7, 7)
+    image = game.apply_symmetry_policy_targets(policy, 2, inputs, None, None, None)
+    for c in range(2):
+        for y in range(7):
+            for x in range(7):
+                assert image[0, c, y * 7 + (6 - x)] == policy[0, c, y * 7 + x]
+        assert image[0, c, 49] == policy[0, c, 49]
+    assert torch.equal(game.apply_symmetry_inputs(inputs, 2), inputs.flip(-1))
+    assert game.apply_symmetry_policy_targets(policy, 0, inputs, None, None, None) is policy
+
+
 def test_a_game_without_a_module_is_refused():
-    with pytest.raises(ValueError, match="no module for the game 'connect4'"):
-        games.get("connect4")
-    with pytest.raises(ValueError, match="connect4"):
-        modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "connect4")
+    with pytest.raises(ValueError, match="no module for the game 'nogame'"):
+        games.get("nogame")
+    with pytest.raises(ValueError, match="nogame"):
+        modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "nogame")
 
 
 def test_a_module_that_lacks_a_member_is_refused(monkeypatch):
@@ -81,6 +108,7 @@ def test_the_export_writes_0_for_enclosure_and_another_games_name_into_option_h(
     header = export_random_model(tmp_path / "enclosure")
     assert header[1] == b"17" and header[OPTION_H] == b"0"
     assert export_random_model(tmp_path / "stub", game="stubgame")[OPTION_H] == b"stubgame"
+    assert export_random_model(tmp_path / "connect4", game="connect4")[OPTION_H] == b"connect4"
 
 
 def random_batch(model, n=2):

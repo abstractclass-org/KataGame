@@ -1,14 +1,19 @@
 // Enclosure fork (owner, 2026-10-04): a model's outputs on fixed positions, for two checks:
-//   - the export against PyTorch, every output: katagame/python/enclosure_nn_outputs_check.py runs the checkpoint on the
-//     same inputs and compares (OUTPUTS search,ownership,training);
+//   - the export against PyTorch: katagame/python/enclosure_nn_check.py compare runs the checkpoint on the same inputs
+//     and compares (OUTPUTS search,ownership), for any game; katagame/python/enclosure_nn_outputs_check.py compares
+//     every output of an Enclosure model (OUTPUTS search,ownership,training);
 //   - one build against another (backends, precisions, the WebAssembly bot against the CUDA build), on the outputs
 //     that both compute: games/enclosure/wasm/compare_dumps.py compares two dumps (OUTPUTS search,ownership).
 //
 //   testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC OUTPUTS
 //
-// Replays each position of INPUTS_FILE (tests/data/enclosure_inputs.txt, the positions of testnninputs), evaluates
-// it at symmetry 0 (FP16, NHWC: 0 or 1, the CUDA backend's modes; the Eigen backend needs NHWC 1), and writes per
-// position the input rows the network got and the outputs of the groups that OUTPUTS names (comma-separated):
+// KataGame fork: it names no game, so it builds against any game's build (tests/enclosure/build.sh BUILD_DIR, with
+// TESTS=testnnoutputs). A position is the game's actions from the start of its standard board.
+//
+// Replays each position of INPUTS_FILE (tests/data/enclosure_inputs.txt, the positions of testnninputs; Connect-4's:
+// tests/data/connect4_positions.txt), evaluates it at symmetry 0 (FP16, NHWC: 0 or 1, the CUDA backend's modes; the
+// Eigen backend needs NHWC 1), and writes per position the input rows the network got and the outputs of the groups
+// that OUTPUTS names (comma-separated):
 //   position <label> <player to move: 1 black, 2 white> <input layout: nchw or nhwc>
 //   spatial <count> <index in that layout>:<value> ...
 //   global <values>
@@ -19,7 +24,7 @@
 //                                          (white's view where it has one, as NNEvaluator reports them; the lead
 //                                          and the time-left variance are only reported)
 //   policy <count> <action>:<probability> ...   (the move policy at the legal actions and pass)
-// ownership: computed at the search's root, reported, and not used to choose a move in Enclosure:
+// ownership: computed at the search's root, reported, and not used to choose a move:
 //   owner <x * y values>                   (white's view, after tanh)
 // training: the training-only outputs, which the Eigen backend does not compute:
 //   regret <value> <ranking>
@@ -81,9 +86,10 @@ int main(int argc, char** argv) {
   map<string, string> kvs = {{"cudaUseNHWC", nhwc ? "true" : "false"}, {"trtIncludeAuxOutputs", "true"}};
   ConfigParser cfg(kvs);
   Logger logger(nullptr, false, true, false, false);
-  const int S = enclosure::SIZE;
+  const int S = NNPos::MAX_BOARD_LEN;  //the network's board, the game's largest
+  //The positions start on the game's standard board, which need not fill it (Connect-4: 7 x 6).
   NNEvaluator* nnEval = new NNEvaluator(
-    "test", modelFile, "", &logger, 8, S, S, true, nhwc, 10, 4, false, "",
+    "test", modelFile, "", &logger, 8, S, S, NNPos::fillsNNBoard(Board::DEFAULT_X_SIZE, Board::DEFAULT_Y_SIZE), nhwc, 10, 4, false, "",
     fp16 ? enabled_t::True : enabled_t::False, 1, {0}, "testnnoutputs", false, 0, cfg);
   nnEval->spawnServerThreads();
   if(training && (!nnEval->hasAuxOutputs() || !nnEval->hasRegretHeads())) {
@@ -150,8 +156,8 @@ int main(int argc, char** argv) {
       out << " " << g;
     out << "\n";
     vector<int> actions;
-    for(int i = 0; i <= enclosure::PASS; i++)
-      if(i == enclosure::PASS || board.legalActions()[i])
+    for(int i = 0; i <= NNPos::PASS_POS; i++)
+      if(i == NNPos::PASS_POS || board.legalActions()[i])
         actions.push_back(i);
     if(search) {
       out << "value " << o.whiteWinProb << " " << o.whiteLossProb << " " << o.whiteNoResultProb;

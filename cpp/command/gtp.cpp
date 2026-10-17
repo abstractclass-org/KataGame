@@ -475,16 +475,16 @@ struct GTPEngine {
 
   //Specify -1 for the sizes for a default
   void setOrResetBoardSize(ConfigParser& cfg, Logger& logger, Rand& seedRand, int boardXSize, int boardYSize, bool loggingToStderr) {
-    bool wasDefault = false;
     if(boardXSize == -1 || boardYSize == -1) {
       boardXSize = Board::DEFAULT_X_SIZE;
       boardYSize = Board::DEFAULT_Y_SIZE;
-      wasDefault = true;
     }
 
-    bool defaultRequireExactNNLen = true;
-    int nnXLen = boardXSize;
-    int nnYLen = boardYSize;
+    //KataGame fork: the network's board is the game's largest board, and a smaller board plays inside it
+    //(Setup::initializeNNEvaluators). Only a board that fills it requires the exact size.
+    bool defaultRequireExactNNLen = NNPos::fillsNNBoard(boardXSize, boardYSize);
+    int nnXLen = NNPos::MAX_BOARD_LEN;
+    int nnYLen = NNPos::MAX_BOARD_LEN;
 
     if(cfg.contains("gtpForceMaxNNSize") && cfg.getBool("gtpForceMaxNNSize")) {
       defaultRequireExactNNLen = false;
@@ -493,7 +493,9 @@ struct GTPEngine {
     }
 
     //If the neural net is wrongly sized, we need to create or recreate it
-    if(nnEval == NULL || !(nnXLen == nnEval->getNNXLen() && nnYLen == nnEval->getNNYLen())) {
+    //KataGame fork: also when it requires the exact size and the board does not fill it
+    if(nnEval == NULL || !(nnXLen == nnEval->getNNXLen() && nnYLen == nnEval->getNNYLen()) ||
+       (nnEval->getRequireExactNNLen() && !defaultRequireExactNNLen)) {
 
       if(nnEval != NULL) {
         assert(bot != NULL);
@@ -541,12 +543,8 @@ struct GTPEngine {
       }
     }
 
-    //On default setup, also override board size to whatever the neural net was initialized with
-    //So that if the net was initalized smaller, we don't fail with a big board
-    if(wasDefault) {
-      boardXSize = nnEval->getNNXLen();
-      boardYSize = nnEval->getNNYLen();
-    }
+    //KataGame fork: KataGo set a default board to the net's size here, for a net smaller than the board. The net is
+    //the game's largest board, so the default board stays the game's standard board (Connect-4's 7 x 6 in 7 x 7).
 
     //If the bot is wrongly sized, we need to create or recreate the bot
     if(bot == NULL || bot->getRootBoard().x_size != boardXSize || bot->getRootBoard().y_size != boardYSize) {
