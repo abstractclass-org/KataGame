@@ -1,11 +1,12 @@
 #ifndef GAME_BOARDHISTORY_H_
 #define GAME_BOARDHISTORY_H_
 
-// Enclosure fork (see ENCLOSURE.md): the history of an Enclosure game. The
-// interface is KataGo's. Moves, legality, the end (after line 120) and the
-// result come from the Enclosure Board; the next player always comes from
-// the position (turns are 1-2-2). Go-only state (ko, superko, encore phases,
-// the button, handicap, komi) keeps its name at a neutral value.
+// KataGame fork (GAMES.md, ENCLOSURE.md): the history of a game. The
+// interface is KataGo's. Moves, legality, the end and the result come from
+// the Board, which reaches the game's rules through the game interface; the
+// next player always comes from the position (Enclosure's turns are 1-2-2).
+// Go-only state (ko, superko, encore phases, the button, handicap, komi)
+// keeps its name at a neutral value.
 
 #include "../core/global.h"
 #include "../core/hash.h"

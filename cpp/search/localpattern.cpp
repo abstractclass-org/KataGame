@@ -44,17 +44,14 @@ void LocalPatternHasher::init(int x, int y, Rand& rand) {
       zobristAtari[dy*xSize + dx] = Hash128(h0,h1);
     }
   }
-  zobristEdge.resize(2 * enclosure::PASS);
-  zobristProtected.resize(enclosure::PASS);
-  for(int i = 0; i<2 * enclosure::PASS; i++) {
+  //KataGame fork: the game's keys come last, so KataGo's keys keep their values. A caller's later draws from rand
+  //come after them (the subtree value bias's ZOBRIST_MOVE_LOCS), so those keep their values only while the game's
+  //count stays the same (Enclosure's 3 x PASS: the edge and protected keys of before the interface).
+  zobristGame.resize(GameInterface::numLocalKeys<GameRules>());
+  for(size_t i = 0; i<zobristGame.size(); i++) {
     uint64_t h0 = rand.nextUInt64();
     uint64_t h1 = rand.nextUInt64();
-    zobristEdge[i] = Hash128(h0,h1);
-  }
-  for(int i = 0; i<enclosure::PASS; i++) {
-    uint64_t h0 = rand.nextUInt64();
-    uint64_t h1 = rand.nextUInt64();
-    zobristProtected[i] = Hash128(h0,h1);
+    zobristGame[i] = Hash128(h0,h1);
   }
 }
 
@@ -62,43 +59,30 @@ LocalPatternHasher::~LocalPatternHasher() {
 }
 
 
-//Enclosure fork. Go hashes point colours and atari around the move's point. An edge has no single
-//point, and nodes alone do not show which of them are joined, so the window is centred on the edge's
-//source point and hashes the edges that reach into it, with their protection (Go's atari flag marks
-//what is fragile now; a protected edge cannot be cut this turn). flipColors swaps the edges' owners.
-static Hash128 hashEdgeWindow(const LocalPatternHasher& hasher, const Board& board, Loc loc, Player pla, bool flipColors) {
+//KataGame fork. Go hashes point colours and atari around the move's point. A game's move is centred on its point
+//(the edge's source point in Enclosure), and the game hashes the position near it (GameInterface::localHash).
+//flipColors swaps the players.
+static Hash128 hashWindow(const LocalPatternHasher& hasher, const Board& board, Loc loc, Player pla, bool flipColors) {
   Hash128 hash = hasher.zobristPla[flipColors ? getOpp(pla) : pla];
   if(loc != Board::PASS_LOC && loc != Board::NULL_LOC) {
     assert(loc >= Board::MOVE_LOC_BASE && loc < Board::NUM_MOVE_LOCS);
-    int cell = Board::actionOfMoveLoc(loc) / enclosure::NOFF;
-    int cx = cell % enclosure::SIZE;
-    int cy = cell / enclosure::SIZE;
-    int xRadius = hasher.xSize/2;
-    int yRadius = hasher.ySize/2;
-    auto inWindow = [&](int x, int y) { return std::abs(x - cx) <= xRadius && std::abs(y - cy) <= yRadius; };
-    for(int owner = 0; owner < 2; owner++) {
-      for(const enclosure::Edge& e : board.pos.edges[owner]) {
-        if(!inWindow(e.ax, e.ay) && !inWindow(e.bx, e.by))
-          continue;
-        int idx = Board::edgeIndex(e);
-        hash ^= hasher.zobristEdge[(flipColors ? 1 - owner : owner) * enclosure::PASS + idx];
-        if(enclosure::contains(board.pos.protected_, e))
-          hash ^= hasher.zobristProtected[idx];
-      }
-    }
+    int cx, cy, channel;
+    GameEncoding::action_point(Board::actionOfMoveLoc(loc), cx, cy, channel);
+    hash ^= GameInterface::localHash<GameRules>(board.pos, cx, cy, hasher.xSize/2, hasher.ySize/2, flipColors,
+                                                hasher.zobristGame.data(), hasher.zobristLocalPattern.data());
   }
   return hash;
 }
 
 Hash128 LocalPatternHasher::getHash(const Board& board, Loc loc, Player pla) const {
-  return hashEdgeWindow(*this, board, loc, pla, false);
+  return hashWindow(*this, board, loc, pla, false);
 }
 
-//Enclosure fork: the hash of the image of board and loc (SymmetryHelpers acts on edges), so a
+//KataGame fork: the hash of the image of board and loc (SymmetryHelpers maps the position), so a
 //symmetry of 0 without flipColors gives getHash.
 Hash128 LocalPatternHasher::getHashWithSym(const Board& board, Loc loc, Player pla, int symmetry, bool flipColors) const {
   if(symmetry == 0)
-    return hashEdgeWindow(*this, board, loc, pla, flipColors);
+    return hashWindow(*this, board, loc, pla, flipColors);
   Board symBoard = SymmetryHelpers::getSymBoard(board, symmetry);
-  return hashEdgeWindow(*this, symBoard, SymmetryHelpers::getSymMoveLoc(loc, symBoard, symmetry), pla, flipColors);
+  return hashWindow(*this, symBoard, SymmetryHelpers::getSymMoveLoc(loc, symBoard, symmetry), pla, flipColors);
 }

@@ -7,9 +7,10 @@
 
 #include <string>
 
+#include "../game/chosenrules.h"
+
 class ConfigParser;
 class GTPSession;
-namespace enclosure { struct Position; }
 
 namespace GTPSessions {
   //A session with the settings cfg, which must outlive it, and the network in nnModelFile.
@@ -17,8 +18,8 @@ namespace GTPSessions {
   //One command line: what the engine prints for it, which is its GTP response. Sets quit after the quit command.
   std::string handle(GTPSession* session, const std::string& line, bool& quit);
   //A new game from the set-up start (the practice bot, games/enclosure/docs/design/22-practice-bot.md), as clear_board starts one
-  //from the standard start: undo stops at it, and its turn number is its edge count. The caller checks the start.
-  void setStart(GTPSession* session, const enclosure::Position& start);
+  //from the standard start: undo stops at it, and its turn number is its moves played. The caller checks the start.
+  void setStart(GTPSession* session, const GameRules::Position& start);
 }
 
 #endif  // COMMAND_GTPSESSION_H_

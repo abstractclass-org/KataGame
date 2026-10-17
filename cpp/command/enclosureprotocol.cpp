@@ -26,6 +26,9 @@
 // KataGo's GTP engine would play, drawn with the chosen-move temperature, seeded by "seed" (a string or an integer,
 // default 0) and the position. A position's turn number is its edge count, so the temperature's early phase follows
 // the game.
+// The rules come through the game interface (GameRules: the moves and the position in the notation, the legal moves,
+// the end, the scores). Enclosure's own parts stay Enclosure's: the history planes' edges, the describe action's edges,
+// nodes and regions, the cut edge, the outcome's text and the position check.
 // Results are reproducible: each evaluation's symmetry comes from its cache key (nnSymmetryFromHash), and the search's
 // random numbers (root noise) from the query's "seed" and the position, so the same request gives the same reply
 // whatever came before, and a search in slices equals one whole search (with one search
@@ -195,19 +198,19 @@ bool buildPosition(
 ) {
   if(!checkVariant(q, f))
     return false;
-  enclosure::Position start;
+  GameRules::Position start;
   if(const json* p = field(q, "position")) {
     string why;
-    if(!p->is_string() || !nt::parse_position(p->get<string>(), start, why)) {
+    if(!p->is_string() || !GameRules::parse_position(p->get<string>(), start, why)) {
       f = {"position", p->is_string() ? why : "a position is a string"};
       return false;
     }
   }
   if(!readHistory(q, start, f))
     return false;
-  board = Board(enclosure::SIZE, enclosure::SIZE);
+  board = Board(GameRules::x_size(start), GameRules::y_size(start));
   board.setPosition(start);
-  pla = start.player == 0 ? P_BLACK : P_WHITE;  // Blue is KataGo's Black
+  pla = board.nextPla();
   Rules rules = Rules::getTrompTaylorish();
   if(const json* k = field(q, "komi")) {
     if(!k->is_number()) {
@@ -219,7 +222,7 @@ bool buildPosition(
   hist = BoardHistory(board, pla, rules, 0);
   // The game's turn number counts edges from the standard start, so a position in the middle of a game is at its
   // edge count: the move temperature's early phase (Search::interpolateEarly) is then the game's, not the query's.
-  hist.setInitialTurnNumber(start.move_count);
+  hist.setInitialTurnNumber(GameRules::moves_played(start));
   if(each)
     each(board.pos);
   if(const json* moves = field(q, "moves")) {
@@ -230,7 +233,7 @@ bool buildPosition(
     for(size_t i = 0; i < moves->size(); i++) {
       const json& m = (*moves)[i];
       string why = "moves are strings";
-      const int action = m.is_string() ? nt::parse_move(m.get<string>(), board.pos, &why) : -1;
+      const int action = m.is_string() ? GameRules::parse_action(board.pos, m.get<string>(), &why) : -1;
       if(action < 0 || !hist.makeBoardMoveTolerant(board, Board::moveLocOfAction(action), pla, false)) {
         f = {"moves", "move " + std::to_string(i) + ": " + why};
         return false;
@@ -264,20 +267,20 @@ vector<string> nodeNames(const vector<enclosure::Edge>& edges) {
   return out;
 }
 
-vector<string> legalNames(const enclosure::Position& p) {
+vector<string> legalNames(const GameRules::Position& p) {
   vector<int> legal;
-  p.legal_actions(legal);
+  GameRules::legal_actions(p, legal);
   vector<string> out;
   for(int a : legal)
-    out.push_back(nt::move_name(a));
+    out.push_back(GameRules::action_text(a));
   std::sort(out.begin(), out.end());
   return out;
 }
 
-json outcome(const enclosure::Position& p) {
-  if(!p.terminal())
+json outcome(const GameRules::Position& p) {
+  if(!GameRules::terminal(p))
     return nullptr;
-  const double d = enclosure::snap(p.scores[0] - p.scores[1]);
+  const double d = enclosure::snap(GameRules::score(p, 0) - GameRules::score(p, 1));
   const string result = d > 0 ? "b+" + nt::score_text(d) : d < 0 ? "r+" + nt::score_text(-d) : "0";
   return {{"result", result}};
 }
@@ -311,11 +314,11 @@ json boardFields(const enclosure::Position& p) {
     edges[name] = sortedEdgeNames(p.edges[side]);
   }
   return {
-    {"position", nt::position_string(p)},
-    {"mover", string(1, nt::PLAYERS[p.player])},
-    {"movesLeft", p.moves_left},
-    {"moveCount", p.move_count},
-    {"scores", {p.scores[0], p.scores[1]}},
+    {"position", GameRules::position_text(p)},
+    {"mover", string(1, nt::PLAYERS[GameRules::next_player(p)])},
+    {"movesLeft", GameRules::turn_moves_left(p)},
+    {"moveCount", GameRules::moves_played(p)},
+    {"scores", {GameRules::score(p, 0), GameRules::score(p, 1)}},
     {"edges", std::move(edges)},
     {"protected", sortedEdgeNames(p.protected_)},
     {"placed", sortedEdgeNames(p.placed)},
@@ -401,11 +404,11 @@ json play(const json& q) {
     return errorReply(q["id"], {"move", "play needs a move"});
   const enclosure::Position& before = board.pos;
   string why;
-  const int action = nt::parse_move(m->get<string>(), before, &why);
+  const int action = GameRules::parse_action(before, m->get<string>(), &why);
   if(action < 0)
     return {{"id", q["id"]}, {"legal", false}, {"why", why}};
   enclosure::Position after = before;
-  after.play(action);  // PASS forfeits the rest of the turn (a timeout)
+  GameRules::play(after, action);  // PASS forfeits the rest of the turn (a timeout)
   const int enemy = 1 - before.player;
   const json cuts = cutEdge(before, after);
   const vector<string> nodesBefore = nodeNames(before.edges[enemy]), nodesAfter = nodeNames(after.edges[enemy]);
@@ -414,8 +417,8 @@ json play(const json& q) {
     if(std::find(nodesAfter.begin(), nodesAfter.end(), n) == nodesAfter.end())
       removed.push_back(n);
   return {
-    {"id", q["id"]}, {"legal", true}, {"move", nt::move_name(action)}, {"cuts", cuts},
-    {"removedNodes", removed}, {"position", nt::position_string(after)}, {"outcome", outcome(after)},
+    {"id", q["id"]}, {"legal", true}, {"move", GameRules::action_text(action)}, {"cuts", cuts},
+    {"removedNodes", removed}, {"position", GameRules::position_text(after)}, {"outcome", outcome(after)},
   };
 }
 
@@ -472,7 +475,8 @@ void acquireEvaluator(const string& file, const string& text, Setup::MaxBatchSiz
   auto make = [&](int concurrent) {
     Rand seedRand("engine");
     return Setup::initializeNNEvaluator(
-      "engine", file, "", *E.cfg, *E.logger, seedRand, concurrent, enclosure::SIZE, enclosure::SIZE, batch, true,
+      "engine", file, "", *E.cfg, *E.logger, seedRand, concurrent, GameRules::MAX_BOARD_LEN, GameRules::MAX_BOARD_LEN,
+      batch, true,
       false, Setup::SETUP_FOR_ANALYSIS
     );
   };
@@ -574,12 +578,12 @@ json loadModel(const json& q) {
   return {{"id", q["id"]}, {"model", modelInfo()}};
 }
 
-// A KataGo move string of the fork ("A10-D10", columns A-S) -> our notation.
+// A move string of KataGo's protocol (Enclosure's: "A10-D10", columns A-S) -> the game's notation.
 json ourMove(const json& m) {
   Loc loc;
-  if(!m.is_string() || !Location::tryOfString(m.get<string>(), enclosure::SIZE, enclosure::SIZE, loc))
+  if(!m.is_string() || !Location::tryOfString(m.get<string>(), GameRules::MAX_BOARD_LEN, GameRules::MAX_BOARD_LEN, loc))
     return m;
-  return nt::move_name(Board::actionOfMoveLoc(loc));
+  return GameRules::action_text(Board::actionOfMoveLoc(loc));
 }
 
 void dropGoFields(json& j) {
@@ -635,10 +639,10 @@ json analysisReply(const json& q, const Board& board, const BoardHistory& hist, 
     static PER_ENGINE float probs[NNPos::MAX_NN_POLICY_SIZE];
     if(E.search->getPolicy(probs)) {
       vector<int> legal;
-      board.pos.legal_actions(legal);
+      GameRules::legal_actions(board.pos, legal);
       vector<std::pair<double, string>> rows;
       for(int a : legal)
-        rows.push_back({probs[a], nt::move_name(a)});
+        rows.push_back({probs[a], GameRules::action_text(a)});
       std::sort(rows.begin(), rows.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
       json policy = json::array();
       for(const auto& [prob, name] : rows)
@@ -705,7 +709,7 @@ json analyze(const json& q) {
   Fail f;
   if(!buildPosition(q, board, hist, pla, f))
     return errorReply(q["id"], f);
-  if(board.pos.terminal())
+  if(board.isGameOver())
     return errorReply(q["id"], {"position", "the game is over"});
   // A position that no game reaches gives numbers that mean nothing: refused, with its reasons (design 04).
   const json check = positionCheck(hist.initialBoard.pos);

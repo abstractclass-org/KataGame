@@ -185,10 +185,10 @@ void TimeControls::getTime(const Board& board, const BoardHistory& hist, double 
   (void)hist;
 
   //Enclosure fork: game-phase constants (games/enclosure/docs/design/08-time-horizons.md): the game-length area in place of the
-  //board area, and the edges played in place of the stones. A whole game then allows for 0.75 x 132 + 15, about 114
+  //board area, and the moves played in place of the stones. An Enclosure game then allows for 0.75 x 132 + 15, about 114
   //edges, against the real 120. The halving below holds: each player places half the edges.
   double boardArea = Board::GAME_LENGTH_AREA;
-  int numStonesOnBoard = board.pos.move_count;
+  int numStonesOnBoard = GameRules::moves_played(board.pos);
 
   //Very crude way to estimate game progress
   double approxTurnsLeftAbsolute;
@@ -304,7 +304,7 @@ void TimeControls::getTime(const Board& board, const BoardHistory& hist, double 
       recommendedTime = edgeIncrement + divideTimeEvenlyForGame(excessMainTime,true,false);
       maxTime = std::min(mainTimeLeft, edgeIncrement + excessMainTime / 5.0);
     }
-    if(board.pos.moves_left == 2)
+    if(GameRules::turn_moves_left(board.pos) > 1)
       maxTime = std::min(maxTime, mainTimeLeft * 0.5);  //the first edge of a turn (the clamps below follow)
   }
   //Byo yomi or canadian time handling

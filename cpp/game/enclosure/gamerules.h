@@ -1,24 +1,28 @@
 #pragma once
 // Enclosure's rules part of the game interface (game/gameinterface.h): each member calls the rules in engine.h and
-// the notation in notation.h. The hash is Board's (board.cpp, Board::syncFromPosition) without the term that the
-// front adds, KataGo's hash of the player to move: its tables come from the same seed in the same order, so the values
-// are the same. The edge count and the edges left in the turn already fix the player to move.
+// the notation in notation.h. The hash is the one that Board's syncFromPosition computed before the interface, without
+// the term that the front adds, KataGo's hash of the player to move: its tables come from Board::initHash's seed, in
+// its order. The edge count and the edges left in the turn already fix the player to move. The optional members keep
+// the engine protocol's moves and the local pattern hash as they were before the interface.
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include "../../core/global.h"
 #include "../../core/hash.h"
 #include "../../core/rand.h"
 #include "../gameinterface.h"
 #include "engine.h"
 #include "notation.h"
+#include "queryposition.h"
 
 namespace enclosure {
 
-// An edge as the action that places it from its lower end (the canonical Edge's a): below PASS.
+// An edge as the action that places it from its end a (the lower end, for a canonical Edge): below PASS.
 inline int edge_action(const Edge& e) {
   return (e.ay * SIZE + e.ax) * NOFF + OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
 }
@@ -48,8 +52,9 @@ struct GameRules {
   static float result(const Position& p) { return p.result(); }
   static double score(const Position& p, int player) { return p.scores[player]; }
 
-  // Board::initHash's Enclosure tables: the edges by owner, the protected and the placed edges, the edge count and
-  // the edges left in the turn.
+  // The tables of the hash: the edges by owner, the protected and the placed edges, the edge count and the edges left
+  // in the turn. They are drawn at the first call, from the seed and in the order that Board::initHash used before the
+  // interface, so the hash keeps its values.
   struct HashTables {
     Hash128 edge[2][PASS];
     Hash128 protectedEdge[PASS];
@@ -77,8 +82,8 @@ struct GameRules {
     }
   };
   static const HashTables& hash_tables() {
-    static const HashTables tables;
-    return tables;
+    static const HashTables hashTables;  // not "tables": engine.h's enclosure::tables
+    return hashTables;
   }
   static Hash128 score_hash(double score, uint64_t salt) {
     uint64_t bits;
@@ -133,6 +138,72 @@ struct GameRules {
   static std::string position_text(const Position& p) { return notation::position_string(p); }
   static bool parse_position(const std::string& text, Position& p, std::string& why) {
     return notation::parse_position(text, p, why);
+  }
+
+  // The engine protocol's moves (GTP, the analysis engine): the edge's two points, source first, such as "D10-D13",
+  // with the column letters A to S (I included, unlike the notation) and the rows 1 to 19. The move server and the
+  // sites read this form.
+  static std::string protocol_point(int x, int y) { return std::string(1, char('A' + x)) + std::to_string(y + 1); }
+  // A point in that form, upper case.
+  static bool parse_protocol_point(const std::string& s, int& x, int& y) {
+    if(s.size() < 2 || s[0] < 'A' || s[0] > 'S')
+      return false;
+    x = s[0] - 'A';
+    int row;
+    if(!Global::tryStringToInt(s.substr(1), row) || row < 1 || row > SIZE)
+      return false;
+    y = row - 1;
+    return true;
+  }
+  static std::string protocol_text(int action) {
+    const int cell = action / NOFF, k = action % NOFF;
+    const int ax = cell % SIZE, ay = cell / SIZE;
+    return protocol_point(ax, ay) + "-" + protocol_point(ax + OFFS[k].dx, ay + OFFS[k].dy);
+  }
+  static bool parse_protocol_text(const std::string& text, int& action) {
+    const std::string s = Global::toUpper(text);
+    const size_t dash = s.find('-');
+    int ax, ay, bx, by;
+    if(dash == std::string::npos || !parse_protocol_point(s.substr(0, dash), ax, ay) ||
+       !parse_protocol_point(s.substr(dash + 1), bx, by))
+      return false;
+    const int dx = bx - ax, dy = by - ay;
+    if(std::abs(dx) > 3 || std::abs(dy) > 3 || (dx == 0 && dy == 0))
+      return false;
+    // The action from the source: the edge with the source as its end a, not canonical.
+    action = edge_action(Edge{int8_t(ax), int8_t(ay), int8_t(bx), int8_t(by)});
+    return true;
+  }
+
+  // The position near a point, for the search's local pattern hash (ENCLOSURE.md, "Subtree value bias"). An edge has no
+  // single point, and nodes alone do not show which of them are joined, so the window hashes the edges of either
+  // player with an end inside it, and whether each is protected (KataGo's atari flag marks what is fragile now; a
+  // protected edge cannot be cut this turn). The keys: each owner's edges by the edge's action, then the protected
+  // edges, in the order that the hasher drew them before the interface. The window of 7 covers a whole edge from its
+  // source (offsets up to 3).
+  static constexpr int NUM_LOCAL_KEYS = 3 * PASS;
+  static constexpr int LOCAL_WINDOW = 7;
+  static Hash128 local_hash(const Position& p, int cx, int cy, int xRadius, int yRadius, bool flipPlayers,
+                            const Hash128* keys) {
+    auto inWindow = [&](int x, int y) { return std::abs(x - cx) <= xRadius && std::abs(y - cy) <= yRadius; };
+    Hash128 h;
+    for(int owner = 0; owner < 2; owner++)
+      for(const Edge& e : p.edges[owner]) {
+        if(!inWindow(e.ax, e.ay) && !inWindow(e.bx, e.by))
+          continue;
+        const int idx = edge_action(e);
+        h ^= keys[(flipPlayers ? 1 - owner : owner) * PASS + idx];
+        if(contains(p.protected_, e))
+          h ^= keys[2 * PASS + idx];
+      }
+    return h;
+  }
+
+  // The analysis engine's field "enclosurePosition" (queryposition.h): the move server sends it.
+  static constexpr const char* QUERY_POSITION_FIELD = "enclosurePosition";
+  template<class Json>
+  static bool parse_query_position(const Json& value, Position& p, std::string& why) {
+    return read_query_position(value, p, why);
   }
 };
 

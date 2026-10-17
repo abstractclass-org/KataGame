@@ -5,9 +5,9 @@
  * Originally from an unreleased project back in 2010, modified since.
  * Authors: brettharrison (original), David Wu (original and later modifications).
  *
- * Enclosure fork: the rules are the verified engine's (game/enclosure/engine.h).
- * Point geometry, player names and the Go hash tables are KataGo's; Go stone
- * logic answers neutrally (ENCLOSURE.md).
+ * KataGame fork: the rules are the game's, through the game interface's rules
+ * part (GameRules, GAMES.md). Point geometry, player names and the Go hash
+ * tables are KataGo's; Go stone logic answers neutrally (ENCLOSURE.md).
  */
 
 #include <algorithm>
@@ -19,9 +19,6 @@
 
 #include "../core/rand.h"
 #include "../core/test.h"
-//The chosen game's rules part (game/gameinterface.h), alone: so every build checks it, and that it compiles without
-//the network encoding part (boardhistory.cpp checks that part).
-#include "../game/chosenrules.h"
 
 using namespace std;
 
@@ -40,11 +37,6 @@ const Hash128 Board::ZOBRIST_PASS_ENDS_PHASE = //Based on sha256 hash of Board::
   Hash128(0x853E097C279EBF4EULL, 0xE3153DEF9E14A62CULL);
 const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOBRIST_GAME_IS_OVER
   Hash128(0xb6f9e465597a77eeULL, 0xf1d583d960a4ce7fULL);
-Hash128 Board::ZOBRIST_EDGE_HASH[2][enclosure::PASS];
-Hash128 Board::ZOBRIST_PROTECTED_HASH[enclosure::PASS];
-Hash128 Board::ZOBRIST_PLACED_HASH[enclosure::PASS];
-Hash128 Board::ZOBRIST_MOVE_COUNT_HASH[enclosure::MAX_MOVES+2];
-Hash128 Board::ZOBRIST_MOVES_LEFT_HASH[3];
 
 //LOCATION (points, as in KataGo)----------------------------------------------------------
 void Location::getAdjacentOffsets(short adj_offsets[8], int x_size)
@@ -104,22 +96,7 @@ int Location::euclideanDistanceSquared(Loc loc0, Loc loc1, int x_size) {
   return dx*dx + dy*dy;
 }
 
-//LOCATION (moves, in the site's notation)------------------------------------------------
-static string pointName(int x, int y) {
-  return string(1, (char)('A' + x)) + Global::intToString(y + 1);
-}
-
-static bool parsePoint(const string& s, int& x, int& y) {
-  if(s.size() < 2 || s[0] < 'A' || s[0] > 'S')
-    return false;
-  x = s[0] - 'A';
-  int row;
-  if(!Global::tryStringToInt(s.substr(1), row) || row < 1 || row > enclosure::SIZE)
-    return false;
-  y = row - 1;
-  return true;
-}
-
+//LOCATION (moves, in the engine protocol's text)-----------------------------------------
 string Location::toString(Loc loc, int x_size, int y_size) {
   (void)x_size; (void)y_size;
   if(loc == Board::NULL_LOC)
@@ -128,11 +105,7 @@ string Location::toString(Loc loc, int x_size, int y_size) {
     return string("pass");
   if(loc < Board::MOVE_LOC_BASE || loc >= Board::NUM_MOVE_LOCS)
     return string("illegalmove:") + Global::intToString((int)loc);
-  int action = Board::actionOfMoveLoc(loc);
-  int cell = action / enclosure::NOFF, k = action % enclosure::NOFF;
-  int ax = cell % enclosure::SIZE, ay = cell / enclosure::SIZE;
-  int bx = ax + enclosure::OFFS[k].dx, by = ay + enclosure::OFFS[k].dy;
-  return pointName(ax, ay) + "-" + pointName(bx, by);
+  return GameInterface::protocolText<GameRules>(Board::actionOfMoveLoc(loc));
 }
 
 string Location::toString(Loc loc, const Board& b) {
@@ -149,20 +122,15 @@ string Location::toStringMach(Loc loc, const Board& b) {
 
 bool Location::tryOfString(const string& str, int x_size, int y_size, Loc& result) {
   (void)x_size; (void)y_size;
-  string s = Global::toUpper(Global::trim(str));
-  if(s == "PASS") {
+  string s = Global::trim(str);
+  if(Global::isEqualCaseInsensitive(s, "pass")) {
     result = Board::PASS_LOC;
     return true;
   }
-  size_t dash = s.find('-');
-  int ax, ay, bx, by;
-  if(dash == string::npos || !parsePoint(s.substr(0, dash), ax, ay) || !parsePoint(s.substr(dash + 1), bx, by))
+  int action;
+  if(!GameInterface::parseProtocolText<GameRules>(s, action) || action < 0 || action >= GameRules::PASS_ACTION)
     return false;
-  int dx = bx - ax, dy = by - ay;
-  if(bx < 0 || bx >= enclosure::SIZE || by < 0 || by >= enclosure::SIZE || std::abs(dx) > 3 || std::abs(dy) > 3 ||
-     (dx == 0 && dy == 0))
-    return false;
-  result = Board::moveLocOfAction((ay * enclosure::SIZE + ax) * enclosure::NOFF + enclosure::OFF_INDEX[dx + 3][dy + 3]);
+  result = Board::moveLocOfAction(action);
   return true;
 }
 
@@ -265,13 +233,13 @@ void Board::copyFrom(const Board& other)
     legalActionsState.store(LEGAL_STALE, std::memory_order_relaxed);
 }
 
-const std::bitset<enclosure::PASS + 1>& Board::legalActions() const {
+const std::bitset<GameRules::NUM_ACTIONS>& Board::legalActions() const {
   if(legalActionsState.load(std::memory_order_acquire) != LEGAL_READY)
     computeLegalActions();
   return legalActionsCache;
 }
 
-void Board::setLegalActions(const std::bitset<enclosure::PASS + 1>& bits) const {
+void Board::setLegalActions(const std::bitset<GameRules::NUM_ACTIONS>& bits) const {
   legalActionsCache = bits;
   legalActionsState.store(LEGAL_READY, std::memory_order_release);
 }
@@ -281,7 +249,7 @@ void Board::computeLegalActions() const {
   if(legalActionsState.compare_exchange_strong(expected, LEGAL_COMPUTING, std::memory_order_acq_rel)) {
     legalActionsCache.reset();
     std::vector<int> actions;
-    pos.legal_actions(actions);
+    GameRules::legal_actions(pos, actions);
     for(int a : actions)
       legalActionsCache.set(a);
     legalActionsState.store(LEGAL_READY, std::memory_order_release);
@@ -295,18 +263,16 @@ void Board::computeLegalActions() const {
 void Board::init(int xS, int yS)
 {
   assert(IS_ZOBRIST_INITALIZED);
-  if(xS != enclosure::SIZE || yS != enclosure::SIZE)
-    throw StringError("Enclosure is played on a 19 x 19 board");
-  x_size = xS;
-  y_size = yS;
+  if(!GameRules::new_game(xS, yS, pos))
+    throw StringError(string("The game ") + GameRules::NAME + " is not played on a " + Global::intToString(xS) +
+                      " x " + Global::intToString(yS) + " board");
   memset(chain_data, 0, sizeof(chain_data));
   memset(chain_head, 0, sizeof(chain_head));
   memset(next_in_chain, 0, sizeof(next_in_chain));
   ko_loc = NULL_LOC;
   numBlackCaptures = 0;
   numWhiteCaptures = 0;
-  Location::getAdjacentOffsets(adj_offsets,x_size);
-  pos = enclosure::Position();
+  syncSizeFromPosition();
   syncFromPosition();
 }
 
@@ -367,64 +333,38 @@ void Board::initHash()
     }
   }
 
-  //Enclosure: edges by owner, protected and placed edges, move count and edges left in the turn.
-  rand.init("Board::initHash() for Enclosure hashes");
-  for(int owner = 0; owner < 2; owner++)
-    for(int i = 0; i < enclosure::PASS; i++)
-      ZOBRIST_EDGE_HASH[owner][i] = nextHash();
-  for(int i = 0; i < enclosure::PASS; i++) {
-    ZOBRIST_PROTECTED_HASH[i] = nextHash();
-    ZOBRIST_PLACED_HASH[i] = nextHash();
-  }
-  for(int i = 0; i < enclosure::MAX_MOVES+2; i++)
-    ZOBRIST_MOVE_COUNT_HASH[i] = nextHash();
-  for(int i = 0; i < 3; i++)
-    ZOBRIST_MOVES_LEFT_HASH[i] = nextHash();
-
   IS_ZOBRIST_INITALIZED = true;
 }
 
-//The canonical edge as an action index: from its lower end (the engine's Edge ordering).
-int Board::edgeIndex(const enclosure::Edge& e) {
-  return (e.ay * enclosure::SIZE + e.ax) * enclosure::NOFF + enclosure::OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
+//A point's owner in the game's terms (-1 none, 0 the first player, 1 the second) as a Color.
+static_assert(C_EMPTY == 0 && C_BLACK == 1 && C_WHITE == 2, "a player's index + 1 is its Color");
+static inline Color colorOfOwner(int8_t owner) {
+  return (Color)(owner + 1);
 }
 
-static Hash128 scoreHash(double score, uint64_t salt) {
-  uint64_t bits;
-  memcpy(&bits, &score, sizeof(bits));
-  return Hash128(Hash::splitMix64(bits ^ salt), Hash::murmurMix(bits + salt));
-}
-
-void Board::setPosition(const enclosure::Position& p) {
+void Board::setPosition(const GameRules::Position& p) {
   pos = p;
+  syncSizeFromPosition();
   syncFromPosition();
+}
+
+void Board::syncSizeFromPosition() {
+  x_size = GameRules::x_size(pos);
+  y_size = GameRules::y_size(pos);
+  Location::getAdjacentOffsets(adj_offsets,x_size);
 }
 
 void Board::syncFromPosition() {
   for(int i = 0; i < MAX_ARR_SIZE; i++)
     colors[i] = C_WALL;
-  for(int y = 0; y < y_size; y++)
-    for(int x = 0; x < x_size; x++)
-      colors[Location::getLoc(x,y,x_size)] = C_EMPTY;
-  Hash128 h;
-  for(int owner = 0; owner < 2; owner++) {
-    Color c = owner == 0 ? C_BLACK : C_WHITE;
-    for(const enclosure::Edge& e : pos.edges[owner]) {
-      colors[Location::getLoc(e.ax,e.ay,x_size)] = c;
-      colors[Location::getLoc(e.bx,e.by,x_size)] = c;
-      h ^= ZOBRIST_EDGE_HASH[owner][edgeIndex(e)];
-    }
-  }
-  for(const enclosure::Edge& e : pos.protected_)
-    h ^= ZOBRIST_PROTECTED_HASH[edgeIndex(e)];
-  for(const enclosure::Edge& e : pos.placed)
-    h ^= ZOBRIST_PLACED_HASH[edgeIndex(e)];
-  h ^= ZOBRIST_MOVE_COUNT_HASH[std::min(pos.move_count, enclosure::MAX_MOVES+1)];
-  h ^= ZOBRIST_MOVES_LEFT_HASH[std::max(0, std::min(pos.moves_left, 2))];
-  h ^= ZOBRIST_PLAYER_HASH[playerOfIndex(pos.player)];
-  h ^= scoreHash(pos.scores[0], 0x9E3779B97F4A7C15ULL);
-  h ^= scoreHash(pos.scores[1], 0xC2B2AE3D27D4EB4FULL);
-  pos_hash = h;
+  int8_t owner[GameRules::MAX_BOARD_LEN * GameRules::MAX_BOARD_LEN];
+  GameRules::pieces(pos, owner);
+  //The game's size (x_size and y_size hold the same), a constant for a game of one size.
+  const int xSize = GameRules::x_size(pos), ySize = GameRules::y_size(pos);
+  for(int y = 0; y < ySize; y++)
+    for(int x = 0; x < xSize; x++)
+      colors[Location::getLoc(x,y,xSize)] = colorOfOwner(owner[y * xSize + x]);
+  pos_hash = GameRules::hash(pos) ^ ZOBRIST_PLAYER_HASH[nextPla()];
   legalActionsState.store(LEGAL_STALE, std::memory_order_release);
 }
 
@@ -445,7 +385,7 @@ double Board::sqrtBoardArea() const {
   return std::sqrt((double)x_size * (double)y_size);
 }
 
-//GO STONES: none in Enclosure--------------------------------------------------------------
+//GO STONES: none in the game---------------------------------------------------------------
 int Board::getChainSize(Loc) const { return 0; }
 int Board::getNumLiberties(Loc) const { return 0; }
 int Board::getNumLibertiesAfterPlay(Loc, Player, int) const { return 0; }
@@ -477,16 +417,16 @@ bool Board::searchIsLadderCapturedAttackerFirst2Libs(Loc, std::vector<Loc>&, std
 //MOVES----------------------------------------------------------------------------------
 
 Player Board::nextPla() const {
-  return playerOfIndex(pos.player);
+  return playerOfIndex(GameRules::next_player(pos));
 }
 
 bool Board::isGameOver() const {
-  return pos.terminal();
+  return GameRules::terminal(pos);
 }
 
 void Board::getLegalMoveLocs(std::vector<Loc>& out) const {
   std::vector<int> actions;
-  pos.legal_actions(actions);
+  GameRules::legal_actions(pos, actions);
   out.clear();
   for(int a : actions)
     out.push_back(moveLocOfAction(a));
@@ -497,7 +437,7 @@ bool Board::isLegalIgnoringKo(Loc loc, Player pla, bool isMultiStoneSuicideLegal
 }
 
 bool Board::isLegal(Loc loc, Player pla, bool) const {
-  if(pla != nextPla() || pos.terminal())
+  if(pla != nextPla() || GameRules::terminal(pos))
     return false;
   if(loc != PASS_LOC && (loc < MOVE_LOC_BASE || loc >= NUM_MOVE_LOCS))
     return false;
@@ -505,7 +445,7 @@ bool Board::isLegal(Loc loc, Player pla, bool) const {
   //step of a descent, search.cpp, where listing all of them cost about 24 us a step).
   if(legalActionsState.load(std::memory_order_acquire) == LEGAL_READY)
     return legalActionsCache.test(actionOfMoveLoc(loc));
-  return pos.is_legal(actionOfMoveLoc(loc));
+  return GameRules::is_legal(pos, actionOfMoveLoc(loc));
 }
 
 bool Board::playMove(Loc loc, Player pla, bool isMultiStoneSuicideLegal) {
@@ -517,7 +457,7 @@ bool Board::playMove(Loc loc, Player pla, bool isMultiStoneSuicideLegal) {
 
 void Board::playMoveAssumeLegal(Loc loc, Player pla) {
   (void)pla;
-  pos.play(actionOfMoveLoc(loc));
+  GameRules::play(pos, actionOfMoveLoc(loc));
   syncFromPosition();
 }
 
@@ -564,7 +504,7 @@ bool Board::isAdjacentOrDiagonalToPla(Loc loc, Player pla) const {
 }
 
 bool Board::isEmpty() const {
-  return pos.move_count == 0;
+  return GameRules::moves_played(pos) == 0;
 }
 
 int Board::numStonesOnBoard() const {
@@ -582,16 +522,13 @@ int Board::numPlaStonesOnBoard(Player pla) const {
 //AREAS AND SCORES-----------------------------------------------------------------------
 
 void Board::calculateArea(Color* result, bool, bool, bool, bool) const {
-  uint8_t inside[2][enclosure::SIZE * enclosure::SIZE];
-  for(int owner = 0; owner < 2; owner++)
-    enclosure::enclosed_area(pos.edges[owner], inside[owner]);  //indexed x * SIZE + y
+  int8_t owner[GameRules::MAX_BOARD_LEN * GameRules::MAX_BOARD_LEN];
+  GameRules::area(pos, owner);
   for(int i = 0; i < MAX_ARR_SIZE; i++)
     result[i] = C_EMPTY;
   for(int y = 0; y < y_size; y++)
-    for(int x = 0; x < x_size; x++) {
-      bool blue = inside[0][x * enclosure::SIZE + y] != 0, red = inside[1][x * enclosure::SIZE + y] != 0;
-      result[Location::getLoc(x,y,x_size)] = blue == red ? C_EMPTY : (blue ? C_BLACK : C_WHITE);
-    }
+    for(int x = 0; x < x_size; x++)
+      result[Location::getLoc(x,y,x_size)] = colorOfOwner(owner[y * x_size + x]);
 }
 
 void Board::calculateIndependentLifeArea(
@@ -602,7 +539,7 @@ void Board::calculateIndependentLifeArea(
 }
 
 double Board::getScore(Player pla) const {
-  return pos.scores[indexOfPlayer(pla)];
+  return GameRules::score(pos, indexOfPlayer(pla));
 }
 
 //TESTING AND IO-------------------------------------------------------------------------
@@ -632,9 +569,9 @@ void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vect
   if(hist != NULL)
     out << "MoveNum: " << hist->size() << " ";
   out << "HASH: " << board.pos_hash << "\n";
-  out << "Line " << board.pos.move_count << ", " << PlayerIO::playerToString(board.nextPla()) << " to move ("
-      << board.pos.moves_left << " left in the turn), scores " << board.pos.scores[0] << " / " << board.pos.scores[1]
-      << "\n";
+  out << "Line " << GameRules::moves_played(board.pos) << ", " << PlayerIO::playerToString(board.nextPla())
+      << " to move (" << GameRules::turn_moves_left(board.pos) << " left in the turn), scores "
+      << GameRules::score(board.pos, 0) << " / " << GameRules::score(board.pos, 1) << "\n";
   for(int y = board.y_size - 1; y >= 0; y--) {
     out << (y + 1 < 10 ? " " : "") << (y + 1) << " ";
     for(int x = 0; x < board.x_size; x++)

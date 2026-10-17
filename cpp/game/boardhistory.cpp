@@ -5,9 +5,6 @@
 #include <algorithm>
 #include <cstring>
 
-//The chosen game's interface, both parts (game/gameinterface.h): so every build checks the network encoding part.
-#include "../game/chosengame.h"
-
 using namespace std;
 
 BoardHistoryModes::BoardHistoryModes()
@@ -319,27 +316,13 @@ Hash128 BoardHistory::getSituationAndSimpleKoAndPrevPosHash(const Board& board, 
   return h;
 }
 
-//The edges of the earlier turns the network sees (Position::history), mixed by turn.
-static Hash128 historyHash(const enclosure::Position& p) {
-  Hash128 h;
-  for(int t = 0; t < enclosure::HISTORY_TURNS; t++) {
-    for(int i = 0; i < p.history_n[t]; i++) {
-      const enclosure::Edge& e = p.history[t][i];
-      uint64_t key = (uint64_t)((e.ay * enclosure::SIZE + e.ax) * enclosure::NOFF +
-                                enclosure::OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3]) * 8 + (uint64_t)t;
-      h.hash0 ^= Hash::splitMix64(key ^ 0xD6E8FEB86659FD93ULL);
-      h.hash1 ^= Hash::murmurMix(key + 0xA0761D6478BD642FULL);
-    }
-  }
-  return h;
-}
-
 Hash128 BoardHistory::getSituationRulesAndKoHash(const Board& board, const BoardHistory& hist, Player nextPlayer, double drawEquivalentWinsForWhite) {
   return getSituationRulesAndKoHash(board, hist, nextPlayer, drawEquivalentWinsForWhite, hist.modes);
 }
 
 Hash128 BoardHistory::getSituationRulesAndKoHash(const Board& board, const BoardHistory& hist, Player nextPlayer, double, const BoardHistoryModes&) {
-  Hash128 hash = getSituationAndSimpleKoHash(board, nextPlayer) ^ historyHash(board.pos);
+  //What the network's inputs read beyond the position's hash (Enclosure: the edges of the earlier turns).
+  Hash128 hash = getSituationAndSimpleKoHash(board, nextPlayer) ^ GameEncoding::input_hash(board.pos);
   //Komi changes the network's inputs and the result (owner, 2026-10-04), so evaluations at different komis must not
   //share a cache entry. Folded in only when nonzero: every hash at komi 0 is as before.
   if(hist.rules.komi != 0.0f) {

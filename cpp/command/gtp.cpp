@@ -272,10 +272,11 @@ static void updateDynamicPDAHelper(
 }
 
 //Enclosure fork (games/enclosure/docs/design/18-play-through-gtp.md): a move for a player who is not to move, or after the game's
-//last edge, is refused. Go lets either colour play at any time; in Enclosure the turn order is fixed (Blue's first
-//turn of one edge, then turns of two), and the game ends after its last edge. Empty when the move may be played.
-static string enclosureTurnError(const Board& board, const BoardHistory& hist, Player pla) {
-  if(hist.isGameFinished || board.pos.terminal())
+//end, is refused. Go lets either colour play at any time; here the position gives the player to move (Enclosure's
+//turn order is fixed: Blue's first turn of one edge, then turns of two), and the game ends where its rules end it.
+//Empty when the move may be played.
+static string turnError(const Board& board, const BoardHistory& hist, Player pla) {
+  if(hist.isGameFinished || board.isGameOver())
     return "the game is over";
   if(pla != hist.presumedNextMovePla)
     return string("it is ") + (hist.presumedNextMovePla == P_BLACK ? "b" : "w") + "'s turn";
@@ -636,16 +637,17 @@ struct GTPEngine {
     return true;
   }
 
-  //Enclosure fork (games/enclosure/docs/design/22-practice-bot.md): a game from a set-up start, as clearBoard starts one from the
-  //standard start. The start is the game's first position, so undo stops there. Its turn number is its edge count, so
-  //the early phase of the move temperature is the game's, as in the engine protocol (command/enclosureprotocol.cpp).
-  void setEnclosureStart(const enclosure::Position& start) {
+  //Enclosure fork (games/enclosure/docs/design/22-practice-bot.md): a game from a set-up start (a position that
+  //GameRules::parse_position reads), as clearBoard starts one from the standard start. The start is the game's first
+  //position, so undo stops there. Its turn number is its moves played (Enclosure's edge count), so the early phase of
+  //the move temperature is the game's, as in the engine protocol (command/enclosureprotocol.cpp).
+  void setStart(const GameRules::Position& start) {
     testAssert(bot->getRootHist().rules == currentRules);
     Board board(bot->getRootBoard().x_size,bot->getRootBoard().y_size);
     board.setPosition(start);
-    Player pla = start.player == 0 ? P_BLACK : P_WHITE; //Blue is KataGo's Black
+    Player pla = board.nextPla();
     BoardHistory hist(board,pla,currentRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
-    hist.setInitialTurnNumber(start.move_count);
+    hist.setInitialTurnNumber(GameRules::moves_played(start));
     vector<Move> newMoveHistory;
     setPositionAndRules(pla,board,hist,board,pla,newMoveHistory);
     clearStatsForNewGame();
@@ -3206,9 +3208,9 @@ bool GTPSession::handle(string line) {
         responseIsError = true;
         response = "Could not parse vertex: '" + pieces[1] + "'";
       }
-      else if(!enclosureTurnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla).empty()) {
+      else if(!turnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla).empty()) {
         responseIsError = true;
-        response = enclosureTurnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla);
+        response = turnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla);
       }
       else {
         bool suc = engine->play(loc,pla);
@@ -3285,9 +3287,9 @@ bool GTPSession::handle(string line) {
         responseIsError = true;
         response = "Could not parse color: '" + pieces[0] + "'";
       }
-      else if(!enclosureTurnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla).empty()) {
+      else if(!turnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla).empty()) {
         responseIsError = true;
-        response = enclosureTurnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla);
+        response = turnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla);
       }
       else {
         bool debug = command == "genmove_debug" || command == "kata-search_debug";
@@ -3954,9 +3956,9 @@ GTPSession* GTPSessions::start(ConfigParser& cfg, const string& nnModelFile) {
   return new GTPSession(cfg,nnModelFile,"","",NULL);
 }
 
-void GTPSessions::setStart(GTPSession* session, const enclosure::Position& start) {
+void GTPSessions::setStart(GTPSession* session, const GameRules::Position& start) {
   session->maybeSaveAvoidPatterns(false); //as clear_board
-  session->engine->setEnclosureStart(start);
+  session->engine->setStart(start);
 }
 
 string GTPSessions::handle(GTPSession* session, const string& line, bool& quit) {

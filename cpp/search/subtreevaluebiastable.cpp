@@ -16,7 +16,8 @@ static void initIfNeeded() {
   if(isInited)
     return;
   Rand rand("ValueBiasTable ZOBRIST STUFF");
-  patternHasher.init(7,7,rand);  //Enclosure fork: 7x7 covers a whole edge from its source (offsets up to 3; owner)
+  //KataGame fork: the game's window (Enclosure's 7 x 7 covers a whole edge from its source), else KataGo's 5 x 5.
+  patternHasher.init(GameInterface::localWindow<GameRules>(),GameInterface::localWindow<GameRules>(),rand);
 
   for(int i = 0; i<Board::NUM_MOVE_LOCS; i++) {
     for(int j = 0; j<2; j++) {

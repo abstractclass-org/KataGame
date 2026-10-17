@@ -7,8 +7,10 @@ reference. The decision and its reasons are design 07 of the engine repository
 (`docs/design/07-game-interface.md`). Enclosure's own design stays in [ENCLOSURE.md](ENCLOSURE.md).
 
 The interface exists. Enclosure implements both parts. Connect-4 (`cpp/game/connect4/`) implements its rules part. The
-policy layout and the backends read the interface (`NNPos`). The rest of the front moves onto it step by step, and the
-map below gives the work of each step.
+front (`Board`, `BoardHistory`), the search, self-play, GTP and the analysis engine reach the rules through the rules
+part. The policy layout and the backends read the interface (`NNPos`). The rest of the network code (the inputs, the
+symmetries, the training rows) still uses Enclosure directly: it moves onto the encoding part step by step, and the map
+below gives the work of each step.
 
 * [The files](#the-files)
 * [Choosing the game](#choosing-the-game)
@@ -27,10 +29,10 @@ map below gives the work of each step.
 | `cpp/game/gameinterface.h` | The contract: every member with its meaning, the two static checks, `GameInterface::checkRules<R>()` and `checkEncoding<E>()`, and `GameInterface::symPoint`, KataGo's symmetry of a point. |
 | `cpp/game/chosenrules.h` | The choice of game, rules part only: the namespace alias `chosengame` and `GameRules`. The Python binding builds against it. |
 | `cpp/game/chosengame.h` | Both parts: `chosenrules.h` and `GameEncoding`. |
-| `cpp/game/<game>/gamerules.h` | The game's rules part: `struct GameRules` in the game's namespace, then its check. |
+| `cpp/game/<game>/gamerules.h` | The game's rules part: `struct GameRules` in the game's namespace, then its check. Enclosure's own position field of the analysis engine is in `game/enclosure/queryposition.h`. |
 | `cpp/game/<game>/gameencoding.h` | The game's network encoding part: `struct GameEncoding`, then its check. |
-| `cpp/game/board.*`, `cpp/game/boardhistory.*` | The front: KataGo's `Board` and `BoardHistory`, which the search calls. They will reach the game through the members only. |
-| `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members against the front's code of today. |
+| `cpp/game/board.*`, `cpp/game/boardhistory.*` | The front: KataGo's `Board` and `BoardHistory`, which the search calls. They reach the game's rules through the members only. |
+| `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, and the defaults of the optional members with a stub game. |
 
 All members are static, and every file is a header. So the compiler sees the same code as in a build for one game, and
 the WebAssembly build, the binding and the standalone tests need no new source file.
@@ -46,8 +48,9 @@ the WebAssembly build, the binding and the standalone tests need no new source f
 - **Other builds** (the WebAssembly module, the fork's standalone tests) define nothing and get Enclosure. So every
   build command of today still works. The Python binding defines `KATAGAME_GAME` for each game that it builds
   (`core/binding/build.sh` in the engine repository).
-- **Every build of `katago` checks both parts:** `board.cpp` includes `chosenrules.h` alone, which also shows that the
-  rules part compiles without the encoding part. `boardhistory.cpp` includes `chosengame.h`.
+- **Every build of `katago` checks both parts:** `board.h` includes `chosengame.h`, so each file that uses the front
+  checks both parts. `rules.cpp`, which includes no `Board`, includes `chosenrules.h` alone: it shows that the rules part
+  compiles without the encoding part.
 
 ## Conventions
 
@@ -70,14 +73,15 @@ the WebAssembly build, the binding and the standalone tests need no new source f
 ## The rules part
 
 `struct GameRules`. The Python binding needs this part, and the encoding part's symmetries when the game has that
-part. It needs KataGo's `core/hash.h` (`Hash128`). Enclosure's `hash` also needs `core/rand.h`: a program that
-calls `hash` links `core/rand.cpp`, `core/hash.cpp` and their dependencies.
+part. It needs KataGo's `core/hash.h` (`Hash128`). Enclosure's `hash` also needs `core/rand.h`, and its protocol's
+parser `core/global.h`: a program that calls them links `core/rand.cpp`, `core/hash.cpp` and their dependencies,
+`core/global.cpp` among them.
 
 | Member | Meaning | Enclosure |
 |---|---|---|
 | `NAME` | The game's name, as in `-DGAME` and the folder. | `"enclosure"` |
 | `Position` | A copyable value: the whole state that the rules read. | `enclosure::Position` (`engine.h`) |
-| `MAX_BOARD_LEN` | The longest side of the game's boards, and the network's board (`NNPos::MAX_BOARD_LEN`). The front will take the build's largest board (`COMPILE_MAX_BOARD_LEN`) from it. | 19 |
+| `MAX_BOARD_LEN` | The longest side of the game's boards, and the network's board (`NNPos::MAX_BOARD_LEN`). The front takes the build's largest board (`COMPILE_MAX_BOARD_LEN`) from it, unless the build asks for a larger one (`USE_BIGGER_BOARDS_EXPENSIVE`). | 19 |
 | `NUM_ACTIONS` | The number of actions, pass included. | `PASS + 1` = 17,329 |
 | `PASS_ACTION` | Pass: `NUM_ACTIONS - 1`. | `PASS` = 17,328 |
 | `new_game(xSize, ySize, p)` | Sets the start position on a board of that size. False when the game is not played on it. | 19 × 19 only |
@@ -99,11 +103,23 @@ calls `hash` links `core/rand.cpp`, `core/hash.cpp` and their dependencies.
 | `position_text(p)` | The one-line position. | `notation::position_string`: the five fields of design 04 |
 | `parse_position(text, p, why)` | Sets `p` from a one-line position, or returns false and the reason. | `notation::parse_position` (the history planes come back empty) |
 
-**Enclosure's hash.** `Board::syncFromPosition` hashes these fields with tables that `Board::initHash` draws: the
-edges by owner, the protected and the placed edges, the edge count, the edges left in the turn and the scores.
-`GameRules` keeps its own copy of those tables. It draws them from the same seed in the same order, so `hash(p)` gives
-the same values. Board's tables and `GameRules`' tables both exist until the front calls `hash`. The player to move is in the hash through the edge
-count and the edges left in the turn, which fix it in every position that a game reaches.
+**Enclosure's hash** covers the edges by owner, the protected and the placed edges, the edge count, the edges left in
+the turn and the scores. Its tables are the ones that `Board::initHash` drew before the interface: `GameRules` draws
+them from the same seed in the same order, at its first call (a function-local static, which is thread safe), so
+`hash(p)` keeps its values. The player to move is in the hash through the edge count and the edges
+left in the turn, which fix it in every position that a game reaches.
+
+### Optional members
+
+A game may leave out an optional member. For each one, `gameinterface.h` has a detector (as the checks have) and a
+helper, which calls the game's member when the game has it, and gives the default when it does not. The front calls
+the helper. The rules part's check requires only that the members of a pair come together.
+
+| Members | Meaning | Default (helper) | Enclosure |
+|---|---|---|---|
+| `protocol_text(action)`, `parse_protocol_text(text, action)` | An action other than pass as the engine protocol (GTP, the analysis engine) writes and reads it. The parser reads trimmed text in any case, does not check legality, and returns false for text that names no action. The front reads and writes pass (`pass`). | `action_text`, and the action whose `action_text` is the text, ignoring case (`protocolText`, `parseProtocolText`). The parser tries each action, so it suits games with few actions. | The form of the move server and the sites: column letters A to S (I included, unlike the notation), such as `D10-D13` |
+| `NUM_LOCAL_KEYS`, `LOCAL_WINDOW`, `local_hash(p, cx, cy, xRadius, yRadius, flipPlayers, keys)` | The position near the point (cx, cy), in the window of xRadius and yRadius: the search's local pattern hash (the subtree value bias, the pattern bonus). The front draws `NUM_LOCAL_KEYS` random keys for it, after KataGo's keys. `flipPlayers` swaps the players. `LOCAL_WINDOW` is the side of the subtree value bias's window (odd), large enough for a move's reach. | Each point of the window on the board hashed with its piece (`pieces`), as KataGo hashes stones: KataGo's keys `zobristLocalPattern` by its colors (empty, the first player, the second), without its atari flag. KataGo's window of 5 (`localHash`, `localWindow`). | The edges of either player with an end in the window, and whether each is protected: the hash of before the interface, byte for byte (3 × 17,328 keys, in the order that the hasher drew them). The window of 7, which covers a whole edge from its source. |
+| `QUERY_POSITION_FIELD`, `parse_query_position(value, p, why)` | A position field of the game's own in an analysis query, beside the generic field `position` (the one-line position): its key, and the reader of its value. The reader is a template on the JSON type, so that the rules part does not need the JSON library. It may throw the JSON library's exceptions, which the analysis engine catches. | None: the analysis engine takes `position` only (`queryPositionField`, `parseQueryPosition`) | `enclosurePosition` (`queryposition.h`): the fields of `Position` as JSON, with the last turns' edges for the history planes, which the one-line position leaves out. The move server sends it. |
 
 ## The network encoding part
 
@@ -157,14 +173,8 @@ These are decided (design 07). Each comes with the step that first needs it.
 
 | Member | Part | What it gives | Enclosure | Without it | Step |
 |---|---|---|---|---|---|
-| The protocol's move text and its parser (optional) | rules | A move as the engine protocol writes and reads it (GTP, the analysis engine) | Today's form: column letters A to S, I included (`Location::toString`, `tryOfString`) | `action_text`, `parse_action` | The rules (abscls-mkd.2) |
-| The position near a point (optional) | rules | The hash of the position in a window around a point, for the local pattern hash | Today's hash of the edges in the window (`search/localpattern.cpp`), byte-identical | A hash of `pieces` in the window | The rules (abscls-mkd.2) |
 | The history planes | encoding | The first plane and the count of the planes that `InputOptions::history` leaves out | The last 4 feature planes | Every game has it | The inputs and the rows (abscls-mkd.3) |
 | A game's own training targets | encoding | The values per point of the slots that the game gives its own meaning, from the game's positions after the row, before KataGo's storage | Today's targets in `trainingwrite.cpp` | Every slot in `TARGETS` that the front does not compute from `pieces` needs it | The inputs and the rows (abscls-mkd.3) |
-
-**Optional members.** For each optional member, `gameinterface.h` gets a detector (as the checks have) and a helper
-that calls the game's member when the game has it, and the default when it does not. The front calls the helper, and
-the check does not require the member. The migrate step of the rules builds the first two.
 
 ## The checks
 
@@ -188,19 +198,24 @@ game/enclosure/../gameinterface.h:295:36: error: static assertion failed: game i
 its policy index, so NUM_ACTIONS is MAX_BOARD_LEN * MAX_BOARD_LEN * POLICY_CHANNELS + 1
 ```
 
-**Enclosure's members equal the front's code of today:** `testgameinterface` replays the 500 games of
-`tests/data/enclosure_games.txt` and 60 random games (with timeout passes and komi). A second position, played through
-`GameRules::play` only, follows each game. At each position it compares:
+**Enclosure's members, and the defaults:** `testgameinterface` replays the 500 games of
+`tests/data/enclosure_games.txt` and 60 random games (with timeout passes and komi). The front calls the rules part,
+so the rules part has one copy. Where the front still has a copy of a member, the test compares the two. At each
+position it checks:
 
-- the rules part with `Board` and `BoardHistory`: the player to move and the edges left (against the 1-2-2 turn
-  order), terminal, the legal actions, `is_legal` (every action at each 200th position), the scores, the hash (with
-  the player's hash, `Board::pos_hash`), the pieces (`Board::colors`), the area (`Board::calculateArea`), the moves
-  and the position in the notation (each read back), and the result at the end.
-- the encoding part with `NNInputs` and `SymmetryHelpers`: the inputs (`fillRowV8` with and without history and at the
-  game's komi, and `fillRowV8Packed` at each symmetry), the input hash (the network cache's key), the policy index
-  (`NNPos::locToPos`), the image position and the action map (the images of the legal actions are the image's legal
-  actions).
-- the constants with `NNPos`, `NNInputs` and `Board`.
+- the rules part against itself: the player to move and the edges left (against the 1-2-2 turn order), `is_legal`
+  against the legal actions (every action at each 200th position), the moves and the position in the notation and the
+  engine protocol's moves (each read back), and the result at the end.
+- the encoding part against `NNInputs`, `NNPos` and `SymmetryHelpers`: the inputs (`fillRowV8` with and without history
+  and at the game's komi, and `fillRowV8Packed` at each symmetry), the policy index (`NNPos::locToPos`), the image
+  position and the action map (the images of the legal actions are the image's legal actions).
+- the constants that `NNPos` and `SymmetryHelpers` still hold.
+
+It also checks the optional members: Enclosure's (the protocol's moves `A10-D10` and `S19-P16`, through `Location`
+too, the window's keys and the query field), and the defaults with a stub game that has none of them (the protocol's
+text read back in any case, and the window's hash at a corner, key by key, with and without `flipPlayers`). The front
+has no copy of the hash any more, so the test pins the values of KataGame before the interface at three positions of
+the first game: `pos_hash`, the situation hash and the local pattern hash at three symmetries.
 
 Build and run it as the other standalone tests (`tests/enclosure/build.sh`), from `katagame/cpp`:
 
@@ -233,56 +248,61 @@ its calls, and upstream releases still merge with few conflicts. The fork's test
 
 ### The front (`cpp/game/board.*`, `cpp/game/boardhistory.*`)
 
-These files are inside the game layer, but they hold Enclosure's code that the members replace. The search step moves
-them onto the members.
+These files are inside the game layer, but they held Enclosure's code that the members replace. The step of the rules
+(abscls-mkd.2) moved them onto the members and deleted their copies of the members' code: every row is done.
 
 | Front | Member |
 |---|---|
-| `Board(x, y)`, `Board::init`: 19 × 19 only, `enclosure::Position()` | `new_game` (the front's error names `NAME`) |
-| `x_size`, `y_size` | `x_size`, `y_size` |
-| `colors` (`syncFromPosition`) | `pieces` |
-| `pos_hash` (`syncFromPosition`), the Enclosure tables of `initHash` (`ZOBRIST_EDGE_HASH`, `_PROTECTED_`, `_PLACED_`, `_MOVE_COUNT_`, `_MOVES_LEFT_`), `edgeIndex` | `hash`, then `^ ZOBRIST_PLAYER_HASH[nextPla()]` as today. The tables move to the game, and `initHash` calls `hash` once, so that the first call in a search does not draw them. The situation hashes add the player's hash again, so the two cancel: that is today's behaviour, and a change of it changes the keys. |
-| `legalActions`, `getLegalMoveLocs`, `computeLegalActions`, `bitset<enclosure::PASS + 1>` | `legal_actions`, `bitset<NUM_ACTIONS>`. The cache of the legal set stays in the front. |
-| `isLegal` | `is_legal` before the legal set exists, as today |
-| `nextPla` | `next_player` |
-| `isGameOver` | `terminal` |
-| `isEmpty` | `moves_played(p) == 0` |
-| `playMoveAssumeLegal`, `playMoveRecorded`, `undo`, `MoveRecord::before` | `play`, and a copy of `Position` |
-| `getScore` | `score` |
-| `calculateArea`, `calculateIndependentLifeArea` | `area` |
-| `setPosition(enclosure::Position)` | `setPosition(GameRules::Position)` |
-| `MOVE_LOC_BASE`, `NUM_MOVE_LOCS`, `moveLocOfAction`, `actionOfMoveLoc` | Stay in the front: a move `Loc` is `MOVE_LOC_BASE` + action, with `NUM_MOVE_LOCS = MOVE_LOC_BASE + PASS_ACTION` and pass from `PASS_ACTION`. |
-| `scoreUnit()` | `SCORE_UNIT` |
-| `TIME_SCALE`, `GAME_LENGTH_AREA` | `GAME_LENGTH / GO_GAME_LENGTH` (`GO_GAME_LENGTH` stays: it is Go's) |
-| `printBoard` (the position's fields) | `position_text` |
-| `Location::toString`, `tryOfString` (moves in letters A-S, with I) | The protocol's move text and its parser (optional), which Enclosure fills with this form. Without it: `action_text`, `parse_action`. |
-| `BoardHistory::endAndScoreGameNow` (margin from `getScore`) | `score` |
-| `BoardHistory` `historyHash` (in `getSituationRulesAndKoHash`) | `input_hash` |
-| `COMPILE_MAX_BOARD_LEN` (default 19) | `MAX_BOARD_LEN` |
+| `Board(x, y)`, `Board::init`: 19 × 19 only, `enclosure::Position()` | Done: `new_game` (the front's error names `NAME`) |
+| `x_size`, `y_size` | Done: `x_size`, `y_size`, also in `setPosition` |
+| `colors` (`syncFromPosition`) | Done: `pieces` |
+| `pos_hash` (`syncFromPosition`), the Enclosure tables of `initHash` (`ZOBRIST_EDGE_HASH`, `_PROTECTED_`, `_PLACED_`, `_MOVE_COUNT_`, `_MOVES_LEFT_`), `edgeIndex` | Done: `hash`, then `^ ZOBRIST_PLAYER_HASH[nextPla()]` as before. The tables moved to the game, which draws them at its first call. The situation hashes add the player's hash again, so the two cancel: that is the behaviour of before, and a change of it changes the keys. |
+| `legalActions`, `getLegalMoveLocs`, `computeLegalActions`, `bitset<enclosure::PASS + 1>` | Done: `legal_actions`, `bitset<NUM_ACTIONS>`. The cache of the legal set stays in the front. |
+| `isLegal` | Done: `is_legal` before the legal set exists, as before |
+| `nextPla` | Done: `next_player` |
+| `isGameOver` | Done: `terminal` |
+| `isEmpty` | Done: `moves_played(p) == 0` |
+| `playMoveAssumeLegal`, `playMoveRecorded`, `undo`, `MoveRecord::before` | Done: `play`, and a copy of `Position` |
+| `getScore` | Done: `score` |
+| `calculateArea`, `calculateIndependentLifeArea` | Done: `area` |
+| `setPosition(enclosure::Position)` | Done: `setPosition(GameRules::Position)` |
+| `MOVE_LOC_BASE`, `NUM_MOVE_LOCS`, `moveLocOfAction`, `actionOfMoveLoc` | Done: they stay in the front. A move `Loc` is `MOVE_LOC_BASE` + action, with `NUM_MOVE_LOCS = MOVE_LOC_BASE + PASS_ACTION` and pass from `PASS_ACTION`. |
+| `scoreUnit()` | Done: `SCORE_UNIT` |
+| `TIME_SCALE`, `GAME_LENGTH_AREA` | Done: `GAME_LENGTH / GO_GAME_LENGTH` (`GO_GAME_LENGTH` stays: it is Go's) |
+| `printBoard` (the position's fields) | Done: `moves_played`, `turn_moves_left` and `score`, so that its lines (GTP's `showboard`, the logs) stay as they were. `position_text` would change them. |
+| `Location::toString`, `tryOfString` (moves in letters A-S, with I) | Done: the protocol's move text and its parser (optional, `protocolText`, `parseProtocolText`), which Enclosure fills with this form. The front keeps `pass` and `null`. |
+| `BoardHistory::endAndScoreGameNow` (margin from `getScore`) | Done: `score` |
+| `BoardHistory` `historyHash` (in `getSituationRulesAndKoHash`) | Done: `input_hash` |
+| `COMPILE_MAX_BOARD_LEN` (default 19) | Done: `MAX_BOARD_LEN`, unless the build asks for more (`USE_BIGGER_BOARDS_EXPENSIVE`) |
 
 ### The search, self-play and the engines (the rules)
 
+The step of the rules (abscls-mkd.2) did this section. The search, self-play, GTP and the analysis engine name no
+game's namespace. Where a row keeps a front name (`Board::GAME_LENGTH_AREA`, `NNPos::SCORE_SCALE`), the name's
+definition reads the member.
+
 | File | Reference | Member |
 |---|---|---|
-| `command/analysis.cpp` | The query field `enclosurePosition`: `enclosure::Position`'s fields, read with `enclosure::SIZE`, `MAX_MOVES`, `HISTORY_TURNS` and `make_edge`, then `Board::setPosition` | A generic position field read by `parse_position`. The history stays outside the one-line position (design 04). `enclosurePosition` stays as an alias: the move server sends it. Its parser becomes an Enclosure extra. |
-| `command/analysis.cpp` | `Board::NUM_MOVE_LOCS` (`avoidMoveUntilByLoc`) | Front (stays) |
-| `command/enclosureprotocol.cpp`, `.h` | Enclosure's engine protocol (design 04): `notation::move_name`, `parse_move`, `position_string` and `parse_position`, `position_check::check`, the `enclosed_area` polygons (the describe action), `snap(scores)` (the outcome), `board.pos.legal_actions` and `terminal`, `enclosure::SIZE` (the board's and the network's size) | `action_text`, `parse_action`, `position_text`, `parse_position`, `legal_actions`, `terminal`, `score`, `result`, `x_size`, `MAX_BOARD_LEN`. The position check and the describe action stay Enclosure's. |
+| `command/analysis.cpp` | The query field `enclosurePosition`: `enclosure::Position`'s fields, read with `enclosure::SIZE`, `MAX_MOVES`, `HISTORY_TURNS` and `make_edge`, then `Board::setPosition` | Done: the generic field `position`, read by `parse_position`. The history stays outside the one-line position (design 04). `enclosurePosition` stays through the game's own position field (optional, `QUERY_POSITION_FIELD`): the move server sends it. Its parser is an Enclosure extra (`game/enclosure/queryposition.h`). |
+| `command/analysis.cpp` | `Board::NUM_MOVE_LOCS` (`avoidMoveUntilByLoc`) | Done: front (stays) |
+| `command/enclosureprotocol.cpp`, `.h` | Enclosure's engine protocol (design 04): `notation::move_name`, `parse_move`, `position_string` and `parse_position`, `position_check::check`, the `enclosed_area` polygons (the describe action), `snap(scores)` (the outcome), `board.pos.legal_actions` and `terminal`, `enclosure::SIZE` (the board's and the network's size) | Done: `action_text`, `parse_action`, `position_text`, `parse_position`, `legal_actions`, `terminal`, `play`, `next_player`, `turn_moves_left`, `moves_played`, `score`, `x_size`, `MAX_BOARD_LEN`. Enclosure's own parts stay: the history planes' edges, the describe action (edges, nodes, regions), the cut edge, the outcome's text and the position check. |
 | `command/enclosureengine.cpp` | The command `enclosure-engine`, `configs/analysis_enclosure.cfg` | Names (see "Names that stay") |
-| `command/gtp.cpp` | `setEnclosureStart(enclosure::Position)`, `board.setPosition` | A start from `parse_position` (`GameRules::Position`) |
-| `command/gtp.cpp` | `board.pos.terminal`, `enclosureTurnError` (the player to move comes from the position) | `terminal`, `next_player` |
-| `command/gtp.cpp` | `Board::GAME_LENGTH_AREA` (resignation), `NNPos::SCORE_SCALE` (the resignation bounds) | `GAME_LENGTH`, `SCORE_SCALE` (through the front's names) |
-| `command/gtpsession.h` | `setStart(enclosure::Position)` | `GameRules::Position` |
-| `search/timecontrols.cpp` | `GAME_LENGTH_AREA`, `board.pos.move_count`, `board.pos.moves_left == 2` | `GAME_LENGTH`, `moves_played`, `turn_moves_left(p) > 1` |
-| `search/localpattern.cpp`, `.h` | The pattern hash: Zobrist keys for each edge (`2 × enclosure::PASS`) and protected edge, `Board::edgeIndex`, the move's source point (`actionOfMoveLoc / NOFF`, `enclosure::SIZE`), `board.pos.edges`, `protected_`, `contains` | The move's point: `action_point`. The window's content: the position near a point (optional), which Enclosure fills with this edge hash. Without it: a hash of `pieces` in the window. |
-| `search/search.cpp`, `search.h`, `searchhelpers.cpp`, `searchexplorehelpers.cpp`, `searchresults.cpp`, `patternbonustable.cpp`, `subtreevaluebiastable.cpp` | `Board::NUM_MOVE_LOCS`, `MOVE_LOC_BASE` | Front (stays) |
-| `search/search.cpp`, `searchhelpers.cpp`, `searchresults.cpp`, `reportedsearchvalues.cpp` | `rootBoard.scoreUnit()` | `SCORE_UNIT` (through `Board::scoreUnit`) |
-| `search/searchhelpers.cpp` | `Board::GAME_LENGTH_AREA` (the half-lives of `interpolateEarly`) | `GAME_LENGTH` |
-| `program/play.cpp` | `Board::GAME_LENGTH_AREA` (the earliest resignation, early forks) | `GAME_LENGTH` |
-| `program/play.cpp` | `NNPos::SCORE_SCALE` (the bounds of the komi spreads) | `SCORE_SCALE` |
-| `program/play.cpp` | `endAndScoreGameNow(board, finalOwnership)`, `calculateArea` (final full area) | `area` |
-| `program/playutils.cpp` | `NNPos::SCORE_SCALE`, `SCORE_TARGET_CAP` (score steps and caps), `Board::GAME_LENGTH_AREA` (the opening moves), `Board::NUM_MOVE_LOCS` | `SCORE_SCALE`, `GAME_LENGTH`, front |
-| `command/evalsgf.cpp`, `command/writetrainingdata.cpp`, `program/playutils.cpp` | `endAndScoreGameNow(board, area)`, `calculateArea` | `area` |
-| `search/search.cpp` | `rootBoard.calculateArea` (the root's safe area) | `area` |
+| `command/gtp.cpp` | `setEnclosureStart(enclosure::Position)`, `board.setPosition` | Done: `setStart(GameRules::Position)`, a start that `parse_position` reads |
+| `command/gtp.cpp` | `board.pos.terminal`, `enclosureTurnError` (the player to move comes from the position) | Done: `terminal` (`Board::isGameOver`), `next_player`, in `turnError` |
+| `command/gtp.cpp` | `Board::GAME_LENGTH_AREA` (resignation), `NNPos::SCORE_SCALE` (the resignation bounds) | Done: `GAME_LENGTH` (through `Board`), `SCORE_SCALE` (through `NNPos`, abscls-mkd.4) |
+| `command/gtpsession.h` | `setStart(enclosure::Position)` | Done: `GameRules::Position` |
+| `search/timecontrols.cpp` | `GAME_LENGTH_AREA`, `board.pos.move_count`, `board.pos.moves_left == 2` | Done: `GAME_LENGTH`, `moves_played`, `turn_moves_left(p) > 1` |
+| `search/localpattern.cpp`, `.h` | The pattern hash: Zobrist keys for each edge (`2 × enclosure::PASS`) and protected edge, `Board::edgeIndex`, the move's source point (`actionOfMoveLoc / NOFF`, `enclosure::SIZE`), `board.pos.edges`, `protected_`, `contains` | Done: the move's point from `action_point`. The window's content: the position near a point (optional, `localHash`), which Enclosure fills with this edge hash, with its keys drawn as before. Without it: a hash of `pieces` in the window. |
+| `search/search.cpp`, `search.h`, `searchhelpers.cpp`, `searchexplorehelpers.cpp`, `searchresults.cpp`, `patternbonustable.cpp`, `subtreevaluebiastable.cpp` | `Board::NUM_MOVE_LOCS`, `MOVE_LOC_BASE` | Done: front (stays) |
+| `search/subtreevaluebiastable.cpp` | The window of 7 × 7, so that it covers a whole edge (KataGo's is 5 × 5) | Done: `LOCAL_WINDOW` (optional, given with the position near a point, through `localWindow`) |
+| `search/search.cpp`, `searchhelpers.cpp`, `searchresults.cpp`, `reportedsearchvalues.cpp` | `rootBoard.scoreUnit()` | Done: `SCORE_UNIT` (through `Board::scoreUnit`) |
+| `search/searchhelpers.cpp` | `Board::GAME_LENGTH_AREA` (the half-lives of `interpolateEarly`) | Done: `GAME_LENGTH` |
+| `program/play.cpp` | `Board::GAME_LENGTH_AREA` (the earliest resignation, early forks) | Done: `GAME_LENGTH` |
+| `program/play.cpp` | `NNPos::SCORE_SCALE` (the bounds of the komi spreads) | Done: `SCORE_SCALE` (through `NNPos`, abscls-mkd.4) |
+| `program/play.cpp` | `endAndScoreGameNow(board, finalOwnership)`, `calculateArea` (final full area) | Done: `area` |
+| `program/playutils.cpp` | `NNPos::SCORE_SCALE`, `SCORE_TARGET_CAP` (score steps and caps), `Board::GAME_LENGTH_AREA` (the opening moves), `Board::NUM_MOVE_LOCS` | Done: `SCORE_SCALE` and the cap (through `NNPos`, abscls-mkd.4), `GAME_LENGTH`, front |
+| `command/evalsgf.cpp`, `command/writetrainingdata.cpp`, `program/playutils.cpp` | `endAndScoreGameNow(board, area)`, `calculateArea` | Done: `area` |
+| `search/search.cpp` | `rootBoard.calculateArea` (the root's safe area) | Done: `area` |
 
 ### The network inputs, the symmetries and the training rows
 
@@ -306,7 +326,7 @@ them onto the members.
 | `dataio/trainingwrite.cpp` | `enclosure::SIZE`, `N_POINTS`, `Board::indexOfPlayer` | `x_size`, `y_size`, `next_player` |
 | `dataio/trainingwrite.cpp` | `NNPos::SCORE_SCALE` (score bins, the q-value score's storage), `SCORE_TARGET_CAP` | `SCORE_SCALE` |
 | `dataio/trainingwrite.h` | The row format's comments (C5-7, C68, C69, C75) | `TARGETS` |
-| `cpp/game/boardhistory.cpp` | `historyHash` | `input_hash` |
+| `cpp/game/boardhistory.cpp` | `historyHash` | Done (the step of the rules): `input_hash` |
 
 ### The policy layout and the backends
 
@@ -351,6 +371,23 @@ Two files beside the trainer also hold Enclosure's facts, for the trainer's step
 - `python/export_model_pytorch.py`: the export of the policy convolution (`NUM_OFFSETS` channels for each output),
   and the V9 inputs (7 global inputs) in the model version.
 - `python/shuffle.py`: the rows' C5-7 channels and V9's 7 global inputs (`pad_global_inputs_to_widest`).
+
+### Enclosure's assumptions that stay in the front and the search
+
+These do not name Enclosure, but they hold for Enclosure's rules only. Each waits for the step of a second game that
+needs it:
+
+- `search/timecontrols.cpp`: an edge counts half the time increment (`increment / 2`), since Enclosure's increment
+  comes once a turn of two edges. A game whose turns have one move needs its own count of moves for a turn.
+- `BoardHistory::isLegalTolerant`: a pass is allowed at any time, as Enclosure's timeout pass. A game whose rules have
+  no pass needs the front to refuse it in GTP and the analysis engine.
+- `Board::simpleRepetitionBoundGt` and `KoHashTable`: a position never recurs (Enclosure's edge count only rises), so
+  the graph search merges transposed turns. A game whose positions can recur needs KataGo's repetition handling.
+- `Board::DEFAULT_LEN`: the default board (`Board()`) is square, 19 or the largest board. A game whose standard board
+  is not square (Connect-4's 7 × 6) needs a default size of its own.
+- `command/enclosureprotocol.cpp`, `enclosureengine.cpp`: Enclosure's engine protocol (design 04), built into every
+  `katago` binary. It reaches the rules through the members, and its own parts are Enclosure's, so a build of another
+  game must leave it out.
 
 ### Names that stay
 

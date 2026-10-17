@@ -12,18 +12,18 @@ struct LocalPatternHasher {
   std::vector<Hash128> zobristLocalPattern;
   std::vector<Hash128> zobristPla;
   std::vector<Hash128> zobristAtari;
-  //Enclosure fork: by owner and edge index, and by edge index for protected edges.
-  std::vector<Hash128> zobristEdge;
-  std::vector<Hash128> zobristProtected;
+  //KataGame fork: the keys of the game's own hash of the window (GameInterface::numLocalKeys).
+  std::vector<Hash128> zobristGame;
 
   LocalPatternHasher();
   ~LocalPatternHasher();
 
   void init(int xSize, int ySize, Rand& rand);
 
-  //Enclosure fork: loc is a move. The window (xSize by ySize points) is centred on the edge's source
-  //point, and hashes every edge of either player with an endpoint inside it, and whether it is protected
-  //(owner, 2026-09-29; ENCLOSURE.md, "Subtree value bias").
+  //KataGame fork: loc is a move. The window (xSize by ySize points) is centred on the move's point
+  //(GameEncoding::action_point) and hashes the position near it: the game's local_hash (Enclosure's: every edge
+  //of either player with an endpoint inside it, and whether it is protected; ENCLOSURE.md, "Subtree value bias"),
+  //else the pieces in the window, as KataGo hashes stones (GameInterface::localHash).
   Hash128 getHash(const Board& board, Loc loc, Player pla) const;
 
   //Returns the hash that would occur if symmetry were applied to both board and loc.

@@ -62,6 +62,30 @@
  *   parse_position(text, p, why)
  *                           bool: sets p from a one-line position, or returns false with the reason in why.
  *
+ * Optional members of the rules part. A game may leave each out: the front calls the helper below, which calls the
+ * game's member when the game has it and gives the default when it does not.
+ *   protocol_text(action), parse_protocol_text(text, action)
+ *                           std::string, bool: an action other than pass as the engine protocol (GTP, the analysis
+ *                           engine) writes and reads it. The parser reads text as it comes (trimmed, in any case),
+ *                           does not check legality, and returns false for text that names no action. The front reads
+ *                           and writes pass ("pass"). A game gives both or neither. Default: action_text, and the
+ *                           action whose action_text is text, ignoring case (protocolText, parseProtocolText).
+ *   NUM_LOCAL_KEYS, LOCAL_WINDOW, local_hash(p, cx, cy, xRadius, yRadius, flipPlayers, keys)
+ *                           int, int, Hash128: the position near the point (cx, cy), in the window of the points (x, y)
+ *                           with |x - cx| <= xRadius and |y - cy| <= yRadius: the local pattern hash of the search
+ *                           (the subtree value bias, the pattern bonus). keys holds the NUM_LOCAL_KEYS random keys
+ *                           that the front draws for the game. flipPlayers swaps the two players. LOCAL_WINDOW is the
+ *                           side of the subtree value bias's window (odd), large enough for a move's reach. A game
+ *                           gives all three or none. Default: each point of the window hashed with its piece, as
+ *                           KataGo hashes stones, in KataGo's window of 5 (localHash, localWindow).
+ *   QUERY_POSITION_FIELD, parse_query_position(value, p, why)
+ *                           const char*, bool: a position field of the game's own in an analysis query, beside the
+ *                           generic field "position" (the one-line position): its key, and the reader of its value, a
+ *                           JSON value (a template on the JSON type, so that the rules part does not need the JSON
+ *                           library). The reader may throw the JSON library's exceptions, which the analysis engine
+ *                           catches (the WebAssembly build has no analysis engine). A game gives both or neither.
+ *                           Default: none.
+ *
  * The network encoding part (struct E):
  *   Rules                   the game's rules part (its GameRules).
  *   NUM_SPATIAL_INPUTS      int: the input planes that the game writes. The front puts KataGo's on-board plane
@@ -96,6 +120,8 @@
  *                           resignation, early forks, the opening moves, the time controls).
  */
 
+#include <algorithm>
+#include <cstdint>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -136,6 +162,8 @@ inline void symPoint(int& x, int& y, int symmetry, int xSize, int ySize) {
 struct SetEntry {
   void operator()(int x, int y, int plane) const;
 };
+//A JSON value for the detection of parse_query_position, a template on the JSON type.
+struct QueryValue {};
 
 //Each detector is true when the expression (the rest of the arguments) is valid and converts to the type.
 #define GAMEINTERFACE_DETECT(NAME, TYPE, ...) \
@@ -176,6 +204,18 @@ namespace rules {
   GAMEINTERFACE_DETECT(HasParsePosition, bool,
                        G::parse_position(std::declval<const std::string&>(), std::declval<P<G>&>(),
                                          std::declval<std::string&>()))
+  //The optional members.
+  GAMEINTERFACE_DETECT(HasProtocolText, std::string, G::protocol_text(0))
+  GAMEINTERFACE_DETECT(HasParseProtocolText, bool,
+                       G::parse_protocol_text(std::declval<const std::string&>(), std::declval<int&>()))
+  GAMEINTERFACE_DETECT(HasNumLocalKeys, int, std::integral_constant<int, G::NUM_LOCAL_KEYS>::value)
+  GAMEINTERFACE_DETECT(HasLocalWindow, int, std::integral_constant<int, G::LOCAL_WINDOW>::value)
+  GAMEINTERFACE_DETECT(HasLocalHash, Hash128,
+                       G::local_hash(std::declval<const P<G>&>(), 0, 0, 0, 0, false, (const Hash128*)nullptr))
+  GAMEINTERFACE_DETECT(HasQueryPositionField, const char*, G::QUERY_POSITION_FIELD)
+  GAMEINTERFACE_DETECT(HasParseQueryPosition, bool,
+                       G::template parse_query_position<QueryValue>(std::declval<const QueryValue&>(),
+                                                                    std::declval<P<G>&>(), std::declval<std::string&>()))
 }
 
 template<class R> constexpr bool checkRules() {
@@ -220,7 +260,114 @@ template<class R> constexpr bool checkRules() {
                 "std::string& why) -> bool");
   if constexpr(HasNumActions<R>::value && HasPassAction<R>::value)
     static_assert(R::PASS_ACTION == R::NUM_ACTIONS - 1, "game interface, rules part: PASS_ACTION is the last action");
+  static_assert(HasProtocolText<R>::value == HasParseProtocolText<R>::value,
+                "game interface, rules part: the game gives protocol_text(int action) -> std::string and "
+                "parse_protocol_text(const std::string&, int& action) -> bool together, or neither");
+  static_assert(HasNumLocalKeys<R>::value == HasLocalHash<R>::value && HasLocalWindow<R>::value == HasLocalHash<R>::value,
+                "game interface, rules part: the game gives NUM_LOCAL_KEYS (constexpr int), LOCAL_WINDOW (constexpr "
+                "int) and local_hash(const Position&, int cx, int cy, int xRadius, int yRadius, bool flipPlayers, "
+                "const Hash128* keys) -> Hash128 together, or none");
+  if constexpr(HasLocalWindow<R>::value)
+    static_assert(R::LOCAL_WINDOW > 0 && R::LOCAL_WINDOW % 2 == 1, "game interface, rules part: LOCAL_WINDOW is odd");
+  static_assert(HasQueryPositionField<R>::value == HasParseQueryPosition<R>::value,
+                "game interface, rules part: the game gives QUERY_POSITION_FIELD (const char*) and the template "
+                "parse_query_position(const Json&, Position&, std::string& why) -> bool together, or neither");
   return true;
+}
+
+//The helpers of the optional members: each calls the game's member when the game has it, else gives the default.
+
+//An action other than pass as the engine protocol writes it.
+template<class R> std::string protocolText(int action) {
+  if constexpr(rules::HasProtocolText<R>::value)
+    return R::protocol_text(action);
+  else
+    return R::action_text(action);
+}
+
+//The action other than pass that text names in the engine protocol, legal or not. False when it names none. The
+//default compares text with action_text of each action, so it suits games with few actions.
+template<class R> bool parseProtocolText(const std::string& text, int& action) {
+  if constexpr(rules::HasParseProtocolText<R>::value)
+    return R::parse_protocol_text(text, action);
+  else {
+    auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c; };
+    auto same = [&](char a, char b) { return lower(a) == lower(b); };
+    for(int a = 0; a < R::PASS_ACTION; a++) {
+      const std::string name = R::action_text(a);
+      if(name.size() == text.size() && std::equal(name.begin(), name.end(), text.begin(), same)) {
+        action = a;
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+//The random keys that the front draws for the game's local_hash: 0 without it.
+template<class R> constexpr int numLocalKeys() {
+  if constexpr(rules::HasLocalHash<R>::value)
+    return R::NUM_LOCAL_KEYS;
+  else
+    return 0;
+}
+
+//The side of the subtree value bias's window: the game's, else KataGo's 5.
+template<class R> constexpr int localWindow() {
+  if constexpr(rules::HasLocalHash<R>::value)
+    return R::LOCAL_WINDOW;
+  else
+    return 5;
+}
+
+//The position near (cx, cy) in the window of xRadius and yRadius. gameKeys: the numLocalKeys<R>() keys of the game's
+//local_hash. pointKeys: the default's keys, KataGo's zobristLocalPattern. The default is KataGo's hash of the stones
+//without its atari flag: each point of the window on the board, with the key
+//pointKeys[state * windowArea + (dy + yRadius) * windowWidth + (dx + xRadius)], where the state is KataGo's color: 0
+//empty, 1 the first player's piece, 2 the second player's (swapped when flipPlayers). Points off the board are left
+//out.
+template<class R>
+Hash128 localHash(const typename R::Position& p, int cx, int cy, int xRadius, int yRadius, bool flipPlayers,
+                  const Hash128* gameKeys, const Hash128* pointKeys) {
+  if constexpr(rules::HasLocalHash<R>::value) {
+    (void)pointKeys;
+    return R::local_hash(p, cx, cy, xRadius, yRadius, flipPlayers, gameKeys);
+  }
+  else {
+    (void)gameKeys;
+    const int xSize = R::x_size(p), ySize = R::y_size(p);
+    int8_t owner[R::MAX_BOARD_LEN * R::MAX_BOARD_LEN];
+    R::pieces(p, owner);
+    const int width = 2 * xRadius + 1, windowArea = width * (2 * yRadius + 1);
+    Hash128 h;
+    for(int y = std::max(0, cy - yRadius); y <= std::min(ySize - 1, cy + yRadius); y++)
+      for(int x = std::max(0, cx - xRadius); x <= std::min(xSize - 1, cx + xRadius); x++) {
+        const int o = owner[y * xSize + x];
+        const int state = o < 0 ? 0 : 1 + (flipPlayers ? 1 - o : o);
+        h ^= pointKeys[state * windowArea + (y - cy + yRadius) * width + (x - cx + xRadius)];
+      }
+    return h;
+  }
+}
+
+//The key of the game's own position field in an analysis query, or null without it.
+template<class R> constexpr const char* queryPositionField() {
+  if constexpr(rules::HasQueryPositionField<R>::value)
+    return R::QUERY_POSITION_FIELD;
+  else
+    return nullptr;
+}
+
+//Reads the game's own position field (queryPositionField). A game without it reads none.
+template<class R, class Json> bool parseQueryPosition(const Json& value, typename R::Position& p, std::string& why) {
+  if constexpr(rules::HasQueryPositionField<R>::value)
+    return R::parse_query_position(value, p, why);
+  else {
+    (void)value;
+    (void)p;
+    why = "the game has no position field of its own";
+    return false;
+  }
 }
 
 namespace encoding {

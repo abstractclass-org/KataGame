@@ -1,18 +1,20 @@
-// The game interface (game/gameinterface.h) against the front: each member of Enclosure's implementation
-// (game/enclosure/gamerules.h, gameencoding.h) gives what Board, BoardHistory, NNInputs and SymmetryHelpers give
-// today, the code that the front will call it from.
+// The game interface (game/gameinterface.h): Enclosure's implementation (game/enclosure/gamerules.h,
+// gameencoding.h), and the defaults of the optional members.
 //
 //   testgameinterface tests/data/enclosure_games.txt
 //
-// It replays the fixture's games (as testgamelayer does) and random games with timeout passes and komi. A second
-// position, played through GameRules::play only, follows each game. At each position:
-// - the rules part: the player to move and the edges left (against the 1-2-2 turn order), terminal, the legal
-//   actions, is_legal, the scores, the hash (with the player's hash, Board::pos_hash), the pieces (Board::colors),
-//   the area (Board::calculateArea), the move and the position in the notation (each read back), and at the end the
-//   result;
-// - the encoding part: the inputs (NNInputs::fillRowV8, and fillRowV8Packed at each symmetry), with and without the
-//   history planes and at several komis, the input hash (the network cache's key), the policy layout (NNPos), the
-//   image position and the action map (SymmetryHelpers), and the constants.
+// The front (Board, BoardHistory) calls the rules part, so the rules part has one copy. NNInputs, NNPos and
+// SymmetryHelpers do not call the encoding part yet: each of its members is checked against the front's code, until
+// the front calls it. The test replays the fixture's games (as testgamelayer does) and random games with timeout
+// passes and komi. At each position:
+// - the rules part, against itself: the player to move and the edges left (against the 1-2-2 turn order), is_legal
+//   against legal_actions, the move and the position in the notation (each read back), the engine protocol's moves
+//   (each read back), and at the end the result;
+// - the encoding part, against the front: the inputs (NNInputs::fillRowV8, and fillRowV8Packed at each symmetry), with
+//   and without the history planes and at several komis, the policy layout (NNPos), the image position and the action
+//   map (SymmetryHelpers), and the constants.
+// In the fixture's first game, the hashes (the position's, the situation's and the local pattern's) are checked against
+// the values of before the interface. A stub game without the optional members checks their defaults.
 
 #include <cstdio>
 #include <fstream>
@@ -24,6 +26,7 @@
 #include "../../game/chosengame.h"
 #include "../../game/enclosure/position_check.h"
 #include "../../neuralnet/nninputs.h"
+#include "../../search/localpattern.h"
 
 using namespace std;
 
@@ -63,51 +66,26 @@ static void interfaceBits(const R::Position& p, const GameInterface::InputOption
   forEachInput(p, options, [&](int i) { bits[i >> 5] |= 1u << (i & 31); });
 }
 
-//An owner from pieces() or area() as Board's color.
-static Color colorOf(int8_t owner) { return owner < 0 ? C_EMPTY : Board::playerOfIndex(owner); }
-
-//Whether the owners of every point equal Board's colors there.
-static bool sameColors(const int8_t* owner, const Color* colors) {
-  for(int y = 0; y < 19; y++)
-    for(int x = 0; x < 19; x++)
-      if(colorOf(owner[y * 19 + x]) != colors[Location::getLoc(x, y, 19)])
-        return false;
-  return true;
-}
-
 //The whole state that the members see: the rules' hash and the inputs' hash.
 static Hash128 fullHash(const R::Position& p) { return R::hash(p) ^ E::input_hash(p); }
 
-//replayed: the same game, played through GameRules::play only. expectedMoves: the moves played, or -1 if unknown.
-static void checkPosition(const Board& board, const BoardHistory& hist, const R::Position& replayed,
-                          const string& where, int expectedMoves) {
+//expectedMoves: the moves played, or -1 if unknown.
+static void checkPosition(const Board& board, const BoardHistory& hist, const string& where, int expectedMoves) {
   const int index = checkedPositions++;
   const R::Position& p = board.pos;
   const Player pla = board.nextPla();
 
   //The rules part.
-  if(R::next_player(p) != Board::indexOfPlayer(pla))
-    fail(where + ": next_player differs from Board::nextPla");
   if(expectedMoves >= 0) {
     int wantPlayer, wantLeft;
     enclosure::position_check::expected_turn(expectedMoves, wantPlayer, wantLeft);
     if(R::moves_played(p) != expectedMoves || R::next_player(p) != wantPlayer || R::turn_moves_left(p) != wantLeft)
       fail(where + ": moves_played, next_player or turn_moves_left is not the 1-2-2 turn order's");
   }
-  if(R::terminal(p) != board.isGameOver())
-    fail(where + ": terminal differs from Board::isGameOver");
-  if((R::moves_played(p) == 0) != board.isEmpty())
-    fail(where + ": moves_played is not 0 exactly at the start");
-  vector<Loc> legalLocs;
-  board.getLegalMoveLocs(legalLocs);
-  vector<int> legal, frontLegal;
+  vector<int> legal;
   R::legal_actions(p, legal);
-  for(Loc loc : legalLocs)
-    frontLegal.push_back(Board::actionOfMoveLoc(loc));
-  if(legal != frontLegal)
-    fail(where + ": legal_actions differs from Board::getLegalMoveLocs");
   for(int a : legal)
-    if(!R::is_legal(p, a) || !board.isLegal(Board::moveLocOfAction(a), pla, false))
+    if(!R::is_legal(p, a))
       fail(where + ": is_legal rejects a listed action");
   if(index % 200 == 0) {
     allActionChecks++;
@@ -116,28 +94,15 @@ static void checkPosition(const Board& board, const BoardHistory& hist, const R:
       if(R::is_legal(p, a) != (listed.count(a) > 0))
         fail(where + ": is_legal differs from legal_actions at action " + Global::intToString(a));
   }
-  if((R::hash(p) ^ Board::ZOBRIST_PLAYER_HASH[pla]) != board.pos_hash)
-    fail(where + ": hash with the player's hash differs from Board::pos_hash");
-  if(R::hash(replayed) != R::hash(p))
-    fail(where + ": the position played through GameRules::play differs from Board's");
-  for(int k = 0; k < 2; k++)
-    if(R::score(p, k) != board.getScore(Board::playerOfIndex(k)))
-      fail(where + ": score differs from Board::getScore");
-  int8_t owner[19 * 19];
-  R::pieces(p, owner);
-  if(!sameColors(owner, board.colors))
-    fail(where + ": pieces differ from Board::colors");
-  if(index % 3 == 0) {
-    Color area[Board::MAX_ARR_SIZE];
-    board.calculateArea(area, false, false, false, false);
-    R::area(p, owner);
-    if(!sameColors(owner, area))
-      fail(where + ": area differs from Board::calculateArea");
-  }
   for(int a : legal) {
     string why;
     if(R::parse_action(p, R::action_text(a), &why) != a)
       fail(where + ": action_text does not read back (" + R::action_text(a) + ": " + why + ")");
+    if(a == R::PASS_ACTION)
+      continue;
+    int read = -1;
+    if(!GameInterface::parseProtocolText<R>(Global::toLower(GameInterface::protocolText<R>(a)), read) || read != a)
+      fail(where + ": the protocol's text does not read back (" + GameInterface::protocolText<R>(a) + ")");
   }
   if(index % 10 == 0) {
     R::Position read;
@@ -167,10 +132,6 @@ static void checkPosition(const Board& board, const BoardHistory& hist, const R:
         if(glob[i] != glob2[i])
           fail(where + ": global_inputs differ from NNInputs::fillRowV8");
     }
-    if(hist.rules.komi == 0.0f &&
-       BoardHistory::getSituationRulesAndKoHash(board, hist, pla, 0.5) !=
-         (BoardHistory::getSituationAndSimpleKoHash(board, pla) ^ E::input_hash(p)))
-      fail(where + ": input_hash is not what the network cache's key adds");
   }
 
   //The policy layout: an action's point and channel give its policy index.
@@ -220,6 +181,193 @@ static void checkPosition(const Board& board, const BoardHistory& hist, const R:
   }
 }
 
+//A stub game without the optional members: a 3 x 3 board, where a move puts the mover's piece on an empty point and
+//the players alternate. The game ends on a full board, and pass is never legal.
+namespace stub {
+struct Position {
+  int8_t cell[9] = {-1, -1, -1, -1, -1, -1, -1, -1, -1};
+  int moves = 0;
+};
+struct GameRules {
+  static constexpr const char* NAME = "stub";
+  using Position = stub::Position;
+  static constexpr int MAX_BOARD_LEN = 3;
+  static constexpr int NUM_ACTIONS = 10;
+  static constexpr int PASS_ACTION = 9;
+  static bool new_game(int xSize, int ySize, Position& p) {
+    p = Position();
+    return xSize == 3 && ySize == 3;
+  }
+  static int x_size(const Position&) { return 3; }
+  static int y_size(const Position&) { return 3; }
+  static int next_player(const Position& p) { return p.moves % 2; }
+  static int turn_moves_left(const Position&) { return 1; }
+  static int moves_played(const Position& p) { return p.moves; }
+  static bool terminal(const Position& p) { return p.moves == 9; }
+  static void legal_actions(const Position& p, vector<int>& out) {
+    out.clear();
+    for(int a = 0; a < 9; a++)
+      if(p.cell[a] < 0)
+        out.push_back(a);
+  }
+  static bool is_legal(const Position& p, int a) { return a >= 0 && a < 9 && p.cell[a] < 0; }
+  static void play(Position& p, int a) { p.cell[a] = (int8_t)next_player(p); p.moves++; }
+  static float result(const Position&) { return 0.f; }
+  static double score(const Position&, int) { return 0.0; }
+  static Hash128 hash(const Position& p) {
+    Hash128 h;
+    for(int i = 0; i < 9; i++)
+      h.hash0 = h.hash0 * 3 + (uint64_t)(p.cell[i] + 1);
+    return h;
+  }
+  static void pieces(const Position& p, int8_t* owner) { copy(p.cell, p.cell + 9, owner); }
+  static void area(const Position& p, int8_t* owner) { pieces(p, owner); }
+  //GTP points: A1 to C3, row 1 at the bottom.
+  static string action_text(int a) {
+    return a == PASS_ACTION ? string("pass") : string(1, char('A' + a % 3)) + char('1' + a / 3);
+  }
+  static int parse_action(const Position& p, const string& text, string* why) {
+    for(int a = 0; a < 9; a++)
+      if(text == action_text(a) && is_legal(p, a))
+        return a;
+    if(why != nullptr)
+      *why = "not a legal point";
+    return -1;
+  }
+  static string position_text(const Position& p) {
+    string s;
+    for(int8_t c : p.cell)
+      s += c < 0 ? '.' : c == 0 ? 'x' : 'o';
+    return s;
+  }
+  static bool parse_position(const string&, Position&, string& why) {
+    why = "not read";
+    return false;
+  }
+};
+static_assert(GameInterface::checkRules<GameRules>(), "the stub game's rules part");
+}  // namespace stub
+
+//The hashes of before the interface, pinned: the values that KataGame main (192acb41) gives in the fixture's first
+//game, at the ply given. The checks above run the same code on both sides, so only these catch a change of the
+//hash's tables (their seed or their order), of the history's hash or of the local pattern keys. The local hashes
+//are those of the move A10-A7, from a hasher with a window of 7 and the keys of the seed below.
+struct PinnedHashes {
+  int ply;
+  const char* pos;          //Board::pos_hash
+  const char* situation;    //BoardHistory::getSituationRulesAndKoHash, komi 0.5
+  const char* local[3];     //getHash, getHashWithSym at symmetry 3, and at symmetry 6 with flipColors
+};
+static const PinnedHashes PINNED[] = {
+  {0, "287C6CE6850489F7A8E988B7A6CA371C", "A25646C97749329A6DDC71C87606496A",
+   {"400F8B95A2DA2E06620DAEFEB1CF30EA", "E39B3ADFA44F4145EDC2100273C52E1B", "BC71B3CC7650008A77B1AF372E57E74A"}},
+  {7, "0994BAAD5524EA138DABC7ECA714F1DA", "AD8747636BE134CB0338D768B06576C7",
+   {"0BA5F626F542F39C966AA57B43DAE712", "B97527EAD3B027788D84081A5289138A", "CF235627EE8EA9373219A76A1537BC51"}},
+  {120, "EC5A1BAB5CF860F5435C016BCE0FA104", "FB5129F8DB826F3E0EE65F9F61E337A6", {nullptr, nullptr, nullptr}},
+};
+static int pinnedChecks = 0;
+static void checkPinnedHashes(const Board& board, const BoardHistory& hist, int ply) {
+  static LocalPatternHasher hasher;
+  static bool hasherReady = false;
+  if(!hasherReady) {
+    Rand rand("probe local pattern keys");
+    hasher.init(7, 7, rand);
+    hasherReady = true;
+  }
+  for(const PinnedHashes& pin : PINNED) {
+    if(pin.ply != ply)
+      continue;
+    pinnedChecks++;
+    const Player pla = board.nextPla();
+    const string where = "the pinned hashes at ply " + Global::intToString(ply);
+    if(board.pos_hash.toString() != pin.pos)
+      fail(where + ": the position's hash");
+    if(BoardHistory::getSituationRulesAndKoHash(board, hist, pla, 0.5).toString() != pin.situation)
+      fail(where + ": the situation's hash");
+    if(pin.local[0] == nullptr)
+      continue;
+    const Loc loc = Location::ofString("A10-A7", board);
+    if(hasher.getHash(board, loc, pla).toString() != pin.local[0] ||
+       hasher.getHashWithSym(board, loc, pla, 3, false).toString() != pin.local[1] ||
+       hasher.getHashWithSym(board, loc, pla, 6, true).toString() != pin.local[2])
+      fail(where + ": the local pattern hashes");
+  }
+}
+
+//The optional members: Enclosure has them, and the stub game gets the defaults.
+static void checkOptionalMembers() {
+  using S = stub::GameRules;
+  static_assert(GameInterface::rules::HasProtocolText<R>::value && GameInterface::rules::HasLocalHash<R>::value &&
+                  GameInterface::rules::HasQueryPositionField<R>::value &&
+                  GameInterface::rules::HasParseQueryPosition<R>::value,
+                "Enclosure has the optional members");
+  static_assert(!GameInterface::rules::HasProtocolText<S>::value && !GameInterface::rules::HasLocalHash<S>::value &&
+                  !GameInterface::rules::HasQueryPositionField<S>::value &&
+                  !GameInterface::rules::HasParseQueryPosition<S>::value,
+                "the stub game has none");
+
+  //Enclosure: the protocol's moves as before the interface (letters A to S, with I), and its own window keys.
+  const int a10d10 = (9 * 19 + 0) * enclosure::NOFF + enclosure::OFF_INDEX[3 + 3][0 + 3];
+  const int s19 = (18 * 19 + 18) * enclosure::NOFF + enclosure::OFF_INDEX[-3 + 3][-3 + 3];
+  int read = -1;
+  Loc loc;
+  if(GameInterface::protocolText<R>(a10d10) != "A10-D10" || GameInterface::protocolText<R>(s19) != "S19-P16" ||
+     R::action_text(s19) == "S19-P16")
+    fail("Enclosure's protocol text is not the form with I (A10-D10, S19-P16)");
+  if(!GameInterface::parseProtocolText<R>("a10-d10", read) || read != a10d10 ||
+     GameInterface::parseProtocolText<R>("A10-E10", read) || GameInterface::parseProtocolText<R>("T1-T2", read) ||
+     GameInterface::parseProtocolText<R>("A10", read) || GameInterface::parseProtocolText<R>("pass", read))
+    fail("Enclosure's protocol parser");
+  if(!Location::tryOfString(" a10-d10 ", 19, 19, loc) || loc != Board::moveLocOfAction(a10d10) ||
+     !Location::tryOfString("Pass", 19, 19, loc) || loc != Board::PASS_LOC ||
+     Location::toString(Board::moveLocOfAction(a10d10), 19, 19) != "A10-D10" ||
+     Location::toString(Board::PASS_LOC, 19, 19) != "pass")
+    fail("Location's moves through the protocol's text");
+  if(GameInterface::numLocalKeys<R>() != 3 * enclosure::PASS)
+    fail("Enclosure's local hash keys");
+  if(string(GameInterface::queryPositionField<R>()) != "enclosurePosition")
+    fail("Enclosure's query position field");
+
+  //The stub game: the protocol's text is action_text, read back in any case.
+  for(int a = 0; a < 9; a++)
+    if(GameInterface::protocolText<S>(a) != S::action_text(a) ||
+       !GameInterface::parseProtocolText<S>(Global::toLower(S::action_text(a)), read) || read != a)
+      fail("the default protocol text of action " + Global::intToString(a));
+  if(GameInterface::parseProtocolText<S>("D1", read) || GameInterface::parseProtocolText<S>("", read) ||
+     GameInterface::parseProtocolText<S>("pass", read) || GameInterface::parseProtocolText<S>("B22", read))
+    fail("the default protocol parser reads text that names no action");
+
+  //The stub game: no window keys, KataGo's window, and the default hash of the window at a corner, with radius 1. The
+  //first player's piece is at A1 (0, 0), the second's at B2 (1, 1). A point's key is
+  //keys[state * 9 + (dy + 1) * 3 + (dx + 1)], KataGo's colors: 0 empty, 1 the first player, 2 the second. The five
+  //points of the window off the board are left out, as KataGo leaves them out.
+  if(GameInterface::numLocalKeys<S>() != 0 || GameInterface::queryPositionField<S>() != nullptr)
+    fail("the stub game has window keys or a query field");
+  if(GameInterface::localWindow<S>() != 5 || GameInterface::localWindow<R>() != 7)
+    fail("the subtree value bias's window is not KataGo's 5 for the stub game and 7 for Enclosure");
+  Rand rand("testgameinterface window keys");
+  Hash128 keys[4 * 9];
+  for(Hash128& k : keys)
+    k = Hash128(rand.nextUInt64(), rand.nextUInt64());
+  stub::Position p;
+  S::play(p, 0);
+  S::play(p, 4);
+  auto expected = [&](bool flip) {
+    Hash128 h;
+    h ^= keys[(flip ? 2 : 1) * 9 + 4];  //A1: dx = 0, dy = 0
+    h ^= keys[0 * 9 + 5];               //B1: empty
+    h ^= keys[0 * 9 + 7];               //A2: empty
+    h ^= keys[(flip ? 1 : 2) * 9 + 8];  //B2
+    return h;
+  };
+  for(bool flip : {false, true})
+    if(GameInterface::localHash<S>(p, 0, 0, 1, 1, flip, nullptr, keys) != expected(flip))
+      fail(string("the default window hash, flipPlayers ") + (flip ? "true" : "false"));
+  string why;
+  if(GameInterface::parseQueryPosition<S>(0, p, why) || why.empty())
+    fail("the stub game reads a query position field");
+}
+
 int main(int argc, char** argv) {
   if(argc != 2) {
     fprintf(stderr, "usage: testgameinterface GAMES_FILE\n");
@@ -227,25 +375,17 @@ int main(int argc, char** argv) {
   }
   Board::initHash();
 
-  //The constants that the front holds today.
+  //The constants that the front still holds.
   if(E::SCORE_SCALE != NNPos::SCORE_SCALE)
     fail("SCORE_SCALE differs from NNPos::SCORE_SCALE");
-  if(E::SCORE_UNIT != Board::scoreUnit())
-    fail("SCORE_UNIT differs from Board::scoreUnit");
-  if(E::GAME_LENGTH / Board::GO_GAME_LENGTH != Board::TIME_SCALE)
-    fail("GAME_LENGTH differs from the game length in Board::TIME_SCALE");
   if(E::SYMMETRIES != (1u << SymmetryHelpers::NUM_SYMMETRIES) - 1)
     fail("SYMMETRIES differs from SymmetryHelpers::NUM_SYMMETRIES");
   {
-    R::Position start, other;
-    Board board;
-    if(!R::new_game(19, 19, start) || (R::hash(start) ^ Board::ZOBRIST_PLAYER_HASH[P_BLACK]) != board.pos_hash)
-      fail("new_game(19, 19) is not Board's start");
+    R::Position other;
     if(R::new_game(9, 9, other) || R::new_game(19, 18, other))
       fail("new_game accepts a board other than 19 x 19");
-    if(R::x_size(start) != board.x_size || R::y_size(start) != board.y_size)
-      fail("x_size or y_size differs from Board's");
   }
+  checkOptionalMembers();
 
   //The fixture's games.
   ifstream in(argv[1]);
@@ -264,8 +404,6 @@ int main(int argc, char** argv) {
     games++;
     Board board;
     BoardHistory hist(board, P_BLACK, Rules(), 0);
-    R::Position replayed;
-    R::new_game(19, 19, replayed);
     //A pass (the player to move has no legal edge) forfeits the rest of the turn: the turn order then shifts.
     bool passed = false;
     for(int i = 0; i < n; i++) {
@@ -273,12 +411,15 @@ int main(int argc, char** argv) {
       istringstream row(line);
       int action;
       row >> action;
-      checkPosition(board, hist, replayed, label + " move " + Global::intToString(i + 1), passed ? -1 : i);
+      checkPosition(board, hist, label + " move " + Global::intToString(i + 1), passed ? -1 : i);
+      if(games == 1)
+        checkPinnedHashes(board, hist, i);
       hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(action), board.nextPla(), NULL);
-      R::play(replayed, action);
       passed = passed || action == R::PASS_ACTION;
     }
-    checkPosition(board, hist, replayed, label + " end", passed ? -1 : n);
+    checkPosition(board, hist, label + " end", passed ? -1 : n);
+    if(games == 1)
+      checkPinnedHashes(board, hist, n);
     getline(in, line);
     istringstream tail(line);
     int result;
@@ -296,35 +437,30 @@ int main(int argc, char** argv) {
       Board board;
       BoardHistory hist(board, P_BLACK, Rules(), 0);
       hist.setKomi(komis[g % (sizeof(komis) / sizeof(komis[0]))]);
-      R::Position replayed;
-      R::new_game(19, 19, replayed);
       int ply = 0;
       while(!board.isGameOver()) {
-        checkPosition(board, hist, replayed,
-                      "random game " + Global::intToString(g) + " ply " + Global::intToString(ply), -1);
+        checkPosition(board, hist, "random game " + Global::intToString(g) + " ply " + Global::intToString(ply), -1);
         vector<int> legal;
         R::legal_actions(board.pos, legal);
         const Player pla = board.nextPla();
-        if(rand.nextBool(0.05)) {
+        if(rand.nextBool(0.05))
           hist.makeBoardMoveTolerant(board, Board::PASS_LOC, pla);
-          R::play(replayed, R::PASS_ACTION);
-        }
-        else {
-          const int a = legal[rand.nextUInt((uint32_t)legal.size())];
-          hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(a), pla, NULL);
-          R::play(replayed, a);
-        }
+        else
+          hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(legal[rand.nextUInt((uint32_t)legal.size())]),
+                                        pla, NULL);
         ply++;
       }
-      checkPosition(board, hist, replayed, "random game " + Global::intToString(g) + " end", -1);
+      checkPosition(board, hist, "random game " + Global::intToString(g) + " end", -1);
       const double margin = board.getScore(P_WHITE) - board.getScore(P_BLACK);
       if(R::result(board.pos) != (margin < 0 ? 1.f : margin > 0 ? -1.f : 0.f))
         fail("random game " + Global::intToString(g) + ": result is not the sign of the scores");
     }
   }
 
+  if(pinnedChecks != (int)(sizeof(PINNED) / sizeof(PINNED[0])))
+    fail("the fixture's first game did not reach every pinned ply");
   printf("%d fixture games and %d random games: %d positions, %d with the inputs checked, %d symmetry checks, "
-         "%d with every action checked, %d failures\n",
-         games, randomGames, checkedPositions, inputChecks, symmetryChecks, allActionChecks, failures);
+         "%d with every action checked, %d with pinned hashes, %d failures\n",
+         games, randomGames, checkedPositions, inputChecks, symmetryChecks, allActionChecks, pinnedChecks, failures);
   return failures == 0 ? 0 : 1;
 }

@@ -82,7 +82,7 @@ player from the last mover break. A survey of the 29 `getOpp` calls in `search/`
 
 Outside `search/`, the self-play game loop (`program/play.cpp`, `playutils.cpp`) and the analysis engine
 (`command/analysis.cpp`) get the same change. GTP play got its own turn-order check later (`command/gtp.cpp`,
-`enclosureTurnError`, games/enclosure/docs/design/18-play-through-gtp.md). SGF, the book and the start-position tools are not on
+`turnError`, games/enclosure/docs/design/18-play-through-gtp.md). SGF, the book and the start-position tools are not on
 our path, and they stay as they are.
 
 Training rows need no change for turn order. KataGo's opponent-policy target is the policy of the next move, whoever
@@ -145,20 +145,23 @@ corrects new nodes in the same bucket (`docs/KataGoMethods.md`).
 
 ## Starting from a position (the analysis engine)
 
-A query of the analysis engine can start from a position instead of the standard start: the field
-`enclosurePosition` (`command/analysis.cpp`) carries `engine.Position`'s fields. These are the edges of each player,
-the protected and placed edges, the scores, the player to move, the edges left in the turn, the move count, and the
-history planes' turns. `Board::setPosition` sets the board from them, and the query's `moves` are played after it.
-meaf.us gives a board and not its moves, so the move server (`games/enclosure/katagame/katagobot.py`) uses this field.
+A query of the analysis engine can start from a position instead of the standard start. Enclosure's own field
+`enclosurePosition` (the rules part's query position field, read in `game/enclosure/queryposition.h`) carries
+`engine.Position`'s fields. These are the edges of each player, the protected and placed edges, the scores, the
+player to move, the edges left in the turn, the move count, and the history planes' turns. `Board::setPosition` sets
+the board from them, and the query's `moves` are played after it. meaf.us gives a board and not its moves, so the move
+server (`games/enclosure/katagame/katagobot.py`) uses this field. The generic field `position` (every game's) takes
+the one-line position (`GameRules::parse_position`) instead. It has no history turns, so it gives what
+`enclosurePosition` gives with an empty `history`. A query gives one of the two fields or neither.
 
 - **The same network inputs:** the history planes come from `Position::history`, not from KataGo's move history, and
-  the cache hash includes them (`historyHash`). At symmetry 0, a position gives the same policy and value as its
-  move list, bit for bit (`games/enclosure/tests/test_position_query.py`).
+  the cache hash includes them (the encoding part's `input_hash`). At symmetry 0, a position gives the same policy and
+  value as its move list, bit for bit (`games/enclosure/tests/test_position_query.py`).
 - **One difference in the search:** the subtree value bias keys a node on the move before it (see "Subtree value
   bias"). A position has no move before the root, so the root's children get no bias entry. With
   `subtreeValueBiasFactor = 0`, the two searches are identical, visit for visit.
-- **A bad position is refused** with an error on the field: an edge off the board or longer than 3, a player other
-  than 0 or 1, more than 2 edges left, or more history turns than `HISTORY_TURNS`.
+- **A bad position is refused** with an error on the field: edges that are not two lists, an edge off the board or
+  longer than 3, a player other than 0 or 1, more than 2 edges left, or more history turns than `HISTORY_TURNS`.
 
 ## Reproducible analysis and search in slices
 
@@ -248,8 +251,8 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
 - **Model versions 8-17** keep their meanings for the architecture, but all of them read V8. The fork refuses Go
   networks (and versions 3-7). Go's `fillRowV3`-`V7` stay in the file, unreachable, to keep the diff from upstream
   small.
-- **The NN cache hash** already includes the history (step 2's `historyHash`). So the cache keeps apart positions
-  that differ only in their history planes.
+- **The NN cache hash** already includes the history (step 2's history hash, now the encoding part's `input_hash`).
+  So the cache keeps apart positions that differ only in their history planes.
 - `maxHistory <= 0` (KataGo's evaluations without history) drops the 4 history planes.
 - **Test:** `tests/enclosure/testnninputs.cpp` against `tests/data/enclosure_inputs.txt` (from the Enclosure
   repository's `games/enclosure/tools/export_katago_inputs.py`: 336 positions from 40 archived and 40 random games, with Python's
