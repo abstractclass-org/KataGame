@@ -17,6 +17,7 @@ below gives the work of each step.
 * [Conventions](#conventions)
 * [The rules part](#the-rules-part)
 * [The network encoding part](#the-network-encoding-part)
+* [The bot part](#the-bot-part)
 * [The members still to build](#the-members-still-to-build)
 * [The checks](#the-checks)
 * [Adding a game](#adding-a-game)
@@ -31,6 +32,9 @@ below gives the work of each step.
 | `cpp/game/chosengame.h` | Both parts: `chosenrules.h` and `GameEncoding`. |
 | `cpp/game/<game>/gamerules.h` | The game's rules part: `struct GameRules` in the game's namespace, then its check. Enclosure's own position field of the analysis engine is in `game/enclosure/queryposition.h`. |
 | `cpp/game/<game>/gameencoding.h` | The game's network encoding part: `struct GameEncoding`, then its check. |
+| `cpp/game/botinterface.h`, `cpp/game/chosenbot.h` | The bot part's contract, its check `GameInterface::checkBot<B>()`, and the chosen game's `GameBot`. |
+| `cpp/game/<game>/gamebot.h` | The game's bot part (optional): `struct GameBot`, then its check. |
+| `cpp/search/alphabeta.h` | The alpha-beta search for every game with a bot part. Only the Python binding compiles it. |
 | `cpp/game/board.*`, `cpp/game/boardhistory.*` | The front: KataGo's `Board` and `BoardHistory`, which the search calls. They reach the game's rules through the members only. |
 | `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, and the defaults of the optional members with a stub game. |
 
@@ -167,6 +171,19 @@ added. The game gives each slot that it writes its own meaning. The front writes
 | `TARGET_INCOME` | C5-6 | the territory income of each player |
 | `TARGET_NEXT_PIECES` | C7 | the next mover's nodes after the row's move, for the symmetries of policy channel 1 (not a loss) |
 
+## The bot part
+
+`struct GameBot`, optional. The alpha-beta search (`cpp/search/alphabeta.h`) needs it with the rules part. The Python
+binding includes both when the game has `gamebot.h`, and then gives the search (`AlphaBeta`). `katago` compiles
+neither: KataGo's search does not use them, so a heuristic changes no output of `katago`. Design 07 of the engine
+repository, "The alpha-beta search", gives the search's values and its rules.
+
+| Member | Meaning | Enclosure | Connect-4 |
+|---|---|---|---|
+| `Rules` | The game's rules part. | `GameRules` | `GameRules` |
+| `evaluate(p)` | A heuristic value of a position that is not terminal, from the view of the player to move. The search keeps it within ±`WIN_VALUE / 2`, below every won or lost end. | The mover's final margin if every region stayed as it is (the greedy bot's measure) | Centre columns and open threes |
+| `order_actions(p, actions)` (optional) | Reorders the legal actions, the most promising first, and keeps the order of equal ones (a stable sort). Without it, they keep the search's order: ascending, or random with a seed. The search puts its table's move first. | None | The centre columns first |
+
 ## The members still to build
 
 These are decided (design 07). Each comes with the step that first needs it.
@@ -235,6 +252,9 @@ OUT_DIR/testgameinterface tests/data/enclosure_games.txt
    `sh core/binding/build.sh <game>`. The module's common API needs no code of the game's own. The game's Python
    extras, if any, go in `games/<game>/binding/extras.h`. The conformance suite (`core/tests/test_conformance.py`)
    checks the module (design 07, "The Python binding").
+4. For the alpha-beta search, add `cpp/game/<game>/gamebot.h` (`struct GameBot`, a heuristic), ending with
+   `static_assert(GameInterface::checkBot<GameBot>(), "...")`. The binding then gives the search, and the arena's
+   player `ab` plays the game.
 
 A second game builds only after the front reaches Enclosure through the members alone (the map below).
 
