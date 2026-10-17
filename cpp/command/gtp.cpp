@@ -1620,7 +1620,7 @@ struct GTPEngine {
     string wlStr = "White winloss: ";
     string leadStr = "White lead: ";
 
-    for(int symmetry = 0; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
+    for(int symmetry : SymmetryHelpers::ALLOWED) {
       if(whichSymmetry == NNInputs::SYMMETRY_ALL || whichSymmetry == symmetry) {
         {
           MiscNNInputParams nnInputParams;
@@ -1665,7 +1665,7 @@ struct GTPEngine {
       return "";
     ostringstream out;
 
-    for(int symmetry = 0; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
+    for(int symmetry : SymmetryHelpers::ALLOWED) {
       if(whichSymmetry == NNInputs::SYMMETRY_ALL || whichSymmetry == symmetry) {
         Board board = bot->getRootBoard();
         BoardHistory hist = bot->getRootHist();
@@ -2056,7 +2056,7 @@ static bool parseRawNNArgs(
     int parsedSym;
     if(s == "all")
       whichSymmetry = NNInputs::SYMMETRY_ALL;
-    else if(Global::tryStringToInt(s,parsedSym) && parsedSym >= 0 && parsedSym <= SymmetryHelpers::NUM_SYMMETRIES-1)
+    else if(Global::tryStringToInt(s,parsedSym) && SymmetryHelpers::isAllowed(parsedSym))
       whichSymmetry = parsedSym;
     else {
       error = "Expected a symmetry argument 'all' or index [0-7] but got '" + pieces[idx] + "'";

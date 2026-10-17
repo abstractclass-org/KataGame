@@ -567,11 +567,12 @@ void NNEvaluator::fillRowBufs(
   int symmetry
 ) const {
   const int rowSpatialLen = NNModelVersion::getNumSpatialFeatures(modelVersion) * nnXLen * nnYLen;
-  //Enclosure fork (owner, 2026-10-06; trick 3): symmetry, the image's row written from board, for V8 and V9 only.
-  const bool enclosureInputs = inputsVersion == 8 || inputsVersion == 9;
-  testAssert(symmetry == 0 || enclosureInputs);
+  //Enclosure fork (owner, 2026-10-06): symmetry, the image's row written from board, for V8 and V9 only. KataGame
+  //fork: V8 and V9 are the game's inputs (NNInputs::NUM_FEATURES_SPATIAL_V8).
+  const bool gameInputs = inputsVersion == 8 || inputsVersion == 9;
+  testAssert(symmetry == 0 || gameInputs);
   //V8 and V9 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
-  if(!enclosureInputs && buf.rowSpatialBuf.size() < rowSpatialLen)
+  if(!gameInputs && buf.rowSpatialBuf.size() < rowSpatialLen)
     buf.rowSpatialBuf.resize(rowSpatialLen);
   const int rowGlobalLen = NNModelVersion::getNumGlobalFeatures(modelVersion);
   if(buf.rowGlobalBuf.size() < rowGlobalLen)
@@ -584,8 +585,8 @@ void NNEvaluator::fillRowBufs(
   //Enclosure fork (owner, 2026-10-06): V8 rows packed, one bit per entry (NNResultBuf::rowSpatialBits). This replaces
   //the float row cleared by its last entries (2026-10-05): the packed row is 9.7 KB, cleared whole. V9 rows are V8's
   //with two more global inputs (2026-10-13).
-  buf.rowSpatialPacked = enclosureInputs;
-  if(enclosureInputs) {
+  buf.rowSpatialPacked = gameInputs;
+  if(gameInputs) {
     testAssert(rowSpatialLen == NNInputs::NUM_SPATIAL_ELTS_V8);
     if(buf.rowSpatialBits.size() < NNInputs::NUM_SPATIAL_WORDS_V8)
       buf.rowSpatialBits.resize(NNInputs::NUM_SPATIAL_WORDS_V8);
@@ -1053,9 +1054,10 @@ void NNEvaluator::serve(
       for(int row = 0; row<numRows; row++) {
         if(resultBufs[row]->symmetry == NNInputs::SYMMETRY_NOTSPECIFIED) {
           if(doRandomize)
-            resultBufs[row]->symmetry = rand.nextUInt(SymmetryHelpers::NUM_SYMMETRIES);
+            resultBufs[row]->symmetry =
+              SymmetryHelpers::ALLOWED[rand.nextUInt(SymmetryHelpers::NUM_ALLOWED_SYMMETRIES)];
           else {
-            testAssert(defaultSymmetry >= 0 && defaultSymmetry <= SymmetryHelpers::NUM_SYMMETRIES-1);
+            testAssert(SymmetryHelpers::isAllowed(defaultSymmetry));
             resultBufs[row]->symmetry = defaultSymmetry;
           }
         }
@@ -1130,7 +1132,7 @@ void NNEvaluator::evaluateSynchronously(NNResultBuf* resultBuf) {
   }
   if(resultBuf->symmetry == NNInputs::SYMMETRY_NOTSPECIFIED) {
     if(currentDoRandomize.load(std::memory_order_acquire))
-      resultBuf->symmetry = syncRand->nextUInt(SymmetryHelpers::NUM_SYMMETRIES);
+      resultBuf->symmetry = SymmetryHelpers::ALLOWED[syncRand->nextUInt(SymmetryHelpers::NUM_ALLOWED_SYMMETRIES)];
     else
       resultBuf->symmetry = currentDefaultSymmetry.load(std::memory_order_acquire);
   }
@@ -1369,10 +1371,11 @@ std::shared_ptr<NNOutput>* NNEvaluator::averageMultipleSymmetries(
 ) {
   MiscNNInputParams nnInputParams = baseNNInputParams;
   vector<std::shared_ptr<NNOutput>> ptrs;
-  std::array<int, SymmetryHelpers::NUM_SYMMETRIES> symmetryIndexes;
-  std::iota(symmetryIndexes.begin(), symmetryIndexes.end(), 0);
+  //KataGame fork: a sample of the game's allowed symmetries.
+  std::array<int, SymmetryHelpers::NUM_ALLOWED_SYMMETRIES> symmetryIndexes = SymmetryHelpers::ALLOWED;
+  testAssert(numSymmetriesToSample <= SymmetryHelpers::NUM_ALLOWED_SYMMETRIES);
   for(int i = 0; i<numSymmetriesToSample; i++) {
-    std::swap(symmetryIndexes[i], symmetryIndexes[rand.nextInt(i,SymmetryHelpers::NUM_SYMMETRIES-1)]);
+    std::swap(symmetryIndexes[i], symmetryIndexes[rand.nextInt(i,SymmetryHelpers::NUM_ALLOWED_SYMMETRIES-1)]);
     nnInputParams.symmetry = symmetryIndexes[i];
     bool skipCacheThisIteration = true; // Skip cache since there's no guarantee which symmetry is in the cache
     evaluate(
@@ -1469,18 +1472,21 @@ void NNEvaluator::evaluate(
   //Enclosure fork: a symmetry acts on the position, not on the input planes (an edge's planes re-anchor
   //under a flip), so the backends' pixel symmetry cannot be used. The symmetry is chosen here as the
   //server thread would (random, or the default), the inputs are the image position's, the backend
-  //gets the identity, and the outputs are mapped back when they arrive.
+  //gets the identity, and the outputs are mapped back when they arrive. KataGame fork: one of the game's allowed
+  //symmetries (SymmetryHelpers::ALLOWED).
   int symmetry = nnInputParams.symmetry;
   if(symmetry == NNInputs::SYMMETRY_NOTSPECIFIED) {
     if(currentSymmetryFromHash.load(std::memory_order_acquire))  //Enclosure fork: from the cache key (setSymmetryFromHash)
-      symmetry = (int)((nnHash.hash0 ^ (nnHash.hash1 >> 7)) % SymmetryHelpers::NUM_SYMMETRIES);
+      symmetry =
+        SymmetryHelpers::ALLOWED[(nnHash.hash0 ^ (nnHash.hash1 >> 7)) % SymmetryHelpers::NUM_ALLOWED_SYMMETRIES];
     else if(currentDoRandomize.load(std::memory_order_acquire))
-      symmetry = (int)clientSymmetryRand(randSeed).nextUInt(SymmetryHelpers::NUM_SYMMETRIES);
+      symmetry =
+        SymmetryHelpers::ALLOWED[clientSymmetryRand(randSeed).nextUInt(SymmetryHelpers::NUM_ALLOWED_SYMMETRIES)];
     else
       symmetry = currentDefaultSymmetry.load(std::memory_order_acquire);
   }
-  testAssert(symmetry >= 0 && symmetry < SymmetryHelpers::NUM_SYMMETRIES);
-  //Enclosure fork (owner, 2026-10-06; trick 3): no image board: the inputs are the image's, written from board
+  testAssert(SymmetryHelpers::isAllowed(symmetry));
+  //Enclosure fork (owner, 2026-10-06): no image board: the inputs are the image's, written from board
   //(fillRowBufs' symmetry), and moves map through symAction (SymmetryHelpers::SymActionMap).
   const SymmetryHelpers::SymActionMap symAction(board, symmetry);
 
@@ -1579,7 +1585,7 @@ void NNEvaluator::evaluate(
     testAssert(nextPlayer == history.presumedNextMovePla);
     {
       const auto& legalBits = board.legalActions();
-      const bool canMove = !history.isGameFinished && nextPlayer == board.nextPla() && !board.pos.terminal();
+      const bool canMove = !history.isGameFinished && nextPlayer == board.nextPla() && !board.isGameOver();
       int j = 0;
       for(size_t i = bitsFirst(legalBits); i < (size_t)NNPos::PASS_POS; i = bitsNext(legalBits, i))
         listedPos[j++] = (uint16_t)i;
@@ -1659,7 +1665,7 @@ void NNEvaluator::evaluate(
     //check (the same for every i) and bit i of the list; per entry it was 17,329 full calls per evaluation.
     {
       const auto& legalBits = board.legalActions();
-      const bool canMove = !history.isGameFinished && nextPlayer == board.nextPla() && !board.pos.terminal();
+      const bool canMove = !history.isGameFinished && nextPlayer == board.nextPla() && !board.isGameOver();
       for(int i = 0; i<policySize; i++)
         isLegal[i] = canMove && legalBits.test(i);
     }

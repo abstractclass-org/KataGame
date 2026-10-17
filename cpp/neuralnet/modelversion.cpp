@@ -23,8 +23,8 @@
 //16 = V7 features, Q value predictions in the policy head
 //17 = V7 features, dropped Q value predictions, introduced transformers and added guards to unused params
 
-//Enclosure fork: model versions 8-17 keep their architecture meanings, but all read the Enclosure
-//inputs (V8, NNInputs::NUM_FEATURES_SPATIAL_V8). Versions 3-7 (and Go networks) are refused.
+//Enclosure fork: model versions 8-17 keep their architecture meanings, but all read the game's
+//inputs (V8, NNInputs::NUM_FEATURES_SPATIAL_V8, from GameEncoding). Versions 3-7 (and Go networks) are refused.
 //18 = version 17's format with the V9 inputs: V8 and the playout doubling advantage (2026-10-13).
 
 static void fail(int modelVersion) {

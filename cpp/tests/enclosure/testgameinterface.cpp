@@ -3,18 +3,19 @@
 //
 //   testgameinterface tests/data/enclosure_games.txt
 //
-// The front (Board, BoardHistory) calls the rules part, so the rules part has one copy. NNInputs, NNPos and
-// SymmetryHelpers do not call the encoding part yet: each of its members is checked against the front's code, until
-// the front calls it. The test replays the fixture's games (as testgamelayer does) and random games with timeout
-// passes and komi. At each position:
+// The front (Board, BoardHistory, NNInputs, NNPos, SymmetryHelpers, the training rows) calls both parts, so each member
+// has one copy. The test replays the fixture's games (as testgamelayer does) and random games with timeout passes and
+// komi. At each position:
 // - the rules part, against itself: the player to move and the edges left (against the 1-2-2 turn order), is_legal
 //   against legal_actions, the move and the position in the notation (each read back), the engine protocol's moves
 //   (each read back), and at the end the result;
-// - the encoding part, against the front: the inputs (NNInputs::fillRowV8, and fillRowV8Packed at each symmetry), with
-//   and without the history planes and at several komis, the policy layout (NNPos), the image position and the action
-//   map (SymmetryHelpers), and the constants.
-// In the fixture's first game, the hashes (the position's, the situation's and the local pattern's) are checked against
-// the values of before the interface. A stub game without the optional members checks their defaults.
+// - the encoding part: the front's rows against the members (NNInputs::fillRowV8, and fillRowV8Packed at each
+//   symmetry), with and without the history planes and at several komis; the history planes (the only planes that
+//   the history changes); the policy layout (NNPos); and the symmetries: the action map onto the image's legal
+//   actions, the inputs at a symmetry against the image's inputs, and the inverse of each image.
+// In the fixture's first game, the hashes (the position's, the situation's and the local pattern's), the images of
+// the position and the training targets are checked against pinned values. A stub game without the optional members
+// checks their defaults.
 
 #include <cstdio>
 #include <fstream>
@@ -52,7 +53,9 @@ static void forEachInput(const R::Position& p, const GameInterface::InputOptions
   const int planes = NNInputs::NUM_FEATURES_SPATIAL_V8;
   for(int pos = 0; pos < 19 * 19; pos++)
     set(pos * planes);
-  E::spatial_inputs(p, options, [&](int x, int y, int plane) { set((y * 19 + x) * planes + 1 + plane); });
+  E::spatial_inputs(p, options, [&](int x, int y, int plane) {
+    set((y * 19 + x) * planes + NNInputs::V8_GAME_PLANES_START + plane);
+  });
 }
 
 static void interfaceRow(const R::Position& p, const GameInterface::InputOptions& options, float* bin, float* glob) {
@@ -68,6 +71,15 @@ static void interfaceBits(const R::Position& p, const GameInterface::InputOption
 
 //The whole state that the members see: the rules' hash and the inputs' hash.
 static Hash128 fullHash(const R::Position& p) { return R::hash(p) ^ E::input_hash(p); }
+
+//FNV-1a over bytes, for the pinned digests.
+static uint64_t digest(uint64_t h, const void* data, size_t n) {
+  const unsigned char* b = (const unsigned char*)data;
+  for(size_t i = 0; i < n; i++)
+    h = (h ^ b[i]) * 1099511628211ULL;
+  return h;
+}
+static const uint64_t DIGEST_START = 14695981039346656037ULL;
 
 //expectedMoves: the moves played, or -1 if unknown.
 static void checkPosition(const Board& board, const BoardHistory& hist, const string& where, int expectedMoves) {
@@ -117,7 +129,8 @@ static void checkPosition(const Board& board, const BoardHistory& hist, const st
   float glob[NNInputs::NUM_FEATURES_GLOBAL_V8], glob2[NNInputs::NUM_FEATURES_GLOBAL_V8];
   if(index % 3 == 0) {
     inputChecks++;
-    for(int history = 0; history < 2; history++) {
+    static vector<float> withHistory(numBin);
+    for(int history = 1; history >= 0; history--) {
       MiscNNInputParams params;
       if(!history)
         params.maxHistory = 0;
@@ -127,10 +140,20 @@ static void checkPosition(const Board& board, const BoardHistory& hist, const st
       NNInputs::fillRowV8(board, hist, pla, params, 19, 19, true, bin.data(), glob);
       interfaceRow(p, options, bin2.data(), glob2);
       if(bin != bin2)
-        fail(where + ": spatial_inputs differ from NNInputs::fillRowV8");
+        fail(where + ": NNInputs::fillRowV8 differs from the on-board plane and spatial_inputs");
       for(int i = 0; i < NNInputs::NUM_FEATURES_GLOBAL_V8; i++)
         if(glob[i] != glob2[i])
-          fail(where + ": global_inputs differ from NNInputs::fillRowV8");
+          fail(where + ": NNInputs::fillRowV8 differs from global_inputs");
+      if(history)
+        withHistory = bin2;
+    }
+    //The history changes the history planes only, and without it they are empty (bin2 is the row without history).
+    const int planes = NNInputs::NUM_FEATURES_SPATIAL_V8;
+    for(int i = 0; i < numBin; i++) {
+      const int plane = i % planes - NNInputs::V8_GAME_PLANES_START;
+      const bool historyPlane = plane >= E::HISTORY_PLANE && plane < E::HISTORY_PLANE + E::NUM_HISTORY_PLANES;
+      if(historyPlane ? bin2[i] != 0.0f : bin2[i] != withHistory[i])
+        fail(where + ": the inputs without history differ outside the history planes, or set one");
     }
   }
 
@@ -148,35 +171,38 @@ static void checkPosition(const Board& board, const BoardHistory& hist, const st
       fail(where + ": action_point or point_action differs from NNPos::locToPos");
   }
 
-  //The symmetries: the image position, the action map, and the image's inputs.
+  //The symmetries: the image position and its inverse, the action map, and the image's inputs.
   if(index % 10 == 0) {
-    static vector<uint32_t> bits(NNInputs::NUM_SPATIAL_WORDS_V8), bits2(NNInputs::NUM_SPATIAL_WORDS_V8);
+    static vector<uint32_t> bits(NNInputs::NUM_SPATIAL_WORDS_V8), bits2(NNInputs::NUM_SPATIAL_WORDS_V8),
+      bits3(NNInputs::NUM_SPATIAL_WORDS_V8);
+    float glob3[NNInputs::NUM_FEATURES_GLOBAL_V8];
     for(int s = 0; s < SymmetryHelpers::NUM_SYMMETRIES; s++) {
       symmetryChecks++;
       const R::Position image = E::sym_position(p, s);
-      if(fullHash(image) != fullHash(SymmetryHelpers::getSymPosition(p, s)))
-        fail(where + ": sym_position differs from SymmetryHelpers::getSymPosition");
+      if(fullHash(E::sym_position(image, SymmetryHelpers::invert(s))) != fullHash(p))
+        fail(where + ": the inverse symmetry does not map the image back");
       //The images of the legal actions are the image position's legal actions, listed by the rules.
       const E::SymActionMap actionMap(p, s);
-      const SymmetryHelpers::SymActionMap frontMap(board, s);
       vector<int> mapped, imageLegal;
-      for(int a : legal) {
+      for(int a : legal)
         mapped.push_back(actionMap(a));
-        if(actionMap(a) != frontMap(a))
-          fail(where + ": SymActionMap differs from SymmetryHelpers::SymActionMap");
-      }
       sort(mapped.begin(), mapped.end());
       R::legal_actions(image, imageLegal);
       if(mapped != imageLegal)
         fail(where + ": the action map's images are not the image position's legal actions");
+      //The front writes the members' inputs at the symmetry, and they are the image position's.
       MiscNNInputParams params;
       GameInterface::InputOptions options;
-      options.symmetry = s;
       options.komi = hist.rules.komi;
+      interfaceBits(image, options, bits3.data());
+      E::global_inputs(image, options, glob3);
+      options.symmetry = s;
       NNInputs::fillRowV8Packed(board, hist, pla, params, 19, 19, true, bits.data(), glob, s);
       interfaceBits(p, options, bits2.data());
       if(bits != bits2)
-        fail(where + ": spatial_inputs differ from NNInputs::fillRowV8Packed at symmetry " + Global::intToString(s));
+        fail(where + ": NNInputs::fillRowV8Packed differs from spatial_inputs at symmetry " + Global::intToString(s));
+      if(bits2 != bits3 || !equal(glob, glob + NNInputs::NUM_FEATURES_GLOBAL_V8, glob3))
+        fail(where + ": the inputs at symmetry " + Global::intToString(s) + " are not the image position's");
     }
   }
 }
@@ -294,6 +320,77 @@ static void checkPinnedHashes(const Board& board, const BoardHistory& hist, int 
   }
 }
 
+//The fixture's first game, position by position, pinned where the front had a copy of the members' code. Both pins
+//are the values of KataGame main (192acb41).
+//- The images of the position (E::sym_position) at each symmetry: a digest of their full hashes, at the plies given.
+//  Before the front called the encoding part, this test checked sym_position against SymmetryHelpers::getSymPosition.
+//- The training targets (E::training_targets) of the rows given: the slots that hold a target and a digest of the
+//  values. The rows of a self-play game, written by trainingwrite.cpp before the targets moved into the game and by
+//  the game's member after, are byte-identical.
+struct PinnedImages {
+  int ply;
+  uint64_t images;
+};
+static const PinnedImages PINNED_IMAGES[] = {
+  {0, 0x200D6413A3AD1DE1ULL}, {7, 0x4CE6774F84207634ULL}, {60, 0x9E0538511F520929ULL}};
+struct PinnedTargets {
+  int row;
+  unsigned slots;
+  uint64_t values;
+};
+static constexpr unsigned GAME_SLOTS = GameInterface::TARGET_OWNERSHIP | GameInterface::TARGET_SEKI |
+                                       GameInterface::TARGET_SCORING | GameInterface::TARGET_INCOME;
+static const PinnedTargets PINNED_TARGETS[] = {
+  {0, GAME_SLOTS, 0x924A4FEA6C761C27ULL}, {7, GAME_SLOTS, 0xCE7144B166577825ULL},
+  {59, GAME_SLOTS, 0xF554CD95F68E5B36ULL}, {118, GAME_SLOTS, 0xB30C52306B6E56A2ULL}};
+static int pinnedGameChecks = 0;
+static void checkPinnedGame(const vector<R::Position>& game) {
+  for(const PinnedImages& pin : PINNED_IMAGES) {
+    if(pin.ply >= (int)game.size())
+      continue;
+    pinnedGameChecks++;
+    uint64_t h = DIGEST_START;
+    for(int s = 0; s < SymmetryHelpers::NUM_SYMMETRIES; s++) {
+      const Hash128 image = fullHash(E::sym_position(game[pin.ply], s));
+      h = digest(h, &image.hash0, sizeof(image.hash0));
+      h = digest(h, &image.hash1, sizeof(image.hash1));
+    }
+    if(h != pin.images)
+      fail("the images at ply " + Global::intToString(pin.ply) + ": digest " + Global::uint64ToHexString(h));
+  }
+  //Every row's targets, each value in its slot's range (GameInterface::TargetValues; the front's slots stay 0), and
+  //the pinned rows' digests.
+  const int area = 19 * 19;
+  vector<float> values(GameInterface::TargetValues::NUM_CHANNELS * area);
+  for(int row = 0; row + 1 < (int)game.size(); row++) {
+    fill(values.begin(), values.end(), 0.0f);
+    const unsigned slots = GameInterface::trainingTargets<E>([&](int j) -> const R::Position& { return game[j]; },
+                                                              (int)game.size(), row, R::next_player(game[row]),
+                                                              values.data());
+    for(int c = 0; c < GameInterface::TargetValues::NUM_CHANNELS; c++)
+      for(int q = 0; q < area; q++) {
+        const float v = values[c * area + q];
+        const bool ok = c == GameInterface::TargetValues::CLASS_CHANNEL
+                          ? (v == -1.0f || v == 0.0f || v == 1.0f || v == 2.0f)
+                      : (c == 2 || c == 3 || c == 7) ? v == 0.0f
+                      : (v >= -1.0f && v <= 1.0f);
+        if(!ok) {
+          fail("the training targets of row " + Global::intToString(row) + ": a value out of its slot's range");
+          return;
+        }
+      }
+    for(const PinnedTargets& pin : PINNED_TARGETS) {
+      if(pin.row != row)
+        continue;
+      pinnedGameChecks++;
+      const uint64_t h = digest(DIGEST_START, values.data(), values.size() * sizeof(float));
+      if(slots != pin.slots || h != pin.values)
+        fail("the training targets of row " + Global::intToString(row) + ": slots " + Global::intToString((int)slots) +
+             ", digest " + Global::uint64ToHexString(h));
+    }
+  }
+}
+
 //The optional members: Enclosure has them, and the stub game gets the defaults.
 static void checkOptionalMembers() {
   using S = stub::GameRules;
@@ -368,6 +465,13 @@ static void checkOptionalMembers() {
     fail("the stub game reads a query position field");
 }
 
+static constexpr bool allSymmetriesInOrder() {
+  for(int i = 0; i < SymmetryHelpers::NUM_ALLOWED_SYMMETRIES; i++)
+    if(SymmetryHelpers::ALLOWED[i] != i)
+      return false;
+  return true;
+}
+
 int main(int argc, char** argv) {
   if(argc != 2) {
     fprintf(stderr, "usage: testgameinterface GAMES_FILE\n");
@@ -375,11 +479,16 @@ int main(int argc, char** argv) {
   }
   Board::initHash();
 
-  //The constants that the front still holds.
-  if(E::SCORE_SCALE != NNPos::SCORE_SCALE)
-    fail("SCORE_SCALE differs from NNPos::SCORE_SCALE");
-  if(E::SYMMETRIES != (1u << SymmetryHelpers::NUM_SYMMETRIES) - 1)
-    fail("SYMMETRIES differs from SymmetryHelpers::NUM_SYMMETRIES");
+  //The allowed symmetries: all 8 for Enclosure, and a subset as Connect-4's (the identity and the left-right mirror,
+  //symmetry 2). Enclosure's own targets.
+  static_assert(SymmetryHelpers::NUM_ALLOWED_SYMMETRIES == 8 && allSymmetriesInOrder(), "Enclosure allows all 8");
+  constexpr std::array<int, 2> mirror = GameInterface::symmetryList<0x5u>();
+  static_assert(mirror[0] == 0 && mirror[1] == 2 && !GameInterface::hasSymmetry(0x5u, 1) &&
+                  !GameInterface::hasSymmetry(0xFFu, 8) && !GameInterface::hasSymmetry(0xFFu, -1),
+                "the identity and the left-right mirror (Connect-4's), and symmetries out of range");
+  static_assert(GameInterface::encoding::HasTrainingTargets<E>::value &&
+                  (E::TARGETS & ~GameInterface::FRONT_TARGETS) != 0,
+                "Enclosure computes its own targets");
   {
     R::Position other;
     if(R::new_game(9, 9, other) || R::new_game(19, 18, other))
@@ -406,6 +515,7 @@ int main(int argc, char** argv) {
     BoardHistory hist(board, P_BLACK, Rules(), 0);
     //A pass (the player to move has no legal edge) forfeits the rest of the turn: the turn order then shifts.
     bool passed = false;
+    vector<R::Position> positions;
     for(int i = 0; i < n; i++) {
       getline(in, line);
       istringstream row(line);
@@ -414,12 +524,16 @@ int main(int argc, char** argv) {
       checkPosition(board, hist, label + " move " + Global::intToString(i + 1), passed ? -1 : i);
       if(games == 1)
         checkPinnedHashes(board, hist, i);
+      positions.push_back(board.pos);
       hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(action), board.nextPla(), NULL);
       passed = passed || action == R::PASS_ACTION;
     }
     checkPosition(board, hist, label + " end", passed ? -1 : n);
-    if(games == 1)
+    positions.push_back(board.pos);
+    if(games == 1) {
       checkPinnedHashes(board, hist, n);
+      checkPinnedGame(positions);
+    }
     getline(in, line);
     istringstream tail(line);
     int result;
@@ -457,7 +571,9 @@ int main(int argc, char** argv) {
     }
   }
 
-  if(pinnedChecks != (int)(sizeof(PINNED) / sizeof(PINNED[0])))
+  if(pinnedChecks != (int)(sizeof(PINNED) / sizeof(PINNED[0])) ||
+     pinnedGameChecks != (int)(sizeof(PINNED_IMAGES) / sizeof(PINNED_IMAGES[0]) +
+                               sizeof(PINNED_TARGETS) / sizeof(PINNED_TARGETS[0])))
     fail("the fixture's first game did not reach every pinned ply");
   printf("%d fixture games and %d random games: %d positions, %d with the inputs checked, %d symmetry checks, "
          "%d with every action checked, %d with pinned hashes, %d failures\n",

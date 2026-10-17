@@ -84,5 +84,5 @@ Hash128 LocalPatternHasher::getHashWithSym(const Board& board, Loc loc, Player p
   if(symmetry == 0)
     return hashWindow(*this, board, loc, pla, flipColors);
   Board symBoard = SymmetryHelpers::getSymBoard(board, symmetry);
-  return hashWindow(*this, symBoard, SymmetryHelpers::getSymMoveLoc(loc, symBoard, symmetry), pla, flipColors);
+  return hashWindow(*this, symBoard, SymmetryHelpers::getSymMoveLoc(loc, board, symmetry), pla, flipColors);
 }

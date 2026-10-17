@@ -24,12 +24,16 @@ static const int PY_PLANES = 219;
 static const int PY_EDGE_PLANES = 192;
 static const int PY_FEATURES_START = 197;
 
+//V8's planes: the front's on-board plane, then the game's (GameEncoding): the edge planes, then the feature planes.
+static const int V8_EDGE_PLANES_START = NNInputs::V8_GAME_PLANES_START;
+static const int V8_FEATURE_PLANES_START = V8_EDGE_PLANES_START + GameEncoding::EDGE_PLANES;
+
 //V8 channel of a Python plane (not one of the scalar planes).
 static int v8Channel(int plane) {
   if(plane < PY_EDGE_PLANES)
-    return NNInputs::V8_EDGE_PLANES_START + plane;
+    return V8_EDGE_PLANES_START + plane;
   assert(plane >= PY_FEATURES_START);
-  return NNInputs::V8_FEATURE_PLANES_START + (plane - PY_FEATURES_START);
+  return V8_FEATURE_PLANES_START + (plane - PY_FEATURES_START);
 }
 
 int main(int argc, char** argv) {
@@ -154,7 +158,7 @@ int main(int argc, char** argv) {
         continue;
       }
       for(int q : it->second)
-        expected[q * C + NNInputs::V8_FEATURE_PLANES_START + player * enclosure::PER_PLAYER + 7] = 1.0f;
+        expected[q * C + V8_FEATURE_PLANES_START + player * enclosure::PER_PLAYER + 7] = 1.0f;
     }
 
     MiscNNInputParams params;
@@ -194,9 +198,8 @@ int main(int argc, char** argv) {
         fail(label + ": the packed row's padding bits are not 0");
     }
     packedChecks++;
-    //Trick 3 (2026-10-06): the image's row written from board (fillRowV8Packed's symmetry) equals the row of the
-    //image board, at every symmetry and in both layouts; SymActionMap maps each legal move as getSymAction does on
-    //the image board.
+    //The image's row written from board (fillRowV8Packed's symmetry) equals the row of the image board, at every
+    //symmetry and in both layouts. (testgamelayer and testgameinterface check the map of the legal moves.)
     for(int sym = 1; sym < SymmetryHelpers::NUM_SYMMETRIES; sym++) {
       const Board symBoard = SymmetryHelpers::getSymBoard(board, sym);
       for(int layout = 0; layout < 2; layout++) {
@@ -210,12 +213,6 @@ int main(int argc, char** argv) {
         if(globalPacked != symGlobal)
           fail(label + ": symmetry " + Global::intToString(sym) + ": the global inputs differ");
       }
-      const SymmetryHelpers::SymActionMap symAction(board, sym);
-      const std::bitset<enclosure::PASS + 1>& legalBits = board.legalActions();
-      for(size_t a = legalBits._Find_first(); a < legalBits.size(); a = legalBits._Find_next(a))
-        if(symAction((int)a) != SymmetryHelpers::getSymAction((int)a, symBoard, sym))
-          fail(label + ": symmetry " + Global::intToString(sym) + ": action " + Global::intToString((int)a) +
-               " maps differently");
       symChecks++;
     }
     for(int i = 0; i < G; i++)

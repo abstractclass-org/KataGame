@@ -843,120 +843,37 @@ Loc SymmetryHelpers::getSymLoc(Loc loc, int xSize, int ySize, int symmetry) {
 }
 
 
-static void getSymXY(int& x, int& y, int symmetry) {
-  if(SymmetryHelpers::isFlipX(symmetry)) x = enclosure::SIZE - x - 1;
-  if(SymmetryHelpers::isFlipY(symmetry)) y = enclosure::SIZE - y - 1;
-  if(SymmetryHelpers::isTranspose(symmetry)) std::swap(x,y);
-}
-
-//Enclosure fork: the image of the Enclosure position (Go's stones, ko and chains do not exist).
+//KataGame fork: the image of the game's position (Go's stones, ko and chains do not exist).
 Board SymmetryHelpers::getSymBoard(const Board& board, int symmetry) {
+  //An allowed symmetry. A game allows a transpose only on square boards (GameEncoding::SYMMETRIES).
+  assert(isAllowed(symmetry) && (!isTranspose(symmetry) || board.x_size == board.y_size));
   Board symBoard(board.x_size, board.y_size);
-  symBoard.setPosition(getSymPosition(board.pos, symmetry));
-  //Enclosure fork: the image's legal moves are the images of the board's (legality is geometry, which a symmetry
-  //keeps), so they are mapped (about 440 moves) instead of listed again (24 us; most evaluations use a random
-  //symmetry). An edge between two of the mover's nodes is listed from its lexicographically first end only
-  //(Position::legal_actions), and the image may change which end that is.
-  const std::bitset<enclosure::PASS + 1>& bits = board.legalActions();
-  std::bitset<enclosure::PASS + 1> image;
-  if(bits.test(enclosure::PASS))
-    image.set(enclosure::PASS);
-  bool node[enclosure::SIZE][enclosure::SIZE] = {};
-  for(const enclosure::Edge& e : symBoard.pos.edges[symBoard.pos.player])
-    node[e.ax][e.ay] = node[e.bx][e.by] = true;
-  for(size_t a = bitsFirst(bits); a < (size_t)enclosure::PASS; a = bitsNext(bits, a)) {
-    const int cell = (int)a / enclosure::NOFF, k = (int)a % enclosure::NOFF;
-    int ax = cell % enclosure::SIZE, ay = cell / enclosure::SIZE;
-    int bx = ax + enclosure::OFFS[k].dx, by = ay + enclosure::OFFS[k].dy;
-    getSymXY(ax, ay, symmetry);
-    getSymXY(bx, by, symmetry);
-    const bool fromB = node[bx][by] && (bx < ax || (bx == ax && by < ay));
-    if(fromB)
-      image.set((by * enclosure::SIZE + bx) * enclosure::NOFF + enclosure::OFF_INDEX[ax - bx + 3][ay - by + 3]);
-    else
-      image.set((ay * enclosure::SIZE + ax) * enclosure::NOFF + enclosure::OFF_INDEX[bx - ax + 3][by - ay + 3]);
-  }
+  symBoard.setPosition(GameEncoding::sym_position(board.pos, symmetry));
+  //The image's legal moves are the images of the board's (an allowed symmetry keeps the rules), so they are mapped
+  //instead of listed again (Enclosure: about 440 moves, against 24 us to list them; most evaluations use a random
+  //symmetry).
+  const std::bitset<GameRules::NUM_ACTIONS>& bits = board.legalActions();
+  std::bitset<GameRules::NUM_ACTIONS> image;
+  if(bits.test(GameRules::PASS_ACTION))
+    image.set(GameRules::PASS_ACTION);
+  const SymActionMap symAction(board, symmetry);
+  for(size_t a = bitsFirst(bits); a < (size_t)GameRules::PASS_ACTION; a = bitsNext(bits, a))
+    image.set(symAction((int)a));
   symBoard.setLegalActions(image);
   return symBoard;
 }
 
-
-enclosure::Edge SymmetryHelpers::getSymEdge(const enclosure::Edge& e, int symmetry) {
-  int ax = e.ax, ay = e.ay, bx = e.bx, by = e.by;
-  getSymXY(ax, ay, symmetry);
-  getSymXY(bx, by, symmetry);
-  return enclosure::make_edge(ax, ay, bx, by);
-}
-
-enclosure::Position SymmetryHelpers::getSymPosition(const enclosure::Position& p, int symmetry) {
-  enclosure::Position s = p;
-  auto map = [&](std::vector<enclosure::Edge>& v) {
-    for(enclosure::Edge& e : v)
-      e = getSymEdge(e, symmetry);
-  };
-  map(s.edges[0]);
-  map(s.edges[1]);
-  map(s.protected_);
-  map(s.placed);
-  for(int h = 0; h < enclosure::HISTORY_TURNS; h++)
-    for(int i = 0; i < s.history_n[h]; i++)
-      s.history[h][i] = getSymEdge(s.history[h][i], symmetry);
-  //Recomputed rather than trusted: tests measure whether the rules respect the symmetry.
-  s.area_ok[0] = s.area_ok[1] = false;
-  return s;
-}
-
-int SymmetryHelpers::getSymAction(int action, const Board& symBoard, int symmetry) {
-  if(action == enclosure::PASS)
-    return action;
-  const int cell = action / enclosure::NOFF, k = action % enclosure::NOFF;
-  int ax = cell % enclosure::SIZE, ay = cell / enclosure::SIZE;
-  int bx = ax + enclosure::OFFS[k].dx, by = ay + enclosure::OFFS[k].dy;
-  getSymXY(ax, ay, symmetry);
-  getSymXY(bx, by, symmetry);
-  const int forward = (ay * enclosure::SIZE + ax) * enclosure::NOFF + enclosure::OFF_INDEX[bx - ax + 3][by - ay + 3];
-  if(symBoard.legalActions()[forward])
-    return forward;
-  //bx, by is off the board only if the action was, and then it has no reverse.
-  if(bx < 0 || bx >= enclosure::SIZE || by < 0 || by >= enclosure::SIZE)
-    return forward;
-  const int reverse = (by * enclosure::SIZE + bx) * enclosure::NOFF + enclosure::OFF_INDEX[ax - bx + 3][ay - by + 3];
-  return symBoard.legalActions()[reverse] ? reverse : forward;
-}
-
-//Enclosure fork (owner, 2026-10-06; trick 3): getSymBoard's image of a legal move, from board: the image is listed
-//from its far end exactly when that end is one of the mover's nodes and comes first (getSymBoard's fromB; a symmetry
-//maps the mover's nodes onto the image's).
-SymmetryHelpers::SymActionMap::SymActionMap(const Board& board, int sym) : symmetry(sym), node() {
-  for(const enclosure::Edge& e : board.pos.edges[board.pos.player])
-    node[e.ax][e.ay] = node[e.bx][e.by] = true;
-}
-
-int SymmetryHelpers::SymActionMap::operator()(int action) const {
-  if(action == enclosure::PASS || symmetry == 0)
-    return action;
-  const int cell = action / enclosure::NOFF, k = action % enclosure::NOFF;
-  int ax = cell % enclosure::SIZE, ay = cell / enclosure::SIZE;
-  int bx = ax + enclosure::OFFS[k].dx, by = ay + enclosure::OFFS[k].dy;
-  const bool farNode = node[bx][by];
-  getSymXY(ax, ay, symmetry);
-  getSymXY(bx, by, symmetry);
-  const bool fromB = farNode && (bx < ax || (bx == ax && by < ay));
-  if(fromB)
-    return (by * enclosure::SIZE + bx) * enclosure::NOFF + enclosure::OFF_INDEX[ax - bx + 3][ay - by + 3];
-  return (ay * enclosure::SIZE + ax) * enclosure::NOFF + enclosure::OFF_INDEX[bx - ax + 3][by - ay + 3];
-}
-
-Loc SymmetryHelpers::getSymMoveLoc(Loc moveLoc, const Board& symBoard, int symmetry) {
+Loc SymmetryHelpers::getSymMoveLoc(Loc moveLoc, const Board& board, int symmetry) {
   if(moveLoc == Board::NULL_LOC || moveLoc == Board::PASS_LOC)
     return moveLoc;
-  return Board::moveLocOfAction(getSymAction(Board::actionOfMoveLoc(moveLoc), symBoard, symmetry));
+  return Board::moveLocOfAction(SymActionMap(board, symmetry)(Board::actionOfMoveLoc(moveLoc)));
 }
 
-//Enclosure fork: a symmetry is valid when the position (edges, protected and placed edges; scores and
-//turn state never change under one) is its own image. The history planes are not part of the game, as
-//Go's move history is not. isSymDupLoc has Board::NUM_MOVE_LOCS entries and avoidMoves is indexed by
-//move Loc. Of each set of equivalent legal moves, the one with the lowest action index is kept.
+//KataGame fork: an allowed symmetry is valid when the position is its own image: the image has the position's hash
+//(GameRules::hash covers the whole position). Earlier turns that only the inputs see (GameEncoding::input_hash, such
+//as Enclosure's history planes) are not part of the game, as Go's move history is not. isSymDupLoc has
+//Board::NUM_MOVE_LOCS entries and avoidMoves is indexed by move Loc. Of each set of equivalent legal moves, the one
+//with the lowest action index is kept.
 void SymmetryHelpers::markDuplicateMoveLocs(
   const Board& board,
   const BoardHistory& hist,
@@ -971,24 +888,23 @@ void SymmetryHelpers::markDuplicateMoveLocs(
   validSymmetries.reserve(SymmetryHelpers::NUM_SYMMETRIES);
   validSymmetries.push_back(0);
 
-  auto sameEdges = [](std::vector<enclosure::Edge> a, std::vector<enclosure::Edge> b) {
-    auto key = [](const enclosure::Edge& e) { return std::make_tuple(e.ax, e.ay, e.bx, e.by); };
-    auto less = [&](const enclosure::Edge& x, const enclosure::Edge& y) { return key(x) < key(y); };
-    std::sort(a.begin(), a.end(), less);
-    std::sort(b.begin(), b.end(), less);
-    return a == b;
-  };
+  const Hash128 hash = GameRules::hash(board.pos);
   for(int symmetry = 1; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
+    if(!isAllowed(symmetry))
+      continue;
     if(onlySymmetries != NULL && !contains(*onlySymmetries,symmetry))
       continue;
-    enclosure::Position image = getSymPosition(board.pos, symmetry);
-    if(sameEdges(image.edges[0], board.pos.edges[0]) && sameEdges(image.edges[1], board.pos.edges[1]) &&
-       sameEdges(image.protected_, board.pos.protected_) && sameEdges(image.placed, board.pos.placed))
+    if(GameRules::hash(GameEncoding::sym_position(board.pos, symmetry)) == hash)
       validSymmetries.push_back(symmetry);
   }
   if(validSymmetries.size() <= 1)
     return;
 
+  //The board is its own image, so the image of a move is a move of the same board.
+  std::vector<SymActionMap> symActions;
+  for(int symmetry: validSymmetries)
+    if(symmetry != 0)
+      symActions.emplace_back(board, symmetry);
   std::vector<Loc> legal;
   board.getLegalMoveLocs(legal);
   for(Loc loc : legal) {
@@ -996,11 +912,8 @@ void SymmetryHelpers::markDuplicateMoveLocs(
       continue;
     if(avoidMoves.size() > 0 && avoidMoves[loc] > 0)
       continue;
-    for(int symmetry: validSymmetries) {
-      if(symmetry == 0)
-        continue;
-      //The board is its own image, so the image move is a move of the same board.
-      Loc symLoc = getSymMoveLoc(loc, board, symmetry);
+    for(const SymActionMap& symAction: symActions) {
+      Loc symLoc = Board::moveLocOfAction(symAction(Board::actionOfMoveLoc(loc)));
       if(!isSymDupLoc[loc] && loc != symLoc)
         isSymDupLoc[symLoc] = true;
     }
@@ -1012,10 +925,12 @@ std::vector<Loc> SymmetryHelpers::getSymMoveLocs(const Board& board, const std::
   Board b = board;
   Board image = getSymBoard(board, symmetry);
   for(Loc loc : moves) {
-    Loc symLoc = getSymMoveLoc(loc, image, symmetry);
-    out.push_back(symLoc);
     Player pla = b.nextPla();
-    if(b.isGameOver() || !b.isLegal(loc, pla, false) || !image.isLegal(symLoc, pla, false))
+    //KataGame fork: the game maps the legal moves only. A move that is not legal on b has no image (the null move).
+    const bool legal = !b.isGameOver() && b.isLegal(loc, pla, false);
+    Loc symLoc = legal || loc == Board::PASS_LOC ? getSymMoveLoc(loc, b, symmetry) : Board::NULL_LOC;
+    out.push_back(symLoc);
+    if(!legal || !image.isLegal(symLoc, pla, false))
       continue;
     b.playMoveAssumeLegal(loc, pla);
     image.playMoveAssumeLegal(symLoc, pla);
@@ -3013,29 +2928,30 @@ void NNInputs::fillRowV7(
 //INPUTSVERSION 8 (Enclosure fork)
 //===========================================================================================
 
-//The Enclosure repository's net.input_planes (engine.write_observation, then planes.feature_planes),
-//with the observation's scalars as global inputs. See NUM_FEATURES_SPATIAL_V8.
+//KataGame fork: the game's inputs (GameEncoding::spatial_inputs and global_inputs) after the front's on-board plane.
+//See NUM_FEATURES_SPATIAL_V8.
 //Fills rowGlobal and calls setEntry(i) for each spatial entry i that is 1 (the spatial row must start all 0); shared
-//by fillRowV8 (floats) and fillRowV8Packed (bits), so the two rows cannot differ. symmetry (owner, 2026-10-06; trick
-//3): the row of board's image under it, each entry moved to its image (a point's to the image point, an edge's to
-//the image edge's canonical anchor as the image's observation lists it); the scalars do not change. playoutInputs
-//(V9, 2026-10-13): rowGlobal also holds the two playout doubling advantage inputs (NUM_FEATURES_GLOBAL_V9).
+//by fillRowV8 (floats) and fillRowV8Packed (bits), so the two rows cannot differ. symmetry (owner, 2026-10-06): the
+//row of board's image under that allowed symmetry, which the game writes from board (InputOptions::symmetry); the
+//on-board plane of a square board does not change. playoutInputs (V9, 2026-10-13): rowGlobal also holds the two
+//playout doubling advantage inputs (NUM_FEATURES_GLOBAL_V9).
 template<typename SetEntry>
 static void fillRowV8Entries(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams,
   int nnXLen, int nnYLen, bool useNHWC, float* rowGlobal, int symmetry, bool playoutInputs, SetEntry setEntry
 ) {
-  assert(nnXLen == enclosure::SIZE && nnYLen == enclosure::SIZE);
-  assert(board.x_size == enclosure::SIZE && board.y_size == enclosure::SIZE);
-  //The inputs are the position's, whose player to move is fixed by the turn order.
-  assert(nextPlayer == Board::playerOfIndex(board.pos.player));
+  //The network's board is the game's largest board (NNPos).
+  assert(nnXLen == NNPos::MAX_BOARD_LEN && nnYLen == NNPos::MAX_BOARD_LEN);
+  assert(board.x_size <= nnXLen && board.y_size <= nnYLen);
+  assert(SymmetryHelpers::isAllowed(symmetry));
+  assert(!SymmetryHelpers::isTranspose(symmetry) || board.x_size == board.y_size);
+  //The inputs are the position's, which gives the player to move.
+  assert(nextPlayer == board.nextPla());
   (void)nextPlayer;
   const int numPos = nnXLen * nnYLen;
   using NNInputs::NUM_FEATURES_SPATIAL_V8;
   using NNInputs::NUM_FEATURES_GLOBAL_V8;
-  using NNInputs::V8_EDGE_PLANES_START;
-  using NNInputs::V8_FEATURE_PLANES_START;
   std::fill(rowGlobal, rowGlobal + (playoutInputs ? NNInputs::NUM_FEATURES_GLOBAL_V9 : NUM_FEATURES_GLOBAL_V8), 0.0f);
 
   int featureStride;
@@ -3052,84 +2968,29 @@ static void fillRowV8Entries(
   auto setOne = [&](int pos, int feature) {
     setEntry(pos * posStride + feature * featureStride);
   };
-  //A point's image (pos = y * 19 + x).
-  auto symPos = [&](int pos) {
-    if(symmetry == 0)
-      return pos;
-    int x = pos % enclosure::SIZE, y = pos / enclosure::SIZE;
-    getSymXY(x, y, symmetry);
-    return y * enclosure::SIZE + x;
-  };
+  //Feature 0 - on board (the front's). A flip keeps the board, and a game allows a transpose only if its boards are
+  //square, so the plane is the same at every allowed symmetry.
+  for(int y = 0; y < board.y_size; y++)
+    for(int x = 0; x < board.x_size; x++)
+      setOne(NNPos::xyToPos(x, y, nnXLen), 0);
 
-  //Feature 0 - on board
-  for(int pos = 0; pos < numPos; pos++)
-    setOne(pos, 0);
-
-  //Edge planes and scalars: the observation's set bits, channels last, (y * 19 + x) * PLANES + plane.
-  int32_t idx[enclosure::MAX_OBS_IDX];
-  float scalars[enclosure::SCALARS];
-  const int n = board.pos.observation(idx, scalars);
-  for(int i = 0; i < n; i++) {
-    int pos = idx[i] / enclosure::PLANES;
-    int plane = idx[i] % enclosure::PLANES;
-    assert(plane < 4 * enclosure::NOFF);
-    //The image edge, anchored as make_edge anchors it (its lexicographically first end), in the same group.
-    if(symmetry != 0) {
-      const int group = plane / enclosure::NOFF, k = plane % enclosure::NOFF;
-      int ax = pos % enclosure::SIZE, ay = pos / enclosure::SIZE;
-      int bx = ax + enclosure::OFFS[k].dx, by = ay + enclosure::OFFS[k].dy;
-      getSymXY(ax, ay, symmetry);
-      getSymXY(bx, by, symmetry);
-      if(std::tie(bx, by) < std::tie(ax, ay)) {
-        std::swap(ax, bx);
-        std::swap(ay, by);
-      }
-      pos = ay * enclosure::SIZE + ax;
-      plane = group * enclosure::NOFF + enclosure::OFF_INDEX[bx - ax + 3][by - ay + 3];
-    }
-    setOne(pos, V8_EDGE_PLANES_START + plane);
-    //Also at the upper end, in the opposite offset's plane of the same group, so a point sees every edge it ends (with
-    //one end only, half of the 48 offset planes were never set). The input option ENCLOSURE_EDGE_BOTH_ENDS until
-    //2026-10-08, then the only way.
-    {
-      const int group = plane / enclosure::NOFF, k = plane % enclosure::NOFF;
-      const int dx = enclosure::OFFS[k].dx, dy = enclosure::OFFS[k].dy;
-      const int upper = (pos / enclosure::SIZE + dy) * enclosure::SIZE + pos % enclosure::SIZE + dx;
-      const int reverse = group * enclosure::NOFF + enclosure::OFF_INDEX[3 - dx][3 - dy];
-      setOne(upper, V8_EDGE_PLANES_START + reverse);
-    }
-  }
-  for(int i = 0; i < enclosure::SCALARS; i++)
-    rowGlobal[i] = scalars[i];
-  //Komi as a starting score (owner, 2026-10-04): scores only add up and the winner is the sign of the final margin,
-  //so Red receiving komi K is exactly Red starting K points ahead. It enters the score input of the side it favours
-  //(scalars 3 and 4, Blue's and Red's scores, engine.h observation), keeping both nonnegative; nothing changes at 0.
-  const double komi = hist.rules.komi;
-  if(komi > 0)
-    rowGlobal[4] = float((board.pos.scores[1] + komi) / (18 * 18 * 61));
-  else if(komi < 0)
-    rowGlobal[3] = float((board.pos.scores[0] - komi) / (18 * 18 * 61));
+  //The game's planes, after the on-board plane, at the image's points.
+  GameInterface::InputOptions options;
+  options.symmetry = symmetry;
+  //maxHistory <= 0 asks for no history (KataGo's ZOBRIST_ZERO_HISTORY case): the game leaves out its history planes.
+  options.history = nnInputParams.maxHistory > 0;
+  options.komi = hist.rules.komi;
+  GameEncoding::spatial_inputs(board.pos, options, [&](int x, int y, int plane) {
+    setOne(NNPos::xyToPos(x, y, nnXLen), NNInputs::V8_GAME_PLANES_START + plane);
+  });
+  GameEncoding::global_inputs(board.pos, options, rowGlobal);
   //V9 (2026-10-13): KataGo's playout doubling advantage, as V7's inputs 15 and 16. The first is 1 whenever the
   //advantage is nonzero, because "there's actually a discontinuity in how training behavior works when this is
   //nonzero, no matter how slightly" (KataGo's comment). The search and the training rows give the advantage from the
   //player to move's side.
   if(playoutInputs && nnInputParams.playoutDoublingAdvantage != 0) {
-    rowGlobal[enclosure::SCALARS] = 1.0f;
-    rowGlobal[enclosure::SCALARS + 1] = (float)(0.5 * nnInputParams.playoutDoublingAdvantage);
-  }
-
-  //Feature planes, channels last, (y * 19 + x) * FEATURE_PLANES + plane.
-  static thread_local std::vector<uint8_t> planes(enclosure::N_POINTS * enclosure::FEATURE_PLANES);
-  enclosure::feature_planes(board.pos, planes.data());
-  //maxHistory <= 0 asks for no history (KataGo's ZOBRIST_ZERO_HISTORY case): drop the history planes.
-  const int numFeaturePlanes =
-    nnInputParams.maxHistory <= 0 ? 2 * enclosure::PER_PLAYER : enclosure::FEATURE_PLANES;
-  for(int pos = 0; pos < numPos; pos++) {
-    const uint8_t* p = planes.data() + pos * enclosure::FEATURE_PLANES;
-    const int image = symPos(pos);
-    for(int f = 0; f < numFeaturePlanes; f++)
-      if(p[f])
-        setOne(image, V8_FEATURE_PLANES_START + f);
+    rowGlobal[NUM_FEATURES_GLOBAL_V8] = 1.0f;
+    rowGlobal[NUM_FEATURES_GLOBAL_V8 + 1] = (float)(0.5 * nnInputParams.playoutDoublingAdvantage);
   }
 }
 

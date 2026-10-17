@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
         for(int symmetry = 1; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
           Board mapped = SymmetryHelpers::getSymBoard(board, symmetry);
           Board fresh(board.x_size, board.y_size);
-          fresh.setPosition(SymmetryHelpers::getSymPosition(board.pos, symmetry));
+          fresh.setPosition(GameEncoding::sym_position(board.pos, symmetry));
           if(mapped.legalActions() != fresh.legalActions())
             fail(where + ": mapped legal moves differ under symmetry " + Global::intToString(symmetry));
         }

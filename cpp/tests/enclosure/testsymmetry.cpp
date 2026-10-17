@@ -4,7 +4,7 @@
 //
 // For each of KataGo's 8 symmetries (bit 0 flipY, bit 1 flipX, bit 2 transpose),
 // random games are played twice: on the board, and on its image under the
-// symmetry, each move mapped by SymmetryHelpers::getSymAction. After every move
+// symmetry, each move mapped by SymmetryHelpers::getSymMoveLoc (the game's SymActionMap). After every move
 // the image game must be the image of the game: the same legal moves (mapped
 // one to one), the same edges, protected and placed edges and history, and the
 // same scores. The feature planes (net1's inputs) of the image must be the
@@ -20,7 +20,7 @@
 // (katagame/python/katago/train/enclosure_symmetry.py): for the first POSITIONS
 // (default 40) positions of INPUTS_FILE (tests/data/enclosure_inputs.txt) and
 // each symmetry, the V8 inputs of the position and of its image, and each legal
-// move with its image (SymmetryHelpers::getSymAction):
+// move with its image (the game's SymActionMap):
 //   sym <label> <symmetry>
 //   in <count> <index> ...       (nonzero spatial entries, NCHW: channel * 361 + y * 19 + x)
 //   global <5 values>
@@ -146,7 +146,7 @@ static int dump(const string& inputsFile, const string& outFile, int maxPosition
       writeInputs(out, "image", image);
       out << "moves " << legal.size();
       for(Loc loc : legal)
-        out << " " << Board::actionOfMoveLoc(loc) << " " << SymmetryHelpers::getSymAction(Board::actionOfMoveLoc(loc), image, symmetry);
+        out << " " << Board::actionOfMoveLoc(loc) << " " << Board::actionOfMoveLoc(SymmetryHelpers::getSymMoveLoc(loc, board, symmetry));
       out << "\n";
     }
   }
@@ -165,7 +165,7 @@ int main(int argc, char** argv) {
   for(int symmetry = 0; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
     Rand rand("testsymmetry " + Global::intToString(symmetry));
     double maxScoreDiff = 0;
-    bool startFixed = stateDifferences(start.pos, SymmetryHelpers::getSymPosition(start.pos, symmetry), maxScoreDiff) == 0;
+    bool startFixed = stateDifferences(start.pos, GameEncoding::sym_position(start.pos, symmetry), maxScoreDiff) == 0;
     long moves = 0, legalDiff = 0, stateDiff = 0, featureDiff = 0;
     for(int game = 0; game < gamesPerSymmetry; game++) {
       Board board;
@@ -178,11 +178,11 @@ int main(int argc, char** argv) {
         image.getLegalMoveLocs(imageLegal);
         set<Loc> mapped;
         for(Loc loc : legal)
-          mapped.insert(SymmetryHelpers::getSymMoveLoc(loc, image, symmetry));
+          mapped.insert(SymmetryHelpers::getSymMoveLoc(loc, board, symmetry));
         if(mapped != set<Loc>(imageLegal.begin(), imageLegal.end()) || mapped.size() != legal.size())
           legalDiff++;
         Loc loc = legal[rand.nextUInt((uint32_t)legal.size())];
-        Loc imageLoc = SymmetryHelpers::getSymMoveLoc(loc, image, symmetry);
+        Loc imageLoc = SymmetryHelpers::getSymMoveLoc(loc, board, symmetry);
         Player pla = board.nextPla();
         if(image.nextPla() != pla || !image.isLegal(imageLoc, pla, false)) {
           legalDiff++;
@@ -191,7 +191,7 @@ int main(int argc, char** argv) {
         board.playMoveAssumeLegal(loc, pla);
         image.playMoveAssumeLegal(imageLoc, pla);
         moves++;
-        stateDiff += stateDifferences(SymmetryHelpers::getSymPosition(board.pos, symmetry), image.pos, maxScoreDiff) != 0;
+        stateDiff += stateDifferences(GameEncoding::sym_position(board.pos, symmetry), image.pos, maxScoreDiff) != 0;
         if(moves % featureEvery == 0)
           featureDiff += featureDifferences(board.pos, image.pos, symmetry) != 0;
       }
@@ -218,15 +218,15 @@ int main(int argc, char** argv) {
           double ignored = 0;
           Board image = SymmetryHelpers::getSymBoard(board, s1);
           //The inverse maps the image back, position and moves.
-          bad += stateDifferences(SymmetryHelpers::getSymPosition(image.pos, SymmetryHelpers::invert(s1)), board.pos, ignored) != 0;
+          bad += stateDifferences(GameEncoding::sym_position(image.pos, SymmetryHelpers::invert(s1)), board.pos, ignored) != 0;
           for(Loc loc : legal) {
-            Loc back = SymmetryHelpers::getSymMoveLoc(SymmetryHelpers::getSymMoveLoc(loc, image, s1), board, SymmetryHelpers::invert(s1));
+            Loc back = SymmetryHelpers::getSymMoveLoc(SymmetryHelpers::getSymMoveLoc(loc, board, s1), image, SymmetryHelpers::invert(s1));
             bad += back != loc;
           }
           //Composition: s1 then s2 is compose(s1, s2).
           for(int s2 = 0; s2 < SymmetryHelpers::NUM_SYMMETRIES; s2++) {
-            enclosure::Position twice = SymmetryHelpers::getSymPosition(image.pos, s2);
-            enclosure::Position once = SymmetryHelpers::getSymPosition(board.pos, SymmetryHelpers::compose(s1, s2));
+            enclosure::Position twice = GameEncoding::sym_position(image.pos, s2);
+            enclosure::Position once = GameEncoding::sym_position(board.pos, SymmetryHelpers::compose(s1, s2));
             bad += stateDifferences(twice, once, ignored) != 0;
             checks++;
           }
@@ -248,7 +248,7 @@ int main(int argc, char** argv) {
     vector<int> expected;
     for(int symmetry = 0; symmetry < SymmetryHelpers::NUM_SYMMETRIES; symmetry++) {
       double ignored = 0;
-      if(stateDifferences(start.pos, SymmetryHelpers::getSymPosition(start.pos, symmetry), ignored) == 0)
+      if(stateDifferences(start.pos, GameEncoding::sym_position(start.pos, symmetry), ignored) == 0)
         expected.push_back(symmetry);
     }
     vector<Loc> legal;

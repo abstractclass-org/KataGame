@@ -560,12 +560,16 @@ struct Position {
         idx[n++] = base + owner * NOFF + k;
         if (contains(protected_, e) || contains(placed, e)) idx[n++] = base + (owner + 2) * NOFF + k;
       }
+    observation_scalars(scalars);
+    return n;
+  }
+  // The observation's SCALARS scalars alone.
+  void observation_scalars(float* scalars) const {
     scalars[0] = float(player);
     scalars[1] = float(moves_left / 2.0);
     scalars[2] = float(double(move_count) / MAX_MOVES);
     scalars[3] = float(scores[0] / (18 * 18 * 61));
     scalars[4] = float(scores[1] / (18 * 18 * 61));
-    return n;
   }
 };
 

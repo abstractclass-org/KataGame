@@ -1,10 +1,9 @@
 #pragma once
-// Enclosure's network encoding part of the game interface (game/gameinterface.h). The inputs are input version V8's
-// (ENCLOSURE.md, "Network inputs"; NNInputs::fillRowV8 in neuralnet/nninputs.cpp), without the on-board plane, which
-// the front writes: the observation's edge planes (engine.h) at both ends of each edge, then the feature planes
-// (features.h). The symmetries act on positions, not on input planes (ENCLOSURE.md, "Symmetries"): these members are
-// SymmetryHelpers' getSymPosition and SymActionMap (nninputs.cpp), and the input hash is BoardHistory's history hash
-// (boardhistory.cpp).
+// Enclosure's network encoding part of the game interface (game/gameinterface.h). The inputs (ENCLOSURE.md, "Network
+// inputs") are the observation's edge planes (engine.h) at both ends of each edge, then the feature planes
+// (features.h). The front puts its on-board plane before them (NNInputs::fillRowV8 in neuralnet/nninputs.cpp). The
+// symmetries act on positions, not on input planes (ENCLOSURE.md, "Symmetries"). The training targets are the spatial
+// targets of ENCLOSURE.md, "Spatial targets".
 
 #include <cstdint>
 #include <vector>
@@ -28,6 +27,10 @@ struct GameEncoding {
   // The observation's scalars: the player to move, the edges left in the turn / 2, the edge count / 120, and both
   // scores / (18 * 18 * 61).
   static constexpr int NUM_GLOBAL_INPUTS = SCALARS;
+  // The last HISTORY_TURNS feature planes: the edges of the last turns.
+  static constexpr int NUM_HISTORY_PLANES = HISTORY_TURNS;
+  static constexpr int HISTORY_PLANE = NUM_SPATIAL_INPUTS - NUM_HISTORY_PLANES;
+  static_assert(HISTORY_PLANE == EDGE_PLANES + 2 * PER_PLAYER, "the history planes follow the players' planes");
 
   static void sym_point(int& x, int& y, int symmetry) { GameInterface::symPoint(x, y, symmetry, SIZE, SIZE); }
 
@@ -35,7 +38,8 @@ struct GameEncoding {
   static void spatial_inputs(const Position& p, const GameInterface::InputOptions& options, Set&& set) {
     const int symmetry = options.symmetry;
     // Each edge is set at its lower end, in the plane of its offset, and at its upper end, in the opposite offset's
-    // plane of the same group. Under a symmetry, the image edge is anchored as make_edge anchors it.
+    // plane of the same group, so that a point sees every edge that it ends. Under a symmetry, the image edge is
+    // anchored as make_edge anchors it.
     int32_t idx[MAX_OBS_IDX];
     float scalars[SCALARS];
     const int n = p.observation(idx, scalars);
@@ -43,7 +47,8 @@ struct GameEncoding {
       const int pos = idx[i] / PLANES, group = idx[i] % PLANES / NOFF;
       int x = pos % SIZE, y = pos / SIZE, k = idx[i] % PLANES % NOFF;
       if(symmetry != 0) {
-        const Edge e = sym_edge(make_edge(x, y, x + OFFS[k].dx, y + OFFS[k].dy), symmetry);
+        // The observation lists the edge from its lower end, as make_edge does.
+        const Edge e = sym_edge(Edge{int8_t(x), int8_t(y), int8_t(x + OFFS[k].dx), int8_t(y + OFFS[k].dy)}, symmetry);
         x = e.ax;
         y = e.ay;
         k = OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
@@ -52,15 +57,16 @@ struct GameEncoding {
       const int dx = OFFS[k].dx, dy = OFFS[k].dy;
       set(x + dx, y + dy, group * NOFF + OFF_INDEX[3 - dx][3 - dy]);
     }
-    // Without history, the history planes (the last HISTORY_TURNS feature planes) are left out.
+    // Without history, the history planes (the last feature planes) are left out.
     static thread_local std::vector<uint8_t> planes(N_POINTS * FEATURE_PLANES);
     feature_planes(p, planes.data());
-    const int numFeaturePlanes = options.history ? FEATURE_PLANES : 2 * PER_PLAYER;
+    const int numFeaturePlanes = options.history ? FEATURE_PLANES : FEATURE_PLANES - NUM_HISTORY_PLANES;
     for(int y = 0; y < SIZE; y++)
       for(int x = 0; x < SIZE; x++) {
         const uint8_t* q = planes.data() + (y * SIZE + x) * FEATURE_PLANES;
         int sx = x, sy = y;
-        sym_point(sx, sy, symmetry);
+        if(symmetry != 0)
+          sym_point(sx, sy, symmetry);
         for(int f = 0; f < numFeaturePlanes; f++)
           if(q[f])
             set(sx, sy, EDGE_PLANES + f);
@@ -70,8 +76,7 @@ struct GameEncoding {
   // Komi enters as a starting score: Red receiving komi K is Red starting K points ahead (scores only add up, and the
   // winner is the sign of the final margin). It goes into the score input of the side it favours.
   static void global_inputs(const Position& p, const GameInterface::InputOptions& options, float* out) {
-    int32_t idx[MAX_OBS_IDX];
-    p.observation(idx, out);
+    p.observation_scalars(out);
     if(options.komi > 0)
       out[4] = float((p.scores[1] + options.komi) / (18 * 18 * 61));
     else if(options.komi < 0)
@@ -158,6 +163,84 @@ struct GameEncoding {
   static constexpr unsigned TARGETS = GameInterface::TARGET_OWNERSHIP | GameInterface::TARGET_SEKI |
                                       GameInterface::TARGET_FUTURE_PIECES | GameInterface::TARGET_SCORING |
                                       GameInterface::TARGET_INCOME | GameInterface::TARGET_NEXT_PIECES;
+
+  // C0, C1, C4 and C5-6 (C2-3 and C7 are the front's). The positions after the row are one edge apart. A turn end is
+  // a position right after one: the turn's placed edges have become protected.
+  template<class Positions>
+  static unsigned training_targets(const Positions& positions, int numPositions, int row, int mover, float* values) {
+    float* occupancy = values;                                         // C0
+    float* cut = values + N_POINTS;                                    // C1
+    float* regions = values + 4 * N_POINTS;                            // C4
+    float* income[2] = {values + 5 * N_POINTS, values + 6 * N_POINTS};  // C5 the mover's, C6 the opponent's
+    const Position& now = positions(row);
+    // The engine's arrays of points are x * SIZE + y, the interface's y * SIZE + x.
+    auto enginePoint = [](int x, int y) { return x * SIZE + y; };
+
+    // At the turn ends after the row: C0, the future occupancy, the mean of +1 inside the mover's regions and -1
+    // inside the opponent's (0 in neither or both). C5-6, the territory income, the mean of each player's enclosed
+    // area inside the unit square around each point. C4, the region occupancy 4 rounds later: the same +1 and -1 at
+    // the 8th turn end (the last if the game ends sooner).
+    uint8_t inside[2][N_POINTS];
+    float pointIncome[N_POINTS];
+    int turnEnds = 0;
+    for(int j = row + 1; j < numPositions; j++) {
+      const Position& p = positions(j);
+      if(!p.placed.empty() || p.move_count <= now.move_count)
+        continue;
+      turnEnds++;
+      for(int k = 0; k < 2; k++) {
+        enclosed_area(p.edges[k], inside[k], pointIncome);
+        float* sum = income[k == mover ? 0 : 1];
+        for(int x = 0; x < SIZE; x++)
+          for(int y = 0; y < SIZE; y++)
+            sum[y * SIZE + x] += pointIncome[enginePoint(x, y)];
+      }
+      for(int x = 0; x < SIZE; x++)
+        for(int y = 0; y < SIZE; y++) {
+          const int occupied = (int)inside[mover][enginePoint(x, y)] - (int)inside[1 - mover][enginePoint(x, y)];
+          occupancy[y * SIZE + x] += (float)occupied;
+          if(turnEnds <= 8)
+            regions[y * SIZE + x] = (float)occupied;
+        }
+    }
+    if(turnEnds > 0)
+      for(int q = 0; q < N_POINTS; q++) {
+        occupancy[q] = occupancy[q] / turnEnds;
+        income[0][q] = income[0][q] / turnEnds;
+        income[1][q] = income[1][q] / turnEnds;
+      }
+
+    // C1: the edges that get cut. On each lattice point of an edge of the position now (its ends and the points it
+    // passes through): +1 if one of the mover's edges there is removed later in the game, -1 if one of the opponent's
+    // is (the mover's wins if both), 0 otherwise. 2 on the points on no edge. An edge counts as cut when it is
+    // removed, even if an identical edge is placed again later.
+    uint8_t onEdge[2][N_POINTS], onCut[2][N_POINTS];
+    std::vector<Edge> removed;
+    for(int k = 0; k < 2; k++) {
+      edge_points(now.edges[k], onEdge[k]);
+      removed.clear();
+      for(const Edge& e : now.edges[k]) {
+        bool gone = false;
+        for(int j = row + 1; j < numPositions && !gone; j++)
+          gone = !contains(positions(j).edges[k], e);
+        if(gone)
+          removed.push_back(e);
+      }
+      edge_points(removed, onCut[k]);
+    }
+    for(int x = 0; x < SIZE; x++)
+      for(int y = 0; y < SIZE; y++) {
+        const int q = enginePoint(x, y);
+        cut[y * SIZE + x] = onCut[mover][q]       ? 1.0f
+                          : onCut[1 - mover][q]   ? -1.0f
+                          : onEdge[0][q] || onEdge[1][q] ? 0.0f
+                          : 2.0f;
+      }
+
+    // C0 holds a target in every row (0 where no turn end follows), C4 and C5-6 only when a turn end follows.
+    return GameInterface::TARGET_OWNERSHIP | GameInterface::TARGET_SEKI |
+           (turnEnds > 0 ? (unsigned)(GameInterface::TARGET_INCOME | GameInterface::TARGET_SCORING) : 0u);
+  }
 
   // The width of the score bins against KataGo's bins of 1 point, from the measured margins (ENCLOSURE.md, "Score
   // scale").

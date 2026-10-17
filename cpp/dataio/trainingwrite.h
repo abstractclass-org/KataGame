@@ -230,6 +230,7 @@ struct TrainingWriteBuffers {
   //C32: Search Entropy (for statistical purposes)
   //C33: Weight assigned to the future position targets valueTargetsNCHW C1-C2
   //C34: Weight assigned to the area/territory target valueTargetsNCHW C4
+  //     KataGame fork: valueTargetWeight when C4 holds the game's target (GameInterface::TARGET_SCORING), else 0.
   //C35: 1.0 minus weight assigned to value targets
 
   //C36-40: Precomputed mask values indicating if we should use historical moves 1-5, if we desire random history masking.
@@ -275,9 +276,12 @@ struct TrainingWriteBuffers {
   //configured (see PlaySettings::useSearchValueSurprise). Both C65 and C66 are the stats that drove the
   //probability of this position being selected for reanalysis, recorded for statistical purposes.
   //C67: If C64, the number of visits of the original cheap search (the reanalysis search's visits are in C60).
-  //C68: Enclosure fork: 1 if valueTargetsNCHW C1 holds the cut-edge target (rows before 2026-10-03 have 0: no target).
-  //C69: Enclosure fork: 1 if valueTargetsNCHW C5-6 hold the territory-income target (0 in rows written before it,
-  //which the shuffle pads to 7 channels, and in rows with no turn end left).
+  //C68: Enclosure fork: 1 if valueTargetsNCHW C1 holds the game's target (GameInterface::TARGET_SEKI, Enclosure's
+  //cut-edge target). Rows before 2026-10-03 have 0: no target. In rows with C27 0, KataGo's flag of the pass-alive
+  //mode (BoardHistoryModes), which C27 cancels.
+  //C69: Enclosure fork: 1 if valueTargetsNCHW C5-6 hold the game's target (GameInterface::TARGET_INCOME, Enclosure's
+  //territory income). 0 in rows written before it, which the shuffle pads to 7 channels, and in rows with no turn end
+  //left.
   //C70: Enclosure fork (owner, 2026-10-04): RGSC's regret target (Eq. 2), if C71.
   //C71: Enclosure fork: 1 if C70 holds the regret target (0 in side positions and when RGSC is off).
   //C72: Enclosure fork (2026-10-11): RGSC's swing regret target (value swing, scaled to the regret's range and capped),
@@ -301,11 +305,17 @@ struct TrainingWriteBuffers {
   NumpyBuffer<int8_t> scoreDistrN;
 
   //Spatial value-related targets
+  //KataGame fork: C0, C1, C4 and C5-6 hold the game's own targets (GameEncoding::TARGETS and training_targets, stored
+  //as GameInterface::TargetValues gives), all 0 in a slot that the game does not write. C2-3 and C7 are the front's,
+  //from the game's pieces. Enclosure's meanings follow each slot (ENCLOSURE.md, "Spatial targets").
   //C0: Final board ownership [-1,1], from the perspective of the player to move. All 0 if C27 has weight 0.
+  //    Enclosure fork: the future occupancy (the mean over the turn ends after the row of +1 inside the mover's
+  //    regions, -1 inside the opponent's), x 120 ([-120,120]).
   //C1: Difference between ownership and naive area (such as due to seki). All 0 if C27 has weight 0.
   //    Enclosure fork: edges that get cut (+1 the mover's, -1 the opponent's, 0 not cut, 2 no edge), if C68.
   //C2-3: Future board position a certain number of turns in the future. All 0 if C33 has weight 0.
   //C4: Final board area/territory [-120,120]. All 0 if C34 has weight 0. Unlike ownership, takes into account group tax and scoring rules.
+  //    Enclosure fork: the region occupancy 4 rounds later (at the 8th turn end after the row), x 120.
   //C5-6: Enclosure fork (owner, 2026-10-03; iviazovetskyi's ownership target): territory income of the player to move
   //(C5) and of the opponent (C6). Per lattice point, its enclosed area inside the unit square around the point,
   //averaged over the turn ends after this row's position, x 120 ([0,120]). All 0 unless C69.

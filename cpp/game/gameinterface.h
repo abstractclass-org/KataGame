@@ -97,6 +97,11 @@
  *                           A template on set, so that each caller's writer is inlined.
  *   global_inputs(p, options, out)
  *                           void: writes NUM_GLOBAL_INPUTS floats.
+ *   HISTORY_PLANE, NUM_HISTORY_PLANES
+ *                           int, int: the history planes, the game's planes HISTORY_PLANE to HISTORY_PLANE +
+ *                           NUM_HISTORY_PLANES - 1. They show what the position keeps of earlier turns, and
+ *                           spatial_inputs sets none of them without options.history. The trainer's history dropout
+ *                           clears them. A game without history has 0 planes.
  *   input_hash(p)           Hash128: what the inputs read beyond hash(p), such as earlier turns. The front mixes it
  *                           into the key of the network's cache.
  *   POLICY_CHANNELS         int: policy channels per point.
@@ -106,12 +111,22 @@
  *                           int: the action at that point and channel, (y * MAX_BOARD_LEN + x) * POLICY_CHANNELS +
  *                           channel, which is also its policy index. Pass is last.
  *   SYMMETRIES              unsigned: the allowed subset of KataGo's 8 symmetries, bit s for symmetry s. Bit 0 (the
- *                           identity) is always set.
+ *                           identity) is always set. A game that allows a transpose (bit 4 to 7) plays on square
+ *                           boards only.
  *   sym_position(p, symmetry)
  *                           Position: the image of the position.
  *   SymActionMap            a type: SymActionMap(p, symmetry) maps each legal action of p and pass (operator(),
  *                           int to int) to its image, an action of sym_position(p, symmetry).
  *   TARGETS                 unsigned: the optional training targets that the game writes (GameTarget bits).
+ *   training_targets(positions, numPositions, row, mover, values)
+ *                           unsigned: the game's own training targets of a training row, the slots of TARGETS that
+ *                           the front does not compute (all but FRONT_TARGETS). positions(j) is the game's position
+ *                           after j moves (const Position&), for 0 <= j < numPositions, and the row is at
+ *                           positions(row). mover is the row's player to move. The game writes the values before the
+ *                           row's storage (TargetValues), in values[channel * area + y * x_size + x], area = x_size *
+ *                           y_size, where the front has written 0. It returns the slots (GameTarget bits) that hold a
+ *                           target in this row, which the front's flags of the slots read (TrainingWriteBuffers). A
+ *                           template on positions. A game whose TARGETS are all FRONT_TARGETS can leave it out.
  *   SCORE_SCALE             double: the game's score spread against Go's. KataGo's constants in points scale by it
  *                           (the score distribution's bin width, the output multipliers, the Huber deltas).
  *   SCORE_UNIT              double: the search's score utility unit, in points, where KataGo uses the square root
@@ -121,6 +136,7 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <type_traits>
@@ -140,7 +156,9 @@ struct InputOptions {
 
 //The optional training targets: the slots of KataGo's spatial targets (its training rows' valueTargetsNCHW) and the
 //two that the fork added. A game gives each slot that it writes its own meaning (its GameEncoding says which), and the
-//front writes 0, with weight 0, in each slot that the game does not write.
+//front writes 0 in each slot that the game does not write. The slots with a weight or a flag of their own (C1, C2-3,
+//C4, C5-6, C7) then have weight 0. C0 has none: KataGo's C27 weighs it with C1 and the score's targets, so the
+//trainer reads TARGETS to leave out C0 for a game without TARGET_OWNERSHIP.
 enum GameTarget : unsigned {
   TARGET_OWNERSHIP = 1u << 0,      //C0: KataGo's ownership.
   TARGET_SEKI = 1u << 1,           //C1: KataGo's seki areas.
@@ -148,6 +166,22 @@ enum GameTarget : unsigned {
   TARGET_SCORING = 1u << 3,        //C4: KataGo's scoring (final area).
   TARGET_INCOME = 1u << 4,         //C5-6: a value per point for each player.
   TARGET_NEXT_PIECES = 1u << 5,    //C7: the next mover's pieces after the row's move.
+};
+//The slots that the front computes from pieces(). The game's training_targets gives every other slot of its TARGETS.
+constexpr unsigned FRONT_TARGETS = TARGET_FUTURE_PIECES | TARGET_NEXT_PIECES;
+
+//The values of a row's spatial targets before the front stores them (TrainingWriteBuffers::addRow): channel c of
+//valueTargetsNCHW is values[c * area + y * x_size + x]. The front stores the slots that the game writes as follows:
+//- C0 (ownership), C4 (scoring), C5-6 (income): a value in [-1, 1], times 120, rounded at random to an integer so
+//  that the expected value is exact (KataGo's storage of its scoring target).
+//- C1 (seki): an integer class, as it is (KataGo's seki: -1, 0 or 1).
+struct TargetValues {
+  static constexpr int NUM_CHANNELS = 8;  //C0 to C7 (the rows' valueTargetsNCHW)
+  //The channels that a game's training_targets can write, in the order of the front's storage (and its random
+  //rounding), and the one stored as it is.
+  static constexpr int GAME_CHANNELS[5] = {0, 1, 4, 5, 6};
+  static constexpr int CLASS_CHANNEL = 1;
+  static constexpr float STORAGE_SCALE = 120.0f;
 };
 
 //KataGo's symmetry of a point on a board of xSize x ySize (SymmetryHelpers::getSymLoc): flip x, flip y, then
@@ -158,12 +192,36 @@ inline void symPoint(int& x, int& y, int symmetry, int xSize, int ySize) {
   if(symmetry & 0x4) std::swap(x, y);
 }
 
+//A set of KataGo's symmetries (bit s for symmetry s, as SYMMETRIES): whether it holds a symmetry, how many it holds,
+//and the list of them in ascending order.
+constexpr bool hasSymmetry(unsigned set, int symmetry) {
+  return symmetry >= 0 && symmetry < 8 && ((set >> symmetry) & 1u) != 0;
+}
+constexpr int numSymmetries(unsigned set) {
+  int n = 0;
+  for(int s = 0; s < 8; s++)
+    n += hasSymmetry(set, s);
+  return n;
+}
+template<unsigned SET> constexpr std::array<int, numSymmetries(SET)> symmetryList() {
+  std::array<int, numSymmetries(SET)> list{};
+  int n = 0;
+  for(int s = 0; s < 8; s++)
+    if(hasSymmetry(SET, s))
+      list[n++] = s;
+  return list;
+}
+
 //A writer for spatial_inputs, for the detection below.
 struct SetEntry {
   void operator()(int x, int y, int plane) const;
 };
 //A JSON value for the detection of parse_query_position, a template on the JSON type.
 struct QueryValue {};
+//A game's positions for the detection of training_targets: positions(j).
+template<class P> struct PositionAt {
+  const P& operator()(int j) const;
+};
 
 //Each detector is true when the expression (the rest of the arguments) is valid and converts to the type.
 #define GAMEINTERFACE_DETECT(NAME, TYPE, ...) \
@@ -386,6 +444,8 @@ namespace encoding {
   GAMEINTERFACE_DETECT(HasGlobalInputs, void,
                        G::global_inputs(std::declval<const P<G>&>(), std::declval<const InputOptions&>(),
                                         (float*)nullptr))
+  GAMEINTERFACE_DETECT(HasHistoryPlane, int, std::integral_constant<int, G::HISTORY_PLANE>::value)
+  GAMEINTERFACE_DETECT(HasNumHistoryPlanes, int, std::integral_constant<int, G::NUM_HISTORY_PLANES>::value)
   GAMEINTERFACE_DETECT(HasInputHash, Hash128, G::input_hash(std::declval<const P<G>&>()))
   GAMEINTERFACE_DETECT(HasPolicyChannels, int, std::integral_constant<int, G::POLICY_CHANNELS>::value)
   GAMEINTERFACE_DETECT(HasActionPoint, void,
@@ -394,6 +454,8 @@ namespace encoding {
   GAMEINTERFACE_DETECT(HasSymmetries, unsigned, std::integral_constant<unsigned, G::SYMMETRIES>::value)
   GAMEINTERFACE_DETECT(HasSymPosition, P<G>, G::sym_position(std::declval<const P<G>&>(), 0))
   GAMEINTERFACE_DETECT(HasTargets, unsigned, std::integral_constant<unsigned, G::TARGETS>::value)
+  GAMEINTERFACE_DETECT(HasTrainingTargets, unsigned,
+                       G::training_targets(std::declval<const PositionAt<P<G>>&>(), 0, 0, 0, (float*)nullptr))
   GAMEINTERFACE_DETECT(HasScoreScale, double, G::SCORE_SCALE)
   GAMEINTERFACE_DETECT(HasScoreUnit, double, G::SCORE_UNIT)
   GAMEINTERFACE_DETECT(HasGameLength, double, G::GAME_LENGTH)
@@ -413,6 +475,9 @@ template<class E> constexpr bool checkEncoding() {
   static_assert(HasGlobalInputs<E>::value,
                 "game interface, encoding part: the game lacks global_inputs(const Position&, const InputOptions&, "
                 "float*)");
+  static_assert(HasHistoryPlane<E>::value && HasNumHistoryPlanes<E>::value,
+                "game interface, encoding part: the game lacks HISTORY_PLANE and NUM_HISTORY_PLANES (constexpr int, "
+                "the history planes; 0 planes without history)");
   static_assert(HasInputHash<E>::value,
                 "game interface, encoding part: the game lacks input_hash(const Position&) -> Hash128");
   static_assert(HasPolicyChannels<E>::value,
@@ -436,6 +501,15 @@ template<class E> constexpr bool checkEncoding() {
   if constexpr(HasSymmetries<E>::value)
     static_assert((E::SYMMETRIES & 1u) != 0 && E::SYMMETRIES <= 0xFFu,
                   "game interface, encoding part: SYMMETRIES is a subset of KataGo's 8 with the identity");
+  if constexpr(HasNumSpatialInputs<E>::value && HasHistoryPlane<E>::value && HasNumHistoryPlanes<E>::value)
+    static_assert(E::HISTORY_PLANE >= 0 && E::NUM_HISTORY_PLANES >= 0 &&
+                    E::HISTORY_PLANE + E::NUM_HISTORY_PLANES <= E::NUM_SPATIAL_INPUTS,
+                  "game interface, encoding part: the history planes are planes of the game's");
+  if constexpr(HasTargets<E>::value)
+    static_assert((E::TARGETS & ~FRONT_TARGETS) == 0 || HasTrainingTargets<E>::value,
+                  "game interface, encoding part: the game's TARGETS hold a slot that the front does not compute, so "
+                  "the game gives training_targets(positions, int numPositions, int row, int mover, float* values) "
+                  "-> unsigned");
   if constexpr(HasRules<E>::value && HasPolicyChannels<E>::value) {
     using R = typename E::Rules;
     if constexpr(rules::HasMaxBoardLen<R>::value && rules::HasNumActions<R>::value)
@@ -444,6 +518,17 @@ template<class E> constexpr bool checkEncoding() {
                     "MAX_BOARD_LEN * POLICY_CHANNELS + 1");
   }
   return true;
+}
+
+//The game's own training targets of a row (training_targets): none for a game whose TARGETS are all FRONT_TARGETS.
+template<class E, class Positions>
+unsigned trainingTargets(const Positions& positions, int numPositions, int row, int mover, float* values) {
+  if constexpr(encoding::HasTrainingTargets<E>::value)
+    return E::training_targets(positions, numPositions, row, mover, values);
+  else {
+    (void)positions; (void)numPositions; (void)row; (void)mover; (void)values;
+    return 0;
+  }
 }
 
 #undef GAMEINTERFACE_DETECT

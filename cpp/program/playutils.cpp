@@ -1269,7 +1269,8 @@ std::shared_ptr<NNOutput> PlayUtils::getFullSymmetryNNOutput(
   const Board& board, const BoardHistory& hist, Player pla, bool includeOwnerMap, const SGFMetadata* sgfMeta, NNEvaluator* nnEval
 ) {
   vector<std::shared_ptr<NNOutput>> ptrs;
-  for(int sym = 0; sym<SymmetryHelpers::NUM_SYMMETRIES; sym++) {
+  //KataGame fork: the game's allowed symmetries.
+  for(int sym : SymmetryHelpers::ALLOWED) {
     MiscNNInputParams nnInputParams;
     nnInputParams.symmetry = sym;
     NNResultBuf buf;

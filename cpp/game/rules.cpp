@@ -1,6 +1,6 @@
 //The chosen game's rules part (game/gameinterface.h), alone and first, in a file that includes no Board: so every
-//build checks it, and that it compiles without the network encoding part (game/board.h includes both parts) and
-//without the JSON library (rules.h includes it).
+//build checks it, and that it compiles without the network encoding part and without the JSON library (rules.h,
+//like game/board.h, includes both parts after it, and the JSON library).
 #include "../game/chosenrules.h"
 
 #include "../game/rules.h"

@@ -276,24 +276,26 @@ So the rules are symmetric under all 8. But only the identity and the mirror map
 other 6, Blue starts on the right or on a vertical line, which never happens. The plan expected only the mirror, so
 the number to use became a decision (see `games/enclosure/docs/decisions/build.md`). **Decided: all 8.** The
 labels are exact, it is KataGo's method, and it can be reversed without new data. An arena A/B test of 2 against 8
-can look at it again. The code handles all 8. `SymmetryHelpers::NUM_SYMMETRIES` sets the count, and KataGo's
-numbering puts flipY at 1. So a count of 2 means the identity and the mirror.
+can look at it again. The code handles all 8. The game's set of allowed symmetries (`GameEncoding::SYMMETRIES`,
+`0xFF`) sets them, in KataGo's numbering, where flipY is 1.
 
 **How symmetries work in the fork:**
 
 - **They act on positions, not on input planes.** An edge's image is the canonical edge between the images of its
   endpoints. So under a flip, a vertical edge moves its anchor to its other end, and the edge planes are not a
   permutation of pixels and channels.
-  - `SymmetryHelpers::getSymEdge`, `getSymPosition` and `getSymBoard` map edges. `getSymAction` and
-    `getSymMoveLoc` map moves.
-  - Between two of the mover's own nodes, only one direction is listed as legal. So the image move is looked up on
-    the image board.
+  - The encoding part's `sym_edge` and `sym_position` map edges (GAMES.md), and `SymmetryHelpers::getSymBoard`
+    maps a board. The encoding part's `SymActionMap` maps moves. `SymmetryHelpers::getSymMoveLoc` calls it, and so
+    does `SymmetryHelpers::SymActionMap`, which builds it from a `Board`.
+  - Between two of the mover's own nodes, only one direction is listed as legal. So the image move is listed from
+    its far end exactly when that end comes first and is one of the mover's nodes, which the position knows.
 - **Network evaluation (`NNEvaluator::evaluate`).** The symmetry is chosen where the inputs are filled: at random (a
   generator per thread, seeded from the evaluator's seed), or the default, as the server thread did. The inputs are
   those of the image position, and the backend gets the identity. On return, the policy is mapped back move by move
   and the ownership point by point, before the softmax and the cache. The backends' pixel symmetry is never used.
 - **Root symmetry pruning** (`markDuplicateMoveLocs`): a symmetry is valid when the position (edges, protected and
-  placed edges) is its own image. Of each set of equivalent legal moves, the search uses the lowest action.
+  placed edges) is its own image, so that the image has the position's hash. Of each set of equivalent legal moves,
+  the search uses the lowest action.
   `computeRootSymRepresentativeLocs` and the analysis output map moves with `getSymMoveLoc`. They map principal
   variations move by move on the image boards (`getSymMoveLocs`).
 - **`LocalPatternHasher::getHashWithSym`** hashes the window of the image board around the image move.
@@ -389,7 +391,7 @@ bins. Only the training rows and the Python head use the distribution (step 6).
   - Symmetries have the same numbers as in C++.
   - Test: `katagame/python/enclosure_symmetry_check.py` against `testsymmetry -dump`. For 40 positions × 8 symmetries,
     the augmented inputs equal the C++ inputs of the image position, and every legal move lands on the image from
-    `getSymAction`, in channel 0 and in channel 1 (with the position as the next position and another player as the
+    `SymActionMap`, in channel 0 and in channel 1 (with the position as the next position and another player as the
     row's mover; the old mapping fails 248 of the 280 cases with a symmetry). Scrambled symmetry labels fail.
 
 ## Score scale (step 6)
@@ -425,7 +427,8 @@ and cdf 0.02 each, L2 3e-5.
 
 ## Training rows and the trainer (step 6)
 
-- **Rows** (`trainingwrite.cpp`):
+- **Rows** (`trainingwrite.cpp`, with the targets of the encoding part's `training_targets` in
+  `cpp/game/enclosure/gameencoding.h`):
   - policy targets of 17,329 moves.
   - the Enclosure ownership target (see "Spatial targets") in channel 0, × 120 with KataGo's stochastic rounding.
     It is computed from the game's positions after the row, at every turn end.

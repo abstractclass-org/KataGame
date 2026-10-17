@@ -3,6 +3,7 @@
 
 #include "../core/global.h"
 #include "../core/hash.h"
+#include "../game/chosengame.h"
 
 #include "../external/nlohmann_json/json.hpp"
 
@@ -39,9 +40,11 @@ struct Rules {
   float komi;
   //Min and max acceptable komi in various places involving user input validation
   //Enclosure fork (owner, 2026-10-04): komi up to the score target cap, (MAX_BOARD_AREA + EXTRA_SCORE_DISTR_RADIUS) *
-  //SCORE_SCALE = (361 + 60) * 12 points (checked in playutils.cpp), for handicaps of a few thousand points (KataGo: 400).
-  static constexpr float MIN_USER_KOMI = -5052.0f;
-  static constexpr float MAX_USER_KOMI = 5052.0f;
+  //SCORE_SCALE (NNPos::SCORE_TARGET_CAP, checked in playutils.cpp), for handicaps of a few thousand points (KataGo:
+  //400). KataGame fork: the game's board and score scale; Enclosure's (361 + 60) * 12 = 5052 points.
+  static constexpr float MAX_USER_KOMI =
+    (float)((GameRules::MAX_BOARD_LEN * GameRules::MAX_BOARD_LEN + 60) * GameEncoding::SCORE_SCALE);
+  static constexpr float MIN_USER_KOMI = -MAX_USER_KOMI;
 
   Rules();
   Rules(

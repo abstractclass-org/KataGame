@@ -185,7 +185,7 @@ void Tests::runEnclosureSearchTests() {
     Board board = SymmetryHelpers::getSymBoard(original, symmetry);
     BoardHistory hist(board, P_WHITE, Rules(), 0);
     testAssert(hist.presumedNextMovePla == P_WHITE);
-    auto sym = [&](const enclosure::Edge& e) { return SymmetryHelpers::getSymEdge(e, symmetry); };
+    auto sym = [&](const enclosure::Edge& e) { return GameEncoding::sym_edge(e, symmetry); };
     const enclosure::Edge winA = sym(enclosure::make_edge(5, 8, 8, 8));
     const enclosure::Edge winB = sym(enclosure::make_edge(5, 5, 5, 8));
     cout << "Symmetry " << symmetry << endl;
@@ -206,7 +206,7 @@ void Tests::runEnclosureSearchTests() {
         allowedOriginal.push_back(loc);
     vector<int> avoidWhite(Board::NUM_MOVE_LOCS, 1);  //Banned at the root only (depth 1)
     for(Loc loc : allowedOriginal) {
-      Loc symLoc = SymmetryHelpers::getSymMoveLoc(loc, board, symmetry);
+      Loc symLoc = SymmetryHelpers::getSymMoveLoc(loc, original, symmetry);
       testAssert(hist.isLegal(board, symLoc, P_WHITE));
       avoidWhite[symLoc] = 0;
     }
