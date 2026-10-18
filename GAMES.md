@@ -435,6 +435,12 @@ targets. The network check against PyTorch (the random test network of `python/e
    6. **The stop:** stop the watchdog, then the gauntlet, by their PIDs, then `bash pipeline/scripts/stop.sh RUN`.
       Connect-4's README shows how to find the PIDs. A run's own dashboard stops apart:
       `systemctl --user stop RUN-dashboard`.
+   The engine repository's shared Python (`core/`) names no game: it finds a run's folder and its models with the run
+   helpers of `core/runs.py`, for every game, and it reaches the game through lookups by the game's name. A game can
+   add the optional modules `games/<game>/bots.py` (its own bots, and its own player of a network) and
+   `games/<game>/replay.py` (its replays on the dashboard's board). Without them, the arena plays the game's networks
+   through `core/networkbot.py`, and the dashboard lists the game's leagues without replays (design 07 of the engine
+   repository, "The pipeline").
 
 The front reaches the game through the members alone (the map below), and the check of the game layer keeps it so.
 So a second game's binary builds from its folder, with the front as it is.
