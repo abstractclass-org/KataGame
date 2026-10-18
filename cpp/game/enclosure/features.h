@@ -1,5 +1,5 @@
 #pragma once
-// Extracted from the Enclosure repository's native engine (enclosure_native.cpp at a546e1a) and edited here since
+// Extracted from the Enclosure repository's native engine (enclosure_native.cpp at 6eb47c7) and edited here since
 // (V2's input options, the income areas, the CPU work of 2026-10-06). This is the only copy of Enclosure's rules:
 // Python reaches it through the Enclosure repository's binding, games/enclosure/binding/rules.cpp
 // (katagame/ENCLOSURE.md, "Board and Rules").

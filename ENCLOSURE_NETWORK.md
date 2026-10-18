@@ -26,7 +26,7 @@ Enclosure repository. This file is the picture.
 | b6c96 | Convnet | (trainer: 1,178,765) | – | v2a's first network, until b10c128 took over (before the regret heads existed) |
 
 For comparison, V1's network (`net1`, `net1b`: 128 channels × 8 blocks, JAX) has about 2.8M parameters
-([games/enclosure/v1/README.md](https://github.com/abstractclass-org/engines/blob/ab141c99/games/enclosure/v1/README.md)).
+([games/enclosure/v1/README.md](https://github.com/abstractclass-org/engines/blob/0e244664/games/enclosure/v1/README.md)).
 
 Notes on the table:
 * "Num params (C++)" is the engine's count when it loads the model (`selfplay.log`, "convnet, N params"). The

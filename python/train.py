@@ -135,6 +135,7 @@ if __name__ == "__main__":
     optional_args.add_argument('-initial-train-bucket-level', help='Train rows initially in the bucket when the checkpoint has no bucket state yet, default samples-per-epoch. No effect once the checkpoint has a bucket.', type=float, required=False)
     optional_args.add_argument('-max-train-steps-since-last-reload', help='Approx total of training allowed if shuffling stops', type=float, required=False)
     optional_args.add_argument('-stop-when-train-bucket-limited', help='Terminate due to train bucket rather than waiting for more', required=False, action='store_true')
+    optional_args.add_argument('-wait-for-data-seconds', help='Seconds to wait before looking again for new data, when the train bucket is spent or too few data files are left to fill a subepoch, default 300', type=float, default=300, required=False)
     optional_args.add_argument('-max-val-samples', help='Approx max of validation samples per epoch', type=int, required=False)
     optional_args.add_argument('-data-prefetch-depth', help='Number of training data files to prefetch ahead of the one being consumed, to hide disk+decompress latency at file boundaries. Memory scales linearly with this (each in-flight file holds its full expanded arrays in RAM, per rank).', type=int, default=1, required=False)
     optional_args.add_argument('-randomize-val', help='Randomize order of validation files', required=False, action='store_true')
@@ -423,6 +424,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     initial_train_bucket_level = args["initial_train_bucket_level"]
     max_train_steps_since_last_reload = args["max_train_steps_since_last_reload"]
     stop_when_train_bucket_limited = args["stop_when_train_bucket_limited"]
+    wait_for_data_seconds = args["wait_for_data_seconds"]
     max_val_samples = args["max_val_samples"]
     randomize_val = args["randomize_val"]
     data_prefetch_depth = args["data_prefetch_depth"]
@@ -1619,10 +1621,10 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                         break
                     else:
                         logging.info(
-                            "Exceeding train bucket, not enough new data rows, waiting 5m and retrying (current level %f)" %
-                            train_state["train_bucket_level"]
+                            "Exceeding train bucket, not enough new data rows, waiting %gs and retrying (current level %f)" %
+                            (wait_for_data_seconds, train_state["train_bucket_level"])
                         )
-                        time.sleep(300)
+                        time.sleep(wait_for_data_seconds)
                         continue
 
         # DDP need to wait on the main process after reloading data and/or training bucket waiting
@@ -1661,8 +1663,8 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                     if quit_if_no_data:
                         logging.info("Not enough data files to fill a subepoch! Quitting.")
                         safe_exit(barrier,0)
-                    logging.info("Not enough data files to fill a subepoch! Waiting 5m before retrying.")
-                    time.sleep(300)
+                    logging.info("Not enough data files to fill a subepoch! Waiting %gs before retrying." % wait_for_data_seconds)
+                    time.sleep(wait_for_data_seconds)
                     maybe_reload_training_data()
                     train_files_to_use = get_files_for_subepoch()
 

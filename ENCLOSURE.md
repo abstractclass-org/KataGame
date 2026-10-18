@@ -484,6 +484,12 @@ This section lists them so that a reader sees them as choices. "On" and "off" de
     holds their losses. (Upstream's `synchronous_loop.sh` turns validation off. Then the loss curves are training
     losses only, and they rise when the data gets harder, even while the network improves.)
   - **Batch** 256, FP16 training.
+  - **Wait for new data: 300 s, KataGo's.** When the train bucket is spent, or too few files remain to fill a
+    subepoch, KataGo's trainer waits a fixed 5 minutes. Then it looks for a new shuffle again. The fork makes this
+    wait a setting, `-wait-for-data-seconds` (default 300). This is the fork's only change to `train.py`. It changes
+    no method, only how soon the trainer looks again. A trainer that a script feeds one window at a time needs a wait
+    of seconds. The other waits stay fixed: 30 s while no new shuffle is ready, and 5 minutes under
+    `-max-train-steps-since-last-reload`.
 - **Self-play** (`selfplay_enclosure.cfg`):
   - **Playout cap randomization: on.** 25% of searches are full searches at 200 visits. The rest are at 40
     (`cheapSearchProb 0.75`, `cheapSearchTargetWeight 0`: only full searches train the policy). 200/40 matches
