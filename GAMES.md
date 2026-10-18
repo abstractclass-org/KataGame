@@ -50,9 +50,7 @@ the WebAssembly build, the binding and the standalone tests need no new source f
 
 - **CMake:** `-DGAME=enclosure` (the default). The games are the folders of `cpp/game/` that hold a `gamerules.h`. An
   unknown name stops `cmake` with the list of games. A game without `gameencoding.h` also stops it: `katago` needs
-  both parts, and the Python binding needs only the rules part. The option defines `KATAGAME_GAME=<name>`. The engine
-  repository's `pipeline/scripts/build_game.sh <game>` makes a game's CUDA and Eigen build folders with the settings
-  of the machine's production builds ("Adding a game", step 6).
+  both parts, and the Python binding needs only the rules part. The option defines `KATAGAME_GAME=<name>`.
 - **The headers:** `chosenrules.h` includes `<name>/gamerules.h` and makes `chosengame` the alias of the namespace
   `<name>`. `chosengame.h` includes `<name>/gameencoding.h`. A game's folder and its namespace have the same name.
 - **Other builds** (the WebAssembly module, the fork's standalone tests) define nothing and get Enclosure. So every
@@ -431,9 +429,12 @@ targets. The network check against PyTorch (the random test network of `python/e
       copy of the settings. `DRY_RUN=1 bash pipeline/scripts/start.sh RUN` shows the settings in force.
    4. **The start:** `bash pipeline/scripts/start.sh RUN` starts self-play, the shuffle, the export and the trainers.
       Then start self-play's watchdog and the gauntlet (`pipeline/scripts/gauntlet.sh RUN`), which rates each export.
-   5. **The dashboard:** the live dashboard shows the run when it runs from the same tree as the run. For a run from
-      a worktree, `bash pipeline/scripts/dashboard.sh RUN` serves the run's own dashboard on a free port.
-   6. **The stop:** stop the watchdog and the gauntlet by their PIDs, then `bash pipeline/scripts/stop.sh RUN`.
+   5. **The dashboard:** the live dashboard shows the runs of `$ENGINES_RUNS` with the main tree's settings and
+      gauntlets. For a run from a worktree or in another folder, `bash pipeline/scripts/dashboard.sh RUN` serves the
+      run's own dashboard on a free port.
+   6. **The stop:** stop the watchdog, then the gauntlet, by their PIDs, then `bash pipeline/scripts/stop.sh RUN`.
+      Connect-4's README shows how to find the PIDs. A run's own dashboard stops apart:
+      `systemctl --user stop RUN-dashboard`.
 
 The front reaches the game through the members alone (the map below), and the check of the game layer keeps it so.
 So a second game's binary builds from its folder, with the front as it is.
@@ -589,7 +590,7 @@ pipeline").
 
 | File | Reference | Now |
 |---|---|---|
-| `enclosure_async.sh` | Enclosure's asynchronous setup: `configs/training/selfplay_enclosure.cfg`, the load check's `configs/analysis_enclosure.cfg`, the binary's default `builds/cuda/katago` of the engine repository's work space | Done: `async_start.sh`, for the game `GAME`: `selfplay_GAME.cfg` (`SELFPLAY_CONFIG`), `analysis_GAME.cfg` (`ANALYSIS_CONFIG`), and `KATAGO_BIN`, which the caller sets. It refuses a binary of another game, a game without a self-play config and a game without a trainer's module, before it makes a folder. The shuffle's row counts stay Enclosure's defaults, with their reason. Done (abscls-mkd.14): a run of another game sets KataGo's in its settings (Connect-4's rows are small), and `analysis_connect4.cfg` is Connect-4's load check. Done (abscls-mkd.18): the engine repository builds a game's binaries for a run with the settings of the production builds (`pipeline/scripts/build_game.sh`), and a check or a worktree changes `KATAGO_BIN` for one start (`RUN_OVERRIDES`). |
+| `enclosure_async.sh` | Enclosure's asynchronous setup: `configs/training/selfplay_enclosure.cfg`, the load check's `configs/analysis_enclosure.cfg`, the binary's default `builds/cuda/katago` of the engine repository's work space | Done: `async_start.sh`, for the game `GAME`: `selfplay_GAME.cfg` (`SELFPLAY_CONFIG`), `analysis_GAME.cfg` (`ANALYSIS_CONFIG`), and `KATAGO_BIN`, which the caller sets. It refuses a binary of another game, a game without a self-play config and a game without a trainer's module, before it makes a folder. The shuffle's row counts stay Enclosure's defaults, with their reason. Done (abscls-mkd.14): a run of another game sets KataGo's in its settings (Connect-4's rows are small), and `analysis_connect4.cfg` is Connect-4's load check. |
 | `enclosure_async_stop.sh`, `enclosure_parts.sh` | The parts' stop, the trainers and the parts' limits | Done: `async_stop.sh`, `async_parts.sh`. They held no game's code, and the limits' defaults are the same. |
 | `train.sh` | `-pos-len 19` | Done: `-pos-len` from `POS_LEN`, which `async_start.sh` sets to the game's `MAX_BOARD_LEN` (the trainer's module). Upstream's 19 without it. `async_start.sh` gives every trainer `-game GAME`. |
 | `main.cpp` (`katago version`) | The binary's game was not visible from outside | Done: the line `Game: NAME` (`GameRules::NAME`), which `async_start.sh` checks against the run's game |
