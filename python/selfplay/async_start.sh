@@ -12,8 +12,9 @@
 # trainer's module, python/katago/train/games/GAME.py).
 # Usage: GAME=NAME KATAGO_BIN=BINARY TRAINERS="b10c128 b15c192" bash katagame/python/selfplay/async_start.sh \
 #            NAMEPREFIX BASEDIR
-#   (the trainers and the parts' resources: async_parts.sh; other settings in the environment: SELFPLAY_OVERRIDES,
-#   BATCHSIZE, ...). The engine repository's pipeline/scripts/start.sh sets them from a run's settings.
+#   (the trainers, the parts' resources and the levers' defaults: async_parts.sh; other settings in the environment:
+#   SELFPLAY_OVERRIDES, BATCHSIZE, PILOT, ...). The engine repository's pipeline/scripts/start.sh sets them from a run's
+#   settings.
 # Stop: bash katagame/python/selfplay/async_stop.sh NAMEPREFIX [PART...]
 # The body is one { ... } block (as pipeline/scripts/*.sh): bash reads all of it before running any, so an edit while
 # a copy starts cannot corrupt what it runs (2026-10-06 19:50: a restart read the file mid-edit, hit a syntax error
@@ -45,50 +46,26 @@ elif [[ "$BIN_GAME" != "$GAME" ]]; then
     echo "$KATAGO_BIN plays $BIN_GAME, and the run plays $GAME: set KATAGO_BIN to a build of $GAME"
     exit 1
 fi
-SELFPLAY_CONFIG="${SELFPLAY_CONFIG:-$KATAGO/cpp/configs/training/selfplay_$GAME.cfg}"
-ANALYSIS_CONFIG="${ANALYSIS_CONFIG:-$KATAGO/cpp/configs/analysis_$GAME.cfg}"
+# The levers' defaults, where the run's settings leave them unset (async_parts.sh: run_defaults, game_defaults).
+run_defaults
 [[ -f "$SELFPLAY_CONFIG" ]] || { echo "no self-play config $SELFPLAY_CONFIG for $GAME (SELFPLAY_CONFIG)"; exit 1; }
 ONLY="${ONLY:-}"  # e.g. ONLY=shuffle: start only these parts (one that stopped), leaving the others running
-# The game's largest board, the trainers' -pos-len (train.sh reads POS_LEN), from the trainer's module of the game.
-# Only when a trainer starts: the module imports torch, and a restart of self-play alone (its watchdog) need not wait.
-if [[ -z "$ONLY" || " $ONLY " == *" train-"* ]]; then
-    POS_LEN=$(cd "$KATAGO"/python && python3 -c "from katago.train import games; print(games.get('$GAME').MAX_BOARD_LEN)") \
-        || { echo "no trainer's module for $GAME (python/katago/train/games/$GAME.py)"; exit 1; }
-    export POS_LEN
+# The game's largest board (the trainers' -pos-len: train.sh reads POS_LEN) and the shuffle's row counts, from the
+# trainer's module of the game. Only when a trainer or the shuffle starts: the module imports torch, and a restart of
+# self-play alone (its watchdog) need not wait.
+if [[ -z "$ONLY" || " $ONLY " == *" train-"* || " $ONLY " == *" shuffle "* ]]; then
+    game_defaults || exit 1
 fi
 
 LOGSDIR="$BASEDIR"/logs
 SCRATCHDIR="$BASEDIR"/shufflescratch
 mkdir -p "$BASEDIR" "$LOGSDIR" "$SCRATCHDIR" "$BASEDIR"/selfplay
 
-# The shuffle's defaults: upstream's synchronous_loop.sh's, scaled for Enclosure's rows in the run v2a.
-# 4 shuffle workers, not upstream's 8: a worker holds about 1.7 GB of Enclosure's rows (shuffle.py's estimate, made
-# for Go's rows, says 72 MB), and here the shuffle runs beside self-play (2026-10-03: 8 workers ran out of 8 GB).
-# An Enclosure row is 186,167 bytes (two 17,329-entry policy targets and three q-value targets), Go's 7,675: so a
-# sharding worker takes 3,300 rows (upstream 80,000) and a shuffled file holds 2,900 (upstream 70,000). A game with
-# smaller rows can set upstream's values in its run's settings (NUM_THREADS_FOR_SHUFFLING, ROWS_PER_SHUFFLE_FILE,
-# SHUFFLE_WORKER_GROUP_ROWS).
-NUM_THREADS_FOR_SHUFFLING="${NUM_THREADS_FOR_SHUFFLING:-4}"
-NUM_TRAIN_SAMPLES_PER_EPOCH="${NUM_TRAIN_SAMPLES_PER_EPOCH:-100000}"
-MAX_TRAIN_PER_DATA="${MAX_TRAIN_PER_DATA:-8}"
-NUM_TRAIN_SAMPLES_PER_SWA="${NUM_TRAIN_SAMPLES_PER_SWA:-80000}"
-BATCHSIZE="${BATCHSIZE:-128}"
-SHUFFLE_MINROWS="${SHUFFLE_MINROWS:-100000}"
-MAX_TRAIN_SAMPLES_PER_CYCLE="${MAX_TRAIN_SAMPLES_PER_CYCLE:-500000}"
-TAPER_WINDOW_SCALE="${TAPER_WINDOW_SCALE:-50000}"
-SHUFFLE_KEEPROWS="${SHUFFLE_KEEPROWS:-600000}"
-ROWS_PER_SHUFFLE_FILE="${ROWS_PER_SHUFFLE_FILE:-2900}"
-SHUFFLE_WORKER_GROUP_ROWS="${SHUFFLE_WORKER_GROUP_ROWS:-3300}"
 # As the synchronous loop of v2a: validation (VALIDATE=1: 1% of the self-play files held out, train.py reports
 # metrics_val.json) and extra train.py flags for every trainer (TRAIN_EXTRA_ARGS, e.g. -use-fp16); one trainer's
 # own flags are TRAIN_ARGS_NAME (2026-10-06: b10c128's learning-rate drop, -lr-scale, while b15c192 trains at the
 # full rate).
-VALIDATE="${VALIDATE:-0}"
 if [[ "$VALIDATE" == 1 ]]; then SHUFFLE_ENV=""; else SHUFFLE_ENV="SKIP_VALIDATE=1"; fi
-TRAIN_EXTRA_ARGS="${TRAIN_EXTRA_ARGS:-}"
-SHUFFLE_EVERY="${SHUFFLE_EVERY:-600}"
-EXPORT_EVERY="${EXPORT_EVERY:-10}"  # upstream's
-CPUS="${CPUS:-0-15}"
 # Each part's memory cap, CPU weight and nice value: part_limits (async_parts.sh). A lower CPU weight for the
 # parts beside self-play lets self-play keep the CPUs while they wait their turn (2026-10-03: the shuffle took its
 # full share from self-play whenever it ran).
@@ -101,8 +78,9 @@ cp -r "$KATAGO"/python/katago "$DATED_ARCHIVE"
 cp -r "$KATAGO"/python/muon "$DATED_ARCHIVE"
 cp "$KATAGO_BIN" "$DATED_ARCHIVE"/bin/katago
 cp "$SELFPLAY_CONFIG" "$DATED_ARCHIVE"/selfplay.cfg
-# The run's overrides of selfplay.cfg (SELFPLAY_OVERRIDES), which the dashboard applies to show the settings in force.
-printf '%s\n' "${SELFPLAY_OVERRIDES:-}" > "$DATED_ARCHIVE"/selfplay_overrides.txt
+# The overrides of selfplay.cfg (the defaults', then SELFPLAY_OVERRIDES), which the dashboard applies to show the
+# settings in force.
+printf '%s\n' "$SELFPLAY_IN_FORCE" > "$DATED_ARCHIVE"/selfplay_overrides.txt
 git -C "$REPO" show --no-patch --no-color > "$DATED_ARCHIVE"/version.txt || true
 git -C "$REPO" diff --no-color > "$DATED_ARCHIVE"/diff.txt || true
 # KataGame is a submodule: the parent's diff shows only its commit, so record its own changes too.
@@ -140,19 +118,24 @@ part() {  # NAME COMMAND...: one part, detached, in its own scope with its limit
     disown
 }
 
-part selfplay ./bin/katago selfplay -output-dir "$BASEDIR"/selfplay -models-dir "$BASEDIR"/models \
-    -config "$DATED_ARCHIVE"/selfplay.cfg ${SELFPLAY_OVERRIDES:+-override-config "$SELFPLAY_OVERRIDES"}
+SELFPLAY=(./bin/katago selfplay -output-dir "$BASEDIR"/selfplay -models-dir "$BASEDIR"/models -config "$DATED_ARCHIVE"/selfplay.cfg)
+if [[ "$PILOT" == 1 ]]; then
+    # Until the first export, a game in flight for each of the run's CPUs (async_parts.sh, PILOT).
+    part selfplay ./pilot_selfplay.sh "$BASEDIR"/models "$(cpu_count "$CPUS")" "$SELFPLAY_IN_FORCE" "${SELFPLAY[@]}"
+else
+    part selfplay "${SELFPLAY[@]}" ${SELFPLAY_IN_FORCE:+-override-config "$SELFPLAY_IN_FORCE"}
+fi
 
+# The shuffle's counts are unset when the shuffle does not start (game_defaults above).
 part shuffle bash -c "while true; do env $SHUFFLE_ENV ./shuffle.sh '$BASEDIR' '$SCRATCHDIR' $NUM_THREADS_FOR_SHUFFLING \
     -min-rows $SHUFFLE_MINROWS -keep-target-rows $SHUFFLE_KEEPROWS -taper-window-scale $TAPER_WINDOW_SCALE \
-    -approx-rows-per-out-file $ROWS_PER_SHUFFLE_FILE -worker-group-size $SHUFFLE_WORKER_GROUP_ROWS \
+    -approx-rows-per-out-file ${ROWS_PER_SHUFFLE_FILE:-} -worker-group-size ${SHUFFLE_WORKER_GROUP_ROWS:-} \
     | tee -a '$BASEDIR'/logs/outshuffle.txt; sleep $SHUFFLE_EVERY; done"
 
 part export bash -c "while true; do ./export_model_for_selfplay.sh '$NAMEPREFIX' '$BASEDIR' 0 \
     >> '$BASEDIR'/logs/outexport.txt 2>&1; sleep $EXPORT_EVERY; done"
 
-TRAIN_ARGS="-game $GAME -samples-per-epoch $NUM_TRAIN_SAMPLES_PER_EPOCH -swa-period-samples $NUM_TRAIN_SAMPLES_PER_SWA -no-repeat-files \
-    -max-train-bucket-per-new-data $MAX_TRAIN_PER_DATA -max-train-bucket-size $MAX_TRAIN_SAMPLES_PER_CYCLE $TRAIN_EXTRA_ARGS"
+TRAIN_ARGS=$(train_flags)
 # The trainers: the first trains the self-play network (main: exports to models/), the others alongside (extra).
 mode=main
 for t in $TRAINERS; do

@@ -1,5 +1,5 @@
-# A run's trainers and the resources of its parts, for async_start.sh and the engine repository's
-# pipeline/scripts/lib.sh (source this file). Every game's runs use it.
+# A run's trainers, the resources of its parts and the defaults of its levers, for async_start.sh and the engine
+# repository's pipeline/scripts/lib.sh (source this file). Every game's runs use it.
 #
 # Trainers: TRAINERS="b10c128 b15c192", each a folder train/NAME. The first trains the self-play network (train.sh's
 # main mode: it exports to models/); the others train alongside on the same data (extra mode: models_extra/, never
@@ -50,4 +50,113 @@ part_limits() {  # PART: "MEM CPUWEIGHT NICE" from the defaults, LIMITS_GROUP an
         echo "part_limits: no defaults for the part $part (group $group)" >&2; return 1
     fi
     echo "$mem $cpu $nice"
+}
+
+# --- The levers' defaults ---------------------------------------------------------------------------------------------
+# run_defaults sets the default of each lever that async_start.sh reads, where the run's settings and the environment
+# leave it unset, so a value that they set wins. game_defaults sets the defaults that need the game's trainer's module
+# (python/katago/train/games/GAME.py), which imports torch. async_start.sh calls both, and so does the dry run of the
+# engine repository's pipeline/scripts/start.sh, which prints RUN_LEVERS in force. The values are upstream's
+# (synchronous_loop.sh, SelfplayTraining.md), but for these, which fit a run of any game:
+# - The shuffle's row counts hold upstream's bytes for the game's rows. A sharding worker takes SHUFFLE_WORKER_GROUP_ROWS
+#   rows (upstream's 80,000) and a shuffled file holds ROWS_PER_SHUFFLE_FILE (70,000): each is upstream's count times
+#   Go's row bytes (7,675, KataGo's shuffle.py) over the game's, rounded to 100, and at most upstream's count. The
+#   game's row bytes come from its encoding (katago/train/games: row_bytes). Enclosure's rows are 187,258 bytes, 24.4
+#   times Go's, so it gets 2,900 and 3,300 (2026-10-02: with upstream's counts, the first shuffle of 100,000 rows ran
+#   WSL out of memory; shuffle.py's estimate of its memory uses Go's rows). A game with rows smaller than Go's keeps
+#   upstream's counts: the scale bounds a worker's memory, and larger counts would only coarsen the shuffle and the
+#   training (Connect-4's rows of 1,470 bytes would give files of 365,000 rows: the window's 100,000 rows in one file
+#   and one worker, and an epoch of at least a whole file, as train.py takes each file whole).
+# - 4 shuffle workers, not upstream's 8: a worker holds about 1.7 GB of Enclosure's rows, and the shuffle runs beside
+#   self-play (2026-10-03: 8 workers ran out of 8 GB). At most the run's CPUs.
+# - Each part's thread pools within the run's CPUs (CPUS), when the run has fewer CPUs than the machine. The libraries'
+#   own defaults count the machine's cores: a run on 2 CPUs kept about 8 runnable threads of Eigen's pool alone
+#   (2026-10-18). Eigen's network threads in self-play (numEigenThreadsPerModel, unless the self-play config sets it)
+#   take one thread a CPU of the run: each evaluates its own batch. torch and numpy in each Python part
+#   (OMP_NUM_THREADS, MKL_NUM_THREADS) take one thread: their pool waits for all its threads at each operation, and the
+#   parts share the run's CPUs. On 2 CPUs beside 2 busy threads, Connect-4's trainer trained 106 samples a second with
+#   2 threads and 261 with 1 (482 and 665 alone, 2026-10-19). With the machine's CPUs, nothing is set.
+# - The shuffle every SHUFFLE_EVERY seconds (600), not upstream's 20 (async_start.sh).
+# - PILOT=1, for a short run, such as a new game's first run of 30 minutes, so that it trains on its networks' own rows.
+#   Until the first export, self-play plays as many games as the run has CPUs (pilot_selfplay.sh): it plays a random
+#   network, which needs no evaluation, so each game is a runnable thread. A network's rows go to a file every 1,000
+#   rows or fewer (maxRowsPerTrainFile, upstream's 10,000 for Go's rows; self-play writes a file only when it has that
+#   many rows, at a network switch, and at its stop). The shuffle runs every 60 s, and a trainer that waits for data
+#   looks again after 30 s (WAIT_FOR_DATA_SECONDS, train.py's -wait-for-data-seconds: 300 by default). A long run keeps
+#   its settings.
+RUN_LEVERS="PILOT CPUS NUM_THREADS_FOR_SHUFFLING NUM_TRAIN_SAMPLES_PER_EPOCH MAX_TRAIN_PER_DATA NUM_TRAIN_SAMPLES_PER_SWA
+BATCHSIZE SHUFFLE_MINROWS MAX_TRAIN_SAMPLES_PER_CYCLE TAPER_WINDOW_SCALE SHUFFLE_KEEPROWS ROWS_PER_SHUFFLE_FILE
+SHUFFLE_WORKER_GROUP_ROWS VALIDATE TRAIN_EXTRA_ARGS SHUFFLE_EVERY EXPORT_EVERY WAIT_FOR_DATA_SECONDS OMP_NUM_THREADS
+MKL_NUM_THREADS SELFPLAY_CONFIG ANALYSIS_CONFIG SELFPLAY_DEFAULTS SELFPLAY_IN_FORCE POS_LEN ROW_BYTES"
+ASYNC_KATAGO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"  # KataGame
+
+cpu_count() {  # LIST: the CPUs in a CPU list of taskset's form (0-15, 12-15, 0,2,4-7)
+    local n=0 r IFS=,
+    for r in $1; do
+        [[ "$r" =~ ^([0-9]+)(-([0-9]+))?$ ]] || { echo "cpu_count: '$1' is not a list of CPUs" >&2; return 1; }
+        n=$(( n + ${BASH_REMATCH[3]:-${BASH_REMATCH[1]}} - BASH_REMATCH[1] + 1 ))
+    done
+    echo "$n"
+}
+
+config_value() {  # KEY: its value in the self-play config, or nothing
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([^#[:space:]]*\).*/\1/p" "$SELFPLAY_CONFIG" 2>/dev/null | tail -1
+}
+
+run_defaults() {  # needs GAME
+    local cpus rows
+    : "${CPUS:=0-15}" "${PILOT:=0}"
+    cpus=$(cpu_count "$CPUS") || return 1
+    : "${SELFPLAY_CONFIG:=$ASYNC_KATAGO/cpp/configs/training/selfplay_$GAME.cfg}"
+    : "${ANALYSIS_CONFIG:=$ASYNC_KATAGO/cpp/configs/analysis_$GAME.cfg}"
+    : "${NUM_THREADS_FOR_SHUFFLING:=$(( cpus < 4 ? cpus : 4 ))}"
+    : "${NUM_TRAIN_SAMPLES_PER_EPOCH:=100000}" "${MAX_TRAIN_PER_DATA:=8}" "${NUM_TRAIN_SAMPLES_PER_SWA:=80000}"
+    : "${BATCHSIZE:=128}" "${SHUFFLE_MINROWS:=100000}" "${MAX_TRAIN_SAMPLES_PER_CYCLE:=500000}"
+    : "${TAPER_WINDOW_SCALE:=50000}" "${SHUFFLE_KEEPROWS:=600000}" "${VALIDATE:=0}" "${TRAIN_EXTRA_ARGS:=}"
+    : "${EXPORT_EVERY:=10}"  # upstream's
+    # The defaults of self-play's config keys (SELFPLAY_DEFAULTS), then the run's own (SELFPLAY_OVERRIDES), which win:
+    # SELFPLAY_IN_FORCE, self-play's -override-config.
+    SELFPLAY_DEFAULTS=""
+    if (( cpus < $(getconf _NPROCESSORS_ONLN) )); then
+        : "${OMP_NUM_THREADS:=1}" "${MKL_NUM_THREADS:=1}"
+        export OMP_NUM_THREADS MKL_NUM_THREADS
+        [[ -n "$(config_value numEigenThreadsPerModel)" ]] || SELFPLAY_DEFAULTS="numEigenThreadsPerModel=$cpus"
+    fi
+    if [[ "$PILOT" == 1 ]]; then
+        : "${SHUFFLE_EVERY:=60}" "${WAIT_FOR_DATA_SECONDS:=30}"
+        rows=$(config_value maxRowsPerTrainFile)
+        if [[ -z "$rows" || "$rows" -gt 1000 ]]; then
+            SELFPLAY_DEFAULTS="${SELFPLAY_DEFAULTS:+$SELFPLAY_DEFAULTS,}maxRowsPerTrainFile=1000"
+        fi
+    else
+        : "${SHUFFLE_EVERY:=600}"
+    fi
+    SELFPLAY_IN_FORCE="${SELFPLAY_DEFAULTS:+$SELFPLAY_DEFAULTS${SELFPLAY_OVERRIDES:+,}}${SELFPLAY_OVERRIDES:-}"
+}
+
+train_flags() {  # the train.py flags of every trainer, from the levers (after run_defaults)
+    echo "-game $GAME -samples-per-epoch $NUM_TRAIN_SAMPLES_PER_EPOCH -swa-period-samples $NUM_TRAIN_SAMPLES_PER_SWA" \
+        "-no-repeat-files -max-train-bucket-per-new-data $MAX_TRAIN_PER_DATA -max-train-bucket-size" \
+        "$MAX_TRAIN_SAMPLES_PER_CYCLE${WAIT_FOR_DATA_SECONDS:+ -wait-for-data-seconds $WAIT_FOR_DATA_SECONDS} $TRAIN_EXTRA_ARGS"
+}
+
+scaled_rows() {  # UPSTREAM GO_ROW_BYTES ROW_BYTES: upstream's count of Go's rows for the same bytes of rows of ROW_BYTES
+    local n=$(( ($1 * $2 + 50 * $3) / (100 * $3) * 100 ))
+    (( n < 100 )) && n=100
+    (( n > $1 )) && n=$1
+    echo "$n"
+}
+
+game_defaults() {  # needs GAME: the game's largest board (POS_LEN, the trainers' -pos-len), its rows' bytes and the
+    # shuffle's counts
+    local facts go python
+    python="$(cd "$ASYNC_KATAGO/.." && pwd)/.venv-katago/bin/python3"  # async_start.sh's (the engine repository's)
+    [[ -x "$python" ]] || python=python3
+    facts=$(cd "$ASYNC_KATAGO"/python && "$python" -c "from katago.train import games; g = games.get('$GAME'); \
+print(g.MAX_BOARD_LEN, games.row_bytes(g), games.GO_ROW_BYTES)") \
+        || { echo "no trainer's module for $GAME (python/katago/train/games/$GAME.py)" >&2; return 1; }
+    read -r POS_LEN ROW_BYTES go <<< "$facts"
+    : "${ROWS_PER_SHUFFLE_FILE:=$(scaled_rows 70000 "$go" "$ROW_BYTES")}"
+    : "${SHUFFLE_WORKER_GROUP_ROWS:=$(scaled_rows 80000 "$go" "$ROW_BYTES")}"
+    export POS_LEN
 }

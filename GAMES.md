@@ -422,8 +422,12 @@ targets. The network check against PyTorch (the random test network of `python/e
       through the org folder's `scripts/machine run`.
    2. **The settings:** `games/<game>/runs/RUN.env`. `KATAGO_BIN` is the CUDA build, for self-play.
       `GAUNTLET_KATAGO_BIN` is the Eigen build, for the gauntlet's matches on the CPU. Start from Connect-4's
-      `c4a.env`: it also sets what the asynchronous setup's defaults do not fit for a new game, KataGo's sizes of the
-      shuffle's files and one thread for each Python part.
+      `c4a.env`. The asynchronous setup's defaults fit any game (`python/selfplay/async_parts.sh`), so the settings
+      need no shuffle sizes and no thread counts: the shuffle's row counts come from the game's row size (the
+      trainer's module, `row_bytes`), at most KataGo's, and each part's thread pools stay within the run's CPUs
+      (`CPUS`). A first run of a few minutes to an hour is a pilot (`PILOT=1`, as `c4a.env`): until the first export,
+      self-play plays a game in flight a CPU, and the files of a network's rows, the shuffle and the trainer's wait for
+      data come at shorter intervals, so that the run trains on its networks' own rows.
    3. **The overrides:** a check, or a run from a worktree with builds of its own, changes settings for one start with
       `RUN_OVERRIDES` (`pipeline/scripts/lib.sh`), and puts its run in another folder with `ENGINES_RUNS`. It needs no
       copy of the settings. `DRY_RUN=1 bash pipeline/scripts/start.sh RUN` shows the settings in force.
@@ -596,7 +600,8 @@ pipeline").
 
 | File | Reference | Now |
 |---|---|---|
-| `enclosure_async.sh` | Enclosure's asynchronous setup: `configs/training/selfplay_enclosure.cfg`, the load check's `configs/analysis_enclosure.cfg`, the binary's default `builds/cuda/katago` of the engine repository's work space | Done: `async_start.sh`, for the game `GAME`: `selfplay_GAME.cfg` (`SELFPLAY_CONFIG`), `analysis_GAME.cfg` (`ANALYSIS_CONFIG`), and `KATAGO_BIN`, which the caller sets. It refuses a binary of another game, a game without a self-play config and a game without a trainer's module, before it makes a folder. The shuffle's row counts stay Enclosure's defaults, with their reason. Done (abscls-mkd.14): a run of another game sets KataGo's in its settings (Connect-4's rows are small), and `analysis_connect4.cfg` is Connect-4's load check. |
+| `enclosure_async.sh` | Enclosure's asynchronous setup: `configs/training/selfplay_enclosure.cfg`, the load check's `configs/analysis_enclosure.cfg`, the binary's default `builds/cuda/katago` of the engine repository's work space | Done: `async_start.sh`, for the game `GAME`: `selfplay_GAME.cfg` (`SELFPLAY_CONFIG`), `analysis_GAME.cfg` (`ANALYSIS_CONFIG`), and `KATAGO_BIN`, which the caller sets. It refuses a binary of another game, a game without a self-play config and a game without a trainer's module, before it makes a folder. Done (abscls-mkd.14): `analysis_connect4.cfg` is Connect-4's load check. |
+| `async_start.sh` (the levers' defaults) | The shuffle's row counts were Enclosure's (2,900 and 3,300 rows, for its rows of 186 KB), and no thread pool had a default, so each Python part and Eigen's self-play took the machine's cores. A run of another game copied KataGo's counts and the thread settings into its settings (abscls-mkd.14). | Done (abscls-mkd.19): `async_parts.sh` (`run_defaults`, `game_defaults`) gives every lever its default, for any game. The shuffle's counts are KataGo's for the same bytes of the game's rows, at most KataGo's: the trainer's module gives the row's bytes (`row_bytes`). When the run has fewer CPUs than the machine, Eigen's self-play takes a network thread a CPU of the run, and each Python part one torch thread. A pilot (`PILOT=1`, `pilot_selfplay.sh`) is a short run. The engine repository's dry run of a start prints the levers in force (its design 07, "The pipeline"). |
 | `enclosure_async_stop.sh`, `enclosure_parts.sh` | The parts' stop, the trainers and the parts' limits | Done: `async_stop.sh`, `async_parts.sh`. They held no game's code, and the limits' defaults are the same. |
 | `train.sh` | `-pos-len 19` | Done: `-pos-len` from `POS_LEN`, which `async_start.sh` sets to the game's `MAX_BOARD_LEN` (the trainer's module). Upstream's 19 without it. `async_start.sh` gives every trainer `-game GAME`. |
 | `main.cpp` (`katago version`) | The binary's game was not visible from outside | Done: the line `Game: NAME` (`GameRules::NAME`), which `async_start.sh` checks against the run's game |

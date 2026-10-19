@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # export_model_pytorch parses its command line at import.
 sys.argv = [sys.argv[0], "-export-dir", "/nonexistent", "-model-name", "x", "-filename-prefix", "x"]
 import export_model_pytorch as export  # noqa: E402
+import shuffle  # noqa: E402
 from katago.train import games, modelconfigs  # noqa: E402
 from katago.train.data_processing_pytorch import GLOBAL_TARGETS_NC_CHANNELS, VALUE_TARGETS_NCHW_CHANNELS  # noqa: E402
 from katago.train.games import enclosure  # noqa: E402
@@ -68,6 +69,21 @@ def test_connect4s_mirror_moves_each_point_to_its_column_mirror():
         assert image[0, c, 49] == policy[0, c, 49]
     assert torch.equal(game.apply_symmetry_inputs(inputs, 2), inputs.flip(-1))
     assert game.apply_symmetry_policy_targets(policy, 0, inputs, None, None, None) is policy
+
+
+def test_a_row_has_the_bytes_of_the_row_writers_arrays():
+    # A Go row as KataGo's shuffle.py measures it (19 x 19, 22 input planes, 19 global inputs, no playout inputs), with
+    # the fork's 3 more value-target planes (8 against KataGo's 5).
+    go = types.SimpleNamespace(MAX_BOARD_LEN=19, POLICY_CHANNELS=1, NUM_SPATIAL_INPUTS=21, NUM_GLOBAL_INPUTS=19)
+    go_row = shuffle.UNCOMPRESSED_BYTES_PER_ROW_REQUIRED_19 + shuffle.UNCOMPRESSED_BYTES_PER_ROW_QVALUES_19
+    assert go_row == games.GO_ROW_BYTES
+    assert games.row_bytes(go, inputs_version=8) == go_row + (VALUE_TARGETS_NCHW_CHANNELS - 5) * 19 * 19
+    assert GLOBAL_TARGETS_NC_CHANNELS == games.ROW_GLOBAL_TARGETS
+    # Connect-4's V9 rows of its first run's check: 1,470 bytes (games/connect4/docs/decisions/training.md).
+    assert games.row_bytes(games.get("connect4")) == 1470
+    # Enclosure's rows, 186,167 bytes when measured (2026-10-02: V8, 5 value-target planes), with the 3 planes and the
+    # 2 playout inputs added since.
+    assert games.row_bytes(games.get("enclosure")) == 186167 + 3 * 19 * 19 + 2 * 4
 
 
 def test_a_game_without_a_module_is_refused():
