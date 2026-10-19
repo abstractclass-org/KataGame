@@ -3,9 +3,12 @@
 # this machine, for a run of any game: GAME names it (KataGame's GAMES.md). It replaced the synchronous loop, whose
 # self-play waited through every shuffle, training and export and the end-of-cycle drain.
 # Departures from SelfplayTraining.md, both for one machine:
-#   - the shuffle runs every SHUFFLE_EVERY seconds (600), not every 20: upstream's 20 s assumes the shuffler has its
-#     own machine ("as many threads as you have cores"); here it would take 8 cores from self-play all the time;
+#   - the shuffle runs every SHUFFLE_EVERY seconds (600, 60 in a pilot), not every 20: upstream's 20 s assumes the
+#     shuffler has its own machine ("as many threads as you have cores"); here it would take 8 cores from self-play all
+#     the time;
 #   - each part runs in its own memory cap (systemd scope), so one running out of memory never takes the others.
+# The levers' defaults that differ from upstream's for any game (the shuffle's row counts, the thread pools, the pilot)
+# are in async_parts.sh.
 # The game: the binary KATAGO_BIN must play it (`katago version` names its game), the self-play config is
 # cpp/configs/training/selfplay_GAME.cfg (SELFPLAY_CONFIG), the load check reads cpp/configs/analysis_GAME.cfg
 # (ANALYSIS_CONFIG), and the trainers train the game's model (train.py -game) on its largest board (-pos-len: the
@@ -62,9 +65,7 @@ SCRATCHDIR="$BASEDIR"/shufflescratch
 mkdir -p "$BASEDIR" "$LOGSDIR" "$SCRATCHDIR" "$BASEDIR"/selfplay
 
 # As the synchronous loop of v2a: validation (VALIDATE=1: 1% of the self-play files held out, train.py reports
-# metrics_val.json) and extra train.py flags for every trainer (TRAIN_EXTRA_ARGS, e.g. -use-fp16); one trainer's
-# own flags are TRAIN_ARGS_NAME (2026-10-06: b10c128's learning-rate drop, -lr-scale, while b15c192 trains at the
-# full rate).
+# metrics_val.json).
 if [[ "$VALIDATE" == 1 ]]; then SHUFFLE_ENV=""; else SHUFFLE_ENV="SKIP_VALIDATE=1"; fi
 # Each part's memory cap, CPU weight and nice value: part_limits (async_parts.sh). A lower CPU weight for the
 # parts beside self-play lets self-play keep the CPUs while they wait their turn (2026-10-03: the shuffle took its
@@ -118,7 +119,8 @@ part() {  # NAME COMMAND...: one part, detached, in its own scope with its limit
     disown
 }
 
-SELFPLAY=(./bin/katago selfplay -output-dir "$BASEDIR"/selfplay -models-dir "$BASEDIR"/models -config "$DATED_ARCHIVE"/selfplay.cfg)
+SELFPLAY=(./bin/katago selfplay -output-dir "$BASEDIR"/selfplay -models-dir "$BASEDIR"/models
+    -config "$DATED_ARCHIVE"/selfplay.cfg)
 if [[ "$PILOT" == 1 ]]; then
     # Until the first export, a game in flight for each of the run's CPUs (async_parts.sh, PILOT).
     part selfplay ./pilot_selfplay.sh "$BASEDIR"/models "$(cpu_count "$CPUS")" "$SELFPLAY_IN_FORCE" "${SELFPLAY[@]}"
@@ -135,6 +137,9 @@ part shuffle bash -c "while true; do env $SHUFFLE_ENV ./shuffle.sh '$BASEDIR' '$
 part export bash -c "while true; do ./export_model_for_selfplay.sh '$NAMEPREFIX' '$BASEDIR' 0 \
     >> '$BASEDIR'/logs/outexport.txt 2>&1; sleep $EXPORT_EVERY; done"
 
+# As the synchronous loop of v2a: extra train.py flags for every trainer (TRAIN_EXTRA_ARGS, e.g. -use-fp16, in
+# train_flags); one trainer's own flags are TRAIN_ARGS_NAME (2026-10-06: b10c128's learning-rate drop, -lr-scale,
+# while b15c192 trains at the full rate).
 TRAIN_ARGS=$(train_flags)
 # The trainers: the first trains the self-play network (main: exports to models/), the others alongside (extra).
 mode=main

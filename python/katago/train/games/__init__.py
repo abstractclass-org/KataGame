@@ -49,10 +49,10 @@ TARGET_INCOME = 1 << 4         # C5-6, flagged in C69
 TARGET_NEXT_PIECES = 1 << 5    # C7, flagged in C75: the next mover's pieces after the row's move (not a loss)
 
 # A training row as the C++ row writer lays it out (dataio/trainingwrite.cpp, TrainingWriteBuffers): the channels of
-# its arrays that do not depend on the game. The shuffle holds rows unpacked, so a row's bytes bound its memory.
+# its arrays that do not depend on the game. The shuffle holds rows uncompressed, so a row's bytes bound its memory.
 ROW_POLICY_TARGETS = 2           # policyTargetsNCMove, int16 a move (POLICY_TARGET_NUM_CHANNELS)
 ROW_GLOBAL_TARGETS = 80          # globalTargetsNC, float32 (GLOBAL_TARGET_NUM_CHANNELS)
-ROW_EXTRA_SCORE_BINS = 60        # scoreDistrN, int8: 2 * (points + 60) bins (NNPos::EXTRA_SCORE_DISTR_RADIUS)
+ROW_EXTRA_SCORE_RADIUS = 60      # scoreDistrN, int8: 2 * (points + 60) bins (NNPos::EXTRA_SCORE_DISTR_RADIUS)
 ROW_VALUE_TARGETS = 8            # valueTargetsNCHW, int8 a point (GameInterface::TargetValues::NUM_CHANNELS)
 ROW_QVALUE_TARGETS = 3           # qValueTargetsNCMove, int16 a move (QVALUE_SPATIAL_TARGET_NUM_CHANNELS)
 ROW_PLAYOUT_INPUTS = 2           # the global inputs that the inputs version 9 adds (modelconfigs.PLAYOUT_GLOBAL_INPUTS)
@@ -62,18 +62,19 @@ GO_ROW_BYTES = 7675
 
 
 def row_bytes(game, inputs_version=9):
-    """The bytes of one training row of the game, unpacked: the row writer's arrays (ROW_ above) on the game's largest
-    board, without the metadata inputs, which the shuffle leaves out. Self-play writes rows of the inputs version 9 by
-    default (C++ NNModelVersion::defaultModelVersion), whatever its network reads."""
+    """The bytes of one training row of the game, uncompressed: the row writer's arrays (ROW_ above) on the game's
+    largest board, without the metadata inputs, which the shuffle leaves out. Self-play writes rows of the inputs
+    version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads."""
     points = game.MAX_BOARD_LEN ** 2
     moves = points * game.POLICY_CHANNELS + 1  # the policy: every point's channels, then pass
     global_inputs = game.NUM_GLOBAL_INPUTS + (ROW_PLAYOUT_INPUTS if inputs_version == 9 else 0)
     return (
-        (1 + game.NUM_SPATIAL_INPUTS) * ((points + 7) // 8)  # binaryInputNCHWPacked: the on-board plane first, a bit a point
-        + 4 * global_inputs                                  # globalInputNC
+        # binaryInputNCHWPacked: KataGo's on-board plane, then the game's planes, a bit a point
+        (1 + game.NUM_SPATIAL_INPUTS) * ((points + 7) // 8)
+        + 4 * global_inputs                                # globalInputNC
         + 2 * ROW_POLICY_TARGETS * moves
         + 4 * ROW_GLOBAL_TARGETS
-        + 2 * (points + ROW_EXTRA_SCORE_BINS)
+        + 2 * (points + ROW_EXTRA_SCORE_RADIUS)
         + ROW_VALUE_TARGETS * points
         + 2 * ROW_QVALUE_TARGETS * moves
     )

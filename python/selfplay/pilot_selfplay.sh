@@ -12,8 +12,8 @@ models=$1 games=$2 overrides=$3; shift 3
 has_network() { [[ -n "$(ls -A "$models" 2>/dev/null)" ]]; }
 if ! has_network; then
     "$@" -override-config "${overrides:+$overrides,}numGameThreads=$games" &
-    pid=$! stopped=0
-    trap 'stopped=1; kill -TERM "$pid" 2>/dev/null' TERM INT
+    pid=$!
+    trap 'kill -TERM "$pid" 2>/dev/null; wait "$pid"; exit $?' TERM INT  # a stop: self-play's own exit
     echo "pilot: $games games in flight until the first network in $models"
     while kill -0 "$pid" 2>/dev/null && ! has_network; do sleep 5 & wait $!; done
     if kill -0 "$pid" 2>/dev/null; then
@@ -21,9 +21,8 @@ if ! has_network; then
         kill -TERM "$pid"
     fi
     wait "$pid"; rc=$?
-    while kill -0 "$pid" 2>/dev/null; do wait "$pid"; rc=$?; done  # a wait that a signal ended
     trap - TERM INT
-    if [[ $stopped == 1 ]] || ! has_network; then exit "$rc"; fi
+    has_network || exit "$rc"
 fi
 exec "$@" ${overrides:+-override-config "$overrides"}
 }
