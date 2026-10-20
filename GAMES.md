@@ -43,6 +43,7 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/game/board.*`, `cpp/game/boardhistory.*` | The front: KataGo's `Board` and `BoardHistory`, which the search calls. They reach the game's rules through the members only. |
 | `cpp/game/<game>/ownfiles.txt` | The game's own code outside the game layer (optional): the files that only the game's binary compiles, and that may name the game. |
 | `cpp/tests/checkgamelayer.py` | The check that no code outside the game layer names a game. Each build of `katago` and `tests/enclosure/build.sh` run it. |
+| `cpp/tests/checkgamelayer_test.py` | The test of the check, on temporary trees with planted uses (Enclosure, Connect-4 and a made-up game with a short name). |
 | `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, and the defaults of the optional members with a stub game. |
 
 All members are static, and every file is a header. So the compiler sees the same code as in a build for one game, and
@@ -105,6 +106,13 @@ that game's binary compiles them. A command of the game's own registers itself w
   helper of `gameinterface.h` or `botinterface.h` calls after its `if constexpr` on the member's detector.
 - reads a field of the game's position (`board.pos.edges` names Enclosure's `Position`).
 
+A name counts only as a namespace or as a folder of an include path. The fork's code keeps Enclosure's name in
+comments, strings, macros and the names of its generic commands, so a word of a line does not count. A short game's name
+is a word of common names (`std::hex`, `hexagon`, `cargo`), so a name is a whole word, and `hex::` after another scope's
+name (`std::hex::`) does not count. The engine repository's Python checks (`name_pattern` in
+`pipeline/tests/checkgamenames.py`) follow the same rule for words of any code. KataGame cannot import that code, so
+this check keeps its own copy, and each copy names the other.
+
 A game's own file may name its own game, and no other: `tests/enclosure/` cannot include Connect-4's headers. The
 check also fails when a game's list names a file that does not exist. Each build of `katago` runs it before it
 compiles (the CMake target `checkgamelayer`, when CMake finds Python 3), and so does `tests/enclosure/build.sh`. On
@@ -113,6 +121,7 @@ the drive of the training machine (`/mnt/f` in WSL), it reads the 266 files in a
 
 ```
 python3 tests/checkgamelayer.py            # from katagame/cpp
+python3 tests/checkgamelayer_test.py       # its test
 ```
 
 ## Conventions
