@@ -341,6 +341,12 @@ void NeuralNet::freeComputeContext(ComputeContext* computeContext) {
   delete computeContext;
 }
 
+//Enclosure fork (2026-10-21): this backend does not compute the training-only outputs.
+bool NeuralNet::computesAuxOutputs(const ComputeContext* computeContext) {
+  (void)computeContext;
+  return false;
+}
+
 //--------------------------------------------------------------
 // Helper: list the short device names an OpenVINO device_type string can run on, dropping
 // device index suffixes and the qualifier of a composite (AUTO/MULTI/HETERO) string.

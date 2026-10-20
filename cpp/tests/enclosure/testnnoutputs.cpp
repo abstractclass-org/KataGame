@@ -26,8 +26,8 @@
 //   policy <count> <action>:<probability> ...   (the move policy at the legal actions and pass)
 // ownership: computed at the search's root, reported, and not used to choose a move:
 //   owner <x * y values>                   (white's view, after tanh)
-// training: the training-only outputs (since 2026-10-21 the Eigen backend computes them too, except RGSC's heads,
-// which only self-play reads, so its dumps have no regret and no swing line):
+// training: the training-only outputs (the Eigen backend computes them too, except RGSC's heads, which only self-play
+// reads, so its dumps have no regret and no swing line):
 //   regret <value> <ranking>
 //   swing <value> <ranking>                (models with the swing heads, 2026-10-11)
 //   auxvalues <12 values>
@@ -93,7 +93,7 @@ int main(int argc, char** argv) {
     fp16 ? enabled_t::True : enabled_t::False, 1, {0}, "testnnoutputs", false, 0, cfg);
   nnEval->spawnServerThreads();
   if(training && (!nnEval->hasAuxOutputs() || (regret && !nnEval->hasRegretHeads()))) {
-    fprintf(stderr, "the model has no aux outputs or no regret heads\n");
+    fprintf(stderr, "the model or the backend gives no aux outputs, or the model has no regret heads\n");
     return 1;
   }
   const bool stage2 = training && nnEval->hasAuxPolicy() && nnEval->hasScoreBelief();

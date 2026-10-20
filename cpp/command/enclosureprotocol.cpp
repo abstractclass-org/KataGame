@@ -445,7 +445,7 @@ json modelInfo() {
 }
 
 // Whether the loaded network gives the root's maps (rootMaps): a network that exports its training-only heads, on a
-// backend that computes them (the GPU module's graph has none).
+// backend that computes them (NeuralNet::computesAuxOutputs: not the GPU module, whose graph has none).
 bool hasMaps() {
   return E.nnEval != nullptr && E.nnEval->hasAuxOutputs();
 }
@@ -612,8 +612,8 @@ void dropGoFields(json& j) {
 
 // The root's maps from the network's training-only heads (the engine repository's
 // games/enclosure/docs/design/06-ownership-and-spatial-targets.md), for "includeWeakWalls" and "includeFutureNodes":
-// one evaluation of the root, with the root's inputs and symmetry, not the search (design 04, "The root's maps"). Called
-// after setPosition. NNOutput::auxMap holds them raw from the mover's side, point (x, y) at y * nnXLen + x of each
+// one evaluation of the root, with the root's inputs and the symmetry of its cache key (the root's own with
+// nnSymmetryFromHash, the default), not the search (design 04, "The root's maps"). Called after setPosition. NNOutput::auxMap holds them raw from the mover's side, point (x, y) at y * nnXLen + x of each
 // channel: 0-1 the future nodes 8 and 32 edges later (tanh: +1 the mover's node, -1 the opponent's), 4-6 the edges
 // that get cut (softmax: no cut, a cut of the mover's edge, a cut of the opponent's). Each map is a list of the 361
 // points, y * 19 + x (row 1 first), as the ownership:
@@ -628,12 +628,14 @@ json rootMaps(const json& q, const Board& board, Player pla) {
     return maps;
   NNResultBuf buf;
   buf.includeAuxOutputs = true;
+  buf.symmetryFromHash = true;  // no random draw, which would shift the search's own (with nnSymmetryFromHash false)
   E.search->computeRootNNEvaluation(buf, false);
   const NNOutput& out = *buf.result;
   testAssert(out.auxMap != NULL);
   const int S = enclosure::SIZE, area = out.nnXLen * out.nnYLen;
   const int mover = pla == P_BLACK ? 0 : 1;
-  auto channel = [&](int c, int x, int y) { return (double)out.auxMap[c * area + NNPos::xyToPos(x, y, out.nnXLen)]; };
+  const int futureNodes = 0, noCut = 4, moverCut = 5, opponentCut = 6;  // auxMap's channels, as above
+  auto channel =[&](int c, int x, int y) { return (double)out.auxMap[c * area + NNPos::xyToPos(x, y, out.nnXLen)]; };
   // Rounded as KataGo rounds the ownership (Search::getAverageTreeOwnership), and never -0.
   auto rounded = [](double v) { return Global::roundStatic(v, 1000000.0) + 0.0; };
   if(walls) {
@@ -641,7 +643,7 @@ json rootMaps(const json& q, const Board& board, Player pla) {
     for(int side = 0; side < 2; side++) {
       uint8_t on[enclosure::SIZE * enclosure::SIZE];
       enclosure::edge_points(board.pos.edges[side], on);
-      const int cut = side == mover ? 5 : 6;
+      const int cut = side == mover ? moverCut : opponentCut;
       json list = json::array();
       for(int y = 0; y < S; y++)
         for(int x = 0; x < S; x++) {
@@ -649,10 +651,11 @@ json rootMaps(const json& q, const Board& board, Player pla) {
             list.push_back(nullptr);
             continue;
           }
-          const double l[3] = {channel(4, x, y), channel(5, x, y), channel(6, x, y)};
-          const double top = std::max({l[0], l[1], l[2]});
-          const double sum = std::exp(l[0] - top) + std::exp(l[1] - top) + std::exp(l[2] - top);
-          list.push_back(rounded(std::exp(l[cut - 4] - top) / sum));
+          // The softmax over the three classes, at the class of this player's cut.
+          double sum = 0;
+          for(int c = noCut; c <= opponentCut; c++)
+            sum += std::exp(channel(c, x, y) - channel(cut, x, y));
+          list.push_back(rounded(1.0 / sum));
         }
       map[string(1, nt::PLAYERS[side])] = std::move(list);
     }
@@ -662,12 +665,12 @@ json rootMaps(const json& q, const Board& board, Player pla) {
     json map = json::object();
     const double sign = mover == 0 ? 1.0 : -1.0;
     const char* horizons[2] = {"8", "32"};
-    for(int c = 0; c < 2; c++) {
+    for(int h = 0; h < 2; h++) {
       json list = json::array();
       for(int y = 0; y < S; y++)
         for(int x = 0; x < S; x++)
-          list.push_back(rounded(sign * std::tanh(channel(c, x, y))));
-      map[horizons[c]] = std::move(list);
+          list.push_back(rounded(sign * std::tanh(channel(futureNodes + h, x, y))));
+      map[horizons[h]] = std::move(list);
     }
     maps["futureNodes"] = std::move(map);
   }
@@ -737,8 +740,7 @@ json analysisReply(
   }
   if(out.contains("ownership"))
     reply["ownership"] = std::move(out["ownership"]);  // per point, index y * 19 + x (row 1 first), Blue's side
-  for(auto it = maps.begin(); it != maps.end(); ++it)
-    reply[it.key()] = it.value();
+  reply.update(maps);
   return reply;
 }
 
@@ -869,7 +871,7 @@ json analyze(const json& q) {
   for(const char* key : {"includeWeakWalls", "includeFutureNodes"})
     if(flag(q, key) && !hasMaps())
       return errorReply(q["id"], {key, string(key) + " needs the network's training-only heads, which this network or "
-                                                     "this module does not give (the GPU module gives none)"});
+                                                     "this backend does not give (the GPU module gives none)"});
   endRunning();  // one search at a time: a new query ends the one before
   p.maxVisits = visits;
   p.maxPlayouts = (int64_t)1 << 50;
@@ -878,7 +880,8 @@ json analyze(const json& q) {
   // As KataGo's analysis engine: the search keeps ownership only when asked (analysis.cpp).
   E.search->setAlwaysIncludeOwnerMap(flag(q, "includeOwnership") || flag(q, "includeMovesOwnership"));
   E.search->setPosition(pla, board, hist);
-  // Before the search, which it leaves as it is: the evaluation with the maps stays out of the evaluator's cache.
+  // Before the search, which it leaves as it is: the evaluation with the maps stays out of the evaluator's cache, and
+  // its symmetry comes from its cache key whatever nnSymmetryFromHash says, so it draws no random numbers.
   json maps = rootMaps(q, board, pla);
   // Root noise (wideRootNoise, KataGo's analysis default) draws from the search thread's random numbers. KataGo seeds
   // them with the engine's seed, the position and the count of searches begun (search.cpp, makeSeed). Seeded with the

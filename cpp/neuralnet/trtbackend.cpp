@@ -187,6 +187,11 @@ void NeuralNet::freeComputeContext(ComputeContext* computeContext) {
   delete computeContext;
 }
 
+//Enclosure fork (2026-10-21): the engine has the training-only outputs only when built with them.
+bool NeuralNet::computesAuxOutputs(const ComputeContext* computeContext) {
+  return computeContext->includeAuxOutputs;
+}
+
 LoadedModel* NeuralNet::loadModelFile(const string& file, const string& expectedSha256) {
   LoadedModel* loadedModel = new LoadedModel(file, expectedSha256);
   return loadedModel;

@@ -548,6 +548,12 @@ void NeuralNet::freeComputeContext(ComputeContext* computeContext) {
   delete computeContext;
 }
 
+//Enclosure fork (2026-10-21): this backend does not compute the training-only outputs.
+bool NeuralNet::computesAuxOutputs(const ComputeContext* computeContext) {
+  (void)computeContext;
+  return false;
+}
+
 
 //--------------------------------------------------------------
 

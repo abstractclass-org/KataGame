@@ -52,6 +52,11 @@ struct NNResultBuf {
   //Enclosure fork (owner, 2026-10-04): set by the caller before evaluate (which leaves it as is): fill
   //NNOutput::auxMap and auxValues when the model has them (NNEvaluator::hasAuxOutputs).
   bool includeAuxOutputs;
+  //Enclosure fork (2026-10-21): set by the caller before evaluate (which leaves it as is): when nnInputParams names no
+  //symmetry, take it from the cache key whatever the evaluator's setting (as setSymmetryFromHash), never from the
+  //thread's random draws. For an evaluation beside the search (the engine protocol's root maps): the search's own
+  //evaluations on this thread then draw what they would have drawn without it.
+  bool symmetryFromHash;
   int boardXSizeForServer;
   int boardYSizeForServer;
   std::vector<float> rowSpatialBuf;
@@ -149,8 +154,8 @@ class NNEvaluator {
   std::string getAbbrevInternalModelName() const;
   Logger* getLogger();
   bool isNeuralNetLess() const;
-  //Enclosure fork (owner, 2026-10-04): the model's exported training-only outputs (NNResultBuf::includeAuxOutputs)
-  //and RGSC's heads (NNOutput::hasRegret).
+  //Enclosure fork (2026-10-04): the model's exported training-only outputs (NNResultBuf::includeAuxOutputs), on a
+  //backend that computes them (NeuralNet::computesAuxOutputs), and RGSC's heads (NNOutput::hasRegret).
   bool hasAuxOutputs() const { return modelHasAux; }
   //Export stage 2: whether the aux outputs include policy outputs 1-4 and the score belief (NNOutput::auxPolicy,
   //scoreBelief), and the score belief's bin width in points (0 without it).

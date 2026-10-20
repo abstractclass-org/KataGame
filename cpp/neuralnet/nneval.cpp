@@ -17,6 +17,7 @@ NNResultBuf::NNResultBuf()
     hasResult(false),
     includeOwnerMap(false),
     includeAuxOutputs(false),
+    symmetryFromHash(false),
     boardXSizeForServer(0),
     boardYSizeForServer(0),
     rowSpatialBuf(),
@@ -185,6 +186,9 @@ NNEvaluator::NNEvaluator(
       homeDataDirOverride,
       usingFP16Mode,loadedModel,cfg
     );
+    //Enclosure fork (2026-10-21): the training-only outputs only from a backend that computes them.
+    modelHasAux = modelHasAux && NeuralNet::computesAuxOutputs(computeContext);
+    modelHasPolicyAux = modelHasPolicyAux && modelHasAux;
     // Snapshot postProcessParams only after createComputeContext: backends may apply
     // config-dependent transforms to the model desc there (e.g. the ONNX backend's
     // scale8 workaround multiplies outputScaleMultiplier by 8).
@@ -1476,7 +1480,8 @@ void NNEvaluator::evaluate(
   //symmetries (SymmetryHelpers::ALLOWED).
   int symmetry = nnInputParams.symmetry;
   if(symmetry == NNInputs::SYMMETRY_NOTSPECIFIED) {
-    if(currentSymmetryFromHash.load(std::memory_order_acquire))  //Enclosure fork: from the cache key (setSymmetryFromHash)
+    //Enclosure fork: from the cache key (setSymmetryFromHash, NNResultBuf::symmetryFromHash)
+    if(currentSymmetryFromHash.load(std::memory_order_acquire) || buf.symmetryFromHash)
       symmetry =
         SymmetryHelpers::ALLOWED[(nnHash.hash0 ^ (nnHash.hash1 >> 7)) % SymmetryHelpers::NUM_ALLOWED_SYMMETRIES];
     else if(currentDoRandomize.load(std::memory_order_acquire))

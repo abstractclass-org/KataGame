@@ -15,25 +15,16 @@ legal actions and pass, and the score belief's probabilities). The C++ value and
 the rest, like PyTorch's outputs, in the view of the player to move.
 """
 
-import sys
+import argparse
 
 import numpy as np
 import torch
 
-from katago.train.model_pytorch import Model
+from katago.train import modelconfigs
+from katago.train.load_model import load_model
 
 S = 19
 BLACK, WHITE = 1, 2
-
-
-def load_model(path):
-    ckpt = torch.load(path, map_location="cpu", weights_only=False)
-    model = Model(ckpt["config"], S)
-    sd = ckpt["model"]
-    prefix = [k for k in sd if k.endswith("value_head.conv1.weight")][0][:-len("value_head.conv1.weight")]
-    model.load_state_dict({k[len(prefix):]: v for k, v in sd.items()}, strict=True)
-    model.eval()
-    return model, ckpt["config"]
 
 
 def read_dump(path):
@@ -60,17 +51,19 @@ def read_dump(path):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if a != "-use-swa"]
-    if "-use-swa" in sys.argv[1:]:  # the weights that a run's exports carry (export_model_for_selfplay.sh -use-swa)
-        from katago.train.load_model import load_model as load_checkpoint
-        _, model, _ = load_checkpoint(args[0], use_swa=True, device="cpu")
-        model.eval()
-    else:
-        model, _ = load_model(args[0])
-    net = getattr(model, "module", model)  # the SWA model wraps the network
-    c_in = net.num_bin_input_features if hasattr(net, "num_bin_input_features") else 215
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("checkpoint")
+    parser.add_argument("dumps", nargs="+", metavar="dump")
+    parser.add_argument("-use-swa", dest="use_swa", action="store_true",
+                        help="the checkpoint's SWA weights, for a model exported with -use-swa (a run's models)")
+    args = parser.parse_args()
+    model, swa_model, _ = load_model(args.checkpoint, use_swa=args.use_swa, device="cpu")
+    if args.use_swa:  # the weights that a run's exports carry (export_model_for_selfplay.sh -use-swa)
+        model = swa_model
+    model.eval()
+    c_in = modelconfigs.get_num_bin_input_features(model.config)
     worst_all = {}
-    for dump in args[1:]:
+    for dump in args.dumps:
         positions = read_dump(dump)
         spatial = torch.zeros(len(positions), c_in, S * S)
         glob = torch.zeros(len(positions), len(positions[0]["global"]))

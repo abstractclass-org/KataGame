@@ -5262,6 +5262,12 @@ void NeuralNet::freeComputeContext(ComputeContext* computeContext) {
   delete computeContext;
 }
 
+//Enclosure fork (2026-10-21): the heads compute every exported training-only output when a row asks.
+bool NeuralNet::computesAuxOutputs(const ComputeContext* computeContext) {
+  (void)computeContext;
+  return true;
+}
+
 //------------------------------------------------------------------------------
 
 struct ComputeHandle {

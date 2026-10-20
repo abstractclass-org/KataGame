@@ -101,6 +101,10 @@ namespace NeuralNet {
   // A ComputeContext should NOT be freed until all ComputeHandles created using it have also been freed.
   void freeComputeContext(ComputeContext* computeContext);
 
+  //Enclosure fork (2026-10-21): whether the backend computes a model's exported training-only outputs
+  //(NNResultBuf::includeAuxOutputs) in this context. NNEvaluator::hasAuxOutputs needs this and a model that has them.
+  bool computesAuxOutputs(const ComputeContext* computeContext);
+
   // Compute Handle -----------------------------------------------------------------
 
   // Any given thread should only ever create one of these at a time.

@@ -38,6 +38,12 @@ void NeuralNet::freeComputeContext(ComputeContext* computeContext) {
   throw StringError("Dummy neural net backend: NeuralNet::freeComputeContext unimplemented");
 }
 
+//Enclosure fork (2026-10-21)
+bool NeuralNet::computesAuxOutputs(const ComputeContext* computeContext) {
+  (void)computeContext;
+  return false;
+}
+
 LoadedModel* NeuralNet::loadModelFile(const string& file, const string& expectedSha256) {
   (void)file;
   (void)expectedSha256;

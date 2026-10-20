@@ -2146,7 +2146,7 @@ struct Trunk {
 
 //Enclosure fork (2026-10-21): the exported training-only outputs (ValueHeadDesc::auxVersion and
 //PolicyHeadDesc::auxVersion), computed only for a batch in which a row asked for them (NNResultBuf::includeAuxOutputs),
-//as the CUDA backend computes them. NULL for an output that the model does not have.
+//as the CUDA backend computes them. A head writes an output only when the model has its layers.
 struct AuxOutputs {
   TENSORMAP4* trunk;       //the trunk -> 8: the 2 future positions, the 2 territory incomes, the 4 cut-edge logits
   TENSORMAP4* scoring;     //v1 -> 1: the future occupancy
@@ -2245,7 +2245,7 @@ struct PolicyHead {
     p1BN.apply(&p1Out, &p1Out2, mask);
     p2Conv.apply(handle, &p1Out2, policy, convWorkspace, false);
     //Enclosure fork: policy outputs 1-4 from the same features, and their pass logits from the pass hidden layer.
-    const bool wantPolicyAux = aux != NULL && aux->policy != NULL && p2ConvAux != nullptr;
+    const bool wantPolicyAux = aux != NULL && p2ConvAux != nullptr;
     if(wantPolicyAux)
       p2ConvAux->apply(handle, &p1Out2, aux->policy, convWorkspace, false);
 
@@ -2367,14 +2367,15 @@ struct ValueHead {
 
     vOwnershipConv.apply(handle, &v1Out2, ownership, convWorkspace, false);
 
-    //Enclosure fork: the training-only outputs, as the CUDA backend's ValueHead computes them.
-    if(aux != NULL && auxTrunkConv != nullptr) {
+    //Enclosure fork: the training-only outputs, as the CUDA backend's ValueHead computes them (aux is given only to a
+    //model that has them).
+    if(aux != NULL) {
       auxTrunkConv->apply(handle, trunk, aux->trunk, convWorkspace, false);
       auxScoringConv->apply(handle, &v1Out2, aux->scoring, convWorkspace, false);
       auxValueMul->apply(&v2Out, aux->value);
       auxValueBias->apply(aux->value);
     }
-    if(aux != NULL && aux->sbS2 != NULL && sbS2Mul != nullptr) {
+    if(aux != NULL && sbS2Mul != nullptr) {
       sbS2Mul->apply(&v1Mean, aux->sbS2);
       sbS2Bias->apply(aux->sbS2);
       sbMixMul->apply(&v1Mean, aux->sbMix);
@@ -2442,7 +2443,7 @@ struct Model {
     TENSORMAP2* value,
     TENSORMAP2* scoreValue,
     TENSORMAP4* ownership,
-    const AuxOutputs* aux,  //Enclosure fork: NULL unless a row asked for the training-only outputs
+    const AuxOutputs* aux,  //Enclosure fork: the training-only outputs, NULL unless a row asks and the model has them
 
     TENSORMAP3* mask,
     float* maskSum,
@@ -2630,6 +2631,12 @@ void NeuralNet::freeComputeContext(ComputeContext* computeContext) {
   delete computeContext;
 }
 
+//Enclosure fork (2026-10-21): the heads compute the exported training-only outputs (AuxOutputs) when a row asks.
+bool NeuralNet::computesAuxOutputs(const ComputeContext* computeContext) {
+  (void)computeContext;
+  return true;
+}
+
 //------------------------------------------------------------------------------
 
 struct ComputeHandle {
@@ -2810,10 +2817,7 @@ void NeuralNet::getOutput(
   TENSORMAP2 sbMix(sbMixData.data(), numSbMix, batchSize);
   TENSORMAP4 policyAux(policyAuxData.data(), numPolicyAux, nnXLen, nnYLen, batchSize);
   TENSORMAP2 policyPassAux(policyPassAuxData.data(), numPolicyPassAux, batchSize);
-  const AuxOutputs aux = {
-    &auxTrunk, &auxScoring, &auxValue, numSbS2 > 0 ? &sbS2 : NULL, numSbS2 > 0 ? &sbMix : NULL,
-    numPolicyAux > 0 ? &policyAux : NULL, numPolicyAux > 0 ? &policyPassAux : NULL,
-  };
+  const AuxOutputs aux = {&auxTrunk, &auxScoring, &auxValue, &sbS2, &sbMix, &policyAux, &policyPassAux};
 
   computeHandle->model->apply(
     &computeHandle->handleInternal,
