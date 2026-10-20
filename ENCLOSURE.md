@@ -33,9 +33,11 @@ A `Loc` names a point or a move, and the moves start after the points (GAMES.md,
   that the front's code had before the interface:
   - `pieces` gives KataGo's `colors`: `C_BLACK` where the point is one of Blue's nodes, `C_WHITE` where it is one of
     Red's, and `C_EMPTY` otherwise. So the display and "whose point is this" work as before.
-  - `hash`: Zobrist hashing over the edges, the protected and placed edges, the edge count, the edges left in the
-    turn and the scores (GAMES.md, "Enclosure's hash"). These are the fields that the engine's `same_position`
-    compares.
+  - `hash` covers the edges by owner, the protected and placed edges, the edge count, the edges left in the turn and the
+    scores. These are the fields that the engine's `same_position` compares. `GameRules` draws the tables from
+    `Board::initHash`'s original seed and order at its first call. A function-local static makes that initialization
+    thread safe, and the hash keeps its values from before the interface. The edge count and the edges left in the turn
+    determine the player to move in every reachable position.
 
 ## Players and turns
 
@@ -52,10 +54,11 @@ check of a move's player is Enclosure's design 18 (games/enclosure/docs/design/1
 the subtree value bias keys a node on the literal previous move, which can be the same player's first edge, and its
 local pattern is adapted to edges ("Subtree value bias").
 
-**Go only, kept neutral:** GAMES.md, "Go's features, kept neutral", lists them. For Enclosure, Go's bonus for the
-filling of neutral points (`getEndingWhiteScoreBonus`) would read the ownership at a move's point, and an edge has no
-point. With anti-mirror off and pass suppression for territory scoring only, the search computes the ownership at its
-root but uses it to choose no move.
+**Go only, kept neutral:** GAMES.md, "Go's features, kept neutral", lists them. `getEndingWhiteScoreBonus` returns 0
+because an edge has no single point for Go's ownership bonus. `rootPruneUselessMoves` still has Go's repeated-pass
+condition and point indexing. Both games' self-play configs enable it. Connect-4 has no pass and never reaches the
+pattern. Whether Enclosure's self-play reaches it is open (abscls-irkf). [The front's
+assumptions](GAMES.md#assumptions-that-stay-in-the-front-and-the-search) describe the remaining code work.
 
 **Graph search:** `Board::simpleRepetitionBoundGt` returns true (GAMES.md, "The player to move in the search").
 Enclosure positions never recur, because the edge count only rises and is in the hash.
@@ -132,9 +135,9 @@ the one-line position (`GameRules::parse_position`) instead. It has no history t
 
 ## Reproducible analysis and search in slices
 
-For the engine protocol (docs/design/04-notation-and-protocol.md), the fork added two settings for every game,
-`nnSymmetryFromHash` and `Search::endManualSearch` (GAMES.md, "Reproducible analysis and search in slices"). The
-engine module turns on `nnSymmetryFromHash` and runs its search in slices. Enclosure's own part:
+The engine module uses the setting `nnSymmetryFromHash` and the method `Search::endManualSearch` to run reproducible
+searches in slices. [GAMES.md](GAMES.md#reproducible-analysis-and-search-in-slices) defines both for every game.
+Enclosure's own part:
 
 - **`katago enclosure-engine`** (`command/enclosureengine.cpp`, `command/enclosureprotocol.cpp`): the engine protocol
   as a command, the same code as the WebAssembly module's. See docs/design/04-notation-and-protocol.md.
@@ -339,7 +342,7 @@ reason for each of KataGo's constants, is for every game (GAMES.md, "The score s
 | Loss weights: score mean 0.0015, lead 0.006, stdev 0.001, short-term score 0.0004, q-value score 0.0008 | as listed | ÷144 |
 | Loss weight: short-term score error | 0.00002 | ÷20,736 |
 | Score distribution pdf and cdf losses | 0.02 each | unchanged |
-| GTP resignation (`command/gtp.cpp`, `shouldResign`): the bound on the score above which Red never resigns; the handicap test; the buffer below schedule | 361; 0.9; 5 points | 4,332; 10.8; 60 |
+| GTP resignation (`command/gtp.cpp`, `shouldResign`): the score bound above which Red never resigns, the handicap test, the buffer below schedule | 361, 0.9, 5 points | 4,332, 10.8, 60 |
 
 ## Training rows and the trainer (step 6)
 
@@ -578,8 +581,9 @@ engine's `enclosed_area`, and which edges survive.
     `setWinnerByResignation`, `isResignation`.
   - `setKomi` and `currentSelfKomi`: the komi, a starting score of Red
     ([komi.md](../games/enclosure/docs/decisions/komi.md)).
-- **Neutral, for Go only:** GAMES.md, "Go's features, kept neutral". For Enclosure, a pass is only the site's
-  timeout, so `passWouldEndPhase` and `passWouldEndGame` are false.
+- **Neutral, for Go only:** GAMES.md, "Go's features, kept neutral". `passWouldEndPhase` and `passWouldEndGame` are
+  false. An Enclosure pass forfeits the rest of the turn. It is legal when no edge is legal. A replay also tolerates
+  pass at any time for the site's timeout.
 
 ## Verification (step 2)
 
