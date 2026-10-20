@@ -3,7 +3,7 @@
 
     python3 tests/checkgamelayer_test.py        # from katagame/cpp
 
-Each tree holds the folders of three games (Enclosure, Connect-4 and a made-up game with a short name, hex), the
+Each tree holds the folders of four games (Enclosure, Connect-4, hex and go), the
 interface's two headers (copied from this tree, which the check reads for the interface's members), and one file that
 a test fills. A use of a game's namespace or a header of its folder fails, for each game. A word that holds a short
 name (std::hex, hexagon, cargo) passes. The check's own run on this tree must pass too. Python's standard library only.
@@ -18,7 +18,7 @@ import unittest
 
 CPP = pathlib.Path(__file__).resolve().parent.parent
 CHECK = CPP / "tests/checkgamelayer.py"
-GAMES = ("enclosure", "connect4", "hex")
+GAMES = ("enclosure", "connect4", "hex", "go")
 
 
 class CheckGameLayer(unittest.TestCase):
@@ -52,6 +52,7 @@ class CheckGameLayer(unittest.TestCase):
         for game in GAMES:
             for code in (f"auto b = {game}::Board();\n", f"namespace {game} {{\n", f"namespace x = {game};\n",
                          f"using namespace {game};\n", f"using namespace {game}::detail;\n", f"::{game}::init();\n",
+                         f"app::{game}::init();\n",
                          f"if (a && {game}::ok) {{}}\n", f'#include "game/{game}/rules.h"\n',
                          f"#include <{game}/rules.h>\n", f'#  include "{game}/rules.h"\n'):
                 with self.subTest(game=game, code=code):
@@ -65,7 +66,6 @@ class CheckGameLayer(unittest.TestCase):
                 "std::cout << std::hex << 255 << std::ios::hex;\n"
                 "auto a = hexagon::Grid(); auto b = cargo::load(); auto c = ago::x; auto d = good::y;\n"
                 "namespace hexagon { namespace x = cargo; }\n"
-                "auto e = app::hex::f();\n"
                 "// Hex, hex and Enclosure fork, in a comment: \"hex\" and \"enclosure\" in a string\n"
                 'const char* GAME = "hex"; int hexBoard = 0; auto h = Hex::Board();\n')
         self.assertEqual(self.plant(code), (0, ""))

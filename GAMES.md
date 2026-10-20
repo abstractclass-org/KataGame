@@ -107,11 +107,12 @@ that game's binary compiles them. A command of the game's own registers itself w
 - reads a field of the game's position (`board.pos.edges` names Enclosure's `Position`).
 
 A name counts only as a namespace or as a folder of an include path. The fork's code keeps Enclosure's name in
-comments, strings, macros and the names of its generic commands, so a word of a line does not count. A short game's name
-is a word of common names (`std::hex`, `hexagon`, `cargo`), so a name is a whole word, and `hex::` after another scope's
-name (`std::hex::`) does not count. The engine repository's Python checks (`name_pattern` in
-`pipeline/tests/checkgamenames.py`) follow the same rule for words of any code. KataGame cannot import that code, so
-this check keeps its own copy, and each copy names the other.
+comments, strings, macros and the names of its generic commands, so a word of a line does not count. A namespace must
+have the game's exact name: `hexagon::` is not `hex::`, and `cargo::` is not `go::`. `std::hex` lacks the trailing `::`.
+A namespace use still counts after another scope (`app::hex::`) or at the global scope (`::hex::`). The engine
+repository's Python checks (`name_pattern` in `pipeline/tests/checkgamenames.py`) share this rule for namespace uses.
+They also check identifiers and strings, so they flag a method such as `bytes.hex()`. This C++ check does not flag it.
+KataGame cannot import the Python rule, so it keeps its own copy. Each copy names the other.
 
 A game's own file may name its own game, and no other: `tests/enclosure/` cannot include Connect-4's headers. The
 check also fails when a game's list names a file that does not exist. Each build of `katago` runs it before it

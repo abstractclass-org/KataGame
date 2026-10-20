@@ -25,11 +25,11 @@ A game's own code outside the game layer (game/<game>/ownfiles.txt) may name its
 Where a name counts. Only as a namespace or as a folder of an include path, never as a word of a comment, a string or
 an identifier: the fork's code keeps Enclosure's name in "Enclosure fork" comments, in strings, in macros and in the
 names of its generic commands, and a short game's name (hex, go) is a word of std::hex, hexagon and ago. A name is a
-whole word of its own: <game>:: does not follow another scope's name (std::hex is not the namespace hex, ::hex:: is),
-and <game> does not end a longer word (cargo::, not go::). This is the rule of the Python checks of the engine
+whole word of its own: std::hex is not hex::, and cargo:: is not go::. A namespace use still counts after another scope
+(app::hex::) or at the global scope (::hex::). This is the rule of the Python checks of the engine
 repository (name_pattern in pipeline/tests/checkgamenames.py, used by core/tests/test_gamenames.py), restricted to these
 two forms. KataGame cannot import that code, so this check keeps its own copy of the rule: change both together.
-The test, python3 tests/checkgamelayer_test.py, plants uses on a temporary tree for each game and a made-up short name.
+The test, python3 tests/checkgamelayer_test.py, plants uses on a temporary tree for each game, including hex and go.
 """
 
 import os
@@ -60,8 +60,7 @@ def game_rules(game, own):
     """The rules that find one game's names. own: the game's own files outside the game layer."""
     g = re.escape(game)
     rules = [
-        # Not after another scope's name (std::hex), but at the global scope (::hex::).
-        Rule([f"{game}::"], rf"(?<!\w)(?<!\w::){g}::", f"names the namespace {game}"),
+        Rule([f"{game}::"], rf"\b{g}::", f"names the namespace {game}"),
         Rule(["namespace"], rf"\bnamespace\s+(?:\w+\s*=\s*)?{g}\b", f"names the namespace {game}"),
         Rule(["include"], rf"#\s*include\s*[\"<](?:[^\">]*/)?{g}/", f"includes a header of game/{game}/"),
     ]
