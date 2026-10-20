@@ -1,96 +1,64 @@
-# KataGo for Enclosure: the fork's design
+# Enclosure in KataGame: the game's own design
 
-`katago/` (upstream `d91ea85` plus our changes) turns KataGo into an Enclosure bot. The plan, its build order and the
-approved departures are in `games/enclosure/docs/katago-fork-plan.md` of this repository. This file records the design decisions
-inside the code. The "steps" below are the steps of that plan. The network itself, drawn and compared with KataGo's,
-is in [ENCLOSURE_NETWORK.md](ENCLOSURE_NETWORK.md).
-
-## Principle
-
-KataGo's methods, parameters and structure stay as they are. The fork replaces the game layer (`cpp/game/`). Every
-other file changes only where it relies on Go: moves as points, alternating turns, Go's input features, and the
-policy size. Concepts that only Go has (ko, superko, encore phases, komi, handicap, the button, pass-alive areas) keep
-their names and signatures, fixed at their neutral values. So their callers compile unchanged, and nothing in them
-branches on Enclosure.
+KataGame plays Enclosure as one game behind the game interface ([GAMES.md](GAMES.md)). This file records Enclosure's
+own design inside the code: its rules and encoding parts, its inputs, symmetries, score scale and training targets,
+its tests, and the settings of its runs. The changes to KataGo that the fork made for Enclosure, and that every game
+now uses, are in GAMES.md, "The front: KataGo's changes for every game": the moves after the points, the player to
+move from the position, the network at a symmetry, the policy head, the rule of the score scale, the game's length,
+and Go's features kept neutral. The plan, its build order and the approved departures are in
+`games/enclosure/docs/katago-fork-plan.md` of the engine repository. The "steps" below are the steps of that plan. The
+network itself, drawn and compared with KataGo's, is in [ENCLOSURE_NETWORK.md](ENCLOSURE_NETWORK.md).
 
 ## Moves and points (step 2)
 
-`Loc` stays a 16-bit `short`, but it now names two different things:
+A `Loc` names a point or a move, and the moves start after the points (GAMES.md, "Moves and points"). For Enclosure:
 
-- **A point**, where KataGo indexes the board: ownership, areas, the planes of the network's inputs and outputs, and
-  symmetries. A point keeps KataGo's layout, `Location::getLoc(x, y, 19)`, within `Board::MAX_ARR_SIZE` (421). Only
-  the game layer and the network's input and output code handle points.
-- **A move**: `NULL_LOC` (0), `PASS_LOC` (1), or `MOVE_LOC_BASE` (421, which is `Board::MAX_ARR_SIZE`) + our action
-  index `(y * 19 + x) * 48 + offset`. The offsets follow the Enclosure engine's order: dx, then dy, each from -3 to 3,
-  without (0, 0). So a move `Loc` goes from 421 to 17,748.
-  - Moves start after the points, so no value is both (see "Moves where points are expected").
-  - Everything that stores, compares, hashes or passes moves (the search tree, histories, training rows) is
-    unchanged.
-  - `NNPos::locToPos` maps a move to its policy index, which is the action index. Pass is last, at 17,328.
-
-A `Move` is still `(Loc, Player)`.
+- **A point** keeps KataGo's layout, `Location::getLoc(x, y, 19)`, within `Board::MAX_ARR_SIZE` (421).
+- **A move** is `MOVE_LOC_BASE` (421) plus the action `(y * 19 + x) * 48 + offset`. The offsets follow the Enclosure
+  engine's order: dx, then dy, each from -3 to 3, without (0, 0). So a move `Loc` goes from 421 to 17,748.
+  `NNPos::locToPos` maps a move to its policy index, which is the action. Pass is last, at 17,328.
 
 ## Board and Rules (step 2)
 
-- **`Rules` is unchanged.** It is plain data (ko, scoring and tax rules, komi), and Enclosure reads none of it. The
-  configurations set komi to 0.
-- **`Board` holds an `enclosure::Position`** (`game/enclosure/engine.h`). It was first extracted from the Enclosure
-  repository's verified native engine, and it has been edited here since: V2's input options (no_maxflow, edges at both
-  ends, the turn-safe plane), the income areas (`clipped_area`), and faster feature planes
+- **`Rules` is KataGo's plain data** (GAMES.md, "Go's features, kept neutral"). Enclosure reads only its komi, a
+  starting score of the second player ([komi.md](../games/enclosure/docs/decisions/komi.md)).
+- **The rules part's position is `enclosure::Position`** (`game/enclosure/engine.h`). It was first extracted from the
+  Enclosure repository's verified native engine, and it has been edited here since: V2's input options (no_maxflow,
+  edges at both ends, the turn-safe plane), the income areas (`clipped_area`), and faster feature planes
   ([speed.md](../games/enclosure/docs/decisions/speed.md) "Faster features").
   - It is now the only copy of Enclosure's rules. Python reaches it through the engine repository's binding of every
     game (`core/binding/rules.cpp`, with Enclosure's extras `games/enclosure/binding/extras.h`: the module
     `games.enclosure.rules`), and the site check compares it with the site's own rules code.
-- Callers outside `game/` use a few members (from a survey of the callers): the size (`x_size`, `y_size` = 19),
-  `colors` (74 uses), `pos_hash`, `ko_loc`, and Go's stone logic (`getNumLiberties`, `isSimpleEye`, captures).
-  - `colors[point]` is `C_BLACK` where the point is one of Blue's nodes, `C_WHITE` where it is one of Red's, and
-    `C_EMPTY` otherwise. So the display and "whose point is this" continue to work.
-  - `pos_hash`: Zobrist hashing over the edges, the protected and placed edges, the scores and the player to move.
-    These are the fields that the engine's `same_position` compares.
-  - `ko_loc` = `NULL_LOC`.
-  - Go's stone logic stays declared, with neutral answers. Steps 3-4 reviewed each caller. Most callers are the Go
-    input features, which the fork replaces anyway.
+- **The front reaches the position through the members** (GAMES.md, "The rules part"). Two of them keep the meaning
+  that the front's code had before the interface:
+  - `pieces` gives KataGo's `colors`: `C_BLACK` where the point is one of Blue's nodes, `C_WHITE` where it is one of
+    Red's, and `C_EMPTY` otherwise. So the display and "whose point is this" work as before.
+  - `hash`: Zobrist hashing over the edges, the protected and placed edges, the edge count, the edges left in the
+    turn and the scores (GAMES.md, "Enclosure's hash"). These are the fields that the engine's `same_position`
+    compares.
 
 ## Players and turns
 
 Blue moves first and is `P_BLACK`. Red is `P_WHITE`. The turn order is 1-2-2: Blue's single opening edge, then turns
-of two edges. So the next player comes from the history (`BoardHistory::presumedNextMovePla`), never from `getOpp` of
-the last mover. In `search/`, every `getOpp` on the sequence of moves (29 places) now asks the position (step 3).
+of two edges. So the next player comes from the position (`next_player`), never from `getOpp` of the last mover
+(GAMES.md, "The player to move in the search").
 
 ## Turn order in the search (step 3)
 
-KataGo already fits two-edge turns. Each `SearchNode` stores its own `nextPla`. The search keeps statistics from White's side
-and read with the sign of the player who chooses, so nothing negates per ply. Only the places that *derive* the next
-player from the last mover break. A survey of the 29 `getOpp` calls in `search/` found three kinds:
+KataGo already fits two-edge turns: each `SearchNode` stores its own `nextPla`, and nothing negates at each move. The
+fork changed only the places that derived the next player from the last mover. The survey of those places, and the
+same change in self-play, the analysis engine and GTP, are in GAMES.md, "The player to move in the search". GTP's
+check of a move's player is Enclosure's design 18 (games/enclosure/docs/design/18-play-through-gtp.md). For Enclosure,
+the subtree value bias keys a node on the literal previous move, which can be the same player's first edge, and its
+local pattern is adapted to edges ("Subtree value bias").
 
-- **The next player after a move: changed to `hist.presumedNextMovePla`**, which the engine sets after every move.
-  - `Search::makeMove` (the root).
-  - `Search::playoutDescend` (both descent branches).
-  - the four replays of the principal variation in `analysisdata.cpp`.
-- **The player who made the move into a node: changed to `moveHistory.back().pla`.**
-  - Subtree value bias in `Search::allocateOrFindNode` (on in self-play, `subtreeValueBiasFactor = 0.30`). The
-    previous move of its key stays the literal previous move, which can be the same player's first edge. Its local
-    pattern is adapted to edges (below).
-- **"The other player" as an identity: unchanged.** Visit-cap contempt, the side that pondering assumes, and playout
-  doubling advantage all name a player, not the next mover.
-- **Go only, kept neutral:**
-  - the pattern bonus table (`avoidRepeatedPatternUtility`, default 0) and anti-mirror (`antiMirror`, default off).
-  - pass-alive pruning in `rootPruneUselessMoves` (passes never occur in a search).
-  - `getEndingWhiteScoreBonus`: it returns 0. Go's bonus reads the ownership at the move's point, and an edge has no
-    point. With anti-mirror off and pass suppression for territory scoring only, the search computes the ownership
-    at its root but uses it to choose no move.
+**Go only, kept neutral:** GAMES.md, "Go's features, kept neutral", lists them. For Enclosure, Go's bonus for the
+filling of neutral points (`getEndingWhiteScoreBonus`) would read the ownership at a move's point, and an edge has no
+point. With anti-mirror off and pass suppression for territory scoring only, the search computes the ownership at its
+root but uses it to choose no move.
 
-Outside `search/`, the self-play game loop (`program/play.cpp`, `playutils.cpp`) and the analysis engine
-(`command/analysis.cpp`) get the same change. GTP play got its own turn-order check later (`command/gtp.cpp`,
-`turnError`, games/enclosure/docs/design/18-play-through-gtp.md). SGF, the book and the start-position tools are not on
-our path, and they stay as they are.
-
-Training rows need no change for turn order. KataGo's opponent-policy target is the policy of the next move, whoever
-plays it (`policyTargetsByTurn[i + 1]`). The value targets are written from the row's `nextPla`.
-
-**Graph search:** `Board::simpleRepetitionBoundGt` returns true, not Go's safe false. Enclosure positions never
-recur, because the move count only increases and is hashed. So the state hash alone identifies a node. With false,
-the move path would go into every graph hash, and transposed turns (A then B, B then A) would never share a node.
+**Graph search:** `Board::simpleRepetitionBoundGt` returns true (GAMES.md, "The player to move in the search").
+Enclosure positions never recur, because the edge count only rises and is in the hash.
 
 **Tests:** `katago runenclosuretests` (`tests/testenclosuresearch.cpp`). They run in a Debug build (asserts on,
 `-D_GLIBCXX_ASSERTIONS`) with KataGo's evaluator that uses no network (`debugSkipNeuralNet`: random logits and values,
@@ -122,9 +90,8 @@ exact results at the end of the game). Graph search and subtree value bias are o
   - Red opens with I9-F9 (win value 0.997). The root keeps 93,891 visits after `makeMove`. Red completes the square
     with F6-F9 (0.999).
 
-**Terminal scores:** `ScoreValue::whiteScoreMeanSqOfScoreGridded` asserted Go's half-point grid. Enclosure scores are
-exact areas, so a final score is a point mass (mean square = score²). This agrees with the Enclosure score bins
-("Score distribution bins").
+**Terminal scores:** Enclosure scores are exact areas, so a final score is a point mass (GAMES.md, "The player to
+move in the search"). This agrees with the Enclosure score bins ("Score distribution bins").
 
 ## Subtree value bias
 
@@ -165,64 +132,35 @@ the one-line position (`GameRules::parse_position`) instead. It has no history t
 
 ## Reproducible analysis and search in slices
 
-For the engine protocol (docs/design/04-notation-and-protocol.md), two additions that change nothing by default:
+For the engine protocol (docs/design/04-notation-and-protocol.md), the fork added two settings for every game,
+`nnSymmetryFromHash` and `Search::endManualSearch` (GAMES.md, "Reproducible analysis and search in slices"). The
+engine module turns on `nnSymmetryFromHash` and runs its search in slices. Enclosure's own part:
 
-- **`nnSymmetryFromHash`** (a setting, off by default): each network evaluation's symmetry is computed from its
-  cache key instead of drawn at random (`NNEvaluator::setSymmetryFromHash`, `nneval.cpp`). Different positions still
-  get different symmetries, so a search keeps the averaging over orientations. The same position always gets the
-  same one, so results do not depend on earlier requests. The engine module turns it on. Self-play keeps its draws.
 - **`katago enclosure-engine`** (`command/enclosureengine.cpp`, `command/enclosureprotocol.cpp`): the engine protocol
   as a command, the same code as the WebAssembly module's. See docs/design/04-notation-and-protocol.md.
-- **`Search::endManualSearch`**: ends a search run through KataGo's manual interface (`beginSearch`,
-  `runSinglePlayout`) as `runWholeSearch` ends its own. The engine module runs a search in slices with it.
 
 ## Moves where points are expected (this blocked step 3)
 
-At first, move `Loc`s were 2 + action, and they shared the values 2-420 with points. Code that treats a move as a
-point then gives wrong answers with no error for those moves, and reads past the end of the array for the other
-moves. KataGo's `assert`s are compiled out in Release.
+At first, move `Loc`s were 2 + action, and they shared the values 2-420 with points. The fix put the moves after the
+points, and the search for code that treats a move as a point found the places that GAMES.md, "Moves and points",
+lists. For Enclosure:
 
-- **The fix: ranges that do not overlap.** Moves start at `MOVE_LOC_BASE = 421`, so a move used
-  as a point is always out of range.
-- **Tests run in a Debug build** (asserts on, `-D_GLIBCXX_ASSERTIONS`), so a miss fails loudly.
-
-What the fix found:
-
-- **Arrays of `Board::MAX_ARR_SIZE` indexed by a move:**
-  - `rootSymDupLoc` and `rootSymRepresentativeLoc` (`search.h`).
-  - the Zobrist table of the subtree value bias (`subtreevaluebiastable.cpp`, on in self-play).
-  - the pattern bonus table.
-- **Arrays of `MAX_ARR_SIZE` that hold one entry per legal move,** while Enclosure positions have up to about 600
-  legal edges:
-  - `chooseIndexWithTemperature` (`searchhelpers.cpp`), which selects the played move.
-- **Loops over points to list legal moves:**
-  - The random-legal-move choosers of `playutils.cpp` loop `loc` over `0..MAX_ARR_SIZE`. With base 2 they saw only
-    moves 2-420, the first 419 edges. With base 421, they saw none.
-  - So all of self-play's random opening moves would fall in one corner, with no error.
-- **Point functions given a move:** `isOnBoard(moveLoc)` in the root checks and in the avoid-move filter
-  (`searchhelpers.cpp`), and `isAdjacentToPla(moveLoc, ...)`.
-
-Each such place now has the size `Board::NUM_MOVE_LOCS` or the policy size, or gets the point that a move means. The
-same search also found and fixed these:
-
-- **`getEndingWhiteScoreBonus`** (Go's dame-filling bonus, on in self-play) read ownership at
-  `whiteOwnerMap[action index]`, past its 361 entries. It now returns 0, which is exactly neutral: it only shifts the
-  score.
-- **`NNPos::locToPos` meant both** a move's policy index and a point's spatial index. It now takes only moves. Points
-  use `NNPos::pointToPos`.
-- **Root symmetry pruning** refused to run until edge symmetries existed (step 4). It is off by default and in
+- An Enclosure position has up to about 600 legal edges, more than the 421 entries of an array of points.
+- With base 2, the choosers of a random legal move saw only moves 2-420, the first 419 edges. With base 421, they
+  saw none.
+- Go's bonus for the filling of neutral points (`getEndingWhiteScoreBonus`, on in self-play) read the ownership at
+  `whiteOwnerMap[action index]`, past its 361 entries. It now returns 0.
+- Root symmetry pruning refused to run until edge symmetries existed (step 4). It is off by default and in
   self-play.
 
 ## Policy indexing (moved from step 4 into step 3)
 
-The search cannot expand Enclosure moves without it, so it comes first.
+The search cannot expand Enclosure moves without it, so it comes first. The rules for every game are in GAMES.md,
+"Conventions" and "Moves and points".
 
-- **`NNPos::MAX_NN_POLICY_SIZE`** = 19 × 19 × 48 + 1 = 17,329.
-- **`locToPos`** maps a move to its action index. Pass is last, at 17,328.
-- **The evaluator without a network (`debugSkipNeuralNet`)** fills every policy entry.
-- **`Board` keeps its legal moves as a bitset**, updated with the position, so `isLegal` is a lookup. The evaluator
-  asks it once for each of the 17,329 entries.
-- **Left for step 4:** the network's inputs, the symmetries, and how the backends lay out the 48 channels per point.
+- **`NNPos::MAX_NN_POLICY_SIZE`** = 19 × 19 × 48 + 1 = 17,329, Enclosure's `NUM_ACTIONS`.
+- **`locToPos`** maps a move to its action. Pass is last, at 17,328.
+- **The legal set** is a bitset of 17,329 entries, which the evaluator reads once for each policy entry.
 
 ## Network inputs (step 4.1)
 
@@ -279,26 +217,18 @@ labels are exact, it is KataGo's method, and it can be reversed without new data
 can look at it again. The code handles all 8. The game's set of allowed symmetries (`GameEncoding::SYMMETRIES`,
 `0xFF`) sets them, in KataGo's numbering, where flipY is 1.
 
-**How symmetries work in the fork:**
+**How symmetries work for Enclosure:** the fork's symmetries act on positions, not on input planes, in every game
+(GAMES.md, "The network at a symmetry"). Enclosure needs this, because its moves are edges:
 
-- **They act on positions, not on input planes.** An edge's image is the canonical edge between the images of its
-  endpoints. So under a flip, a vertical edge moves its anchor to its other end, and the edge planes are not a
-  permutation of pixels and channels.
-  - The encoding part's `sym_edge` and `sym_position` map edges (GAMES.md), and `SymmetryHelpers::getSymBoard`
-    maps a board. The encoding part's `SymActionMap` maps moves. `SymmetryHelpers::getSymMoveLoc` calls it, and so
-    does `SymmetryHelpers::SymActionMap`, which builds it from a `Board`.
+- **An edge's image** is the canonical edge between the images of its endpoints. So under a flip, a vertical edge
+  moves its anchor to its other end, and the edge planes are not a permutation of pixels and channels.
+  - The encoding part's `sym_edge` and `sym_position` map edges, and `SymmetryHelpers::getSymBoard` maps a board. The
+    encoding part's `SymActionMap` maps moves. `SymmetryHelpers::getSymMoveLoc` calls it, and so does
+    `SymmetryHelpers::SymActionMap`, which builds it from a `Board`.
   - Between two of the mover's own nodes, only one direction is listed as legal. So the image move is listed from
     its far end exactly when that end comes first and is one of the mover's nodes, which the position knows.
-- **Network evaluation (`NNEvaluator::evaluate`).** The symmetry is chosen where the inputs are filled: at random (a
-  generator per thread, seeded from the evaluator's seed), or the default, as the server thread did. The inputs are
-  those of the image position, and the backend gets the identity. On return, the policy is mapped back move by move
-  and the ownership point by point, before the softmax and the cache. The backends' pixel symmetry is never used.
-- **Root symmetry pruning** (`markDuplicateMoveLocs`): a symmetry is valid when the position (edges, protected and
-  placed edges) is its own image, so that the image has the position's hash. Of each set of equivalent legal moves,
-  the search uses the lowest action.
-  `computeRootSymRepresentativeLocs` and the analysis output map moves with `getSymMoveLoc`. They map principal
-  variations move by move on the image boards (`getSymMoveLocs`).
-- **`LocalPatternHasher::getHashWithSym`** hashes the window of the image board around the image move.
+- **Root symmetry pruning:** a symmetry is valid when the position (edges, protected and placed edges) is its own
+  image.
 - **Tests:**
   - `testsymmetry`: the measurement above. It also does 153,600 round trips and compositions (the inverse maps back,
     s1 then s2 is `compose(s1, s2)`). It checks root pruning at the start, where the valid symmetries are {0, 1} and
@@ -339,20 +269,12 @@ bins. Only the training rows and the Python head use the distribution (step 6).
 
 ## The network's policy head, export and CPU backend (step 5)
 
-- **Policy layout:** every policy output has 48 channels per point, channel = output × 48 + offset. So the policy
-  entry (y · 19 + x) · 48 + offset (the action index) reads the NHWC output in place. Pass stays one logit per output.
-  - PyTorch (`model_pytorch.py`): `conv2p` has `num_policy_outputs × 48` channels. The head returns (N, outputs,
-    17,329) with pass last. `policy_len` and `POLICY_CHANNELS` of Enclosure's trainer module
-    (`katago/train/games/enclosure.py`) hold the numbers.
-  - Export (`export_model_pytorch.py`): the chosen outputs (regular and optimistic, as upstream) are written as blocks
-    of 48 channels.
-  - C++ (`desc.cpp`): `p2Conv.outChannels` must be `policyOutChannels × 48`. The Eigen backend sizes its buffers and
-    decodes the blocks (with the optimism blend per entry).
-  - CUDA (`cudaandrocmbackend.inc`):
-    - the host and device policy buffers hold 48 channels per output.
-    - the pass buffer holds one logit per output.
-    - the decode reads NHWC or NCHW.
-    - the backend refuses every symmetry except the identity.
+- **Policy layout:** the policy head of every game (GAMES.md, "The policy head"), with 48 channels per point, one for
+  each offset. So the policy entry (y · 19 + x) · 48 + offset reads the NHWC output in place.
+  - PyTorch (`model_pytorch.py`): the head returns (N, outputs, 17,329) with pass last. `policy_len` and
+    `POLICY_CHANNELS` of Enclosure's trainer module (`katago/train/games/enclosure.py`) hold the numbers.
+  - C++: the Eigen backend decodes the blocks with the optimism blend for each entry. The CUDA backend's decode reads
+    NHWC or NCHW.
 
     Tested with `katago runenclosurenntests MODEL INPUTS OUT [fp16] [nhwc]` on the RTX 5080, against PyTorch:
     - FP32 with TF32 off (`NVIDIA_TF32_OVERRIDE=0`), NCHW and NHWC: within 7e-6, as the CPU.
@@ -362,11 +284,10 @@ bins. Only the training rows and the Python head use the distribution (step 6).
     TensorRT came later.
 - **Inputs in PyTorch:** `modelconfigs` gives 215 spatial and 5 global inputs (7 with the config's `inputs_version` 9). The model's first layers read them from
   there, not from Go's hard-coded 22 and 19.
-- **Go's score parity** (the komi feature times a parity vector in the score-belief head) stays as a no-op: the vector
-  is zero. Here the last global input is a score (V8) or half the playout doubling advantage (V9), not komi.
+- **Go's score parity** stays a no-op (GAMES.md, "The policy head"). Enclosure's last global input is a score (V8) or
+  half the playout doubling advantage (V9), not komi.
 - **Score-belief bin centres** are in points: 12 × (bin − 421 + 0.5) (the Enclosure score bins).
-- **No result:** the fork never sets `isNoResult`. Its rules (area scoring, positional ko) take KataGo's branch that
-  sets the no-result output to zero. So win and loss share the probability, as under Go's area rules.
+- **No result** never occurs (GAMES.md, "Go's features, kept neutral").
 - **Test:** `katagame/python/enclosure_nn_check.py` with the fork's test `testnnoutputs`. The test initialises a b6c96 at
   random. Then it perturbs every parameter and statistic, so that no layer is an identity. It exports the model and
   evaluates it in C++ (`NNEvaluator`) on the 332 unfinished positions of `tests/data/enclosure_inputs.txt`.
@@ -401,31 +322,24 @@ bins. Only the training rows and the Python head use the distribution (step 6).
 **Decided:** scores stay in raw points, and every constant that KataGo tuned to Go's point scale is scaled by
 `SCORE_SCALE` = 12 (C++ `NNPos::SCORE_SCALE`, Python `SCORE_SCALE` in `katago/train/games/enclosure.py`). This is
 the width of the Enclosure score bins against KataGo's bins of 1 point, from the measured margins. Training then
-weighs every score term exactly as KataGo does on scores of Go's size ("scale-invariant retune"). The rule:
+weighs every score term exactly as KataGo does on scores of Go's size ("scale-invariant retune"). The rule, and the
+reason for each of KataGo's constants, is for every game (GAMES.md, "The score scale"). Enclosure's values, at s = 12:
 
-- quantities in points: × s.
-- squared points: × s².
-- each loss weight: ÷ the growth of its loss. A Huber loss whose argument and delta both scale by s grows by s². The
-  squared-error loss grows by s⁴.
-
-| Constant | KataGo | Enclosure | Why KataGo selected it |
-|---|---|---|---|
-| Output multipliers: score mean, stdev, lead, short-term scores | 20 | 240 | Paper A.5: "an arbitrary reasonable scaling factor so that on typical data the neural net would only need to output values around unit scale" |
-| Short-term score error multiplier | 150 (squared points) | 21,600 | The same aim, for a squared error (model v13 rescaled it) |
-| Score distribution range | ±(361 + 60) points | ±5,052 points | Paper A.5: "an upper bound for the plausible final score difference", the board area plus 60 for komi |
-| Score target cap | 421 | 5,052 | The same bound, so that targets stay in range |
-| Q-value score storage in int16 | ×60 | ×5 | ×60 keeps ±421 within 32,000 at a precision of 1/60 point. ×5 keeps ±5,052 within it. |
-| Huber delta: score mean | 12 | 144 | Code comment: Huber is "meanlike locally and ... medianlike for very large possible losses". The specific deltas: source not found yet (to trace in KataGo's commits and issues). The paper's first version used 10. |
-| Huber delta: lead / stdev / q-value score / short-term score | 8 / 10 / 12 / 12 | 96 / 120 / 144 / 144 | As above |
-| Huber delta: short-term score error | 100 (squared points) | 14,400 | As above, in squared points |
-| Floor of the irreducible error: short-term score | 1e-4 ("one hundredth of a point", squared) | 1.44e-2 | A regulariser: a hundredth of the unit |
-| Loss weights: score mean 0.0015, lead 0.006, stdev 0.001, short-term score 0.0004, q-value score 0.0008 | as listed | ÷144 | Source not found yet (to trace in KataGo's commits and issues). The paper's first version used 0.004 for the self-predictions. The division keeps each term's share of the total loss, whatever the original reason. |
-| Loss weight: short-term score error | 0.00002 | ÷20,736 | A loss of the fourth degree |
-| Score distribution pdf and cdf losses | 0.02 each | unchanged | Over bins, not points (paper: pdf and cdf 0.02) |
-| GTP resignation (`command/gtp.cpp`, `shouldResign`): the bound on the score above which Red never resigns; the handicap test; the buffer below schedule | 361; 0.9; 5 points | 4,332; 10.8; 60 | The board area as the largest score; "Always require at least a 5 point buffer" before resigning a handicap game. Only GTP play uses them. |
-
-The paper's base weights, for reference: value 1.5, policy 1.0, opponent policy 0.15, ownership 1.5/b², score pdf
-and cdf 0.02 each, L2 3e-5.
+| Constant | KataGo | Enclosure |
+|---|---|---|
+| Output multipliers: score mean, stdev, lead, short-term scores | 20 | 240 |
+| Short-term score error multiplier | 150 (squared points) | 21,600 |
+| Score distribution range | ±(361 + 60) points | ±5,052 points |
+| Score target cap | 421 | 5,052 |
+| Q-value score storage in int16 | ×60 | ×5: it keeps ±5,052 within 32,000 |
+| Huber delta: score mean | 12 | 144 |
+| Huber delta: lead / stdev / q-value score / short-term score | 8 / 10 / 12 / 12 | 96 / 120 / 144 / 144 |
+| Huber delta: short-term score error | 100 (squared points) | 14,400 |
+| Floor of the irreducible error: short-term score | 1e-4 ("one hundredth of a point", squared) | 1.44e-2 |
+| Loss weights: score mean 0.0015, lead 0.006, stdev 0.001, short-term score 0.0004, q-value score 0.0008 | as listed | ÷144 |
+| Loss weight: short-term score error | 0.00002 | ÷20,736 |
+| Score distribution pdf and cdf losses | 0.02 each | unchanged |
+| GTP resignation (`command/gtp.cpp`, `shouldResign`): the bound on the score above which Red never resigns; the handicap test; the buffer below schedule | 361; 0.9; 5 points | 4,332; 10.8; 60 |
 
 ## Training rows and the trainer (step 6)
 
@@ -486,9 +400,10 @@ This section lists them so that a reader sees them as choices. "On" and "off" de
   - **Batch** 256, FP16 training.
   - **Wait for new data: 300 s, KataGo's.** When the train bucket is spent, or too few files remain to fill a
     subepoch, KataGo's trainer waits a fixed 5 minutes. Then it looks for a new shuffle again. The fork makes this
-    wait a setting, `-wait-for-data-seconds` (default 300). This is the fork's only change to `train.py`. It changes
-    no method, only how soon the trainer looks again. A trainer that a script feeds one window at a time needs a wait
-    of seconds. The other waits stay fixed: 30 s while no new shuffle is ready, and 5 minutes under
+    wait a setting, `-wait-for-data-seconds` (default 300). It is the fork's only change to how `train.py` trains (its
+    other flags, `-game` and `-inputs-version`, name the model's game and inputs: GAMES.md, "The trainer's module").
+    It changes no method, only how soon the trainer looks again. A trainer that a script feeds one window at a time
+    needs a wait of seconds. The other waits stay fixed: 30 s while no new shuffle is ready, and 5 minutes under
     `-max-train-steps-since-last-reload`.
 - **Self-play** (`selfplay_enclosure.cfg`):
   - **Playout cap randomization: on.** 25% of searches are full searches at 200 visits. The rest are at 40
@@ -622,17 +537,10 @@ Game-phase constants:
 
 - `Board::TIME_SCALE` (Python: the model's `time_scale`, `GAME_LENGTH / GO_GAME_LENGTH`) = 120 / 328 ≈ 0.366:
   Enclosure's 120 edges against the measured mean length of KataGo's own 19×19 self-play games without handicap or
-  setup stones.
-  - Source: the kata1 training games on katagoarchive.org. A sample of 732 games: mean 328.7, median 329, 10th-90th
-    percentile 294-363. A later sample of 51,094 games: mean 328.1, median 327, 292-366.
-  - KataGo plays games to the end and does not resign, so its games are longer than human games.
-  - This measurement replaced an earlier guess of 250 moves (find the source of every number).
-- `Board::GAME_LENGTH_AREA` = 361 × 0.366 ≈ 132 replaces the board area in the game-phase constants:
-  - the earliest self-play resignation (A / 5).
-  - the early-fork move (`earlyForkGameExpectedMoveProp` × A).
-  - the number of opening policy moves (`policyInitAreaProp` × A).
-  - GTP play: KataGo's time allocation (`TimeControls::getTime`: A in its game-length estimates, the edges played in
-    place of the stones), and GTP resignation's minimum game length and handicap catch-up (`shouldResign`).
+  setup stones. The measurement and its source are in GAMES.md, "The game's length". It replaced an earlier guess of
+  250 moves (find the source of every number).
+- `Board::GAME_LENGTH_AREA` = 361 × 0.366 ≈ 132 replaces the board area in the game-phase constants that GAMES.md,
+  "The game's length", lists. In GTP play, KataGo's time allocation counts the edges played in place of the stones.
 - Provisionally, until its target is measured: the variance-time output multiplier (40 → 14.6) and its Huber delta
   (50 → 18.3), with the loss weight ÷ 0.366².
 - The look-ahead formulas keep the board area. KataGo's code comment on the short-term constants says that they
@@ -664,16 +572,14 @@ engine's `enclosed_area`, and which edges survive.
 - **Kept, with an Enclosure meaning:**
   - `moveHistory`, `isLegal`, `makeBoardMoveAssumeLegal`, `makeBoardMoveTolerant`, `isLegalTolerant`,
     `getRecentBoard`, `clear`.
-  - `isGameFinished` (after line 120), `winner`, `finalWhiteMinusBlackScore` (red minus blue), `isNoResult` (the
-    rules' draw when the player to move has no legal edge).
+  - `isGameFinished` (after line 120), `winner` (empty for a draw), `finalWhiteMinusBlackScore` (red minus blue,
+    with the komi).
   - `presumedNextMovePla`, `initialBoard`, `initialTurnNumber`, `getCurrentTurnNumber`, `endAndScoreGameNow`,
     `setWinnerByResignation`, `isResignation`.
-- **Neutral, for Go only:**
-  - `encorePhase` = 0, `superKoBanned` and `koRecapBlocked` all false.
-  - `setKomi` and `currentSelfKomi` (komi 0), `hasButton` = false.
-  - handicap functions: none.
-  - `passWouldEndPhase` and `passWouldEndGame` false (a pass is only the site's timeout).
-  - `endGameIfAllPassAlive`: nothing to do.
+  - `setKomi` and `currentSelfKomi`: the komi, a starting score of Red
+    ([komi.md](../games/enclosure/docs/decisions/komi.md)).
+- **Neutral, for Go only:** GAMES.md, "Go's features, kept neutral". For Enclosure, a pass is only the site's
+  timeout, so `passWouldEndPhase` and `passWouldEndGame` are false.
 
 ## Verification (step 2)
 

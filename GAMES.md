@@ -1,10 +1,11 @@
 # The game interface: the C++ reference
 
-**Status: decided, being built.** KataGame plays a game that supplies the game interface. The build chooses one game, as
-it chooses one backend. This file is the C++ reference: the members, the conventions, the game layer, the checks, and
-how to add a game. Its last part is the map of the code that reached Enclosure directly, with the member that replaced
-each reference. The decision and its reasons are design 07 of the engine repository
-(`docs/design/07-game-interface.md`). Enclosure's own design stays in [ENCLOSURE.md](ENCLOSURE.md).
+**Status: decided, built.** KataGame plays a game that supplies the game interface. The build chooses one game, as it
+chooses one backend. This file is the C++ reference: the members, the conventions, the game layer, the front's changes
+to KataGo for every game, the checks, and how to add a game. Its last part is the map of the code that reached
+Enclosure directly, with the member that replaced each reference. The decision and its reasons are design 07 of the
+engine repository (`docs/design/07-game-interface.md`), and the record of what the second game showed is its design 06,
+step 6. Enclosure's own design stays in [ENCLOSURE.md](ENCLOSURE.md).
 
 The interface exists. Enclosure and Connect-4 (`cpp/game/connect4/`) implement both parts, and each game has its
 `katago` binary. The front (`Board`, `BoardHistory`), the search, self-play, GTP and the analysis engine reach the
@@ -19,6 +20,7 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 * [Choosing the game](#choosing-the-game)
 * [The game layer](#the-game-layer)
 * [Conventions](#conventions)
+* [The front: KataGo's changes for every game](#the-front-katagos-changes-for-every-game)
 * [The rules part](#the-rules-part)
 * [The network encoding part](#the-network-encoding-part)
 * [The bot part](#the-bot-part)
@@ -136,6 +138,185 @@ python3 tests/checkgamelayer.py            # from katagame/cpp
   plays on square boards only: the front's on-board plane does not change under a symmetry.
 - **No exceptions:** the WebAssembly build has none. A parser returns `false` or `-1` and gives the reason.
 
+## The front: KataGo's changes for every game
+
+KataGo's methods, parameters and structure stay as they are. The fork replaces Go's rules with the game interface.
+Every other file changes only where it relied on Go: moves as points, turns that alternate, Go's input features, the
+policy's size, and Go's score scale. Concepts that only Go has (ko, superko, encore phases, handicap, the button,
+pass-alive areas) keep their names and signatures, fixed at neutral values. So their callers compile unchanged, and
+nothing in them branches on a game. The fork made these changes for Enclosure, its first game, and every game now
+uses them. [ENCLOSURE.md](ENCLOSURE.md) keeps Enclosure's values and the tests of each change on Enclosure.
+
+### Moves and points
+
+A `Loc` stays a 16-bit `short`, but it names two different things:
+
+- **A point,** where KataGo indexes the board: ownership, areas, the planes of the network's inputs and outputs, and
+  the symmetries. A point keeps KataGo's layout (`Location::getLoc`), within `Board::MAX_ARR_SIZE`. Only the front and
+  the network's input and output code handle points.
+- **A move:** `NULL_LOC` (0), `PASS_LOC` (1), or `Board::MOVE_LOC_BASE` plus the game's action. `MOVE_LOC_BASE` is
+  `MAX_ARR_SIZE`, so the moves start after the points, and every move `Loc` is below `Board::NUM_MOVE_LOCS`.
+  Everything that stores, compares, hashes or passes moves (the search tree, the histories, the training rows) is
+  KataGo's. A `Move` is still `(Loc, Player)`.
+
+**Why the two ranges do not overlap:** code that treats a move as a point then reads out of the range of every point
+array. If the ranges overlapped, such code would give wrong answers with no error for some moves, and KataGo's
+`assert`s are compiled out in Release. The fork's tests of the search run in a Debug build (asserts on,
+`-D_GLIBCXX_ASSERTIONS`), so a miss fails loudly. The fix found these places, and each now has the size
+`NUM_MOVE_LOCS` or the policy's size, or takes the point that a move means (`action_point`):
+
+- Arrays of `MAX_ARR_SIZE` indexed by a move: `rootSymDupLoc` and `rootSymRepresentativeLoc` (`search.h`), the
+  Zobrist table of the subtree value bias (`subtreevaluebiastable.cpp`), and the pattern bonus table.
+- Arrays of `MAX_ARR_SIZE` that hold one entry for each legal move, which a game can have more of than points:
+  `chooseIndexWithTemperature` (`searchhelpers.cpp`), which chooses the played move.
+- Loops over points that list the legal moves: the choosers of a random legal move in `playutils.cpp`. With moves
+  among the points, all of self-play's random opening moves would fall in one corner, with no error.
+- Point functions given a move: `isOnBoard(moveLoc)` in the root checks and in the filter of avoided moves
+  (`searchhelpers.cpp`), and `isAdjacentToPla(moveLoc, ...)`.
+- `NNPos::locToPos` took both a move and a point. It now takes moves only, and gives the action, which is the policy
+  index. A point's spatial index comes from `NNPos::pointToPos`.
+
+**The legal moves:** `Board` keeps the legal actions as a bitset (`bitset<NUM_ACTIONS>`), updated with the position,
+so `isLegal` is a lookup. The evaluator reads it by policy index, and the evaluator that uses no network
+(`debugSkipNeuralNet`) fills every policy entry.
+
+### The player to move in the search
+
+A turn can have several moves (Enclosure's 1-2-2), so the next player comes from the position (`next_player`, through
+`BoardHistory::presumedNextMovePla`), never from `getOpp` of the last mover. KataGo already fits such turns: each
+`SearchNode` stores its own `nextPla`, and the search keeps its statistics from White's side, read with the sign of the
+player who chooses, so nothing negates at each move. Only the places that derive the next player from the last mover
+had to change. A survey of the 29 `getOpp` calls in `search/` found three kinds:
+
+- **The next player after a move:** now `hist.presumedNextMovePla`, which the front sets after every move. These are
+  `Search::makeMove` (the root), `Search::playoutDescend` (both branches of the descent), and the four replays of the
+  principal variation in `analysisdata.cpp`.
+- **The player who made the move into a node:** now `moveHistory.back().pla`. This is the subtree value bias in
+  `Search::allocateOrFindNode`. The previous move of its key stays the literal previous move, which can be the same
+  player's.
+- **"The other player" as an identity:** unchanged. The visit-cap contempt, the side that pondering assumes, and the
+  playout doubling advantage each name a player, not the next mover.
+
+The self-play game loop (`program/play.cpp`, `playutils.cpp`) and the analysis engine (`command/analysis.cpp`) take
+the next player in the same way, and GTP checks the player of a move against the position (`turnError`). The training
+rows need no change: KataGo's opponent-policy target is the policy of the next move, whoever plays it, and the value
+targets are from the row's player to move. Enclosure's search tests check this ([ENCLOSURE.md](ENCLOSURE.md), "Turn
+order in the search").
+
+- **The graph search:** `Board::simpleRepetitionBoundGt` returns true, not Go's safe false. A position of the fork's
+  games never recurs, so the position's hash alone identifies a node, and transposed turns (A then B, B then A) share
+  a node. With false, the moves would go into every graph hash. A game whose positions can recur needs KataGo's
+  repetition handling ("Enclosure's assumptions that stay in the front and the search", below).
+- **A final score is a point mass:** `ScoreValue::whiteScoreMeanSqOfScoreGridded` returns the square of the score.
+  KataGo's Go version spreads a score over Go's half-point grid, which the games' exact scores do not have.
+
+### Go's features, kept neutral
+
+These stay declared, with neutral answers, so that their callers compile unchanged:
+
+- **`Board`:** `ko_loc` is `NULL_LOC`. Go's stone logic (liberties, eyes, captures, ladders) gives neutral answers.
+- **`BoardHistory`:** `encorePhase` is 0, `superKoBanned` and `koRecapBlocked` are all false, `hasButton` is false,
+  and there are no handicap stones. `passWouldEndPhase` and `passWouldEndGame` are false, and
+  `endGameIfAllPassAlive` does nothing. The rules' `Rules` struct is plain data (ko, scoring and tax rules, komi),
+  and the games read only its komi.
+- **The search:** the pattern bonus table (`avoidRepeatedPatternUtility`, 0 by default) and anti-mirror (`antiMirror`,
+  off by default) work but are off. The pruning of pass-alive areas in `rootPruneUselessMoves` never acts, since a
+  search plays no pass. `getEndingWhiteScoreBonus` (Go's bonus for the filling of neutral points) returns 0, which only
+  shifts the score: it read the ownership at the move's point, which a move of several channels does not have.
+- **No result:** the fork never sets `isNoResult`. KataGo's branch for rules without a no-result outcome then sets
+  that output to zero, so a win and a loss share the probability, as under Go's area rules.
+
+### The network at a symmetry
+
+- **A symmetry acts on the position, not on the input planes.** The evaluator (`NNEvaluator::evaluate`) chooses the
+  symmetry where it fills the inputs: at random (a generator for each thread, seeded from the evaluator's seed), from
+  the cache key (`nnSymmetryFromHash`), or the server's. The inputs are those of the image position (`sym_position`),
+  and the backend gets the identity: the CUDA backend refuses any other. On return, the policy is mapped back action
+  by action (`SymActionMap`) and the ownership point by point, before the softmax and the cache. The backends'
+  symmetry of pixels is never used. So a game whose moves do not move as pixels (Enclosure's edges) gets exact images.
+- **Root symmetry pruning** (`markDuplicateMoveLocs`): a symmetry is valid when the image has the position's hash. Of
+  each set of equal legal moves, the search uses the lowest action. `computeRootSymRepresentativeLocs` and the
+  analysis output map moves with `getSymMoveLoc`, and map principal variations move by move on the image boards
+  (`getSymMoveLocs`).
+- **`LocalPatternHasher::getHashWithSym`** hashes the window of the image board around the image move.
+
+### The policy head
+
+- **Each policy output has `POLICY_CHANNELS` channels for each point,** channel = output × `POLICY_CHANNELS` +
+  channel. So the policy entry of an action, `(y * MAX_BOARD_LEN + x) * POLICY_CHANNELS + channel`, reads the NHWC
+  output in place. Pass stays one logit for each output.
+  - PyTorch (`model_pytorch.py`): `conv2p` has `num_policy_outputs × POLICY_CHANNELS` channels. The head returns (N,
+    outputs, `NUM_ACTIONS`), with pass last.
+  - The export (`export_model_pytorch.py`) writes the chosen outputs (the regular and the optimistic, as upstream) as
+    blocks of `POLICY_CHANNELS` channels.
+  - C++ (`desc.cpp`): `p2Conv.outChannels` must be `policyOutChannels × POLICY_CHANNELS`. The Eigen and CUDA backends
+    size their buffers for it and decode the blocks. The pass buffer holds one logit for each output.
+- **Go's score parity** (the komi input times a parity vector in the score-belief head) stays a no-op: the vector is
+  zero. A game whose last global input is komi would need KataGo's.
+
+### The score scale
+
+Scores stay in the game's points. Every constant that KataGo tuned to Go's points scales by the game's `SCORE_SCALE`
+(s), its score spread against Go's. Training then weighs every score term as KataGo does on scores of Go's size. The
+rule:
+
+- a quantity in points: × s.
+- squared points: × s².
+- a loss weight: ÷ the growth of its loss. A Huber loss whose argument and delta both scale by s grows by s². A
+  squared-error loss on squared points grows by s⁴.
+
+| Constant | KataGo (s = 1) | Scales by | Why KataGo selected it |
+|---|---|---|---|
+| Output multipliers: score mean, stdev, lead, short-term scores | 20 | s | The paper, A.5: "an arbitrary reasonable scaling factor so that on typical data the neural net would only need to output values around unit scale" |
+| Short-term score error multiplier | 150 (squared points) | s² | The same aim, for a squared error (model version 13 rescaled it) |
+| Score distribution range, score target cap | ±(361 + 60) points | s, on the game's largest board: ±(`MAX_BOARD_LEN²` + 60) × s | The paper, A.5: "an upper bound for the plausible final score difference", the board's area plus 60 for komi |
+| Score distribution bins | 1 point wide | s: 2 × (`MAX_BOARD_LEN²` + 60) bins, s points wide | The same bound, in bins of one point |
+| Q-value score storage in int16 | × 60 | ÷ s | × 60 keeps ±421 within 32,000 at a precision of 1/60 point |
+| Huber deltas: score mean, lead, stdev, q-value score, short-term score | 12, 8, 10, 12, 12 | s | A code comment: Huber is "meanlike locally and ... medianlike for very large possible losses". The specific deltas: source not found yet. The paper's first version used 10. |
+| Huber delta: short-term score error | 100 (squared points) | s² | As above, in squared points |
+| Floor of the irreducible error: short-term score | 1e-4 (squared points) | s² | A regulariser: a hundredth of a point, squared |
+| Loss weights: score mean, lead, stdev, short-term score, q-value score | 0.0015, 0.006, 0.001, 0.0004, 0.0008 | ÷ s² | Source not found yet. The paper's first version used 0.004 for the self-predictions. The division keeps each term's share of the total loss, whatever the first reason. |
+| Loss weight: short-term score error | 0.00002 | ÷ s⁴ | A loss of the fourth degree |
+| Score distribution pdf and cdf losses | 0.02 each | none | Over bins, not points (the paper: pdf and cdf 0.02) |
+| GTP resignation (`command/gtp.cpp`, `shouldResign`): the bound on the score, the handicap test, the buffer below schedule | 361, 0.9, 5 points | s | The board's area as the largest score, and "Always require at least a 5 point buffer" before a handicap game resigns. Only GTP play uses them. |
+
+The paper's base weights, for reference: value 1.5, policy 1.0, opponent policy 0.15, ownership 1.5/b², score pdf
+and cdf 0.02 each, L2 3e-5. The search's score utility unit is a separate constant (`SCORE_UNIT`), since one scale for
+both would change Enclosure's search (design 07 of the engine repository, "Why"). Enclosure's s is 12
+([ENCLOSURE.md](ENCLOSURE.md), "Score scale"), and Connect-4's is 1: its score is in discs, so its constants are
+KataGo's.
+
+### The game's length
+
+KataGo sets its time constants from the board's area. In Go, the area sets both the game's length and the reach of
+its tactics. A game can have Go's board and a shorter game, so the fork divides the constants by what they measure
+(`board.h`):
+
+- **The look-ahead horizons count decisions:** KataGo's 19 × 19 formulas, unchanged, counted in moves of the search
+  tree. These are the short-term value and score targets, the short-term error targets, and value-surprise weighting.
+- **The game-phase constants are fractions of a game:** `Board::TIME_SCALE` is `GAME_LENGTH / GO_GAME_LENGTH`, and
+  `Board::GAME_LENGTH_AREA` (19 × 19 × `TIME_SCALE`) replaces the board's area in them: the earliest self-play
+  resignation (A / 5), the early-fork move (`earlyForkGameExpectedMoveProp` × A), the number of opening policy moves
+  (`policyInitAreaProp` × A), and in GTP play, KataGo's time allocation (`TimeControls::getTime`: A in its estimates
+  of the game's length, the moves played in place of the stones) and resignation's minimum game length and handicap
+  catch-up (`shouldResign`). The trainer's variance-time constants scale by `TIME_SCALE` too (`model_pytorch.py`).
+- **`GO_GAME_LENGTH` = 328** is measured: the mean length of KataGo's own 19 × 19 self-play games without handicap or
+  setup stones, from the kata1 training games on katagoarchive.org. A sample of 732 games: mean 328.7, median 329,
+  10th to 90th percentile 294 to 363. A later sample of 51,094 games: mean 328.1, median 327, 292 to 366. KataGo
+  plays its games to the end and does not resign, so its games are longer than human games. The specific numbers are
+  Go's, and a game can need other values later.
+
+### Reproducible analysis and search in slices
+
+For an engine protocol (design 04 of the engine repository), two additions that change nothing by default:
+
+- **`nnSymmetryFromHash`** (a setting, off by default): each network evaluation's symmetry comes from its cache key,
+  not from a random draw (`NNEvaluator::setSymmetryFromHash`, `nneval.cpp`). Different positions still get different
+  symmetries, so a search keeps the mean over orientations. The same position always gets the same one, so a result
+  does not depend on earlier requests. Self-play keeps its random draws.
+- **`Search::endManualSearch`** ends a search that KataGo's manual interface runs (`beginSearch`,
+  `runSinglePlayout`), as `runWholeSearch` ends its own. An engine module runs a search in slices with it.
+
 ## The rules part
 
 `struct GameRules`. The Python binding needs this part, and the encoding part's symmetries when the game has that
@@ -190,6 +371,28 @@ the helper. The rules part's check requires only that the members of a pair come
 | `TURN_MOVES` | The moves of a full turn, after which the clock's increment comes. The time controls give each move its share of the increment (`increment / TURN_MOVES`), and a move with more of its turn to come takes at most the time left divided by the moves left (`turn_moves_left`). | 1, a game that alternates (`turnMoves`) | 2: the site's increment comes once a turn of two edges (games/enclosure/docs/design/18-play-through-gtp.md) |
 | `replay_tolerates(p, action)` | Whether a replayed game (GTP, the analysis engine, SGF files, start positions: `BoardHistory::isLegalTolerant`) also plays this action of `p` where it is not legal: what a site plays beside the legal actions. `play` must accept it. Any `int` (false out of range). The search still plays the legal actions only. | None: a replay plays the legal actions only (`replayTolerates`) | A pass at any time: the site's pass on a clock's timeout, which forfeits the rest of the turn |
 
+### A game's notation, and a site's own terms
+
+A game's notation is in its rules part, beside its rules: its moves (`action_text`, `parse_action`), its one-line
+position (`position_text`, `parse_position`), its moves in the engine protocol (`protocol_text`,
+`parse_protocol_text`), and its own start-position field of an analysis query (`QUERY_POSITION_FIELD`,
+`parse_query_position`). The engine protocol (GTP and the analysis engine) reads and writes only these members.
+
+A game that a site already plays (a strategyjam.org game ported to KataGame) speaks the site's own terms, so that one
+move server serves every such game behind the same page driver (abscls-r93). Its engine takes the site's match record
+(the start state and the moves, in the site's move strings) and answers with a site move string:
+
+- **The moves:** `protocol_text` and `parse_protocol_text` give an action as the site's move string.
+- **The start:** the game's query field reads the site's start state, when the site's games do not all start from
+  the standard position.
+- **A backend that maps a record to an analysis query** adds three things. KataGo's analysis query lists each move
+  with a colour (`[["B", MOVE], ...]`), so the backend gives the colours from the record's order or from the game's
+  turn rule. A game whose turn has several actions (`TURN_MOVES` above 1) has one protocol move for each action: if the
+  site writes one string for a turn, the notation or the backend splits it. The front reads and writes pass (`pass`)
+  itself, so the backend maps the site's pass string to it.
+
+A game with no site version (Connect-4) uses the notation of design 04 of the engine repository.
+
 ## The network encoding part
 
 `struct GameEncoding`. The search, self-play and the trainer need it. The Python binding uses only its symmetries
@@ -214,9 +417,9 @@ game's global inputs (V9 adds KataGo's 2 playout inputs after them).
 | `SymActionMap` | `SymActionMap(p, s)(a)`: the image of a legal action of `p` or pass, an action of `sym_position(p, s)`. Built once for each position and symmetry. | the edge's image, listed from its other end when that end comes first and is one of the mover's nodes |
 | `TARGETS` | The optional training targets that the game writes. | all six (below) |
 | `training_targets(positions, n, row, mover, values)` | The game's own targets of a training row: the slots of `TARGETS` that the front does not compute (all but `FRONT_TARGETS`), from the game's positions `positions(j)`, `0 <= j < n`, with the row at `positions(row)`, from the view of `mover`. It writes the values before the row's storage (`TargetValues`) and returns the slots that hold a target in this row. A template on `positions`. A game whose `TARGETS` are all `FRONT_TARGETS` can leave it out. | C0, C1, C4 and C5-6 (below), from the positions after the row |
-| `SCORE_SCALE` | The game's score spread against Go's. KataGo's constants in points scale by it. | 12 (ENCLOSURE.md, "Score scale") |
+| `SCORE_SCALE` | The game's score spread against Go's. KataGo's constants in points scale by it ("The score scale"). | 12 (ENCLOSURE.md, "Score scale") |
 | `SCORE_UNIT` | The search's score utility unit, in points, where KataGo uses the square root of the board's area. | 140.5845 = √(18 · 18 · 61) |
-| `GAME_LENGTH` | A game's mean length in moves, for KataGo's game-phase constants. | 120 |
+| `GAME_LENGTH` | A game's mean length in moves, for KataGo's game-phase constants ("The game's length"). | 120 |
 
 `InputOptions` holds what the front gives the input members:
 
@@ -392,30 +595,46 @@ targets. The network check against PyTorch (the random test network of `python/e
 
 ## Adding a game
 
-1. Make the folder `cpp/game/<game>/` with `gamerules.h` (`struct GameRules` in the namespace `<game>`) and
-   `gameencoding.h` (`struct GameEncoding`). End each with its check:
-   `static_assert(GameInterface::checkRules<GameRules>(), "...")`. Connect-4's `gamerules.h` and `gameencoding.h` are
-   short examples of the two parts. Give the optional members where the defaults do not fit ("Optional members": the
-   standard board, the turn, the pass).
-2. Build with `-DGAME=<game>`, in a build folder for that game and backend. Code of the game's own that uses the front
-   (a command or a test of the search) goes outside the folder, in a file named after the game, and the game lists it
-   in `cpp/game/<game>/ownfiles.txt` ("The game layer").
-3. In the engine repository, make `games/<game>/` a Python package and build the game's rules module with
-   `sh core/binding/build.sh <game>`. The module's common API needs no code of the game's own. The game's Python
-   extras, if any, go in `games/<game>/binding/extras.h`. The conformance suite (`core/tests/test_conformance.py`)
-   checks the module (design 07, "The Python binding").
-4. For the alpha-beta search, add `cpp/game/<game>/gamebot.h` (`struct GameBot`, a heuristic), ending with
-   `static_assert(GameInterface::checkBot<GameBot>(), "...")`. The binding then gives the search, and the arena's
-   player `ab` plays the game.
-5. For training, add the trainer's module `python/katago/train/games/<game>.py` with the members of
-   `games/__init__.py` ("The trainer's module"), the values of the game's encoding part. `train.py -game <game>` then
-   makes a model of the game, and its exported files name the game. The network check against PyTorch takes the game
-   (`python/enclosure_nn_check.py make -game <game>`) and the game's positions for `testnnoutputs`.
-6. For a run, add the game's self-play config `cpp/configs/training/selfplay_<game>.cfg` and its analysis config
+Connect-4 is the template: each step names its file. The engine repository's `games/connect4/README.md`, "A new game
+from this template", gives the same steps, and its design 06, step 6, records which parts of the code are now the same
+for every game and what a new game must still touch.
+
+1. **The rules part.** Make the folder `cpp/game/<game>/` with `gamerules.h` (`struct GameRules` in the namespace
+   `<game>`). End it with its check: `static_assert(GameInterface::checkRules<GameRules>(), "...")`. Connect-4's
+   `gamerules.h` is a short example. Give the optional members where the defaults do not fit ("Optional members": the
+   standard board, the turn, the pass). The notation is in this part: a game that a site already plays speaks the
+   site's terms ("A game's notation, and a site's own terms").
+2. **The Python module and the tests.** In the engine repository, make `games/<game>/` a Python package and build the
+   game's rules module with `sh core/binding/build.sh <game>`. The module's common API needs no code of the game's
+   own. The game's Python extras, if any, go in `games/<game>/binding/extras.h`. The conformance suite
+   (`core/tests/test_conformance.py`) checks the module of each game of the game layer (design 07, "The Python
+   binding"). The game's own tests go in `games/<game>/tests/`: compare the rules with published results where they
+   exist (Connect-4's `test_rules.py`: the counts of positions, and small boards solved to the end). The random bot
+   (`core/bots.py`) and the arena (`python -m core.arena --game <game>`) play the game at once.
+3. **The bot part** (optional). For the alpha-beta search, add `cpp/game/<game>/gamebot.h` (`struct GameBot`, a
+   heuristic), ending with `static_assert(GameInterface::checkBot<GameBot>(), "...")`. The binding then gives the
+   search, and the arena's player `ab` plays the game. A game's own bots and the arena's fixed opponents for it go in
+   the optional module `games/<game>/bots.py` (design 07, "The pipeline").
+4. **The encoding part.** Add `cpp/game/<game>/gameencoding.h` (`struct GameEncoding`), ending with
+   `static_assert(GameInterface::checkEncoding<GameEncoding>(), "...")`. Connect-4's is a short example. Build with
+   `-DGAME=<game>`, in a build folder for that game and backend: `pipeline/scripts/build_game.sh <game>` builds both
+   backends (step 6). Code of the game's own that uses the front (a command or a test of the search) goes outside the
+   folder, in a file named after the game, and the game lists it in `cpp/game/<game>/ownfiles.txt` ("The game
+   layer").
+5. **The trainer's module.** Add `python/katago/train/games/<game>.py` with the members of `games/__init__.py` ("The
+   trainer's module"), the values of the game's encoding part. `train.py -game <game>` then makes a model of the game,
+   and its exported files name the game. Check the network against PyTorch: a random test network
+   (`python/enclosure_nn_check.py make -game <game>`, then its export), `testnnoutputs` on positions of the game in
+   `cpp/tests/data/`, then `enclosure_nn_check.py compare`. The engine repository's `build_verify.sh` and
+   `verify_build.sh` are Enclosure's own, so a new game runs these by hand (Connect-4's README, "The network").
+6. **The run.** Add the game's self-play config `cpp/configs/training/selfplay_<game>.cfg` and its analysis config
    `cpp/configs/analysis_<game>.cfg` (the load check, and the engine repository's network bot, `core/networkbot.py`,
-   which plays the game's networks in its arena). Then the first run, in the engine repository (its design 07, "The
-   pipeline"), in WSL from its root after `. pipeline/env.sh`. Connect-4's README ("The run") gives each command for
-   its run `c4a`:
+   which plays the game's networks in its arena). Each starts from KataGo's (`selfplay1.cfg`, `analysis_example.cfg`)
+   and says why on each line that differs: Connect-4's sets its board, komi 0, a draw's value, its symmetries at the
+   root, and a smaller cache of evaluations in the analysis config (`nnCacheSizePowerOfTwo = 16`), since each engine
+   of the gauntlet and the ratings allocates the whole cache. Then the first run, in the engine repository (its
+   design 07, "The pipeline"), in WSL from its root after `. pipeline/env.sh`. Connect-4's README ("The run") gives
+   each command for its run `c4a`:
    1. **The binaries and the rules module:** `bash pipeline/scripts/build_game.sh <game>` builds `katago` for the game
       with the settings of the machine's builds `builds/cuda` and `builds/eigen`, in `$ENGINES_BUILDS/<game>-cuda`
       and `<game>-eigen`, and the game's rules module, which the gauntlet imports. It is a heavy job: start it
@@ -433,18 +652,38 @@ targets. The network check against PyTorch (the random test network of `python/e
       copy of the settings. `DRY_RUN=1 bash pipeline/scripts/start.sh RUN` shows the settings in force.
    4. **The start:** `bash pipeline/scripts/start.sh RUN` starts self-play, the shuffle, the export and the trainers.
       Then start self-play's watchdog and the gauntlet (`pipeline/scripts/gauntlet.sh RUN`), which rates each export.
+      A short run needs a gauntlet round as short as its exports' interval (`GAUNTLET_ARGS`: c4a's round is every 10
+      minutes).
    5. **The dashboard:** the live dashboard shows the runs of `$ENGINES_RUNS` with the main tree's settings and
       gauntlets. For a run from a worktree or in another folder, `bash pipeline/scripts/dashboard.sh RUN` serves the
       run's own dashboard on a free port.
    6. **The stop:** stop the watchdog, then the gauntlet, by their PIDs, then `bash pipeline/scripts/stop.sh RUN`.
       Connect-4's README shows how to find the PIDs. A run's own dashboard stops apart:
-      `systemctl --user stop RUN-dashboard`.
+      `systemctl --user stop RUN-dashboard`. The last export can come after the gauntlet's last round: then start the
+      gauntlet again after the stop for one more round, and stop it.
    The engine repository's shared Python (`core/`) names no game: it finds a run's folder and its models with the run
    helpers of `core/runs.py`, for every game, and it reaches the game through lookups by the game's name. A game can
    add the optional module `games/<game>/bots.py` (its own bots, and its own player of a network). Without it, the
    arena plays the game's networks through `core/networkbot.py`. The dashboard's replay board draws only Enclosure's
    board, from Enclosure's `games/enclosure/replay.py`, so it lists another game's leagues without replays (design 07
    of the engine repository, "The pipeline").
+7. **What a new game still meets.** These are open, and each is the same for every game after Connect-4:
+   - The engine repository's checks that no shared code names a game (`core/tests/test_gamenames.py`,
+     `pipeline/tests/checkgamenames.py`) find a game's name inside other words: a short name, such as `go` or `hex`,
+     fails them on harmless words (abscls-mkd.20).
+   - A run in a worktree needs the worktree's link `.venv-katago` to the main tree's environment. Without it, the
+     asynchronous setup's defaults (`game_defaults` in `python/selfplay/async_parts.sh`) take the system's `python3`,
+     which has no torch, and the start stops with "no trainer's module for GAME", which hides that cause.
+   - A worktree made from Windows has no Git in WSL, so a run started from it keeps an empty `version.txt` and diffs
+     in its archive (abscls-ro06). Write the commit in the decision log.
+   - A run's parts run outside the `scripts/machine` job that starts them, so the job's limits do not hold them
+     (abscls-w2u), and a run beside the GPU's holder needs a cap that the machine tool does not give yet (abscls-4eq).
+     The run's own limits (`CPUS`, `LIMITS_*`) hold it.
+   - For a small network, self-play on the Eigen build on the run's CPUs can be faster than on a GPU that another
+     job holds (Connect-4: 2,170 evaluations a second on 2 CPUs, 692 on the shared GPU). `KATAGO_BIN` chooses.
+   - The alpha-beta bot searches for a fixed time a move, not on the clock (abscls-859).
+   - The front's assumptions that the fork's games share ("Enclosure's assumptions that stay in the front and the
+     search"): positions that never recur, and moves as points in the opening books and the start positions.
 
 The front reaches the game through the members alone (the map below), and the check of the game layer keeps it so.
 So a second game's binary builds from its folder, with the front as it is.
@@ -456,6 +695,11 @@ Each reference to Enclosure outside `cpp/game/`, and each Enclosure constant in 
 `BoardHistory`, `NNPos`, `NNInputs`, `SymmetryHelpers`). Only those names' definitions change. So KataGo's search keeps
 its calls, and upstream releases still merge with few conflicts. The fork's tests (`cpp/tests/enclosure/`,
 `cpp/tests/testenclosure*.cpp`) stay Enclosure's tests and are not in the map.
+
+Every row is done, with these exceptions, each with its reason in its row: the OpenCL and ONNX Runtime backends and the
+ONNX metadata, which wait for a machine with their toolchains (abscls-bd7), and two parts of the trainer that are not
+the game's (Go's score parity vector, an option for experiments). The last sections list the assumptions of the
+fork's games that stay in the front, and the names that stay.
 
 ### The front (`cpp/game/board.*`, `cpp/game/boardhistory.*`)
 
