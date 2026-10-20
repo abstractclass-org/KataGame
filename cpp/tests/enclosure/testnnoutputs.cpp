@@ -26,7 +26,8 @@
 //   policy <count> <action>:<probability> ...   (the move policy at the legal actions and pass)
 // ownership: computed at the search's root, reported, and not used to choose a move:
 //   owner <x * y values>                   (white's view, after tanh)
-// training: the training-only outputs, which the Eigen backend does not compute:
+// training: the training-only outputs (since 2026-10-21 the Eigen backend computes them too, except RGSC's heads,
+// which only self-play reads, so its dumps have no regret and no swing line):
 //   regret <value> <ranking>
 //   swing <value> <ranking>                (models with the swing heads, 2026-10-11)
 //   auxvalues <12 values>
@@ -72,10 +73,9 @@ int main(int argc, char** argv) {
     }
   }
 #ifdef USE_EIGEN_BACKEND
-  if(training) {
-    fprintf(stderr, "the Eigen backend does not compute the training-only outputs\n");
-    return 2;
-  }
+  const bool regret = false;  //the Eigen backend does not compute RGSC's heads
+#else
+  const bool regret = training;
 #endif
   Board::initHash();
   ScoreValue::initTables();
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
     "test", modelFile, "", &logger, 8, S, S, NNPos::fillsNNBoard(Board::DEFAULT_X_SIZE, Board::DEFAULT_Y_SIZE), nhwc, 10, 4, false, "",
     fp16 ? enabled_t::True : enabled_t::False, 1, {0}, "testnnoutputs", false, 0, cfg);
   nnEval->spawnServerThreads();
-  if(training && (!nnEval->hasAuxOutputs() || !nnEval->hasRegretHeads())) {
+  if(training && (!nnEval->hasAuxOutputs() || (regret && !nnEval->hasRegretHeads()))) {
     fprintf(stderr, "the model has no aux outputs or no regret heads\n");
     return 1;
   }
@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
     nnEval->evaluate(board, hist, pla, params, buf, true, ownership);
     const NNOutput& o = *buf.result;
     if((ownership && o.whiteOwnerMap == NULL) ||
-       (training && (o.auxMap == NULL || o.auxValues == NULL || !o.hasRegret)) ||
+       (training && (o.auxMap == NULL || o.auxValues == NULL || (regret && !o.hasRegret))) ||
        (stage2 && (o.auxPolicy == NULL || o.scoreBelief == NULL))) {
       fprintf(stderr, "%s: missing outputs\n", label.c_str());
       return 1;
@@ -176,10 +176,12 @@ int main(int argc, char** argv) {
       out << "\n";
     }
     if(training) {
-      out << "regret " << o.regretValue << " " << o.regretRanking;
-      if(o.hasSwing)
-        out << "\nswing " << o.swingValue << " " << o.swingRanking;
-      out << "\nauxvalues";
+      if(regret) {
+        out << "regret " << o.regretValue << " " << o.regretRanking << "\n";
+        if(o.hasSwing)
+          out << "swing " << o.swingValue << " " << o.swingRanking << "\n";
+      }
+      out << "auxvalues";
       for(int i = 0; i < NNOutput::NUM_AUX_VALUES; i++)
         out << " " << o.auxValues[i];
       out << "\nauxmap";

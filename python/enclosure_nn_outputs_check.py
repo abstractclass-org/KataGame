@@ -1,13 +1,15 @@
 #!/usr/bin/python3
 """Enclosure fork: the C++ model's outputs against the PyTorch checkpoint's, on the same input rows.
 
-    python enclosure_nn_outputs_check.py CHECKPOINT DUMP [DUMP ...]
+    python enclosure_nn_outputs_check.py CHECKPOINT DUMP [DUMP ...] [-use-swa]
 
 Each DUMP comes from the fork's testnnoutputs (katagame/cpp/tests/enclosure/testnnoutputs.cpp, with OUTPUTS
 search,ownership,training), which evaluated a
-model exported from CHECKPOINT (export_model_pytorch.py, without -use-swa) on positions and wrote the input rows
-the network got with its outputs. This runs CHECKPOINT's model on the same rows and reports, per output, the
-largest difference: the value (win, loss, no result), the ownership, RGSC's regret value and ranking, and the
+model exported from CHECKPOINT (export_model_pytorch.py; with -use-swa, the checkpoint's SWA weights, which a run's
+exports carry) on positions and wrote the input rows the network got with its outputs. This runs CHECKPOINT's model
+on the same rows and reports, per output, the
+largest difference: the value (win, loss, no result), the ownership, RGSC's regret value and ranking (not in the
+Eigen backend's dumps), and the
 exported training-only outputs (the aux values and the 9 aux maps; with export stage 2, policy outputs 1-4 at the
 legal actions and pass, and the score belief's probabilities). The C++ value and ownership are in white's view;
 the rest, like PyTorch's outputs, in the view of the player to move.
@@ -58,10 +60,17 @@ def read_dump(path):
 
 
 def main():
-    model, config = load_model(sys.argv[1])
-    c_in = model.num_bin_input_features if hasattr(model, "num_bin_input_features") else 215
+    args = [a for a in sys.argv[1:] if a != "-use-swa"]
+    if "-use-swa" in sys.argv[1:]:  # the weights that a run's exports carry (export_model_for_selfplay.sh -use-swa)
+        from katago.train.load_model import load_model as load_checkpoint
+        _, model, _ = load_checkpoint(args[0], use_swa=True, device="cpu")
+        model.eval()
+    else:
+        model, _ = load_model(args[0])
+    net = getattr(model, "module", model)  # the SWA model wraps the network
+    c_in = net.num_bin_input_features if hasattr(net, "num_bin_input_features") else 215
     worst_all = {}
-    for dump in sys.argv[2:]:
+    for dump in args[1:]:
         positions = read_dump(dump)
         spatial = torch.zeros(len(positions), c_in, S * S)
         glob = torch.zeros(len(positions), len(positions[0]["global"]))
@@ -89,8 +98,9 @@ def main():
             note("value", value - cpp_value)
             owner = torch.tanh(out_ownership[n, 0]).numpy().reshape(-1)
             note("ownership", owner - (p["owner"] if p["pla"] == WHITE else -p["owner"]))
-            note("regret value", torch.sigmoid(out_regret[n, 0]).item() * 4.0 - p["regret"][0])
-            note("regret ranking", out_regret[n, 1].item() - p["regret"][1])
+            if "regret" in p:  # not in the Eigen backend's dumps (it leaves out RGSC's heads)
+                note("regret value", torch.sigmoid(out_regret[n, 0]).item() * 4.0 - p["regret"][0])
+                note("regret ranking", out_regret[n, 1].item() - p["regret"][1])
             if "swing" in p:  # models with the swing heads (2026-10-11)
                 note("swing value", torch.sigmoid(out_regret[n, 2]).item() * 4.0 - p["swing"][0])
                 note("swing ranking", out_regret[n, 3].item() - p["swing"][1])

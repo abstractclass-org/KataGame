@@ -2000,8 +2000,11 @@ void NNEvaluator::evaluate(
 
 
   // And record the nnHash in the result and put it into the table
+  //Enclosure fork (2026-10-21): not a result with the training-only outputs. Only checks and the engine protocol's maps
+  //ask for them, one position at a time, and they make an entry several times larger (policy outputs 1-4 alone are
+  //277 KB). An entry of the same position without them stays, so the search's evaluations do not change.
   buf.result->nnHash = nnHash;
-  if(nnCacheTable != NULL)
+  if(nnCacheTable != NULL && buf.result->auxMap == NULL)
     nnCacheTable->set(buf.result);
 
 }

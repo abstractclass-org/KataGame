@@ -2144,6 +2144,19 @@ struct Trunk {
   }
 };
 
+//Enclosure fork (2026-10-21): the exported training-only outputs (ValueHeadDesc::auxVersion and
+//PolicyHeadDesc::auxVersion), computed only for a batch in which a row asked for them (NNResultBuf::includeAuxOutputs),
+//as the CUDA backend computes them. NULL for an output that the model does not have.
+struct AuxOutputs {
+  TENSORMAP4* trunk;       //the trunk -> 8: the 2 future positions, the 2 territory incomes, the 4 cut-edge logits
+  TENSORMAP4* scoring;     //v1 -> 1: the future occupancy
+  TENSORMAP2* value;       //v2 -> 12: the TD values and scores
+  TENSORMAP2* sbS2;        //the pooled v1 -> the score belief's s2 (aux version 2)
+  TENSORMAP2* sbMix;       //the pooled v1 -> the score belief's mixture logits
+  TENSORMAP4* policy;      //p1 -> policy outputs 1-4, POLICY_CHANNELS channels each (policy aux version 1)
+  TENSORMAP2* policyPass;  //the pass hidden layer -> their pass logits
+};
+
 struct PolicyHead {
   const string name;
   const int modelVersion;
@@ -2158,6 +2171,9 @@ struct PolicyHead {
   const MatBiasLayer gpoolToPassBias;
   const ActivationLayer passActivation;
   const MatMulLayer gpoolToPassMul2;
+  //Enclosure fork: policy outputs 1-4 and their pass logits (AuxOutputs), when the model has them.
+  std::unique_ptr<ConvLayer> p2ConvAux;
+  std::unique_ptr<MatMulLayer> gpoolToPassMul2Aux;
 
   PolicyHead() = delete;
   PolicyHead(const PolicyHead&) = delete;
@@ -2176,13 +2192,20 @@ struct PolicyHead {
       gpoolToPassBias(desc.gpoolToPassBias),
       passActivation(desc.passActivation),
       gpoolToPassMul2(desc.gpoolToPassMul2)
-  {}
+  {
+    if(desc.auxVersion >= 1) {
+      p2ConvAux = std::make_unique<ConvLayer>(desc.p2ConvAux,nnX,nnY);
+      gpoolToPassMul2Aux = std::make_unique<MatMulLayer>(desc.gpoolToPassMul2Aux);
+    }
+  }
 
   size_t requiredConvWorkspaceElts(size_t maxBatchSize) const {
     size_t maxElts = 0;
     maxElts = std::max(maxElts,p1Conv.requiredConvWorkspaceElts(maxBatchSize));
     maxElts = std::max(maxElts,g1Conv.requiredConvWorkspaceElts(maxBatchSize));
     maxElts = std::max(maxElts,p2Conv.requiredConvWorkspaceElts(maxBatchSize));
+    if(p2ConvAux != nullptr)
+      maxElts = std::max(maxElts,p2ConvAux->requiredConvWorkspaceElts(maxBatchSize));
     return maxElts;
   }
 
@@ -2192,6 +2215,7 @@ struct PolicyHead {
     CONSTTENSORMAP4* trunk,
     TENSORMAP2* policyPass,
     TENSORMAP4* policy,
+    const AuxOutputs* aux,
     CONSTTENSORMAP3* mask,
     const float* maskSum,
     float* convWorkspace
@@ -2220,12 +2244,18 @@ struct PolicyHead {
     addNCBiasInplace(&p1Out, &g1Bias);
     p1BN.apply(&p1Out, &p1Out2, mask);
     p2Conv.apply(handle, &p1Out2, policy, convWorkspace, false);
+    //Enclosure fork: policy outputs 1-4 from the same features, and their pass logits from the pass hidden layer.
+    const bool wantPolicyAux = aux != NULL && aux->policy != NULL && p2ConvAux != nullptr;
+    if(wantPolicyAux)
+      p2ConvAux->apply(handle, &p1Out2, aux->policy, convWorkspace, false);
 
     if(modelVersion >= 15) {
       gpoolToPassMul.apply(&g1Concat, &p1Pass);
       gpoolToPassBias.apply(&p1Pass);
       passActivation.apply(&p1Pass, &p1Pass);
       gpoolToPassMul2.apply(&p1Pass, policyPass);
+      if(wantPolicyAux)
+        gpoolToPassMul2Aux->apply(&p1Pass, aux->policyPass);
     }
     else {
       gpoolToPassMul.apply(&g1Concat, policyPass);
@@ -2247,6 +2277,15 @@ struct ValueHead {
   const MatMulLayer sv3Mul;
   const MatBiasLayer sv3Bias;
   const ConvLayer vOwnershipConv;
+  //Enclosure fork: the training-only outputs (AuxOutputs), when the model has them.
+  std::unique_ptr<ConvLayer> auxTrunkConv;
+  std::unique_ptr<ConvLayer> auxScoringConv;
+  std::unique_ptr<MatMulLayer> auxValueMul;
+  std::unique_ptr<MatBiasLayer> auxValueBias;
+  std::unique_ptr<MatMulLayer> sbS2Mul;
+  std::unique_ptr<MatBiasLayer> sbS2Bias;
+  std::unique_ptr<MatMulLayer> sbMixMul;
+  std::unique_ptr<MatBiasLayer> sbMixBias;
 
   ValueHead() = delete;
   ValueHead(const ValueHead&) = delete;
@@ -2264,12 +2303,30 @@ struct ValueHead {
       v3Bias(desc.v3Bias),
       sv3Mul(desc.sv3Mul),
       sv3Bias(desc.sv3Bias),
-      vOwnershipConv(desc.vOwnershipConv,nnX,nnY) {}
+      vOwnershipConv(desc.vOwnershipConv,nnX,nnY)
+  {
+    if(desc.auxVersion >= 1) {
+      auxTrunkConv = std::make_unique<ConvLayer>(desc.auxTrunkConv,nnX,nnY);
+      auxScoringConv = std::make_unique<ConvLayer>(desc.auxScoringConv,nnX,nnY);
+      auxValueMul = std::make_unique<MatMulLayer>(desc.auxValueMul);
+      auxValueBias = std::make_unique<MatBiasLayer>(desc.auxValueBias);
+    }
+    if(desc.auxVersion >= 2) {
+      sbS2Mul = std::make_unique<MatMulLayer>(desc.sbS2Mul);
+      sbS2Bias = std::make_unique<MatBiasLayer>(desc.sbS2Bias);
+      sbMixMul = std::make_unique<MatMulLayer>(desc.sbMixMul);
+      sbMixBias = std::make_unique<MatBiasLayer>(desc.sbMixBias);
+    }
+  }
 
   size_t requiredConvWorkspaceElts(size_t maxBatchSize) const {
     size_t maxElts = 0;
     maxElts = std::max(maxElts,v1Conv.requiredConvWorkspaceElts(maxBatchSize));
     maxElts = std::max(maxElts,vOwnershipConv.requiredConvWorkspaceElts(maxBatchSize));
+    if(auxTrunkConv != nullptr) {
+      maxElts = std::max(maxElts,auxTrunkConv->requiredConvWorkspaceElts(maxBatchSize));
+      maxElts = std::max(maxElts,auxScoringConv->requiredConvWorkspaceElts(maxBatchSize));
+    }
     return maxElts;
   }
 
@@ -2280,6 +2337,7 @@ struct ValueHead {
     TENSORMAP2* value,
     TENSORMAP2* scoreValue,
     TENSORMAP4* ownership,
+    const AuxOutputs* aux,
     CONSTTENSORMAP3* mask,
     const float* maskSum,
     float* convWorkspace
@@ -2308,6 +2366,20 @@ struct ValueHead {
     sv3Bias.apply(scoreValue);
 
     vOwnershipConv.apply(handle, &v1Out2, ownership, convWorkspace, false);
+
+    //Enclosure fork: the training-only outputs, as the CUDA backend's ValueHead computes them.
+    if(aux != NULL && auxTrunkConv != nullptr) {
+      auxTrunkConv->apply(handle, trunk, aux->trunk, convWorkspace, false);
+      auxScoringConv->apply(handle, &v1Out2, aux->scoring, convWorkspace, false);
+      auxValueMul->apply(&v2Out, aux->value);
+      auxValueBias->apply(aux->value);
+    }
+    if(aux != NULL && aux->sbS2 != NULL && sbS2Mul != nullptr) {
+      sbS2Mul->apply(&v1Mean, aux->sbS2);
+      sbS2Bias->apply(aux->sbS2);
+      sbMixMul->apply(&v1Mean, aux->sbMix);
+      sbMixBias->apply(aux->sbMix);
+    }
   }
 };
 
@@ -2370,6 +2442,7 @@ struct Model {
     TENSORMAP2* value,
     TENSORMAP2* scoreValue,
     TENSORMAP4* ownership,
+    const AuxOutputs* aux,  //Enclosure fork: NULL unless a row asked for the training-only outputs
 
     TENSORMAP3* mask,
     float* maskSum,
@@ -2395,6 +2468,7 @@ struct Model {
       trunkBuf,
       policyPass,
       policy,
+      aux,
       mask,
       maskSum,
       convWorkspace
@@ -2406,6 +2480,7 @@ struct Model {
       value,
       scoreValue,
       ownership,
+      aux,
       mask,
       maskSum,
       convWorkspace
@@ -2705,6 +2780,41 @@ void NeuralNet::getOutput(
   computeMaskSum(&mask,maskSum.data());
   vector<float>& convWorkspace = buffers.convWorkspace;
 
+  //Enclosure fork (2026-10-21): the training-only outputs, when a row of the batch asked for them (NNEvaluator then
+  //gives the row an auxMap), in buffers of this batch only. NHWC, as the other outputs.
+  const ValueHead& valueHead = computeHandle->model->valueHead;
+  const PolicyHead& policyHead = computeHandle->model->policyHead;
+  bool wantAux = false;
+  for(int row = 0; row < batchSize; row++)
+    wantAux = wantAux || outputs[row]->auxMap != NULL;
+  wantAux = wantAux && valueHead.auxTrunkConv != nullptr;
+  const int xy = nnXLen * nnYLen;
+  const int numAuxTrunk = wantAux ? valueHead.auxTrunkConv->outChannels : 0;
+  const int numAuxValues = wantAux ? valueHead.auxValueMul->outChannels : 0;
+  const int numSbS2 = wantAux && valueHead.sbS2Mul != nullptr ? valueHead.sbS2Mul->outChannels : 0;
+  const int numSbMix = wantAux && valueHead.sbMixMul != nullptr ? valueHead.sbMixMul->outChannels : 0;
+  const int numPolicyAux = wantAux && policyHead.p2ConvAux != nullptr ? policyHead.p2ConvAux->outChannels : 0;
+  const int numPolicyPassAux = numPolicyAux > 0 ? policyHead.gpoolToPassMul2Aux->outChannels : 0;
+  testAssert(!wantAux || numAuxTrunk + 1 == NNOutput::NUM_AUX_MAP_CHANNELS);
+  testAssert(!wantAux || numAuxValues == NNOutput::NUM_AUX_VALUES);
+  testAssert(numPolicyAux == numPolicyPassAux * NNPos::POLICY_CHANNELS);
+  vector<float> auxTrunkData((size_t)batchSize * numAuxTrunk * xy);
+  vector<float> auxScoringData(wantAux ? (size_t)batchSize * xy : 0);
+  vector<float> auxValueData((size_t)batchSize * numAuxValues), sbS2Data((size_t)batchSize * numSbS2);
+  vector<float> sbMixData((size_t)batchSize * numSbMix), policyAuxData((size_t)batchSize * numPolicyAux * xy);
+  vector<float> policyPassAuxData((size_t)batchSize * numPolicyPassAux);
+  TENSORMAP4 auxTrunk(auxTrunkData.data(), numAuxTrunk, nnXLen, nnYLen, batchSize);
+  TENSORMAP4 auxScoring(auxScoringData.data(), wantAux ? 1 : 0, nnXLen, nnYLen, batchSize);
+  TENSORMAP2 auxValue(auxValueData.data(), numAuxValues, batchSize);
+  TENSORMAP2 sbS2(sbS2Data.data(), numSbS2, batchSize);
+  TENSORMAP2 sbMix(sbMixData.data(), numSbMix, batchSize);
+  TENSORMAP4 policyAux(policyAuxData.data(), numPolicyAux, nnXLen, nnYLen, batchSize);
+  TENSORMAP2 policyPassAux(policyPassAuxData.data(), numPolicyPassAux, batchSize);
+  const AuxOutputs aux = {
+    &auxTrunk, &auxScoring, &auxValue, numSbS2 > 0 ? &sbS2 : NULL, numSbS2 > 0 ? &sbMix : NULL,
+    numPolicyAux > 0 ? &policyAux : NULL, numPolicyAux > 0 ? &policyPassAux : NULL,
+  };
+
   computeHandle->model->apply(
     &computeHandle->handleInternal,
     computeHandle->scratch.get(),
@@ -2717,6 +2827,7 @@ void NeuralNet::getOutput(
     &value,
     &scoreValue,
     &ownership,
+    wantAux ? &aux : NULL,
     &mask,
     maskSum.data(),
     convWorkspace.data()
@@ -2780,6 +2891,36 @@ void NeuralNet::getOutput(
       const float* ownershipSrcBuf = ownershipData + row * nnXLen * nnYLen;
       assert(computeHandle->model->numOwnershipChannels == 1);
       SymmetryHelpers::copyOutputsWithSymmetry(ownershipSrcBuf, output->whiteOwnerMap, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
+    }
+
+    //Enclosure fork: the training-only outputs, raw, in NNOutput's layouts as the CUDA backend writes them (NNEvaluator
+    //maps, scales and finishes them): auxMap channel by channel, the trunk's 8 then the occupancy; policy outputs 1-4
+    //at entry (y * nnXLen + x) * K + offset, their pass last; the score belief's s2 then its mixture logits.
+    if(output->auxMap != NULL && wantAux) {
+      const float* trunkAux = auxTrunkData.data() + (size_t)row * numAuxTrunk * xy;
+      for(int c = 0; c < numAuxTrunk; c++)
+        for(int pos = 0; pos < xy; pos++)
+          output->auxMap[c * xy + pos] = trunkAux[pos * numAuxTrunk + c];
+      std::copy(auxScoringData.begin() + (size_t)row * xy, auxScoringData.begin() + (size_t)(row + 1) * xy,
+                output->auxMap + numAuxTrunk * xy);
+      std::copy(auxValueData.begin() + (size_t)row * numAuxValues,
+                auxValueData.begin() + (size_t)(row + 1) * numAuxValues, output->auxValues);
+    }
+    if(output->auxPolicy != NULL && numPolicyAux > 0) {
+      const float* src = policyAuxData.data() + (size_t)row * numPolicyAux * xy;
+      for(int a = 0; a < numPolicyPassAux; a++) {
+        float* dst = output->auxPolicy + (size_t)a * NNPos::MAX_NN_POLICY_SIZE;
+        for(int pos = 0; pos < xy; pos++)
+          for(int k = 0; k < K; k++)
+            dst[pos * K + k] = src[pos * numPolicyAux + a * K + k];
+        dst[xy * K] = policyPassAuxData[(size_t)row * numPolicyPassAux + a];
+      }
+    }
+    if(output->scoreBeliefRaw != NULL && numSbS2 > 0) {
+      std::copy(sbS2Data.begin() + (size_t)row * numSbS2, sbS2Data.begin() + (size_t)(row + 1) * numSbS2,
+                output->scoreBeliefRaw);
+      std::copy(sbMixData.begin() + (size_t)row * numSbMix, sbMixData.begin() + (size_t)(row + 1) * numSbMix,
+                output->scoreBeliefRaw + numSbS2);
     }
 
     if(modelVersion >= 9) {
@@ -3068,7 +3209,7 @@ void enclosureEigenRawOutput(
   vector<float>& convWorkspace = buffers.convWorkspace;
   computeHandle->model->apply(
     &computeHandle->handleInternal, computeHandle->scratch.get(), &input, &inputGlobal, NULL, &trunk, &policyPass,
-    &policy, &value, &scoreValue, &ownership, &mask, maskSum.data(), convWorkspace.data()
+    &policy, &value, &scoreValue, &ownership, NULL, &mask, maskSum.data(), convWorkspace.data()
   );
 
   std::copy(policyPass.data(), policyPass.data() + size_t(rows) * P, policyPassOut);

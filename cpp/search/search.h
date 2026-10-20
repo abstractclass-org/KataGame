@@ -595,7 +595,11 @@ private:
   // Neural net queries
   // searchnnhelpers.cpp
   //----------------------------------------------------------------------------------------
+public:
+  //Enclosure fork (2026-10-21): public, for the network's outputs at the root that the search does not read (the
+  //engine protocol's maps, command/enclosureprotocol.cpp). The root's inputs, as the search evaluates the root.
   void computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwnerMap);
+private:
   bool initNodeNNOutput(
     SearchThread& thread, SearchNode& node,
     bool isRoot, bool skipCache, bool isReInit

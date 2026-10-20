@@ -25,7 +25,8 @@
 // chosenMove* keys); other keys are refused. "chooseMove": true adds "chosenMove" to a search's final reply: the move
 // KataGo's GTP engine would play, drawn with the chosen-move temperature, seeded by "seed" (a string or an integer,
 // default 0) and the position. A position's turn number is its edge count, so the temperature's early phase follows
-// the game.
+// the game. "includeWeakWalls" and "includeFutureNodes" add the root's maps from the network's training-only heads
+// (rootMaps), from one evaluation of the root, not from the search.
 // The rules come through the game interface (GameRules: the moves and the position in the notation, the legal moves,
 // the end, the scores). Enclosure's own parts stay Enclosure's: the history planes' edges, the describe action's edges,
 // nodes and regions, the cut edge, the outcome's text and the position check.
@@ -45,6 +46,7 @@
 #include "../core/logger.h"
 #include "../core/rand.h"
 #include "../core/sha2.h"
+#include "../core/test.h"
 #include "../core/timer.h"
 #include "../game/board.h"
 #include "../game/boardhistory.h"
@@ -57,6 +59,7 @@
 #include "../external/nlohmann_json/json.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <functional>
 #include <iterator>
@@ -83,7 +86,7 @@ namespace {
 
 // The interface's version (design 04, "Versioning"). Before 1.0, a breaking change takes the next minor version and a
 // compatible change the next patch ("0.6" is 0.6.0).
-const char* PROTOCOL = "0.6.1";
+const char* PROTOCOL = "0.6.2";
 // The first build that searched as this one does (design 04, "The same search"), given as each reply's "search". A
 // change that can alter an analysis reply sets it to "", and the build then names itself. After that build's release,
 // it takes the released build's name. A change that leaves every analysis reply as it was keeps it.
@@ -143,6 +146,12 @@ json errorReply(const json& id, const Fail& f) {
 const json* field(const json& q, const char* key) {
   auto it = q.find(key);
   return it == q.end() ? nullptr : &*it;
+}
+
+// A query's option such as "includeOwnership": true only when given as true.
+bool flag(const json& q, const char* key) {
+  const json* b = field(q, key);
+  return b != nullptr && b->is_boolean() && b->get<bool>();
 }
 
 // The rules and size fields are optional; anything but the online variant at 19 x 19 is refused.
@@ -435,11 +444,21 @@ json modelInfo() {
   return {{"name", E.modelName}, {"sha256", E.modelSha}, {"bytes", E.modelBytes}};
 }
 
+// Whether the loaded network gives the root's maps (rootMaps): a network that exports its training-only heads, on a
+// backend that computes them (the GPU module's graph has none).
+bool hasMaps() {
+  return E.nnEval != nullptr && E.nnEval->hasAuxOutputs();
+}
+
 json queryVersion(const json& q) {
+  json trained = json::array({"winrate", "scoreSelfplay", "scoreStdev", "scoreLead", "policy", "ownership"});
+  if(hasMaps()) {
+    trained.push_back("weakWalls");
+    trained.push_back("futureNodes");
+  }
   return {
     {"id", q["id"]}, {"protocol", PROTOCOL}, {"build", P.build}, {"search", searchName()},
-    {"model", E.nnEval != nullptr ? modelInfo() : json(nullptr)}, {"rules", RULES},
-    {"trained", {"winrate", "scoreSelfplay", "scoreStdev", "scoreLead", "policy", "ownership"}},
+    {"model", E.nnEval != nullptr ? modelInfo() : json(nullptr)}, {"rules", RULES}, {"trained", std::move(trained)},
   };
 }
 
@@ -591,16 +610,82 @@ void dropGoFields(json& j) {
     j.erase(key);
 }
 
-// An analysis query's reply from the search's tree as it is now (during a search in slices, or after it).
-json analysisReply(const json& q, const Board& board, const BoardHistory& hist, Player pla, bool during) {
-  auto flag = [&](const char* key) { const json* b = field(q, key); return b != nullptr && b->is_boolean() && b->get<bool>(); };
+// The root's maps from the network's training-only heads (the engine repository's
+// games/enclosure/docs/design/06-ownership-and-spatial-targets.md), for "includeWeakWalls" and "includeFutureNodes":
+// one evaluation of the root, with the root's inputs and symmetry, not the search (design 04, "The root's maps"). Called
+// after setPosition. NNOutput::auxMap holds them raw from the mover's side, point (x, y) at y * nnXLen + x of each
+// channel: 0-1 the future nodes 8 and 32 edges later (tanh: +1 the mover's node, -1 the opponent's), 4-6 the edges
+// that get cut (softmax: no cut, a cut of the mover's edge, a cut of the opponent's). Each map is a list of the 361
+// points, y * 19 + x (row 1 first), as the ownership:
+//   "weakWalls": {"b", "r"}: at each point of the player's edges (their ends and the points they pass through), the
+//                chance that an edge of the player's there is cut before the game ends; null at the other points.
+//   "futureNodes": {"8", "32"}: at each point, the expected +1 for a Blue node 8 (32) edges later and -1 for a Red
+//                  one: Blue's side, as the ownership.
+json rootMaps(const json& q, const Board& board, Player pla) {
+  json maps = json::object();
+  const bool walls = flag(q, "includeWeakWalls"), nodes = flag(q, "includeFutureNodes");
+  if(!walls && !nodes)
+    return maps;
+  NNResultBuf buf;
+  buf.includeAuxOutputs = true;
+  E.search->computeRootNNEvaluation(buf, false);
+  const NNOutput& out = *buf.result;
+  testAssert(out.auxMap != NULL);
+  const int S = enclosure::SIZE, area = out.nnXLen * out.nnYLen;
+  const int mover = pla == P_BLACK ? 0 : 1;
+  auto channel = [&](int c, int x, int y) { return (double)out.auxMap[c * area + NNPos::xyToPos(x, y, out.nnXLen)]; };
+  // Rounded as KataGo rounds the ownership (Search::getAverageTreeOwnership), and never -0.
+  auto rounded = [](double v) { return Global::roundStatic(v, 1000000.0) + 0.0; };
+  if(walls) {
+    json map = json::object();
+    for(int side = 0; side < 2; side++) {
+      uint8_t on[enclosure::SIZE * enclosure::SIZE];
+      enclosure::edge_points(board.pos.edges[side], on);
+      const int cut = side == mover ? 5 : 6;
+      json list = json::array();
+      for(int y = 0; y < S; y++)
+        for(int x = 0; x < S; x++) {
+          if(!on[x * S + y]) {
+            list.push_back(nullptr);
+            continue;
+          }
+          const double l[3] = {channel(4, x, y), channel(5, x, y), channel(6, x, y)};
+          const double top = std::max({l[0], l[1], l[2]});
+          const double sum = std::exp(l[0] - top) + std::exp(l[1] - top) + std::exp(l[2] - top);
+          list.push_back(rounded(std::exp(l[cut - 4] - top) / sum));
+        }
+      map[string(1, nt::PLAYERS[side])] = std::move(list);
+    }
+    maps["weakWalls"] = std::move(map);
+  }
+  if(nodes) {
+    json map = json::object();
+    const double sign = mover == 0 ? 1.0 : -1.0;
+    const char* horizons[2] = {"8", "32"};
+    for(int c = 0; c < 2; c++) {
+      json list = json::array();
+      for(int y = 0; y < S; y++)
+        for(int x = 0; x < S; x++)
+          list.push_back(rounded(sign * std::tanh(channel(c, x, y))));
+      map[horizons[c]] = std::move(list);
+    }
+    maps["futureNodes"] = std::move(map);
+  }
+  return maps;
+}
+
+// An analysis query's reply from the search's tree as it is now (during a search in slices, or after it), with the
+// root's maps (rootMaps) that its query asked for.
+json analysisReply(
+  const json& q, const Board& board, const BoardHistory& hist, Player pla, bool during, const json& maps
+) {
   int pvLen = 15;
   if(const json* l = field(q, "analysisPVLen"))
     if(l->is_number_integer())
       pvLen = std::max(0, l->get<int>());
   json out;
-  if(!E.search->getAnalysisJson(P_BLACK, pvLen, false, false, flag("includeOwnership"), false,
-                                flag("includeMovesOwnership"), false, flag("includePVVisits"), false, out))
+  if(!E.search->getAnalysisJson(P_BLACK, pvLen, false, false, flag(q, "includeOwnership"), false,
+                                flag(q, "includeMovesOwnership"), false, flag(q, "includePVVisits"), false, out))
     return errorReply(q["id"], {"", "the search gave no analysis"});
   json moveInfos = json::array();
   for(json& mi : out["moveInfos"]) {
@@ -623,7 +708,7 @@ json analysisReply(const json& q, const Board& board, const BoardHistory& hist, 
     {"id", q["id"]}, {"isDuringSearch", during}, {"turnNumber", hist.moveHistory.size()}, {"engine", engineTag()},
     {"rootInfo", std::move(rootInfo)}, {"moveInfos", std::move(moveInfos)},
   };
-  if(flag("chooseMove") && !during) {
+  if(flag(q, "chooseMove") && !during) {
     // The move KataGo's GTP engine would play (Search::getChosenMoveLoc): a draw over the play selection values with
     // the chosen-move temperature. Its seed comes from the query's "seed" (default 0) and the position, never from
     // earlier requests (design 04, "Reproducible analysis"), so the same request draws the same move. A bot that
@@ -634,7 +719,7 @@ json analysisReply(const json& q, const Board& board, const BoardHistory& hist, 
     const Loc loc = E.search->getChosenMoveLoc(rand);
     reply["chosenMove"] = loc == Board::NULL_LOC ? json(nullptr) : ourMove(Location::toString(loc, board));
   }
-  if(flag("includePolicy")) {
+  if(flag(q, "includePolicy")) {
     // The root's network policy over every legal edge, by edge (the fork's policy index is the action index).
     static PER_ENGINE float probs[NNPos::MAX_NN_POLICY_SIZE];
     if(E.search->getPolicy(probs)) {
@@ -652,6 +737,8 @@ json analysisReply(const json& q, const Board& board, const BoardHistory& hist, 
   }
   if(out.contains("ownership"))
     reply["ownership"] = std::move(out["ownership"]);  // per point, index y * 19 + x (row 1 first), Blue's side
+  for(auto it = maps.begin(); it != maps.end(); ++it)
+    reply[it.key()] = it.value();
   return reply;
 }
 
@@ -667,6 +754,7 @@ struct Running {
   int64_t maxVisits = 0, nonPlayoutVisits = 0, playouts = 0;
   int64_t sliceVisits = 0;  // 0: by time
   double sliceSeconds = 0;
+  json maps;  // the root's maps (rootMaps), for every reply of the search
 };
 PER_ENGINE Running* RUN = nullptr;
 
@@ -694,7 +782,7 @@ json runSlice() {
     }
   }
   const bool during = r.playouts + r.nonPlayoutVisits < r.maxVisits;
-  const json reply = analysisReply(r.query, r.board, r.hist, r.pla, during);
+  const json reply = analysisReply(r.query, r.board, r.hist, r.pla, during, r.maps);
   if(!during)
     endRunning();
   return reply;
@@ -778,15 +866,20 @@ json analyze(const json& q) {
     if(maxTime < 1e20)
       return errorReply(q["id"], {"overrideSettings", "a search in slices has no maxTime: stop it by terminate"});
   }
-  auto flag = [&](const char* key) { const json* b = field(q, key); return b != nullptr && b->is_boolean() && b->get<bool>(); };
+  for(const char* key : {"includeWeakWalls", "includeFutureNodes"})
+    if(flag(q, key) && !hasMaps())
+      return errorReply(q["id"], {key, string(key) + " needs the network's training-only heads, which this network or "
+                                                     "this module does not give (the GPU module gives none)"});
   endRunning();  // one search at a time: a new query ends the one before
   p.maxVisits = visits;
   p.maxPlayouts = (int64_t)1 << 50;
   p.maxTime = maxTime;
   E.search->setParams(p);
   // As KataGo's analysis engine: the search keeps ownership only when asked (analysis.cpp).
-  E.search->setAlwaysIncludeOwnerMap(flag("includeOwnership") || flag("includeMovesOwnership"));
+  E.search->setAlwaysIncludeOwnerMap(flag(q, "includeOwnership") || flag(q, "includeMovesOwnership"));
   E.search->setPosition(pla, board, hist);
+  // Before the search, which it leaves as it is: the evaluation with the maps stays out of the evaluator's cache.
+  json maps = rootMaps(q, board, pla);
   // Root noise (wideRootNoise, KataGo's analysis default) draws from the search thread's random numbers. KataGo seeds
   // them with the engine's seed, the position and the count of searches begun (search.cpp, makeSeed). Seeded with the
   // query's "seed" in place of the engine's, and the count reset, the same request draws the same noise whatever came
@@ -797,9 +890,9 @@ json analyze(const json& q) {
   E.search->numSearchesBegun = 0;
   if(slice == nullptr) {
     E.search->runWholeSearch(pla);
-    return analysisReply(q, board, hist, pla, false);
+    return analysisReply(q, board, hist, pla, false, maps);
   }
-  RUN = new Running{q, board, hist, pla, nullptr, visits, 0, 0, sliceVisits, sliceSeconds};
+  RUN = new Running{q, board, hist, pla, nullptr, visits, 0, 0, sliceVisits, sliceSeconds, std::move(maps)};
   E.search->beginSearch(false);
   RUN->nonPlayoutVisits = E.search->getRootVisits();
   RUN->thread = new SearchThread(0, *E.search);
@@ -819,7 +912,7 @@ json terminateQuery(const json& q) {
   const json id = q.contains("terminateId") ? q["terminateId"] : q["id"];
   if(!isRunning(id))
     return errorReply(q["id"], {"terminateId", "no search in slices runs with this id"});
-  json reply = analysisReply(RUN->query, RUN->board, RUN->hist, RUN->pla, false);
+  json reply = analysisReply(RUN->query, RUN->board, RUN->hist, RUN->pla, false, RUN->maps);
   reply["terminated"] = true;
   endRunning();
   return reply;
