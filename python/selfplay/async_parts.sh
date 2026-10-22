@@ -157,22 +157,24 @@ scaled_rows() {  # UPSTREAM GO_BYTES BYTES: upstream's count of Go's rows, scale
 # python3 from PATH when that venv is missing. When a game's module exists but does not load, it says which python ran
 # and the error's last line: a python with no torch (for example in a worktree without the venv) fails there.
 game_defaults() {
-    local facts go python out venv
+    local facts go python err venv
     venv="$(cd "$ASYNC_KATAGO/.." && pwd)/.venv-katago"
     python="$venv/bin/python3"
     [[ -x "$python" ]] || python=python3
-    if ! out=$(cd "$ASYNC_KATAGO"/python && "$python" -c "from katago.train import games; g = games.get('$GAME'); \
-print(g.MAX_BOARD_LEN, games.row_bytes(g), games.GO_ROW_BYTES)" 2>&1); then
+    err=$(mktemp) || return 1
+    if ! facts=$(cd "$ASYNC_KATAGO"/python && "$python" -c "from katago.train import games; g = games.get('$GAME'); \
+print(g.MAX_BOARD_LEN, games.row_bytes(g), games.GO_ROW_BYTES)" 2>"$err"); then
         if [[ ! -e "$ASYNC_KATAGO/python/katago/train/games/$GAME.py" ]]; then
             echo "no trainer's module for $GAME (python/katago/train/games/$GAME.py)" >&2
         else
             [[ "$python" == python3 ]] && echo "no $venv: python3 from PATH ran ($(command -v python3))" >&2
-            echo "$python could not load the trainer's module for $GAME: ${out##*$'\n'}" >&2
+            echo "$python could not load the trainer's module for $GAME: $(tail -1 "$err")" >&2
         fi
+        rm -f "$err"
         return 1
     fi
-    facts=${out##*$'\n'}
-    [[ "$out" == *$'\n'* ]] && echo "${out%$'\n'*}" >&2  # the module's warnings, on stderr as before
+    cat "$err" >&2
+    rm -f "$err"
     read -r POS_LEN ROW_BYTES go <<< "$facts"
     : "${ROWS_PER_SHUFFLE_FILE:=$(scaled_rows 70000 "$go" "$ROW_BYTES")}"
     : "${SHUFFLE_WORKER_GROUP_ROWS:=$(scaled_rows 80000 "$go" "$ROW_BYTES")}"
