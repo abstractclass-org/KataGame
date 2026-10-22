@@ -33,10 +33,10 @@ spread evenly through the file. It keeps their inputs, the same for every checkp
 measure: each checkpoint in RUN_DIR/models and models_extra (NAME-sS-dD with model.ckpt) exported after the run's last
 input change (the RUN_DIR/*_since markers: older networks read other inputs), not yet in RUN_DIR/symmetry.jsonl, at
 least --every-rows data rows from each one measured of its size. A pass measures the newest of each size first, if no
-measured one of its size is newer, then at most --backlog older ones, newest first: a backlog of many checkpoints
-(after a replay, or a long stop) fills back over many passes, at the usual load, not all at once. It appends one line
+measured one of its size is newer, then at most --backlog older ones, newest first. Use --backlog 0 to skip the backlog.
+A backlog after a replay or a long stop fills over many passes. It appends one line
 for each, in the order measured (the dashboard sorts them by row). First it measures again each line that lacks a
-number this version computes, and rewrites the file. With --watch it looks again every SECONDS, forever. With --only
+number this version computes, and rewrites the file. With --watch it waits SECONDS after each pass. With --only
 it measures just the checkpoints named and prints them, writing nothing.
 The positions are RUN_DIR/symmetry_positions.npz.
 """
@@ -255,11 +255,13 @@ def main():
     m = sub.add_parser("measure")
     m.add_argument("run")
     m.add_argument("--every-rows", type=int, default=250000)
-    m.add_argument("--backlog", type=int, default=1)
+    m.add_argument("--backlog", type=int, default=1, help="older checkpoints per pass (0 skips the backlog)")
     m.add_argument("--watch", type=int, default=0)
     m.add_argument("--threads", type=int, default=2)
     m.add_argument("--only", nargs="+")
     args = ap.parse_args()
+    if args.command == "measure" and args.backlog < 0:
+        m.error("--backlog must be at least 0")
     make_positions(args) if args.command == "positions" else measure(args)
 
 
