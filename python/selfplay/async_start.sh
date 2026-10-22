@@ -6,7 +6,9 @@
 #   - the shuffle runs every SHUFFLE_EVERY seconds (600, 60 in a pilot), not every 20: upstream's 20 s assumes the
 #     shuffler has its own machine ("as many threads as you have cores"); here it would take 8 cores from self-play all
 #     the time;
-#   - each part runs in its own memory cap (systemd scope), so one running out of memory never takes the others.
+#   - each part runs in its own memory cap (systemd scope), so one running out of memory never takes the others;
+#   - the trainers start one at a time, each after the one before it has logged its first training metrics
+#     (first_step_lock.sh): several trainers that began to train together beside self-play filled the GPU's memory.
 # The levers' defaults that differ from upstream's for any game (the shuffle's row counts, the thread pools, the pilot)
 # are in async_parts.sh.
 # The game: the binary KATAGO_BIN must play it (`katago version` names its game), the self-play config is
@@ -141,11 +143,14 @@ part export bash -c "while true; do ./export_model_for_selfplay.sh '$NAMEPREFIX'
 # train_flags); one trainer's own flags are TRAIN_ARGS_NAME (2026-10-06: b10c128's learning-rate drop, -lr-scale,
 # while b15c192 trains at the full rate).
 TRAIN_ARGS=$(train_flags)
-# The trainers: the first trains the self-play network (main: exports to models/), the others alongside (extra).
+# The trainers: the first trains the self-play network (main: exports to models/), the others alongside (extra). Each
+# starts through first_step_lock.sh, with one lock for the run: a trainer starts only after the trainer that started
+# before it has logged its first training metrics, so that their first steps never take GPU memory together.
 mode=main
 for t in $TRAINERS; do
     # shellcheck disable=SC2046  # a trainer's own flags are a list
-    part "train-$t" ./train.sh "$BASEDIR" "$t" "$(trainer_kind "$t")" "$BATCHSIZE" "$mode" $TRAIN_ARGS $(trainer_args "$t")
+    part "train-$t" ./first_step_lock.sh "$BASEDIR"/first_step.lock "train-$t" \
+        ./train.sh "$BASEDIR" "$t" "$(trainer_kind "$t")" "$BATCHSIZE" "$mode" $TRAIN_ARGS $(trainer_args "$t")
     mode=extra
 done
 sleep 2
