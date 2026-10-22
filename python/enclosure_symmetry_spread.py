@@ -2,7 +2,8 @@
 """Enclosure fork: how far a network's outputs move between the 8 board symmetries, checkpoint by checkpoint.
 
     python enclosure_symmetry_spread.py positions OUT.npz --tdata DIR [--files 64] [--per-file 2] [--seed 0]
-    python enclosure_symmetry_spread.py measure RUN_DIR [--every-rows 250000] [--watch SECONDS] [--threads 2]
+    python enclosure_symmetry_spread.py measure RUN_DIR [--every-rows 250000] [--backlog 1] [--watch SECONDS]
+        [--threads 2]
     python enclosure_symmetry_spread.py measure RUN_DIR --only NAME [NAME ...]
 
 The network is not built symmetric. Training shows each row in a random symmetry (katago/train/games/enclosure.py),
@@ -31,9 +32,12 @@ spread evenly through the file. It keeps their inputs, the same for every checkp
 
 measure: each checkpoint in RUN_DIR/models and models_extra (NAME-sS-dD with model.ckpt) exported after the run's last
 input change (the RUN_DIR/*_since markers: older networks read other inputs), not yet in RUN_DIR/symmetry.jsonl, at
-least --every-rows data rows after the last one measured of its size. It appends one line for each. First it measures
-again each line that lacks a number this version computes, and rewrites the file. With --watch it looks again every
-SECONDS, forever. With --only it measures just the checkpoints named and prints them, writing nothing.
+least --every-rows data rows from each one measured of its size. A pass measures the newest of each size first, if no
+measured one of its size is newer, then at most --backlog older ones, newest first: a backlog of many checkpoints
+(after a replay, or a long stop) fills back over many passes, at the usual load, not all at once. It appends one line
+for each, in the order measured (the dashboard sorts them by row). First it measures again each line that lacks a
+number this version computes, and rewrites the file. With --watch it looks again every SECONDS, forever. With --only
+it measures just the checkpoints named and prints them, writing nothing.
 The positions are RUN_DIR/symmetry_positions.npz.
 """
 
@@ -160,25 +164,29 @@ def checkpoint_dirs(run):
             for d in (run / kind).iterdir() if NAME.fullmatch(d.name)}
 
 
-def candidates(run, done, every_rows):
-    """The checkpoints to measure now, oldest first: after the last input change, one per every_rows of each size."""
+def candidates(run, done, every_rows, backlog):
+    """The checkpoints to measure now: those exported after the last input change, each at least every_rows data rows
+    from every measured checkpoint of its size. First the newest of each size, if no measured checkpoint of its size
+    is newer. Then at most backlog older ones (the backlog), newest first. So a start that finds many checkpoints not
+    measured (942 after the transformer's replay) measures the newest at once and the older ones a few at a time."""
     since = max((int(p.read_text().split()[0]) for p in run.glob("*_since")), default=0)
-    last = {}
+    measured = {}
     for name in done:
         m = NAME.fullmatch(name)
         if m:
-            last[m.group(1)] = max(last.get(m.group(1), -1), int(m.group(3)))
+            measured.setdefault(m.group(1), []).append(int(m.group(3)))
     found = []
     for d in checkpoint_dirs(run).values():
         m, ckpt = NAME.fullmatch(d.name), d / "model.ckpt"
         if d.name not in done and ckpt.exists() and ckpt.stat().st_mtime >= since:
             found.append((m.group(1), int(m.group(3)), int(m.group(2)), d))
-    chosen = []
-    for size, rows, samples, d in sorted(found, key=lambda f: (f[0], f[1], f[2])):
-        if rows >= last.get(size, -every_rows) + every_rows:
-            chosen.append((size, rows, samples, d))
-            last[size] = rows
-    return sorted(chosen, key=lambda c: c[1])
+    newest, older = [], []
+    for size, rows, samples, d in sorted(found, key=lambda f: (f[1], f[2]), reverse=True):
+        taken = measured.setdefault(size, [])
+        if all(abs(rows - r) >= every_rows for r in taken):
+            (newest if not taken or rows > max(taken) else older).append((size, rows, samples, d))
+            taken.append(rows)
+    return newest + older[:backlog]
 
 
 def fill_missing(run, out, binary, global_raw):
@@ -212,7 +220,7 @@ def measure(args):
         fill_missing(run, out, binary, global_raw)
     while True:
         done = {json.loads(line)["model"] for line in out.read_text().splitlines()} if out.exists() else set()
-        todo = candidates(run, done, args.every_rows)
+        todo = candidates(run, done, args.every_rows, args.backlog)
         if args.only:
             dirs = checkpoint_dirs(run)
             todo = [(m.group(1), int(m.group(3)), int(m.group(2)), dirs[n])
@@ -247,6 +255,7 @@ def main():
     m = sub.add_parser("measure")
     m.add_argument("run")
     m.add_argument("--every-rows", type=int, default=250000)
+    m.add_argument("--backlog", type=int, default=1)
     m.add_argument("--watch", type=int, default=0)
     m.add_argument("--threads", type=int, default=2)
     m.add_argument("--only", nargs="+")
