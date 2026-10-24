@@ -35,8 +35,8 @@
 
 namespace blueprints {
 
-constexpr int RADIUS = 20;              // the board: |q| <= RADIUS, |r| <= RADIUS
-constexpr int LEN = 2 * RADIUS + 1;     // 41
+constexpr int RADIUS = 30;              // the board: |q| <= RADIUS, |r| <= RADIUS from its middle
+constexpr int LEN = 2 * RADIUS + 1;     // 61
 constexpr int AREA = LEN * LEN;
 constexpr int PLIES = 120;              // the moves of a game
 constexpr int HAND = 3;                 // the blueprints of a player
@@ -51,7 +51,7 @@ constexpr int DIRS[6][2] = {{1, 0}, {1, -1}, {0, -1}, {-1, 0}, {-1, 1}, {0, 1}};
 // - Channels 0-2: place blueprint K at the board's point (q + RADIUS, r + RADIUS).
 // - Channels 3-5: pick the cell (q, r) of blueprint I, at the hand's point (q + HAND_X, r + HAND_Y).
 // - Channels 6-8: drop the picked cell into blueprint J at (q, r), at the hand's point.
-// A blueprint's cells have 0 <= r <= 20 and |q| <= 20, and a drop's r is at least -1. So the hand's points fit.
+// A blueprint's cells have 0 <= r <= 20 and |q| <= 20, and a drop's cell is next to them. So the hand's points fit.
 constexpr int CHANNELS = 9;
 constexpr int PLACE = 0, PICK = 3, DROP = 6;
 constexpr int HAND_X = RADIUS, HAND_Y = 1;

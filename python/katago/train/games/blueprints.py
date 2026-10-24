@@ -24,7 +24,7 @@ from . import TARGET_OWNERSHIP, apply_symmetry_points
 
 # The members of the game's module (C++ game/blueprints/gameencoding.h).
 NAME = "blueprints"
-MAX_BOARD_LEN = 41       # the axial square |q|, |r| <= 20
+MAX_BOARD_LEN = 61       # the axial square |q|, |r| <= 30 from its middle, which follows the game
 POLICY_CHANNELS = 9      # place blueprint 1-3, pick from blueprint 1-3, drop into blueprint 1-3
 NUM_SPATIAL_INPUTS = 59  # 60 with the on-board plane
 NUM_GLOBAL_INPUTS = 17
@@ -37,7 +37,7 @@ GAME_LENGTH = 120.0      # the site's moves of a game
 
 # The encoding's facts that the augmentation reads (gamerules.h, gameencoding.h). A plane's index in a batch is
 # 1 + its index here: KataGo's on-board plane comes first.
-RADIUS, HAND, HAND_X, HAND_Y = 20, 3, 20, 1
+RADIUS, HAND, HAND_X, HAND_Y = 30, 3, 30, 1
 MY_PLACES, THEIR_PLACES = 10, 19   # + k: fits, + 3 + k: takes 1+ stars, + 6 + k: takes 3+ stars
 MY_HAND, THEIR_HAND = 30, 39       # + k: cells, + 3 + k: stars, + 6 + k: walls
 PICKED = 48                        # + k: the picked cell of blueprint k
