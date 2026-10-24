@@ -28,9 +28,9 @@ from . import TARGET_OWNERSHIP, apply_symmetry_points
 NAME = "blueprints"
 MAX_BOARD_LEN = 67       # the view: |q|, |r| <= 33 from the mover's window, which follows its play (gamerules.h)
 POLICY_CHANNELS = 6      # place blueprint 1-3, then a cell of blueprint 1-3 (a pick, or a drop after a pick)
-NUM_SPATIAL_INPUTS = 59  # 60 with the on-board plane
+NUM_SPATIAL_INPUTS = 89  # 90 with the on-board plane
 NUM_GLOBAL_INPUTS = 21
-HISTORY_PLANE = 51       # the points that each of the last 4 actions stamped and took, newest first
+HISTORY_PLANE = 81       # the points that each of the last 4 actions stamped and took, newest first
 NUM_HISTORY_PLANES = 8
 SYMMETRIES = (1 << 0) | (1 << 3) | (1 << 4) | (1 << 7)
 TARGETS = TARGET_OWNERSHIP   # C0: the final board (+1 the mover's cells, -1 the opponent's)
@@ -40,9 +40,13 @@ GAME_LENGTH = 120.0      # the site's moves of a game
 # The encoding's facts that the augmentation reads (gamerules.h, gameencoding.h). A plane's index in a batch is
 # 1 + its index here: KataGo's on-board plane comes first.
 VIEW_RADIUS, HAND, HAND_X, HAND_Y = 33, 3, 33, 1
-MY_PLACES, THEIR_PLACES = 10, 19   # + k: fits, + 3 + k: takes 1+ stars, + 6 + k: takes 3+ stars
-MY_HAND, THEIR_HAND = 30, 39       # + k: cells, + 3 + k: stars, + 6 + k: walls
-PICKED = 48                        # + k: the picked cell of blueprint k
+# A player's placements, + level * HAND + k for blueprint k: fits (level 0), takes at least 1 to 4 enemy stars (levels
+# 1 to 4), scores at least 25, 100 and 400 points (levels 5 to 7). All of them are anchors.
+MY_PLACES, THEIR_PLACES = 10, 34
+STAR_LEVELS = 4
+PLACE_PLANES = (1 + STAR_LEVELS + 3) * HAND
+MY_HAND, THEIR_HAND = 60, 69       # + k: cells, + 3 + k: stars, + 6 + k: walls
+PICKED = 78                        # + k: the picked cell of blueprint k
 NEXT_MOVER_SLOT = 1                # the value targets' slot that says who moves next (+1 the row's mover, -1 not)
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
 
@@ -128,8 +132,8 @@ def apply_symmetry_inputs(binary_inputs, symmetry):
     _remap_planes(out, binary_inputs, MY_HAND, 3 * HAND, _hand_image, symmetry, mine)
     _remap_planes(out, binary_inputs, THEIR_HAND, 3 * HAND, _hand_image, symmetry, theirs)
     _remap_planes(out, binary_inputs, PICKED, HAND, _hand_image, symmetry, mine)
-    _remap_planes(out, binary_inputs, MY_PLACES, 3 * HAND, _anchor_image, symmetry, mine)
-    _remap_planes(out, binary_inputs, THEIR_PLACES, 3 * HAND, _anchor_image, symmetry, theirs)
+    _remap_planes(out, binary_inputs, MY_PLACES, PLACE_PLANES, _anchor_image, symmetry, mine)
+    _remap_planes(out, binary_inputs, THEIR_PLACES, PLACE_PLANES, _anchor_image, symmetry, theirs)
     return out
 
 

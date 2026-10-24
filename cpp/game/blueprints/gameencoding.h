@@ -5,8 +5,9 @@
 // - The inputs are the view: the VIEW x VIEW points of the rules board around the mover's window (gamerules.h,
 //   view_origin). After the front's on-board plane, from the mover's side: each player's cells by type, each player's
 //   frontier (the empty points next to its cells), each player's cells open to a stamp (not walls, next to an empty
-//   point), and for each blueprint of each player the anchors in the view where it fits and where it takes 1 or more
-//   and 3 or more enemy stars, and each player's cells that some placement of the other player takes. Then each
+//   point), and for each blueprint of each player the anchors in the view where it fits, where it takes at least 1,
+//   2, 3 and 4 enemy stars, and where it scores at least 25, 100 and 400 points (the stars that it takes times the
+//   player's stars on the board), and each player's cells that some placement of the other player takes. Then each
 //   player's blueprints, drawn at the hand's points (gamerules.h, HAND_X and HAND_Y), where the policy's picks and
 //   drops are, and the picked cell, a plane for each blueprint. Then the history: the points that each of the last 4
 //   actions stamped and took.
@@ -86,14 +87,23 @@ struct GameEncoding {
   static constexpr int MINE = 0, THEIRS = 3;                 // + type
   static constexpr int MY_FRONTIER = 6, THEIR_FRONTIER = 7;
   static constexpr int MY_OPEN = 8, THEIR_OPEN = 9;
-  static constexpr int MY_PLACES = 10, THEIR_PLACES = 19;    // + k: fits; + 3 + k: takes 1+ stars; + 6 + k: 3+ stars
-  static constexpr int MINE_TAKEN = 28, THEIRS_TAKEN = 29;   // cells that some placement of the other player takes
-  static constexpr int MY_HAND = 30, THEIR_HAND = 39;        // + k: cells; + 3 + k: stars; + 6 + k: walls
+  // A player's placements, + level * HAND + k for blueprint k: where it fits (level 0), where it takes at least 1 to
+  // STAR_LEVELS enemy stars (levels 1 to 4), and where it scores at least POINT_LEVELS[i] (levels 5 + i).
+  static constexpr int STAR_LEVELS = 4;
+  static constexpr int NUM_POINT_LEVELS = 3;
+  static constexpr int POINT_LEVELS[NUM_POINT_LEVELS] = {25, 100, 400};
+  static constexpr int PLACE_PLANES = (1 + STAR_LEVELS + NUM_POINT_LEVELS) * HAND;  // 24
+  static constexpr int MY_PLACES = 10, THEIR_PLACES = 34;
+  static constexpr int MINE_TAKEN = 58, THEIRS_TAKEN = 59;   // cells that some placement of the other player takes
+  static constexpr int MY_HAND = 60, THEIR_HAND = 69;        // + k: cells; + 3 + k: stars; + 6 + k: walls
   // + k: the picked cell of blueprint k. A plane for each blueprint, so that the planes alone give the blueprint's
   // frame (the trainer's augmentation reads no global input).
-  static constexpr int PICKED = 48;
-  static constexpr int HISTORY_PLANE = 51, NUM_HISTORY_PLANES = 2 * HISTORY;  // action h: + 2h stamped, + 2h + 1 taken
-  static constexpr int NUM_SPATIAL_INPUTS = HISTORY_PLANE + NUM_HISTORY_PLANES;  // 59
+  static constexpr int PICKED = 78;
+  static constexpr int HISTORY_PLANE = 81, NUM_HISTORY_PLANES = 2 * HISTORY;  // action h: + 2h stamped, + 2h + 1 taken
+  static constexpr int NUM_SPATIAL_INPUTS = HISTORY_PLANE + NUM_HISTORY_PLANES;  // 89
+  static_assert(THEIR_PLACES == MY_PLACES + PLACE_PLANES && MINE_TAKEN == THEIR_PLACES + PLACE_PLANES &&
+                MY_HAND == THEIRS_TAKEN + 1 && PICKED == THEIR_HAND + 3 * HAND && HISTORY_PLANE == PICKED + HAND,
+                "Blueprints' planes follow one another");
   static constexpr int NUM_GLOBAL_INPUTS = 21;
 
   template<class Set>
@@ -138,7 +148,7 @@ struct GameEncoding {
             }
       }
     // The placements of each player in the view, on the board as it is: the mover's when no pick waits for its drop,
-    // and the opponent's as if it moved now (its threats).
+    // and the opponent's as if it moved now (its threats, which score with its own stars).
     if(!GameRules::terminal(p)) {
       for(int player : {mover, opponent}) {
         if(player == mover && p.picked >= 0)
@@ -158,10 +168,12 @@ struct GameEncoding {
               if(on_view(tx, ty))
                 set(tx, ty, taken);
             }
-            if(stars >= 1)
-              set(x, y, places + HAND + k);
-            if(stars >= 3)
-              set(x, y, places + 2 * HAND + k);
+            for(int level = 1; level <= std::min(stars, STAR_LEVELS); level++)
+              set(x, y, places + level * HAND + k);
+            const int score = stars * p.stars[player];
+            for(int i = 0; i < NUM_POINT_LEVELS; i++)
+              if(score >= POINT_LEVELS[i])
+                set(x, y, places + (1 + STAR_LEVELS + i) * HAND + k);
           });
         }
       }
