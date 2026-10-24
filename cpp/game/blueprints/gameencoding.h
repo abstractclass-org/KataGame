@@ -2,28 +2,33 @@
 // Blueprints' network encoding part of the game interface (game/gameinterface.h). The engine repository's
 // games/blueprints/README.md describes the inputs, the targets and the score.
 //
-// - The inputs, after the front's on-board plane, from the mover's side: on the board, each player's cells by type,
-//   each player's frontier (the empty points next to its cells), each player's cells open to a stamp (not walls, next
-//   to an empty point), and for each blueprint of each player the anchors where it fits and where it takes 1 or more
+// - The inputs are the view: the VIEW x VIEW points of the rules board around the mover's window (gamerules.h,
+//   view_origin). After the front's on-board plane, from the mover's side: each player's cells by type, each player's
+//   frontier (the empty points next to its cells), each player's cells open to a stamp (not walls, next to an empty
+//   point), and for each blueprint of each player the anchors in the view where it fits and where it takes 1 or more
 //   and 3 or more enemy stars, and each player's cells that some placement of the other player takes. Then each
 //   player's blueprints, drawn at the hand's points (gamerules.h, HAND_X and HAND_Y), where the policy's picks and
-//   drops are, and the picked cell. Then the history: the points that each of the last 4 actions stamped and took.
+//   drops are, and the picked cell, a plane for each blueprint. Then the history: the points that each of the last 4
+//   actions stamped and took.
 // - The global inputs: the mover's seat, its moves left in the turn, the game's progress, the stars on the board, the
-//   scores, and the pick.
+//   scores, the pick, and each player's cells and stars outside the view.
 // - The policy: 6 channels a point, the actions of gamerules.h (placements, then the cells of the hand: picks, or
 //   drops after a pick).
 // - The symmetries: the 4 of KataGo's 8 that keep the hex neighbours (DIRS) on the axial square: the identity, the
-//   turn by 180 degrees (3) and two reflections (4, 7). A board's point moves as a pixel. A blueprint moves cell by
-//   cell, then goes back to the site's frame (its lowest cell at 0,0): so the hand's points, the anchors of the
-//   placements and the picks and drops move as pixels and then by each blueprint's shift. The inputs at a symmetry are
-//   the inputs of the position's image (sym_position).
-// - The training targets: the final board as ownership (C0). The value targets and the score targets are KataGo's,
-//   from the rules' result and score.
+//   turn by 180 degrees (3) and two reflections (4, 7). The image maps the rules board around its middle. The window's
+//   rule and the recentering round toward zero, so the image's window is the window's image, and a point of the view
+//   moves as a pixel. A blueprint moves cell by cell, then goes back to the site's frame (its lowest cell at 0,0): so
+//   the hand's points, the anchors of the placements and the picks and drops move as pixels and then by each
+//   blueprint's shift. The inputs at a symmetry are the inputs of the position's image (sym_position).
+// - The training targets: the final board as ownership on the row's view (C0), and in C1 which player moves next, for
+//   the trainer's symmetries (no loss reads it). The value targets and the score targets are KataGo's, from the rules'
+//   result and score.
 
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <utility>
+#include <vector>
 
 #include "../../core/hash.h"
 #include "../gameinterface.h"
@@ -61,11 +66,17 @@ inline void frame_shift(const Blueprint& b, int symmetry, bool withExtra, int ex
     consider(extraQ, extraR);
 }
 
-inline int sym_index(int index, int symmetry) {
-  int x = index % LEN, y = index / LEN;
-  GameInterface::symPoint(x, y, symmetry, LEN, LEN);
-  return y * LEN + x;
+// A rules point's image: its pixel on the rules board, as symPoint gives it.
+inline void sym_rules(int& x, int& y, int symmetry) { GameInterface::symPoint(x, y, symmetry, RULES_LEN, RULES_LEN); }
+inline int32_t sym_rules_index(int32_t index, int symmetry) {
+  int x = index % RULES_LEN, y = index / RULES_LEN;
+  sym_rules(x, y, symmetry);
+  return y * RULES_LEN + x;
 }
+
+// How far from the view the inputs read the rules board: a placement lies in the view, and the cells next to its
+// cells, or next to the frontier's points, one point beyond.
+constexpr int INPUT_REACH = 2;
 
 struct GameEncoding {
   using Rules = GameRules;
@@ -83,58 +94,67 @@ struct GameEncoding {
   static constexpr int PICKED = 48;
   static constexpr int HISTORY_PLANE = 51, NUM_HISTORY_PLANES = 2 * HISTORY;  // action h: + 2h stamped, + 2h + 1 taken
   static constexpr int NUM_SPATIAL_INPUTS = HISTORY_PLANE + NUM_HISTORY_PLANES;  // 59
-  static constexpr int NUM_GLOBAL_INPUTS = 17;
+  static constexpr int NUM_GLOBAL_INPUTS = 21;
 
   template<class Set>
   static void spatial_inputs(const Position& p, const GameInterface::InputOptions& options, Set&& set) {
     if(options.symmetry == 0)
       write_inputs(p, options.history, set);
     else
-      write_inputs(sym_position(p, options.symmetry), options.history, set);
+      write_inputs(near_image(p, options.symmetry), options.history, set);
   }
 
   template<class Set>
   static void write_inputs(const Position& p, bool history, Set& set) {
     const int mover = GameRules::next_player(p), opponent = 1 - mover;
-    for(int y = 0; y < LEN; y++)
-      for(int x = 0; x < LEN; x++) {
-        const int8_t v = p.cell[y * LEN + x];
+    int ox, oy;
+    view_origin(p, ox, oy);
+    for(int y = 0; y < VIEW; y++)
+      for(int x = 0; x < VIEW; x++) {
+        const int rx = x + ox, ry = y + oy;
+        if(!on_rules(rx, ry))
+          continue;
+        const int8_t v = p.cell[ry * RULES_LEN + rx];
         if(v) {
           const int owner = cell_owner(v), type = cell_type(v);
           set(x, y, (owner == mover ? MINE : THEIRS) + type);
           if(type != WALL) {
             bool open = false;
             for(const auto& d : DIRS)
-              open = open || (on_board(x + d[0], y + d[1]) && !p.cell[(y + d[1]) * LEN + x + d[0]]);
+              open = open || (on_rules(rx + d[0], ry + d[1]) && !p.cell[(ry + d[1]) * RULES_LEN + rx + d[0]]);
             if(open)
               set(x, y, owner == mover ? MY_OPEN : THEIR_OPEN);
           }
         }
         else {
-          if(next_to_own(p, x, y, mover))
+          if(next_to_own(p, rx, ry, mover))
             set(x, y, MY_FRONTIER);
-          if(next_to_own(p, x, y, opponent))
+          if(next_to_own(p, rx, ry, opponent))
             set(x, y, THEIR_FRONTIER);
         }
       }
-    // The placements of each player, on the board as it is: the mover's when no pick waits for its drop, and the
-    // opponent's as if it moved now (its threats).
+    // The placements of each player in the view, on the board as it is: the mover's when no pick waits for its drop,
+    // and the opponent's as if it moved now (its threats).
     if(!GameRules::terminal(p)) {
+      static thread_local std::vector<int32_t> frontier;
       for(int player : {mover, opponent}) {
         if(player == mover && p.picked >= 0)
           continue;
         const int places = player == mover ? MY_PLACES : THEIR_PLACES;
         const int taken = player == mover ? THEIRS_TAKEN : MINE_TAKEN;
+        frontier_near(p, player, ox, oy, frontier);
         for(int k = 0; k < HAND; k++) {
           const Blueprint& b = p.hand[player][k];
-          for_each_placement(p, player, b, [&](int x, int y) {
+          for_each_placement(p, player, b, ox, oy, frontier, [&](int x, int y) {
             set(x, y, places + k);
-            int16_t points[MAX_TAKEN];
-            const int n = taken_by(p, player, b, x, y, points);
+            int32_t points[MAX_TAKEN];
+            const int n = taken_by(p, player, b, x + ox, y + oy, points);
             int stars = 0;
             for(int i = 0; i < n; i++) {
               stars += cell_type(p.cell[points[i]]) == STAR;
-              set(points[i] % LEN, points[i] / LEN, taken);
+              const int tx = points[i] % RULES_LEN - ox, ty = points[i] / RULES_LEN - oy;
+              if(on_view(tx, ty))
+                set(tx, ty, taken);
             }
             if(stars >= 1)
               set(x, y, places + HAND + k);
@@ -163,10 +183,15 @@ struct GameEncoding {
     if(history)
       for(int h = 0; h < HISTORY; h++) {
         const Footprint& f = p.history[h];
+        auto mark = [&](int32_t point, int plane) {
+          const int x = point % RULES_LEN - ox, y = point / RULES_LEN - oy;
+          if(on_view(x, y))
+            set(x, y, plane);
+        };
         for(int i = 0; i < f.nStamped; i++)
-          set(f.stamped[i] % LEN, f.stamped[i] / LEN, HISTORY_PLANE + 2 * h);
+          mark(f.stamped[i], HISTORY_PLANE + 2 * h);
         for(int i = 0; i < f.nTaken; i++)
-          set(f.taken[i] % LEN, f.taken[i] / LEN, HISTORY_PLANE + 2 * h + 1);
+          mark(f.taken[i], HISTORY_PLANE + 2 * h + 1);
       }
   }
 
@@ -175,7 +200,8 @@ struct GameEncoding {
     const double a = std::log10(1.0 + std::fabs(points) / 10.0) / 2.0;
     return float(points < 0 ? -a : a);
   }
-  // The same at every symmetry: no input names a point.
+  // The same at every symmetry: no input names a point. The cells and stars outside the view count what the planes
+  // do not show.
   static void global_inputs(const Position& p, const GameInterface::InputOptions&, float* out) {
     const int mover = GameRules::next_player(p), opponent = 1 - mover;
     for(int i = 0; i < NUM_GLOBAL_INPUTS; i++)
@@ -195,6 +221,21 @@ struct GameEncoding {
       out[13 + p.pickType] = 1.0f;
       out[16] = p.pickConnected ? 1.0f : 0.0f;
     }
+    int ox, oy;
+    view_origin(p, ox, oy);
+    int cellsIn[2] = {0, 0}, starsIn[2] = {0, 0};
+    for(int y = std::max(0, oy); y < std::min(RULES_LEN, oy + VIEW); y++)
+      for(int x = std::max(0, ox); x < std::min(RULES_LEN, ox + VIEW); x++) {
+        const int8_t v = p.cell[y * RULES_LEN + x];
+        if(v) {
+          cellsIn[cell_owner(v)]++;
+          starsIn[cell_owner(v)] += cell_type(v) == STAR;
+        }
+      }
+    out[17] = float(p.cells[mover] - cellsIn[mover]) / 100.0f;
+    out[18] = float(p.cells[opponent] - cellsIn[opponent]) / 100.0f;
+    out[19] = float(p.stars[mover] - starsIn[mover]) / 50.0f;
+    out[20] = float(p.stars[opponent] - starsIn[opponent]) / 50.0f;
   }
   // What the inputs read beyond hash(): the history's points.
   static Hash128 input_hash(const Position& p) {
@@ -202,9 +243,9 @@ struct GameEncoding {
     for(int t = 0; t < HISTORY; t++) {
       const Footprint& f = p.history[t];
       for(int i = 0; i < f.nStamped; i++)
-        h ^= key(60000 + uint64_t(t) * 2 * AREA + uint64_t(f.stamped[i]), 0);
+        h ^= key(70000 + uint64_t(t) * 2 * RULES_AREA + uint64_t(f.stamped[i]), 0);
       for(int i = 0; i < f.nTaken; i++)
-        h ^= key(60000 + uint64_t(t) * 2 * AREA + AREA + uint64_t(f.taken[i]), 0);
+        h ^= key(70000 + uint64_t(t) * 2 * RULES_AREA + RULES_AREA + uint64_t(f.taken[i]), 0);
     }
     return h;
   }
@@ -219,18 +260,10 @@ struct GameEncoding {
 
   static constexpr unsigned SYMMETRIES = (1u << 0) | (1u << 3) | (1u << 4) | (1u << 7);
 
-  // The image: each cell of the board and of the history at its point's image, each blueprint's cells at their
-  // images in the site's frame. The rest of a picked blueprint and the picked cell keep the frame of the whole
-  // blueprint's image, as the rest keeps the whole blueprint's frame until the drop.
-  static Position sym_position(const Position& p, int symmetry) {
-    if(symmetry == 0)
-      return p;
-    Position s = p;
-    for(int i = 0; i < AREA; i++)
-      s.cell[i] = 0;
-    for(int i = 0; i < AREA; i++)
-      if(p.cell[i])
-        s.cell[sym_index(i, symmetry)] = p.cell[i];
+  // The image of everything but the cells: each blueprint's cells at their images in the site's frame (the rest of a
+  // picked blueprint and the picked cell keep the frame of the whole blueprint's image, as the rest keeps the whole
+  // blueprint's frame until the drop), the history's points, the recent placements' boxes and the offset.
+  static void sym_records(const Position& p, int symmetry, Position& s) {
     const int mover = GameRules::next_player(p);
     for(int player = 0; player < 2; player++)
       for(int k = 0; k < HAND; k++) {
@@ -239,6 +272,7 @@ struct GameEncoding {
         int mq, mr;
         frame_shift(b, symmetry, rest, p.pickQ, p.pickR, mq, mr);
         Blueprint& image = s.hand[player][k];
+        image = b;
         for(int i = 0; i < b.n; i++) {
           int q = b.q[i], r = b.r[i];
           sym_offset(q, r, symmetry);
@@ -253,31 +287,104 @@ struct GameEncoding {
         }
       }
     for(int h = 0; h < HISTORY; h++) {
+      s.history[h] = p.history[h];
       Footprint& f = s.history[h];
       for(int i = 0; i < f.nStamped; i++)
-        f.stamped[i] = int16_t(sym_index(f.stamped[i], symmetry));
+        f.stamped[i] = sym_rules_index(f.stamped[i], symmetry);
       for(int i = 0; i < f.nTaken; i++)
-        f.taken[i] = int16_t(sym_index(f.taken[i], symmetry));
+        f.taken[i] = sym_rules_index(f.taken[i], symmetry);
     }
-    // The image's site coordinates: the linear part on the site's grid. The board's middle stays the middle, and the
-    // recentering commutes with the symmetry (gamerules.h, recenter).
+    for(int player = 0; player < 2; player++)
+      for(int i = 0; i < RECENT; i++) {
+        const Box& b = p.recent[player][i];
+        Box& image = s.recent[player][i];
+        image = b;
+        if(!b.any)
+          continue;
+        int ax = b.x0, ay = b.y0, bx = b.x1, by = b.y1;
+        sym_rules(ax, ay, symmetry);
+        sym_rules(bx, by, symmetry);
+        image.x0 = int16_t(std::min(ax, bx));
+        image.x1 = int16_t(std::max(ax, bx));
+        image.y0 = int16_t(std::min(ay, by));
+        image.y1 = int16_t(std::max(ay, by));
+      }
     int oq = p.offsetQ, orr = p.offsetR;
     sym_offset(oq, orr, symmetry);
     s.offsetQ = int16_t(oq);
     s.offsetR = int16_t(orr);
+  }
+
+  // The image: the rules board's cells at their pixels' images around its middle, the cells' hash again by the
+  // image's site coordinates, and the records (sym_records).
+  static Position sym_position(const Position& p, int symmetry) {
+    if(symmetry == 0)
+      return p;
+    Position s = p;
+    sym_records(p, symmetry, s);
+    s.cellHash = Hash128();
+    for(int i = 0; i < RULES_AREA; i++)
+      s.cell[i] = 0;
+    for(int i = 0; i < RULES_AREA; i++)
+      if(p.cell[i]) {
+        const int32_t j = sym_rules_index(i, symmetry);
+        s.cell[j] = p.cell[i];
+        const int q = j % RULES_LEN - RULES_RADIUS + s.offsetQ, r = j / RULES_LEN - RULES_RADIUS + s.offsetR;
+        s.cellHash ^= key(site_key(q, r), uint64_t(p.cell[i]));
+      }
+    return s;
+  }
+
+  // The image as the inputs read it: the records, and the cells within INPUT_REACH of the view only. The counts of
+  // cells and stars stay the whole board's.
+  static const Position& near_image(const Position& p, int symmetry) {
+    static thread_local std::vector<Position> buffer(1);
+    Position& s = buffer[0];
+    std::fill(s.cell, s.cell + RULES_AREA, int8_t(0));
+    s.scores[0] = p.scores[0];
+    s.scores[1] = p.scores[1];
+    s.stars[0] = p.stars[0];
+    s.stars[1] = p.stars[1];
+    s.cells[0] = p.cells[0];
+    s.cells[1] = p.cells[1];
+    s.ply = p.ply;
+    s.picked = p.picked;
+    s.pickQ = p.pickQ;
+    s.pickR = p.pickR;
+    s.pickType = p.pickType;
+    s.pickConnected = p.pickConnected;
+    sym_records(p, symmetry, s);
+    int ox, oy;
+    view_origin(p, ox, oy);
+    for(int y = std::max(0, oy - INPUT_REACH); y < std::min(RULES_LEN, oy + VIEW + INPUT_REACH); y++)
+      for(int x = std::max(0, ox - INPUT_REACH); x < std::min(RULES_LEN, ox + VIEW + INPUT_REACH); x++) {
+        const int8_t v = p.cell[y * RULES_LEN + x];
+        if(!v)
+          continue;
+        int sx = x, sy = y;
+        sym_rules(sx, sy, symmetry);
+        s.cell[sy * RULES_LEN + sx] = v;
+      }
     return s;
   }
 
   // A legal action's image, an action of sym_position: a placement's anchor is the lowest point of its stamped cells'
-  // images, and a pick's or a drop's hand point moves by its blueprint's frame (frame_shift).
+  // images, in the image's view (the window's image), and a pick's or a drop's hand point moves by its blueprint's
+  // frame (frame_shift).
   struct SymActionMap {
     int symmetry;
     Blueprint hand[HAND];  // the mover's
     int picked, pickQ, pickR;
+    int ox, oy, imageOx, imageOy;  // the view's origin on the rules board, and the image's
     SymActionMap(const Position& p, int sym)
       : symmetry(sym), picked(p.picked), pickQ(p.pickQ), pickR(p.pickR) {
       for(int k = 0; k < HAND; k++)
         hand[k] = p.hand[GameRules::next_player(p)][k];
+      view_origin(p, ox, oy);
+      int wx = ox + VIEW_RADIUS, wy = oy + VIEW_RADIUS;
+      sym_rules(wx, wy, sym);
+      imageOx = wx - VIEW_RADIUS;
+      imageOy = wy - VIEW_RADIUS;
     }
     int operator()(int action) const {
       if(symmetry == 0 || action == GameRules::PASS_ACTION)
@@ -287,14 +394,14 @@ struct GameEncoding {
         const Blueprint& b = hand[channel - PLACE];
         int ax = 0, ay = 0;
         for(int i = 0; i < b.n; i++) {
-          int sx = x + b.q[i], sy = y + b.r[i];
-          GameInterface::symPoint(sx, sy, symmetry, LEN, LEN);
+          int sx = x + ox + b.q[i], sy = y + oy + b.r[i];
+          sym_rules(sx, sy, symmetry);
           if(i == 0 || sy < ay || (sy == ay && sx < ax)) {
             ax = sx;
             ay = sy;
           }
         }
-        return action_at(ax, ay, channel);
+        return action_at(ax - imageOx, ay - imageOy, channel);
       }
       const int k = channel - HAND_CHANNEL;  // a pick from blueprint k, or a drop into it after a pick
       int mq, mr;
@@ -305,9 +412,9 @@ struct GameEncoding {
     }
   };
 
-  // C0, the final board as ownership, on the row's board: +1 on the mover's cells, -1 on the opponent's, 0 on an empty
-  // point. The board follows the game, so the final cells move by the difference of the two positions' offsets, and a
-  // final cell off the row's board counts for no point.
+  // C0, the final board as ownership, on the row's view: +1 on the mover's cells, -1 on the opponent's, 0 on an empty
+  // point. The final cells move by their site coordinates into the row's rules board, then into its view, and a final
+  // cell off the row's view counts for no point.
   // C1 is no target: the slot carries which player makes the row's next move, for the trainer's symmetries of the
   // second policy target (katago/train/games/blueprints.py): +1 on every point when it is the row's mover, -1 when it
   // is the opponent, 0 at the end. The front stores the slot as it is, and its flag stays 0 (the returned slots hold
@@ -318,19 +425,21 @@ struct GameEncoding {
   static unsigned training_targets(const Positions& positions, int numPositions, int row, int mover, float* values) {
     const Position& end = positions(numPositions - 1);
     const Position& now = positions(row);
-    const int dx = end.offsetQ - now.offsetQ, dy = end.offsetR - now.offsetR;
-    for(int i = 0; i < AREA; i++)
+    int ox, oy;
+    view_origin(now, ox, oy);
+    const int dx = end.offsetQ - now.offsetQ - ox, dy = end.offsetR - now.offsetR - oy;
+    for(int i = 0; i < VIEW_AREA; i++)
       values[i] = 0.0f;
     float next = 0.0f;
     if(row + 1 < numPositions && !GameRules::terminal(positions(row + 1)))
       next = GameRules::next_player(positions(row + 1)) == mover ? 1.0f : -1.0f;
-    for(int i = 0; i < AREA; i++)
-      values[NEXT_MOVER_SLOT * AREA + i] = next;
-    for(int y = 0; y < LEN; y++)
-      for(int x = 0; x < LEN; x++) {
-        const int owner = cell_owner(end.cell[y * LEN + x]);
-        if(owner >= 0 && on_board(x + dx, y + dy))
-          values[(y + dy) * LEN + x + dx] = owner == mover ? 1.0f : -1.0f;
+    for(int i = 0; i < VIEW_AREA; i++)
+      values[NEXT_MOVER_SLOT * VIEW_AREA + i] = next;
+    for(int y = 0; y < RULES_LEN; y++)
+      for(int x = 0; x < RULES_LEN; x++) {
+        const int owner = cell_owner(end.cell[y * RULES_LEN + x]);
+        if(owner >= 0 && on_view(x + dx, y + dy))
+          values[(y + dy) * VIEW + x + dx] = owner == mover ? 1.0f : -1.0f;
       }
     return GameInterface::TARGET_OWNERSHIP;
   }
