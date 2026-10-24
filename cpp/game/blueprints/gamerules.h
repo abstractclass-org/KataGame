@@ -4,8 +4,12 @@
 // describes the game, the board and the notation.
 //
 // - The board is a hex grid in axial coordinates (q, r), with the six neighbours of DIRS. The site's grid has no edge.
-//   This port plays on the axial square |q| <= 20, |r| <= 20: the point (x, y) = (q + 20, r + 20) of a 41 x 41 board.
-//   A placement must fit on it. That is the only rule of the port that the site does not have.
+//   This port plays on an axial square of LEN x LEN points that follows the game: after each placement the cells move
+//   so that their bounding box is in the middle (recenter), and the position keeps the site's coordinates of the
+//   middle point (offsetQ, offsetR). The rules do not depend on where the cells are. A placement must fit on the
+//   board, so a game's cells span at most LEN points in q and in r: the only rule of the port that the site does not
+//   have. The engine's strings give a placement's cell from the board's middle. games/blueprints/site.py adds the
+//   offset for the site's strings.
 // - Each player has three blueprints: shapes of plain, star and wall cells, in the site's frame, where the lowest cell
 //   (the least r, then the least q) is at (0, 0). A turn order of 1, 2, 2, ... moves ends after 120 moves (plies).
 // - A move places a blueprint ("K@q,r": its (0, 0) cell lands on (q, r)) on empty cells, one of them next to a cell of
@@ -194,6 +198,9 @@ struct Position {
   // The last HISTORY actions, the newest first. Not part of the game's state: hash() leaves it out, and the one-line
   // position does not hold it.
   Footprint history[HISTORY];
+  // The site's coordinates (q, r) of the board's middle point (RADIUS, RADIUS): the board follows the game
+  // (recenter), and the rules do not depend on where the cells are.
+  int16_t offsetQ = 0, offsetR = 0;
 };
 
 // The player to move at a ply: the first plays ply 0, then each player two (the site's te).
@@ -350,6 +357,48 @@ inline void stamp(Position& p, int player, const Blueprint& b, int x, int y, Foo
   }
 }
 
+// Moves the cells so that their bounding box is in the board's middle, and the offset with them. The shift is half
+// the box's distance from the middle, rounded toward zero, so that it commutes with the symmetries (gameencoding.h):
+// they negate and swap the coordinates. The cells stay on the board: they were on it, so the box is at most LEN wide.
+// A history's point that leaves the board goes: the cells it took can lie beyond the box.
+inline void recenter(Position& p) {
+  int xmin = LEN, xmax = -1, ymin = LEN, ymax = -1;
+  for(int y = 0; y < LEN; y++)
+    for(int x = 0; x < LEN; x++)
+      if(p.cell[y * LEN + x]) {
+        xmin = std::min(xmin, x);
+        xmax = std::max(xmax, x);
+        ymin = std::min(ymin, y);
+        ymax = std::max(ymax, y);
+      }
+  if(xmax < 0)
+    return;
+  const int dx = (xmin + xmax - 2 * RADIUS) / 2, dy = (ymin + ymax - 2 * RADIUS) / 2;  // C++ rounds toward zero
+  if(dx == 0 && dy == 0)
+    return;
+  int8_t moved[AREA] = {};
+  for(int y = ymin; y <= ymax; y++)
+    for(int x = xmin; x <= xmax; x++)
+      if(p.cell[y * LEN + x])
+        moved[(y - dy) * LEN + x - dx] = p.cell[y * LEN + x];
+  std::copy(moved, moved + AREA, p.cell);
+  auto shift = [&](int16_t* points, int8_t& n) {
+    int kept = 0;
+    for(int i = 0; i < n; i++) {
+      const int x = points[i] % LEN - dx, y = points[i] / LEN - dy;
+      if(on_board(x, y))
+        points[kept++] = int16_t(y * LEN + x);
+    }
+    n = int8_t(kept);
+  };
+  for(Footprint& f : p.history) {
+    shift(f.stamped, f.nStamped);
+    shift(f.taken, f.nTaken);
+  }
+  p.offsetQ = int16_t(p.offsetQ + dx);
+  p.offsetR = int16_t(p.offsetR + dy);
+}
+
 // The start's blueprints: a star with a ring of six cells (the site's re and ie), in the site's frame.
 inline Blueprint flower(const int ring[6]) {
   Blueprint b;
@@ -494,6 +543,7 @@ struct GameRules {
       take(p, channel - PICK, x - HAND_X, y - HAND_Y);
     else {
       stamp(p, mover, p.hand[mover][channel - PLACE], x, y, p.history[0]);
+      recenter(p);
       p.ply++;
     }
   }
@@ -522,6 +572,7 @@ struct GameRules {
       h ^= key(41000 + uint64_t(p.picked) * 4096 + (p.pickQ + 32) * 64 + (p.pickR + 32), uint64_t(p.pickType));
     h ^= key(50000, uint64_t(uint32_t(p.scores[0])));
     h ^= key(50001, uint64_t(uint32_t(p.scores[1])));
+    h ^= key(50002, uint64_t(uint16_t(p.offsetQ)) << 16 | uint16_t(p.offsetR));
     return h;
   }
 
@@ -585,10 +636,10 @@ struct GameRules {
     return action;
   }
 
-  // The one-line position, seven fields: the ply, the two scores, the board ("q,r,T" with T of psw for the first
-  // player and PSW for the second, joined by ;), the first player's three blueprints and the second's ("q,r,t" joined
-  // by ;, the blueprints joined by |), and the pick ("I:q,r,t" of the mover, its cell out of blueprint I). "-" is
-  // empty.
+  // The one-line position, eight fields: the ply, the two scores, the board ("q,r,T" from the board's middle, with T
+  // of psw for the first player and PSW for the second, joined by ;), the first player's three blueprints and the
+  // second's ("q,r,t" joined by ;, the blueprints joined by |), the pick ("I:q,r,t" of the mover, its cell out of
+  // blueprint I), and the site's coordinates of the board's middle ("q,r"). "-" is empty.
   static std::string position_text(const Position& p) {
     std::string s = std::to_string(p.ply) + " " + std::to_string(p.scores[0]) + " " + std::to_string(p.scores[1]) + " ";
     std::string board;
@@ -620,13 +671,14 @@ struct GameRules {
       s += '-';
     else
       s += std::to_string(p.picked + 1) + ":" + cell_text(p.pickQ, p.pickR) + "," + TYPE_LETTERS[p.pickType];
-    return s;
+    return s + " " + cell_text(p.offsetQ, p.offsetR);
   }
   // Checks the fields, the board's points, each blueprint's frame and connection, and the cells of each player's hand.
+  // Then the board goes to its middle (recenter), as play() keeps it.
   static bool parse_position(const std::string& text, Position& p, std::string& why) {
     const std::vector<std::string> fields = split(text, ' ');
-    if(fields.size() != 7) {
-      why = "a position is seven fields: the ply, the two scores, the board, the two hands and the pick";
+    if(fields.size() != 8) {
+      why = "a position is eight fields: the ply, the two scores, the board, the two hands, the pick and the offset";
       return false;
     }
     Position q;
@@ -732,6 +784,14 @@ struct GameRules {
       }
       q.pickConnected = q.hand[mover][q.picked].connected();
     }
+    int oq, orr;
+    if(!parse_cell(fields[7], oq, orr)) {
+      why = "the offset is q,r: the site's coordinates of the board's middle";
+      return false;
+    }
+    q.offsetQ = int16_t(oq);
+    q.offsetR = int16_t(orr);
+    recenter(q);
     p = q;
     return true;
   }

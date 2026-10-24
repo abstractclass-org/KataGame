@@ -258,6 +258,12 @@ struct GameEncoding {
       for(int i = 0; i < f.nTaken; i++)
         f.taken[i] = int16_t(sym_index(f.taken[i], symmetry));
     }
+    // The image's site coordinates: the linear part on the site's grid. The board's middle stays the middle, and the
+    // recentering commutes with the symmetry (gamerules.h, recenter).
+    int oq = p.offsetQ, orr = p.offsetR;
+    sym_offset(oq, orr, symmetry);
+    s.offsetQ = int16_t(oq);
+    s.offsetR = int16_t(orr);
     return s;
   }
 
@@ -298,15 +304,23 @@ struct GameEncoding {
     }
   };
 
-  // C0, the final board as ownership: +1 on the mover's cells, -1 on the opponent's, 0 on an empty point.
+  // C0, the final board as ownership, on the row's board: +1 on the mover's cells, -1 on the opponent's, 0 on an empty
+  // point. The board follows the game, so the final cells move by the difference of the two positions' offsets, and a
+  // final cell off the row's board counts for no point.
   static constexpr unsigned TARGETS = GameInterface::TARGET_OWNERSHIP;
   template<class Positions>
-  static unsigned training_targets(const Positions& positions, int numPositions, int, int mover, float* values) {
+  static unsigned training_targets(const Positions& positions, int numPositions, int row, int mover, float* values) {
     const Position& end = positions(numPositions - 1);
-    int8_t owners[AREA];
-    GameRules::area(end, owners);
+    const Position& now = positions(row);
+    const int dx = end.offsetQ - now.offsetQ, dy = end.offsetR - now.offsetR;
     for(int i = 0; i < AREA; i++)
-      values[i] = owners[i] < 0 ? 0.0f : owners[i] == mover ? 1.0f : -1.0f;
+      values[i] = 0.0f;
+    for(int y = 0; y < LEN; y++)
+      for(int x = 0; x < LEN; x++) {
+        const int owner = cell_owner(end.cell[y * LEN + x]);
+        if(owner >= 0 && on_board(x + dx, y + dy))
+          values[(y + dy) * LEN + x + dx] = owner == mover ? 1.0f : -1.0f;
+      }
     return GameInterface::TARGET_OWNERSHIP;
   }
 
