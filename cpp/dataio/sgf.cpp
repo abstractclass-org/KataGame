@@ -126,10 +126,15 @@ static Loc parseSgfLocOrPass(const string& s, int xSize, int ySize) {
 }
 
 static void writeSgfLoc(ostream& out, Loc loc, int xSize, int ySize) {
-  if(xSize >= 53 || ySize >= 53)
-    throw StringError("Writing coordinates for SGF files for board sizes >= 53 is not implemented");
   if(loc == Board::PASS_LOC || loc == Board::NULL_LOC)
     return;
+  //KataGame fork (2026-10-25): SGF's letters reach 52 points. A board of 53 or more (Blueprints' 61) writes a move
+  //as the number of its Loc. No reader reads it back: these records are self-play's logs, and a game with several
+  //policy channels writes its actions there, not points.
+  if(xSize >= 53 || ySize >= 53) {
+    out << (int)loc;
+    return;
+  }
   int x = Location::getX(loc,xSize);
   int y = Location::getY(loc,xSize);
   const char* chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
