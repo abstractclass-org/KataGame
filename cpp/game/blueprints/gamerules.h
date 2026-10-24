@@ -171,6 +171,16 @@ struct Blueprint {
   }
 };
 
+// The last actions that the network sees (the history planes, gameencoding.h): for each, the points that a placement
+// stamped and the points whose cells it took. An edit's actions and a pass leave the board as it was: no points. A
+// connected shape of n cells has at most 2n + 4 cells next to it, so a placement takes at most 46.
+constexpr int HISTORY = 4;
+constexpr int MAX_TAKEN = 2 * MAX_CELLS + 4;
+struct Footprint {
+  int8_t nStamped = 0, nTaken = 0;
+  int16_t stamped[MAX_CELLS] = {}, taken[MAX_TAKEN] = {};  // points, y * LEN + x
+};
+
 struct Position {
   int8_t cell[AREA] = {};  // [y * LEN + x]: cell_value
   Blueprint hand[2][HAND];
@@ -181,6 +191,9 @@ struct Position {
   // blueprint, whose rest keeps its frame until the drop. pickConnected: whether that rest is connected.
   int8_t picked = -1, pickQ = 0, pickR = 0, pickType = 0;
   bool pickConnected = false;
+  // The last HISTORY actions, the newest first. Not part of the game's state: hash() leaves it out, and the one-line
+  // position does not hold it.
+  Footprint history[HISTORY];
 };
 
 // The player to move at a ply: the first plays ply 0, then each player two (the site's te).
@@ -197,11 +210,9 @@ inline bool next_to_own(const Position& p, int x, int y, int player) {
   return false;
 }
 
-// Whether placing blueprint k of the mover with its (0, 0) cell on the board's point (x, y) is legal: every cell on
-// the board and empty, and one of them next to a cell of the mover (the site's H, on this port's board).
-inline bool can_place(const Position& p, int k, int x, int y) {
-  const int mover = turn_of(p.ply);
-  const Blueprint& b = p.hand[mover][k];
+// Whether the player's blueprint b fits with its (0, 0) cell on the board's point (x, y): every cell on the board and
+// empty, and one of them next to a cell of the player (the site's H, on this port's board).
+inline bool fits(const Position& p, int player, const Blueprint& b, int x, int y) {
   if(b.n == 0)
     return false;
   bool touches = false;
@@ -209,9 +220,53 @@ inline bool can_place(const Position& p, int k, int x, int y) {
     const int cx = x + b.q[i], cy = y + b.r[i];
     if(!on_board(cx, cy) || p.cell[cy * LEN + cx])
       return false;
-    touches = touches || next_to_own(p, cx, cy, mover);
+    touches = touches || next_to_own(p, cx, cy, player);
   }
   return touches;
+}
+
+// Whether placing blueprint k of the mover with its (0, 0) cell on (x, y) is legal.
+inline bool can_place(const Position& p, int k, int x, int y) {
+  return fits(p, turn_of(p.ply), p.hand[turn_of(p.ply)][k], x, y);
+}
+
+// Calls f(x, y) once for each point where the player's blueprint b fits (fits): each anchor that puts a cell of b on
+// an empty point next to the player (the frontier), in the order of the frontier's points, then b's cells.
+template<class F>
+inline void for_each_placement(const Position& p, int player, const Blueprint& b, F&& f) {
+  if(b.n == 0)
+    return;
+  int8_t seen[AREA] = {};
+  for(int fy = 0; fy < LEN; fy++)
+    for(int fx = 0; fx < LEN; fx++) {
+      if(p.cell[fy * LEN + fx] || !next_to_own(p, fx, fy, player))
+        continue;
+      for(int i = 0; i < b.n; i++) {
+        const int x = fx - b.q[i], y = fy - b.r[i];
+        if(!on_board(x, y) || seen[y * LEN + x])
+          continue;
+        seen[y * LEN + x] = 1;
+        if(fits(p, player, b, x, y))
+          f(x, y);
+      }
+    }
+}
+
+// The points whose cells blueprint b of the player takes with its (0, 0) cell on (x, y): the enemy's cells next to a
+// stamped cell, not walls, each once (the site's ce). Returns their number, at most MAX_TAKEN.
+inline int taken_by(const Position& p, int player, const Blueprint& b, int x, int y, int16_t* out) {
+  int n = 0;
+  for(int i = 0; i < b.n; i++)
+    for(const auto& d : DIRS) {
+      const int nx = x + b.q[i] + d[0], ny = y + b.r[i] + d[1];
+      const int8_t v = at(p, nx, ny);
+      if(cell_owner(v) != 1 - player || cell_type(v) == WALL)
+        continue;
+      const int16_t index = int16_t(ny * LEN + nx);
+      if(std::find(out, out + n, index) == out + n)
+        out[n++] = index;
+    }
+  return n;
 }
 
 // Whether the picked cell can go to blueprint j at (q, r) (the site's pe, after the pick), on the hand's points.
@@ -275,30 +330,22 @@ inline bool can_pick(const Position& p, int k, int q, int r) {
 }
 
 // Stamps blueprint b of the player with its (0, 0) cell at (x, y): the stamped cells, the enemy cells that go and the
-// score (the site's ce and le). The caller checked the placement.
-inline void stamp(Position& p, int player, const Blueprint& b, int x, int y) {
+// score (the site's ce and le). The caller checked the placement. Writes the stamped and the taken points to trace.
+inline void stamp(Position& p, int player, const Blueprint& b, int x, int y, Footprint& trace) {
   const int enemy = 1 - player;
+  trace.nTaken = int8_t(taken_by(p, player, b, x, y, trace.taken));
   int removedStars = 0;
-  // The cells that go: next to a stamped cell, the enemy's, not walls. Each counts once.
-  std::vector<int> removed;
-  for(int i = 0; i < b.n; i++)
-    for(const auto& d : DIRS) {
-      const int nx = x + b.q[i] + d[0], ny = y + b.r[i] + d[1];
-      const int8_t v = at(p, nx, ny);
-      if(cell_owner(v) == enemy && cell_type(v) != WALL) {
-        const int index = ny * LEN + nx;
-        if(std::find(removed.begin(), removed.end(), index) == removed.end())
-          removed.push_back(index);
-      }
-    }
-  for(int index : removed)
-    removedStars += cell_type(p.cell[index]) == STAR;
+  for(int i = 0; i < trace.nTaken; i++)
+    removedStars += cell_type(p.cell[trace.taken[i]]) == STAR;
   p.scores[player] += removedStars * p.stars[player];
-  for(int index : removed)
-    p.cell[index] = 0;
+  for(int i = 0; i < trace.nTaken; i++)
+    p.cell[trace.taken[i]] = 0;
   p.stars[enemy] = int16_t(p.stars[enemy] - removedStars);
+  trace.nStamped = b.n;
   for(int i = 0; i < b.n; i++) {
-    p.cell[(y + b.r[i]) * LEN + x + b.q[i]] = cell_value(player, b.t[i]);
+    const int16_t index = int16_t((y + b.r[i]) * LEN + x + b.q[i]);
+    trace.stamped[i] = index;
+    p.cell[index] = cell_value(player, b.t[i]);
     p.stars[player] = int16_t(p.stars[player] + (b.t[i] == STAR));
   }
 }
@@ -323,8 +370,10 @@ inline void setup(Position& p) {
     p.hand[player][0] = flower(plain);
     p.hand[player][1] = flower(player == 0 ? firsts : seconds);
     p.hand[player][2] = flower(plain);
-    for(int k = 0; k < HAND; k++)
-      stamp(p, player, p.hand[player][k], starts[player][k] + RADIUS, -1 + RADIUS);
+    for(int k = 0; k < HAND; k++) {
+      Footprint start;  // the start has no history
+      stamp(p, player, p.hand[player][k], starts[player][k] + RADIUS, -1 + RADIUS, start);
+    }
   }
 }
 
@@ -392,29 +441,8 @@ struct GameRules {
       return;
     }
     const int mover = turn_of(p.ply);
-    // The placements: each anchor that puts a cell of the blueprint on an empty point next to the mover (the
-    // frontier), checked once.
-    std::vector<int8_t> frontier(AREA, 0);
-    for(int y = 0; y < LEN; y++)
-      for(int x = 0; x < LEN; x++)
-        frontier[y * LEN + x] = !p.cell[y * LEN + x] && next_to_own(p, x, y, mover);
-    std::vector<int8_t> seen(AREA);
-    for(int k = 0; k < HAND; k++) {
-      const Blueprint& b = p.hand[mover][k];
-      std::fill(seen.begin(), seen.end(), 0);
-      for(int f = 0; f < AREA; f++) {
-        if(!frontier[f])
-          continue;
-        for(int i = 0; i < b.n; i++) {
-          const int x = f % LEN - b.q[i], y = f / LEN - b.r[i];
-          if(!on_board(x, y) || seen[y * LEN + x])
-            continue;
-          seen[y * LEN + x] = 1;
-          if(can_place(p, k, x, y))
-            out.push_back(action_at(x, y, PLACE + k));
-        }
-      }
-    }
+    for(int k = 0; k < HAND; k++)
+      for_each_placement(p, mover, p.hand[mover][k], [&](int x, int y) { out.push_back(action_at(x, y, PLACE + k)); });
     // The picks.
     for(int k = 0; k < HAND; k++) {
       const Blueprint& b = p.hand[mover][k];
@@ -438,6 +466,10 @@ struct GameRules {
   }
   static void play(Position& p, int action) {
     const int mover = turn_of(p.ply);
+    // The history: the newest action first. Only a placement leaves points.
+    for(int h = HISTORY - 1; h > 0; h--)
+      p.history[h] = p.history[h - 1];
+    p.history[0] = Footprint();
     if(action == PASS_ACTION) {
       // A timeout's pass ends the move. A pick without its drop goes back.
       if(p.picked >= 0) {
@@ -461,7 +493,7 @@ struct GameRules {
     else if(channel >= PICK)
       take(p, channel - PICK, x - HAND_X, y - HAND_Y);
     else {
-      stamp(p, mover, p.hand[mover][channel - PLACE], x, y);
+      stamp(p, mover, p.hand[mover][channel - PLACE], x, y, p.history[0]);
       p.ply++;
     }
   }
@@ -528,7 +560,9 @@ struct GameRules {
     int q, r;
     if(!parse_cell(s.substr(sep + 1), q, r))
       return false;
-    const int x = q + (place ? RADIUS : HAND_X), y = r + (place ? RADIUS : HAND_Y);
+    // The hand is drawn at the board's middle column, so a hand's point and a board's point add the same x.
+    static_assert(HAND_X == RADIUS, "the hand's x is the board's middle column");
+    const int x = q + RADIUS, y = r + (place ? RADIUS : HAND_Y);
     if(!on_board(x, y))
       return false;
     action = action_at(x, y, (place ? PLACE : drop ? DROP : PICK) + k);
