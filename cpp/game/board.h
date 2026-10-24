@@ -202,8 +202,7 @@ struct Board
   //score, about 141 points). Read by the search's score utility and the score values it reports; KataGo's factors
   //and scales apply on top.
   static double scoreUnit() { return GameEncoding::SCORE_UNIT; }
-  //KataGame fork: the areas that KataGo's look-ahead horizons (the short-term value and score targets, value
-  //surprise) and its komi and handicap draws read where KataGo reads the board's area: the game's, else the board's
+  //KataGame fork: the areas of KataGo's look-ahead horizons and of its komi sampler: the game's, else the board's
   //(GameInterface::lookaheadArea and komiArea, gameinterface.h).
   double lookaheadArea() const { return GameInterface::lookaheadArea<GameEncoding>(x_size, y_size); }
   double komiArea() const { return GameInterface::komiArea<GameEncoding>(x_size, y_size); }

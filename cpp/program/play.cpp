@@ -507,7 +507,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       thisHandicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      board, rand
+      board, rand  //KataGame fork: the board, for its komi area (Board::komiArea)
     );
     testAssert(extraBlackAndKomi.extraBlack == 0);
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
@@ -577,7 +577,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       thisHandicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      board, rand
+      board, rand  //KataGame fork: the board, for its komi area (Board::komiArea)
     );
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
 
@@ -605,7 +605,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       handicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      board, rand
+      board, rand  //KataGame fork: the board, for its komi area (Board::komiArea)
     );
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
 
@@ -2074,7 +2074,7 @@ FinishedGameData* Play::runGame(
 
     vector<double> valueSurpriseByTurn;
     computeValueSurpriseByTurn(
-      valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.lookaheadArea(),  //Enclosure fork: a look-ahead horizon, KataGo's (Board::TIME_SCALE)
+      valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.lookaheadArea(),  //KataGame fork: a look-ahead horizon, on the game's look-ahead area (Board::TIME_SCALE)
       playSettings.useSearchValueSurprise
     );
 
@@ -2099,7 +2099,7 @@ FinishedGameData* Play::runGame(
       //the value surprise of every turn at or before them (of just those turns themselves, for search value
       //surprise), so recompute.
       computeValueSurpriseByTurn(
-        valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.lookaheadArea(),  //Enclosure fork: a look-ahead horizon, KataGo's (Board::TIME_SCALE)
+        valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.lookaheadArea(),  //KataGame fork: a look-ahead horizon, on the game's look-ahead area (Board::TIME_SCALE)
         playSettings.useSearchValueSurprise
       );
 

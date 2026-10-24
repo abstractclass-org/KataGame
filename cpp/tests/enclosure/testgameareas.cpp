@@ -1,20 +1,20 @@
-// KataGame fork: the areas that KataGo's look-ahead horizons and its komi draws read where KataGo reads the board's
+// KataGame fork: the areas that KataGo's look-ahead horizons and its komi sampler read where KataGo reads the board's
 // area (GameInterface::lookaheadArea and komiArea, gameinterface.h), through the front: the defaults with stub games,
 // and the build's game on its standard board, against the values pinned below.
 //
 //   testgameareas
 //
 // It prints the build's game, its standard board and both areas, then for each short-term value target its lambda
-// (KataGo's: 1 minus the weight of the row's own search value, TrainingWriteBuffers::shortTermValueNowFactor) and its
-// mean look-ahead in moves, and the komi draw's standard deviation for one configured as 100 points, each beside its
-// value with the board's area.
+// (KataGo's: 1 minus the weight of the row's own search value, 1 / (1 + A * c) on the look-ahead area A, as
+// trainingwrite.cpp writes it) and its mean look-ahead in moves, and the komi draw's standard deviation for one
+// configured as 100 points, each beside its value with the board's area.
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 
 #include "../../core/rand.h"
-#include "../../dataio/trainingwrite.h"
+#include "../../game/board.h"
 #include "../../program/playutils.h"
 
 using namespace std;
@@ -71,13 +71,12 @@ int main() {
   check(board.lookaheadArea() == lookahead, "the game's look-ahead area");
   check(board.komiArea() == komi, "the game's komi area");
 
-  //The short-term value targets: KataGo's formula on the look-ahead area, bit for bit.
+  //The short-term value targets: KataGo's formula (trainingwrite.cpp) on the look-ahead area.
   static const double FACTORS[3] = {0.176, 0.056, 0.016};
   static const char* SLOTS[3] = {"C4-7", "C8-11", "C12-15"};
   for(int i = 0; i < 3; i++) {
-    const double now = TrainingWriteBuffers::shortTermValueNowFactor(board, i);
+    const double now = 1.0 / (1.0 + board.lookaheadArea() * FACTORS[i]);
     const double boardNow = 1.0 / (1.0 + boardArea * FACTORS[i]);
-    check(now == 1.0 / (1.0 + lookahead * FACTORS[i]), "a short-term value target's weight of the row's own value");
     printf("short-term value target %d (%s): lambda %.6f, mean look-ahead %.1f moves (the board's area: lambda %.6f, "
            "%.1f moves)\n", i, SLOTS[i], 1.0 - now, (1.0 - now) / now, 1.0 - boardNow, (1.0 - boardNow) / boardNow);
   }

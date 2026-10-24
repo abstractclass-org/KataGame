@@ -450,7 +450,7 @@ them).
 | Member | Meaning | Default (helper) | Blueprints |
 |---|---|---|---|
 | `LOOKAHEAD_AREA` | The area A that KataGo's look-ahead horizons read where KataGo reads the board's area ("The game's length"). The short-term value targets C4-7, C8-11 and C12-15 have lambda = 1 - 1 / (1 + A × c), for c = 0.176, 0.056 and 0.016: a mean look-ahead of A × c moves. Value-surprise weighting uses c = 0.016. | The board's area, `x_size * y_size` (`lookaheadArea`, `Board::lookaheadArea`) | 361, Go's: its 67 × 67 view holds the window, and its moves do not reach that far. The look-ahead is about 64, 20 and 6 actions, against 790, 251 and 72 with the view's 4,489, in a game of about 140 actions. |
-| `KOMI_AREA` | The area A that KataGo's komi and handicap draws read where KataGo reads the board's area (`PlayUtils::chooseExtraBlackAndKomi`): each configured standard deviation times √A / 19, and the number of handicap stones. | The board's area (`komiArea`, `Board::komiArea`) | 361: a komi configured in points is drawn in points. The view's 4,489 multiplied each standard deviation by 67 / 19. |
+| `KOMI_AREA` | The area A that KataGo's komi sampler reads where KataGo reads the board's area (`PlayUtils::chooseExtraBlackAndKomi`): each configured standard deviation times √A / 19, and the number of handicap stones. The two spreads of `fancyKomiVarying` (`play.cpp`) still read the board's area. | The board's area (`komiArea`, `Board::komiArea`) | 361: the sampler draws a komi in the points that the config gives. The view's 4,489 multiplied each standard deviation by 67 / 19. |
 
 `InputOptions` holds what the front gives the input members:
 
@@ -517,7 +517,7 @@ its version.
 | `NAME`, `MAX_BOARD_LEN`, `POLICY_CHANNELS`, `NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS`, `SYMMETRIES`, `TARGETS`, `SCORE_SCALE`, `GAME_LENGTH` | As in C++. `MAX_BOARD_LEN` is the trainer's `pos_len` (the model refuses another), and the score distribution's bins are `SCORE_SCALE` points wide. | As in C++ | As in C++ |
 | `HISTORY_PLANE`, `NUM_HISTORY_PLANES` | As in C++ (the game's planes, newest first), for the history dropout. | The last 4 feature planes: 210, 4 | None: 0, 0 |
 | `apply_symmetry_inputs`, `apply_symmetry_policy_targets`, `apply_symmetry_policy` | The augmentation of the input planes, the policy targets (both channels) and a policy of the mover's moves (the q-values), at an allowed symmetry. The value targets move as pixels in every game (`games.apply_symmetry_points`). | An edge moves as an edge, with each channel's player's nodes | Every plane and the policy move as pixels, as KataGo's do. The mirror flips x on the network's 7 × 7 board, which a row of the standard board fills in width. |
-| `mask_targets` (optional) | The rows' global targets, with weight 0 for each target that the augmentation cannot map in a row. The trainer applies it to every batch, at every symmetry and without the symmetries (`games.mask_targets`: none without the member). | None | None. Blueprints gives it: the second policy target (C28) after a drop with a move of the same player to come. |
+| `mask_targets` (optional) | The rows' global targets, with weight 0 for each target that the augmentation cannot map in a row. The trainer applies it to every batch, at every symmetry and without the symmetries (`games.mask_targets`: none without the member). Blueprints gives it: the second policy target (C28) after a drop with a move of the same player to come. | None | None |
 
 The model's heads are the same in every game. The rows give each slot that the game does not write the weight 0, but
 not C0 (above). So the trainer leaves out C0 for a game without `TARGET_OWNERSHIP`.
@@ -618,6 +618,13 @@ TESTS=testgameinterface bash tests/enclosure/build.sh BUILD_DIR OUT_DIR
 OUT_DIR/testgameinterface tests/data/enclosure_games.txt
 ```
 
+**The areas of KataGo's constants:** `testgameareas` runs on a build of any game. It checks the defaults of
+`LOOKAHEAD_AREA` and `KOMI_AREA` with stub games, and the build's game on its standard board: both areas against the
+values that the test pins for each game, and the komi sampler's standard deviation for one configured as 100 points.
+It prints the lambdas of the short-term value targets beside their values with the board's area. A new game fails it
+until the test pins the game's areas. It builds and runs as `testgameinterface` does, with no argument. In the engine
+repository, `games/blueprints/tools/td_lambdas.py` checks the lambdas in Blueprints' rows.
+
 **Connect-4's encoding part.** The conformance suite checks that its mirror maps the legal moves onto the image's. With
 a Connect-4 binary and network, the engine repository's `games/connect4/tests/test_network.py` checks two more things.
 Value, score and ownership agree exactly after mapping the mirrored outputs back. The policy agrees within a relative
@@ -650,7 +657,9 @@ code and the work that remains for a third game.
    bots and the arena's fixed opponents for it go in the optional module `games/<game>/bots.py` (design 07, "The
    pipeline").
 4. **The encoding part.** Add `cpp/game/<game>/gameencoding.h` (`struct GameEncoding`), ending with
-   `static_assert(GameInterface::checkEncoding<GameEncoding>(), "...")`. Connect-4's is a short example. Build with
+   `static_assert(GameInterface::checkEncoding<GameEncoding>(), "...")`. Connect-4's is a short example. A board
+   larger than the reach of the game's moves gives `LOOKAHEAD_AREA` and `KOMI_AREA` ("The network encoding part"), and
+   `tests/enclosure/testgameareas.cpp` pins the game's areas in any case. Build with
    `-DGAME=<game>`, in a build folder for that game and backend: `pipeline/scripts/build_game.sh <game>` builds both
    backends and rebuilds the binding with the encoding's symmetries. Repeat the conformance suite to check them. Code of
    the game's own that uses the front (a command or a test of the search) goes outside the folder, in a file named after

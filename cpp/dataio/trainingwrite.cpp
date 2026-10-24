@@ -448,16 +448,6 @@ static void fillValueTDTargets(const vector<ValueTargets>& whiteValueTargetsByTu
   buf[3] = (float)score;
 }
 
-double TrainingWriteBuffers::shortTermValueNowFactor(const Board& board, int target) {
-  //These three constants used to be 'nicer' numbers 0.18, 0.06, 0.02, but we screwed up the functional form
-  //by omitting the "1.0 +" at the front (breaks scaling to small board sizes), so when we fixed this we also
-  //decreased the other numbers slightly to try to maximally limit the impact of the fix on the numerical values
-  //on the actual board sizes 9-19, since it would be costly to retest.
-  static constexpr double HORIZON_FACTORS[3] = {0.176, 0.056, 0.016};
-  testAssert(target >= 0 && target < 3);
-  return 1.0/(1.0 + board.lookaheadArea() * HORIZON_FACTORS[target]);
-}
-
 void TrainingWriteBuffers::setLastRowRegret(float regret) {
   testAssert(curRows > 0);
   float* rowGlobal = globalTargetsNC.data + (curRows - 1) * GLOBAL_TARGET_NUM_CHANNELS;
@@ -611,15 +601,19 @@ void TrainingWriteBuffers::addRow(
   }
 
   //Fill td-like value targets
-  //Enclosure fork (owner): look-ahead horizons count decisions (edges), so KataGo's 19x19 formula stands: about 6,
-  //20 and 64 edges (see Board::TIME_SCALE for the split). KataGame fork: on the game's look-ahead area
-  //(shortTermValueNowFactor), the board's area unless the game gives its own.
+  //Enclosure fork: look-ahead horizons count decisions (edges), so KataGo's 19x19 formula stands: about 6,
+  //20 and 64 edges (see Board::TIME_SCALE for the split). KataGame fork: on the game's look-ahead area.
   int boardArea = board.x_size * board.y_size;
+  const double lookaheadArea = board.lookaheadArea();
   testAssert(whiteValueTargetsIdx >= 0 && whiteValueTargetsIdx < whiteValueTargets.size());
   fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 0.0, rowGlobal);
-  fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, shortTermValueNowFactor(board, 0), rowGlobal+4);
-  fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, shortTermValueNowFactor(board, 1), rowGlobal+8);
-  fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, shortTermValueNowFactor(board, 2), rowGlobal+12);
+  //These three constants used to be 'nicer' numbers 0.18, 0.06, 0.02, but we screwed up the functional form
+  //by omitting the "1.0 +" at the front (breaks scaling to small board sizes), so when we fixed this we also
+  //decreased the other numbers slightly to try to maximally limit the impact of the fix on the numerical values
+  //on the actual board sizes 9-19, since it would be costly to retest.
+  fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0/(1.0 + lookaheadArea * 0.176), rowGlobal+4);
+  fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0/(1.0 + lookaheadArea * 0.056), rowGlobal+8);
+  fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0/(1.0 + lookaheadArea * 0.016), rowGlobal+12);
   fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0, rowGlobal+16);
 
   //Lead

@@ -456,9 +456,8 @@ struct GameEncoding {
   // A game is 120 of the site's moves (moves_played counts them; a pick and its drop are one).
   static constexpr double GAME_LENGTH = PLIES;
   // The view is 67 x 67 so that it holds the window, not because a decision reaches that far: KataGo's look-ahead
-  // horizons read Go's 361, about 64, 20 and 6 actions (the board's 4,489 gave about 790, 251 and 72 actions in a game
-  // of about 140). And the komi draws read 361, so that a komi configured in points is drawn in points (the board's
-  // area multiplied each standard deviation by 67 / 19).
+  // horizons read Go's 361, about 64, 20 and 6 actions in a game of about 140. And the komi sampler reads 361, so that
+  // it draws a komi in the points that the config gives (GAMES.md, the encoding part's optional members).
   static constexpr double LOOKAHEAD_AREA = 19 * 19;
   static constexpr double KOMI_AREA = 19 * 19;
 };

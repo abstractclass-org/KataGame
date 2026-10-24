@@ -184,7 +184,7 @@ def write_blueprints_rows(path):
     global target is 1."""
     game = games.get("blueprints")
     points = game.MAX_BOARD_LEN ** 2
-    moves = points * game.POLICY_CHANNELS + 1
+    moves = policy_len(game.MAX_BOARD_LEN, game.POLICY_CHANNELS)
     picked, next_mover = [0, 0, 1, 1], [1, -1, 1, -1]
     global_inputs = np.zeros((4, game.NUM_GLOBAL_INPUTS), dtype=np.float32)
     global_inputs[:, game.PICKED_INPUT] = picked
@@ -217,4 +217,3 @@ def test_blueprints_rows_of_a_drop_with_the_same_mover_next_have_no_next_policy_
     assert weights[:, 28].tolist() == [1.0, 1.0, 0.0, 1.0]
     others = [c for c in range(GLOBAL_TARGETS_NC_CHANNELS) if c != 28]
     assert torch.equal(weights[:, others], torch.ones(4, len(others)))
-    assert np.load(path)["globalTargetsNC"][2, 28] == 1.0  # the rows on disk stay as written

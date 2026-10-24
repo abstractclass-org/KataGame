@@ -150,12 +150,13 @@
  *   LOOKAHEAD_AREA          double: the area that KataGo's look-ahead horizons read where KataGo reads the board's area
  *                           (the short-term value and score targets, value-surprise weighting). The horizons count
  *                           decisions, so a game whose board is larger than the reach of its decisions gives Go's 361,
- *                           and the horizons count its moves as KataGo's count Go's. Default: the board's area, x_size
- *                           * y_size (lookaheadArea).
- *   KOMI_AREA               double: the area that KataGo's komi and handicap draws read where KataGo reads the board's
- *                           area (chooseExtraBlackAndKomi: the configured standard deviations times sqrt(area) / 19,
- *                           and the handicap's stones). 361 draws a komi configured in points in points. Default: the
- *                           board's area, x_size * y_size (komiArea).
+ *                           and the horizons count its moves as KataGo's count Go's. Default: the board's area,
+ *                           x_size * y_size (lookaheadArea).
+ *   KOMI_AREA               double: the area that KataGo's komi sampler reads where KataGo reads the board's area
+ *                           (chooseExtraBlackAndKomi: the configured standard deviations times sqrt(area) / 19, and
+ *                           the handicap's stones). With 361, the sampler draws a komi in the points that the config
+ *                           gives. The spreads of fancyKomiVarying still read the board's area. Default: the board's
+ *                           area, x_size * y_size (komiArea).
  */
 
 #include <algorithm>
@@ -611,7 +612,7 @@ template<class E> constexpr double lookaheadArea(int xSize, int ySize) {
     return (double)xSize * ySize;
 }
 
-//The area of KataGo's komi and handicap draws on a board of xSize x ySize: the game's, else the board's.
+//The area of KataGo's komi sampler on a board of xSize x ySize: the game's, else the board's.
 template<class E> constexpr double komiArea(int xSize, int ySize) {
   if constexpr(encoding::HasKomiArea<E>::value) {
     (void)xSize;
