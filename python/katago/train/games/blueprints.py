@@ -9,13 +9,15 @@ by cell (the symmetry's linear part on axial offsets) and then goes back to the 
 - the hand's planes and the picked cell's planes move by the linear part and then by their blueprint's shift;
 - a placement's anchor (its (0, 0) cell) moves as a pixel and then by its blueprint's shift: the image's anchor is the
   lowest image of the stamped cells;
-- the policy's picks and drops move as the hand's points, and its placements as the anchors.
+- the policy's cells of the hand (picks, and drops after a pick) move as the hand's points, and its placements as the
+  anchors.
 
 Each row's shifts come from its own hand planes: the mover's blueprints (with the picked cell, whose blueprint keeps
 its whole frame until the drop) and the opponent's. The second policy target (the next move) needs the next mover's
-blueprints after the row's move. They are the row's own, except after a drop with a move of the same player to come:
-the drop changes two blueprints of the mover, and the row does not say which drop was played. Those rows map with the
-row's frames, an error in that target only.
+blueprints after the row's move, and the row's value targets say who the next mover is (slot C1). The blueprints are
+the row's own, except after a drop with a move of the same player to come: the drop changes two blueprints of the
+mover, and the row does not say which drop was played. Those rows map with the row's frames, an error in that target
+only.
 """
 
 import torch
@@ -25,7 +27,7 @@ from . import TARGET_OWNERSHIP, apply_symmetry_points
 # The members of the game's module (C++ game/blueprints/gameencoding.h).
 NAME = "blueprints"
 MAX_BOARD_LEN = 61       # the axial square |q|, |r| <= 30 from its middle, which follows the game
-POLICY_CHANNELS = 9      # place blueprint 1-3, pick from blueprint 1-3, drop into blueprint 1-3
+POLICY_CHANNELS = 6      # place blueprint 1-3, then a cell of blueprint 1-3 (a pick, or a drop after a pick)
 NUM_SPATIAL_INPUTS = 59  # 60 with the on-board plane
 NUM_GLOBAL_INPUTS = 17
 HISTORY_PLANE = 51       # the points that each of the last 4 actions stamped and took, newest first
@@ -41,8 +43,7 @@ RADIUS, HAND, HAND_X, HAND_Y = 30, 3, 30, 1
 MY_PLACES, THEIR_PLACES = 10, 19   # + k: fits, + 3 + k: takes 1+ stars, + 6 + k: takes 3+ stars
 MY_HAND, THEIR_HAND = 30, 39       # + k: cells, + 3 + k: stars, + 6 + k: walls
 PICKED = 48                        # + k: the picked cell of blueprint k
-MOVES_LEFT_INPUT = 1               # the global input: 1 when the mover has 2 moves left in its turn
-DROP = 6                           # the policy's drop channels: 6 to 8
+NEXT_MOVER_SLOT = 1                # the value targets' slot that says who moves next (+1 the row's mover, -1 not)
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
 
 
@@ -163,16 +164,12 @@ def apply_symmetry_policy(policy, symmetry, binary_inputs, global_inputs):
 def apply_symmetry_policy_targets(policy, symmetry, binary_inputs, global_inputs, value_targets, global_targets):
     """The policy targets (N, 2, policy): channel 0 the mover's move, channel 1 the next move.
 
-    The next move is the mover's when its targets are drops (the row's move was a pick), and when the mover has a
-    second move in its turn (global input 1). Else it is the opponent's."""
+    The row says who makes the next move: the value targets' slot C1 holds +1 when it is the row's mover and -1 when
+    it is the opponent (C++ training_targets, NEXT_MOVER_SLOT; no loss reads the slot)."""
     if symmetry == 0:
         return policy
     mine = _shifts(binary_inputs, symmetry, MY_HAND, PICKED)
     theirs = _shifts(binary_inputs, symmetry, THEIR_HAND)
-    n = policy.shape[0]
-    picked = (binary_inputs[:, 1 + PICKED:1 + PICKED + HAND] > 0.5).flatten(1).any(dim=1)
-    next_drops = (policy[:, 1, :-1].reshape(n, -1, POLICY_CHANNELS)[:, :, DROP:] != 0).flatten(1).any(dim=1)
-    two_left = global_inputs[:, MOVES_LEFT_INPUT] > 0.5
-    same_next = torch.where(picked, two_left, next_drops | two_left)
+    same_next = value_targets[:, NEXT_MOVER_SLOT, 0, 0] > 0
     same = torch.stack((torch.ones_like(same_next), same_next), dim=1)
     return _map_policy(policy, symmetry, mine, theirs, same)

@@ -18,8 +18,8 @@
 // - Or a move edits the hand ("I:q,r>J:q,r"): one cell of blueprint I goes to blueprint J, next to its cells (to
 //   (0, 0) when J is empty). A move to another blueprint keeps blueprint I connected. A move within I keeps it
 //   connected after the move, and puts the cell elsewhere. Both blueprints then go back to the site's frame.
-// - This port plays an edit as two actions of the mover: the pick ("I:q,r") and the drop (">J:q,r"). So the site's
-//   string of an edit is the pick's text, then the drop's. A pick is legal only when a drop follows it.
+// - This port plays an edit as two actions of the mover: the pick ("I:q,r") and the drop ("J:q,r"). So the site's
+//   string of an edit is the pick's text, ">", then the drop's. A pick is legal only when a drop follows it.
 // - Pass is never legal. The site plays it when a clock runs out: a replay tolerates it, and it ends the move.
 
 #include <algorithm>
@@ -47,13 +47,15 @@ constexpr const char* TYPE_LETTERS = "psw";  // plain, star, wall
 // The six neighbours of (q, r), in the site's order.
 constexpr int DIRS[6][2] = {{1, 0}, {1, -1}, {0, -1}, {-1, 0}, {-1, 1}, {0, 1}};
 
-// The actions: a point and one of 9 channels, on the largest board, then pass.
+// The actions: a point and one of 6 channels, on the largest board, then pass.
 // - Channels 0-2: place blueprint K at the board's point (q + RADIUS, r + RADIUS).
-// - Channels 3-5: pick the cell (q, r) of blueprint I, at the hand's point (q + HAND_X, r + HAND_Y).
-// - Channels 6-8: drop the picked cell into blueprint J at (q, r), at the hand's point.
+// - Channels 3-5: the cell (q, r) of blueprint K, at the hand's point (q + HAND_X, r + HAND_Y): a pick of that cell
+//   when no pick waits for its drop, else the drop of the picked cell there. A position never has both a legal pick
+//   and a legal drop, so the two share these channels.
 // A blueprint's cells have 0 <= r <= 20 and |q| <= 20, and a drop's cell is next to them. So the hand's points fit.
-constexpr int CHANNELS = 9;
-constexpr int PLACE = 0, PICK = 3, DROP = 6;
+// The front keeps an action in a short (Board, "move Locs must fit in a short"), so the actions stay under 32,768.
+constexpr int CHANNELS = 6;
+constexpr int PLACE = 0, HAND_CHANNEL = 3;
 constexpr int HAND_X = RADIUS, HAND_Y = 1;
 inline int action_at(int x, int y, int channel) { return (y * LEN + x) * CHANNELS + channel; }
 inline int action_x(int action) { return action / CHANNELS % LEN; }
@@ -300,7 +302,7 @@ inline void drops(const Position& p, std::vector<int>& out) {
     const Blueprint& target = p.hand[mover][j];
     auto consider = [&](int q, int r) {
       if(can_drop(p, j, q, r))
-        out.push_back(action_at(q + HAND_X, r + HAND_Y, DROP + j));
+        out.push_back(action_at(q + HAND_X, r + HAND_Y, HAND_CHANNEL + j));
     };
     if(target.n == 0)
       consider(0, 0);
@@ -497,7 +499,7 @@ struct GameRules {
       const Blueprint& b = p.hand[mover][k];
       for(int i = 0; i < b.n; i++)
         if(can_pick(p, k, b.q[i], b.r[i]))
-          out.push_back(action_at(b.q[i] + HAND_X, b.r[i] + HAND_Y, PICK + k));
+          out.push_back(action_at(b.q[i] + HAND_X, b.r[i] + HAND_Y, HAND_CHANNEL + k));
     }
     std::sort(out.begin(), out.end());
   }
@@ -505,13 +507,10 @@ struct GameRules {
     if(action < 0 || action >= PASS_ACTION || terminal(p))
       return false;
     const int x = action_x(action), y = action_y(action), channel = action_channel(action);
-    if(channel >= DROP)
-      return can_drop(p, channel - DROP, x - HAND_X, y - HAND_Y);
-    if(p.picked >= 0)
-      return false;
-    if(channel >= PICK)
-      return can_pick(p, channel - PICK, x - HAND_X, y - HAND_Y);
-    return can_place(p, channel - PLACE, x, y);
+    if(channel >= HAND_CHANNEL)
+      return p.picked >= 0 ? can_drop(p, channel - HAND_CHANNEL, x - HAND_X, y - HAND_Y)
+                           : can_pick(p, channel - HAND_CHANNEL, x - HAND_X, y - HAND_Y);
+    return p.picked < 0 && can_place(p, channel - PLACE, x, y);
   }
   static void play(Position& p, int action) {
     const int mover = turn_of(p.ply);
@@ -531,16 +530,16 @@ struct GameRules {
       return;
     }
     const int x = action_x(action), y = action_y(action), channel = action_channel(action);
-    if(channel >= DROP) {
-      const int j = channel - DROP;
+    if(channel >= HAND_CHANNEL && p.picked >= 0) {  // the drop
+      const int j = channel - HAND_CHANNEL;
       p.hand[mover][j].add(x - HAND_X, y - HAND_Y, p.pickType);
       p.hand[mover][j].normalize();
       p.hand[mover][p.picked].normalize();
       p.picked = -1;
       p.ply++;
     }
-    else if(channel >= PICK)
-      take(p, channel - PICK, x - HAND_X, y - HAND_Y);
+    else if(channel >= HAND_CHANNEL)  // the pick
+      take(p, channel - HAND_CHANNEL, x - HAND_X, y - HAND_Y);
     else {
       stamp(p, mover, p.hand[mover][channel - PLACE], x, y, p.history[0]);
       recenter(p);
@@ -582,20 +581,20 @@ struct GameRules {
   }
   static void area(const Position& p, int8_t* owners) { pieces(p, owners); }
 
-  // The site's strings: "K@q,r" (a placement), "I:q,r" (a pick) and ">J:q,r" (a drop), with blueprints from 1.
+  // The strings: "K@q,r" (a placement, its cell from the board's middle) and "K:q,r" (a cell of blueprint K: a pick,
+  // or a drop after a pick), with blueprints from 1. The site's string of an edit joins its pick's and its drop's with
+  // ">": "I:q,r>J:q,r". A string of a cell may start with ">", as the drop's part of the site's string does.
   static std::string action_text(int action) {
     if(action == PASS_ACTION)
       return "pass";
     const int x = action_x(action), y = action_y(action), channel = action_channel(action);
-    if(channel >= DROP)
-      return ">" + std::to_string(channel - DROP + 1) + ":" + cell_text(x - HAND_X, y - HAND_Y);
-    if(channel >= PICK)
-      return std::to_string(channel - PICK + 1) + ":" + cell_text(x - HAND_X, y - HAND_Y);
+    if(channel >= HAND_CHANNEL)
+      return std::to_string(channel - HAND_CHANNEL + 1) + ":" + cell_text(x - HAND_X, y - HAND_Y);
     return std::to_string(channel - PLACE + 1) + "@" + cell_text(x - RADIUS, y - RADIUS);
   }
   static std::string protocol_text(int action) { return action_text(action); }
-  // The action that a placement's, a pick's or a drop's string names, legal or not. False for any other text, and
-  // for a point off this port's board or the hand's points.
+  // The action that a placement's or a cell's string names, legal or not. False for any other text, and for a point
+  // off this port's board or the hand's points.
   static bool parse_protocol_text(const std::string& text, int& action) {
     if(text.empty())
       return false;
@@ -616,7 +615,7 @@ struct GameRules {
     const int x = q + RADIUS, y = r + (place ? RADIUS : HAND_Y);
     if(!on_board(x, y))
       return false;
-    action = action_at(x, y, (place ? PLACE : drop ? DROP : PICK) + k);
+    action = action_at(x, y, (place ? PLACE : HAND_CHANNEL) + k);
     return true;
   }
   static int parse_action(const Position& p, const std::string& text, std::string* why) {
@@ -627,8 +626,8 @@ struct GameRules {
     };
     int action;
     if(!parse_protocol_text(text, action))
-      return fail("not a move: \"" + text + "\" (K@q,r places blueprint K, I:q,r picks a cell, >J:q,r drops it; " +
-                  "the board is |q|, |r| <= " + std::to_string(RADIUS) + ")");
+      return fail("not a move: \"" + text + "\" (K@q,r places blueprint K from the board's middle, K:q,r picks a " +
+                  "cell or drops the picked one; the board is |q|, |r| <= " + std::to_string(RADIUS) + ")");
     if(terminal(p))
       return fail("the game is over");
     if(!is_legal(p, action))

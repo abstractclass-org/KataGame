@@ -10,7 +10,8 @@
 //   drops are, and the picked cell. Then the history: the points that each of the last 4 actions stamped and took.
 // - The global inputs: the mover's seat, its moves left in the turn, the game's progress, the stars on the board, the
 //   scores, and the pick.
-// - The policy: 9 channels a point, the actions of gamerules.h.
+// - The policy: 6 channels a point, the actions of gamerules.h (placements, then the cells of the hand: picks, or
+//   drops after a pick).
 // - The symmetries: the 4 of KataGo's 8 that keep the hex neighbours (DIRS) on the axial square: the identity, the
 //   turn by 180 degrees (3) and two reflections (4, 7). A board's point moves as a pixel. A blueprint moves cell by
 //   cell, then goes back to the site's frame (its lowest cell at 0,0): so the hand's points, the anchors of the
@@ -282,7 +283,7 @@ struct GameEncoding {
       if(symmetry == 0 || action == GameRules::PASS_ACTION)
         return action;
       const int x = action_x(action), y = action_y(action), channel = action_channel(action);
-      if(channel < PICK) {
+      if(channel < HAND_CHANNEL) {
         const Blueprint& b = hand[channel - PLACE];
         int ax = 0, ay = 0;
         for(int i = 0; i < b.n; i++) {
@@ -295,7 +296,7 @@ struct GameEncoding {
         }
         return action_at(ax, ay, channel);
       }
-      const int k = channel < DROP ? channel - PICK : channel - DROP;
+      const int k = channel - HAND_CHANNEL;  // a pick from blueprint k, or a drop into it after a pick
       int mq, mr;
       frame_shift(hand[k], symmetry, k == picked, pickQ, pickR, mq, mr);
       int q = x - HAND_X, r = y - HAND_Y;
@@ -307,7 +308,12 @@ struct GameEncoding {
   // C0, the final board as ownership, on the row's board: +1 on the mover's cells, -1 on the opponent's, 0 on an empty
   // point. The board follows the game, so the final cells move by the difference of the two positions' offsets, and a
   // final cell off the row's board counts for no point.
+  // C1 is no target: the slot carries which player makes the row's next move, for the trainer's symmetries of the
+  // second policy target (katago/train/games/blueprints.py): +1 on every point when it is the row's mover, -1 when it
+  // is the opponent, 0 at the end. The front stores the slot as it is, and its flag stays 0 (the returned slots hold
+  // no TARGET_SEKI), so no loss reads it. A pick and a placement with a move to come leave the move to the mover.
   static constexpr unsigned TARGETS = GameInterface::TARGET_OWNERSHIP;
+  static constexpr int NEXT_MOVER_SLOT = 1;
   template<class Positions>
   static unsigned training_targets(const Positions& positions, int numPositions, int row, int mover, float* values) {
     const Position& end = positions(numPositions - 1);
@@ -315,6 +321,11 @@ struct GameEncoding {
     const int dx = end.offsetQ - now.offsetQ, dy = end.offsetR - now.offsetR;
     for(int i = 0; i < AREA; i++)
       values[i] = 0.0f;
+    float next = 0.0f;
+    if(row + 1 < numPositions && !GameRules::terminal(positions(row + 1)))
+      next = GameRules::next_player(positions(row + 1)) == mover ? 1.0f : -1.0f;
+    for(int i = 0; i < AREA; i++)
+      values[NEXT_MOVER_SLOT * AREA + i] = next;
     for(int y = 0; y < LEN; y++)
       for(int x = 0; x < LEN; x++) {
         const int owner = cell_owner(end.cell[y * LEN + x]);
