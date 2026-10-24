@@ -122,7 +122,7 @@ struct Board
   //length and the reach of its tactics. A game can have Go's board and a shorter game (Enclosure: 19x19 and 120
   //edges), so the constants are split by what they measure (ENCLOSURE.md, "Time horizons"):
   //- look-ahead horizons (short-term value and score targets, value surprise) count decisions, moves in our search
-  //  tree: KataGo's 19x19 formulas unchanged, with the board area;
+  //  tree: KataGo's 19x19 formulas unchanged, with the board area (lookaheadArea: a game can give its own);
   //- game-phase constants (earliest resignation, early forks, opening moves) are fractions of a game: a game has
   //  GameEncoding::GAME_LENGTH moves against GO_GAME_LENGTH moves of a 19x19 KataGo self-play game, so they use
   //  GAME_LENGTH_AREA (the area scaled by TIME_SCALE). GO_GAME_LENGTH is measured: the mean length of KataGo's own
@@ -202,6 +202,11 @@ struct Board
   //score, about 141 points). Read by the search's score utility and the score values it reports; KataGo's factors
   //and scales apply on top.
   static double scoreUnit() { return GameEncoding::SCORE_UNIT; }
+  //KataGame fork: the areas that KataGo's look-ahead horizons (the short-term value and score targets, value
+  //surprise) and its komi and handicap draws read where KataGo reads the board's area: the game's, else the board's
+  //(GameInterface::lookaheadArea and komiArea, gameinterface.h).
+  double lookaheadArea() const { return GameInterface::lookaheadArea<GameEncoding>(x_size, y_size); }
+  double komiArea() const { return GameInterface::komiArea<GameEncoding>(x_size, y_size); }
 
   //Go stones (none in the game): neutral answers.
   int getChainSize(Loc loc) const;

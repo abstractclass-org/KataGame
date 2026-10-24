@@ -182,6 +182,8 @@ def read_npz_training_data(
                 if include_qvalues:
                     batch_qValueTargetsNCMove = torch.from_numpy(qValueTargetsNCMove[start:end]).to(device)
 
+                # KataGame fork: the targets that the game's symmetries cannot map get weight 0, in every batch.
+                batch_globalTargetsNC = games.mask_targets(game, batch_binaryInputNCHW, batch_globalInputNC, batch_valueTargetsNCHW, batch_globalTargetsNC)
                 batch_binaryInputNCHW = apply_history_dropout(game, batch_binaryInputNCHW)
 
                 if randomize_symmetries:

@@ -26,8 +26,10 @@ ExtraBlackAndKomi PlayUtils::chooseExtraBlackAndKomi(
   double handicapProb, int numExtraBlackFixed,
   double bigStdevProb, float bigStdev,
   double biggerStdevProb, float biggerStdev,
-  double sqrtBoardArea, Rand& rand
+  const Board& board, Rand& rand
 ) {
+  //KataGame fork: the game's komi area (Board::komiArea), the board's area unless the game gives its own.
+  const double sqrtBoardArea = sqrt(board.komiArea());
   int extraBlack = 0;
   float komi = base;
 

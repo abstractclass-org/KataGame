@@ -507,7 +507,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       thisHandicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      sqrt(board.x_size*board.y_size), rand
+      board, rand
     );
     testAssert(extraBlackAndKomi.extraBlack == 0);
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
@@ -577,7 +577,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       thisHandicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      sqrt(board.x_size*board.y_size), rand
+      board, rand
     );
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
 
@@ -605,7 +605,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       handicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      sqrt(board.x_size*board.y_size), rand
+      board, rand
     );
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
 
@@ -1349,7 +1349,7 @@ static void computeValueSurpriseByTurn(
   vector<double>& valueSurpriseByTurn,
   const vector<ValueTargets>& whiteValueTargetsByTurn,
   const vector<ReportedSearchValues>& rawNNValues,
-  double boardArea,
+  double boardArea,  //KataGame fork: the look-ahead area (Board::lookaheadArea)
   bool useSearchValueSurprise
 ) {
   testAssert(whiteValueTargetsByTurn.size() == rawNNValues.size() + 1);
@@ -2074,7 +2074,7 @@ FinishedGameData* Play::runGame(
 
     vector<double> valueSurpriseByTurn;
     computeValueSurpriseByTurn(
-      valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.x_size * board.y_size,  //Enclosure fork: a look-ahead horizon, KataGo's (Board::TIME_SCALE)
+      valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.lookaheadArea(),  //Enclosure fork: a look-ahead horizon, KataGo's (Board::TIME_SCALE)
       playSettings.useSearchValueSurprise
     );
 
@@ -2099,7 +2099,7 @@ FinishedGameData* Play::runGame(
       //the value surprise of every turn at or before them (of just those turns themselves, for search value
       //surprise), so recompute.
       computeValueSurpriseByTurn(
-        valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.x_size * board.y_size,  //Enclosure fork: a look-ahead horizon, KataGo's (Board::TIME_SCALE)
+        valueSurpriseByTurn, gameData->whiteValueTargetsByTurn, rawNNValues, board.lookaheadArea(),  //Enclosure fork: a look-ahead horizon, KataGo's (Board::TIME_SCALE)
         playSettings.useSearchValueSurprise
       );
 

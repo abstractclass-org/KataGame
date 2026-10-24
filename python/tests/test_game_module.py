@@ -5,6 +5,7 @@ import os
 import sys
 import types
 
+import numpy as np
 import pytest
 import torch
 
@@ -14,7 +15,8 @@ sys.argv = [sys.argv[0], "-export-dir", "/nonexistent", "-model-name", "x", "-fi
 import export_model_pytorch as export  # noqa: E402
 import shuffle  # noqa: E402
 from katago.train import games, modelconfigs  # noqa: E402
-from katago.train.data_processing_pytorch import GLOBAL_TARGETS_NC_CHANNELS, VALUE_TARGETS_NCHW_CHANNELS  # noqa: E402
+from katago.train.data_processing_pytorch import (  # noqa: E402
+    GLOBAL_TARGETS_NC_CHANNELS, VALUE_TARGETS_NCHW_CHANNELS, read_npz_training_data)
 from katago.train.games import enclosure  # noqa: E402
 from katago.train.metrics_pytorch import Metrics  # noqa: E402
 from katago.train.model_pytorch import Model, policy_len  # noqa: E402
@@ -168,3 +170,51 @@ def test_a_game_without_the_ownership_target_trains_no_ownership(game_without_ow
     without = spatial_losses("stubgame")
     assert without["oloss_sum"] == 0
     assert all(without[k] == full[k] for k in full if k != "oloss_sum"), (without, full)
+
+
+def test_a_game_without_mask_targets_keeps_the_weights():
+    global_targets = torch.ones(2, GLOBAL_TARGETS_NC_CHANNELS)
+    assert not hasattr(enclosure, "mask_targets")
+    assert games.mask_targets(enclosure, None, None, None, global_targets) is global_targets
+
+
+def write_blueprints_rows(path):
+    """Four Blueprints rows as self-play writes them, empty but for what the second policy target's mask reads: a pick
+    waits for its drop (global input 9) or not, and the next mover is the row's mover (C1 +1) or not (C1 -1). Every
+    global target is 1."""
+    game = games.get("blueprints")
+    points = game.MAX_BOARD_LEN ** 2
+    moves = points * game.POLICY_CHANNELS + 1
+    picked, next_mover = [0, 0, 1, 1], [1, -1, 1, -1]
+    global_inputs = np.zeros((4, game.NUM_GLOBAL_INPUTS), dtype=np.float32)
+    global_inputs[:, game.PICKED_INPUT] = picked
+    value_targets = np.zeros((4, VALUE_TARGETS_NCHW_CHANNELS, game.MAX_BOARD_LEN, game.MAX_BOARD_LEN), dtype=np.int8)
+    value_targets[:, game.NEXT_MOVER_SLOT] = np.array(next_mover, dtype=np.int8)[:, None, None]
+    np.savez_compressed(
+        path,
+        binaryInputNCHWPacked=np.zeros((4, 1 + game.NUM_SPATIAL_INPUTS, (points + 7) // 8), dtype=np.uint8),
+        globalInputNC=global_inputs,
+        policyTargetsNCMove=np.zeros((4, 2, moves), dtype=np.int16),
+        globalTargetsNC=np.ones((4, GLOBAL_TARGETS_NC_CHANNELS), dtype=np.float32),
+        scoreDistrN=np.zeros((4, 2 * points + 2 * games.ROW_EXTRA_SCORE_RADIUS), dtype=np.int8),
+        valueTargetsNCHW=value_targets,
+        qValueTargetsNCMove=np.zeros((4, games.ROW_QVALUE_TARGETS, moves), dtype=np.int16),
+    )
+
+
+@pytest.mark.parametrize("randomize_symmetries", [False, True])
+def test_blueprints_rows_of_a_drop_with_the_same_mover_next_have_no_next_policy_weight(tmp_path, randomize_symmetries):
+    # The trainer cannot map their second policy target under a symmetry (katago/train/games/blueprints.py), so its
+    # weight, C28, is 0 in every batch, with or without the symmetries. Every other weight stays.
+    path = tmp_path / "rows.npz"
+    write_blueprints_rows(path)
+    config = modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "blueprints")
+    batches = list(read_npz_training_data([str(path)], batch_size=4, world_size=1, rank=0, pos_len=67, device="cpu",
+                                          randomize_symmetries=randomize_symmetries, include_meta=False,
+                                          model_config=config))
+    assert len(batches) == 1
+    weights = batches[0]["globalTargetsNC"]
+    assert weights[:, 28].tolist() == [1.0, 1.0, 0.0, 1.0]
+    others = [c for c in range(GLOBAL_TARGETS_NC_CHANNELS) if c != 28]
+    assert torch.equal(weights[:, others], torch.ones(4, len(others)))
+    assert np.load(path)["globalTargetsNC"][2, 28] == 1.0  # the rows on disk stay as written

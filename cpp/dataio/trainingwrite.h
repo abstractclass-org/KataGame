@@ -211,6 +211,7 @@ struct TrainingWriteBuffers {
   //C4-7: MCTS win-loss-noresult estimate td-like target, lambda = 1 - 1/(1 + boardArea * 0.176)
   //C8-11: MCTS win-loss-noresult estimate td-like target, lambda = 1 - 1/(1 + boardArea * 0.056)
   //C12-15: MCTS win-loss-noresult estimate td-like target, lambda = 1 - 1/(1 + boardArea * 0.016)
+  //KataGame fork: boardArea is the look-ahead area (Board::lookaheadArea; shortTermValueNowFactor below).
   //C16-19: MCTS win-loss-noresult estimate td-like target, lambda = 0 (so, actually just the immediate MCTS result).
 
   //C20: Actual final score, from the perspective of the player to move, adjusted for draw utility, zero if C27 is zero.
@@ -355,6 +356,11 @@ struct TrainingWriteBuffers {
   //source (C74).
   void setLastRowSwing(float swing);
   void setLastRowRgscSource(int source);
+
+  //KataGame fork: the weight of the row's own search value in the short-term value target C4-7, C8-11 or C12-15
+  //(target 0, 1 or 2), 1 minus its lambda: 1 / (1 + A * c), c = 0.176, 0.056 or 0.016, with A the board's look-ahead
+  //area (Board::lookaheadArea).
+  static double shortTermValueNowFactor(const Board& board, int target);
 
   void addRow(
     const Board& board, const BoardHistory& hist, Player nextPlayer,

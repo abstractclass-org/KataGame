@@ -31,6 +31,14 @@ and the augmentation, for each allowed symmetry (KataGo's numbers: bit 0 flips y
                         q-value targets).
 
 The value targets are planes of points, so every game maps them with apply_symmetry_points.
+
+A module may also give this optional member (mask_targets below gives the default):
+
+  mask_targets(binary_inputs, global_inputs, value_targets, global_targets)
+                        the rows' global targets (N, 80), with weight 0 for each target that the game's augmentation
+                        cannot map in a row. The arguments are the rows' as read, before any symmetry. The trainer
+                        applies it to every batch, at every symmetry and without the symmetries, so that the weights do
+                        not depend on the draw. Default: the global targets as they are.
 """
 
 import importlib
@@ -107,6 +115,14 @@ def get(name: str):
 def symmetries(game):
     """The game's allowed symmetries, ascending."""
     return [s for s in range(8) if game.SYMMETRIES & (1 << s)]
+
+
+def mask_targets(game, binary_inputs, global_inputs, value_targets, global_targets):
+    """The rows' global targets after the game's mask_targets, or as they are for a game without it."""
+    mask = getattr(game, "mask_targets", None)
+    if mask is None:
+        return global_targets
+    return mask(binary_inputs, global_inputs, value_targets, global_targets)
 
 
 def apply_symmetry_points(tensor, symmetry):

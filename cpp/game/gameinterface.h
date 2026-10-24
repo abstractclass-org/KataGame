@@ -145,6 +145,17 @@
  *                           of the board's area.
  *   GAME_LENGTH             double: a game's mean length in moves, for KataGo's game-phase constants (the earliest
  *                           resignation, early forks, the opening moves, the time controls).
+ *
+ * Optional members of the encoding part, as those of the rules part (the helper below gives the default):
+ *   LOOKAHEAD_AREA          double: the area that KataGo's look-ahead horizons read where KataGo reads the board's area
+ *                           (the short-term value and score targets, value-surprise weighting). The horizons count
+ *                           decisions, so a game whose board is larger than the reach of its decisions gives Go's 361,
+ *                           and the horizons count its moves as KataGo's count Go's. Default: the board's area, x_size
+ *                           * y_size (lookaheadArea).
+ *   KOMI_AREA               double: the area that KataGo's komi and handicap draws read where KataGo reads the board's
+ *                           area (chooseExtraBlackAndKomi: the configured standard deviations times sqrt(area) / 19,
+ *                           and the handicap's stones). 361 draws a komi configured in points in points. Default: the
+ *                           board's area, x_size * y_size (komiArea).
  */
 
 #include <algorithm>
@@ -521,6 +532,9 @@ namespace encoding {
   GAMEINTERFACE_DETECT(HasScoreScale, double, G::SCORE_SCALE)
   GAMEINTERFACE_DETECT(HasScoreUnit, double, G::SCORE_UNIT)
   GAMEINTERFACE_DETECT(HasGameLength, double, G::GAME_LENGTH)
+  //The optional members.
+  GAMEINTERFACE_DETECT(HasLookaheadArea, double, G::LOOKAHEAD_AREA)
+  GAMEINTERFACE_DETECT(HasKomiArea, double, G::KOMI_AREA)
 }
 
 template<class E> constexpr bool checkEncoding() {
@@ -579,7 +593,33 @@ template<class E> constexpr bool checkEncoding() {
                     "game interface, encoding part: an action is its policy index, so NUM_ACTIONS is MAX_BOARD_LEN * "
                     "MAX_BOARD_LEN * POLICY_CHANNELS + 1");
   }
+  if constexpr(HasLookaheadArea<E>::value)
+    static_assert(E::LOOKAHEAD_AREA > 0, "game interface, encoding part: LOOKAHEAD_AREA is positive");
+  if constexpr(HasKomiArea<E>::value)
+    static_assert(E::KOMI_AREA > 0, "game interface, encoding part: KOMI_AREA is positive");
   return true;
+}
+
+//The area of KataGo's look-ahead horizons on a board of xSize x ySize: the game's, else the board's.
+template<class E> constexpr double lookaheadArea(int xSize, int ySize) {
+  if constexpr(encoding::HasLookaheadArea<E>::value) {
+    (void)xSize;
+    (void)ySize;
+    return E::LOOKAHEAD_AREA;
+  }
+  else
+    return (double)xSize * ySize;
+}
+
+//The area of KataGo's komi and handicap draws on a board of xSize x ySize: the game's, else the board's.
+template<class E> constexpr double komiArea(int xSize, int ySize) {
+  if constexpr(encoding::HasKomiArea<E>::value) {
+    (void)xSize;
+    (void)ySize;
+    return E::KOMI_AREA;
+  }
+  else
+    return (double)xSize * ySize;
 }
 
 //The game's own training targets of a row (training_targets): none for a game whose TARGETS are all FRONT_TARGETS.

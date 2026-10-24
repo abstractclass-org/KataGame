@@ -45,6 +45,7 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/tests/checkgamelayer.py` | The check that no code outside the game layer names a game. Each build of `katago` and `tests/enclosure/build.sh` run it. |
 | `cpp/tests/checkgamelayer_test.py` | The test of the check, on temporary trees with planted uses (Enclosure, Connect-4 and a made-up game with a short name). |
 | `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, and the defaults of the optional members with a stub game. |
+| `cpp/tests/enclosure/testgameareas.cpp` | The look-ahead area and the komi area (optional members of the encoding part) through the front, for the build's game: the short-term value targets' lambdas and the komi draw's standard deviation, against each game's pinned areas, and the defaults with stub games. |
 
 All members are static, and every file is a header. So the compiler sees the same code as in a build for one game, and
 the WebAssembly build, the binding and the standalone tests need no new source file.
@@ -312,6 +313,8 @@ its tactics. A game can have Go's board and a shorter game, so the fork divides 
 
 - **The look-ahead horizons count decisions:** KataGo's 19 × 19 formulas, unchanged, counted in moves of the search
   tree. These are the short-term value and score targets, the short-term error targets, and value-surprise weighting.
+  They read the game's look-ahead area (`Board::lookaheadArea`, the optional member `LOOKAHEAD_AREA`): the board's
+  area, unless the game's board is larger than the reach of its decisions.
 - **The game-phase constants are fractions of a game.** `Board::TIME_SCALE` is `GAME_LENGTH / GO_GAME_LENGTH`.
   `Board::GAME_LENGTH_AREA` is `19 * 19 * TIME_SCALE`. It replaces the board's area (A) in these constants:
   - earliest self-play resignation: `1 + int(A / 5)`.
@@ -439,6 +442,16 @@ game's global inputs (V9 adds KataGo's 2 playout inputs after them).
 | `SCORE_UNIT` | The search's score utility unit, in points, where KataGo uses the square root of the board's area. | 140.5845 = √(18 · 18 · 61) |
 | `GAME_LENGTH` | A game's mean length in moves, for KataGo's game-phase constants ("The game's length"). | 120 |
 
+The encoding part's optional members work as the rules part's ("Optional members"): `gameinterface.h` has a detector
+and a helper for each, and the front calls the helper, through `Board`. The encoding part's check requires each to be
+positive. Enclosure and Connect-4 give neither, so their values are those of KataGo's code (`testgameareas` pins
+them).
+
+| Member | Meaning | Default (helper) | Blueprints |
+|---|---|---|---|
+| `LOOKAHEAD_AREA` | The area A that KataGo's look-ahead horizons read where KataGo reads the board's area ("The game's length"). The short-term value targets C4-7, C8-11 and C12-15 have lambda = 1 - 1 / (1 + A × c), for c = 0.176, 0.056 and 0.016: a mean look-ahead of A × c moves. Value-surprise weighting uses c = 0.016. | The board's area, `x_size * y_size` (`lookaheadArea`, `Board::lookaheadArea`) | 361, Go's: its 67 × 67 view holds the window, and its moves do not reach that far. The look-ahead is about 64, 20 and 6 actions, against 790, 251 and 72 with the view's 4,489, in a game of about 140 actions. |
+| `KOMI_AREA` | The area A that KataGo's komi and handicap draws read where KataGo reads the board's area (`PlayUtils::chooseExtraBlackAndKomi`): each configured standard deviation times √A / 19, and the number of handicap stones. | The board's area (`komiArea`, `Board::komiArea`) | 361: a komi configured in points is drawn in points. The view's 4,489 multiplied each standard deviation by 67 / 19. |
+
 `InputOptions` holds what the front gives the input members:
 
 | Field | Meaning |
@@ -504,6 +517,7 @@ its version.
 | `NAME`, `MAX_BOARD_LEN`, `POLICY_CHANNELS`, `NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS`, `SYMMETRIES`, `TARGETS`, `SCORE_SCALE`, `GAME_LENGTH` | As in C++. `MAX_BOARD_LEN` is the trainer's `pos_len` (the model refuses another), and the score distribution's bins are `SCORE_SCALE` points wide. | As in C++ | As in C++ |
 | `HISTORY_PLANE`, `NUM_HISTORY_PLANES` | As in C++ (the game's planes, newest first), for the history dropout. | The last 4 feature planes: 210, 4 | None: 0, 0 |
 | `apply_symmetry_inputs`, `apply_symmetry_policy_targets`, `apply_symmetry_policy` | The augmentation of the input planes, the policy targets (both channels) and a policy of the mover's moves (the q-values), at an allowed symmetry. The value targets move as pixels in every game (`games.apply_symmetry_points`). | An edge moves as an edge, with each channel's player's nodes | Every plane and the policy move as pixels, as KataGo's do. The mirror flips x on the network's 7 × 7 board, which a row of the standard board fills in width. |
+| `mask_targets` (optional) | The rows' global targets, with weight 0 for each target that the augmentation cannot map in a row. The trainer applies it to every batch, at every symmetry and without the symmetries (`games.mask_targets`: none without the member). | None | None. Blueprints gives it: the second policy target (C28) after a drop with a move of the same player to come. |
 
 The model's heads are the same in every game. The rows give each slot that the game does not write the weight 0, but
 not C0 (above). So the trainer leaves out C0 for a game without `TARGET_OWNERSHIP`.

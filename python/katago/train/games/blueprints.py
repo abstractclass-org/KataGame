@@ -16,8 +16,8 @@ Each row's shifts come from its own hand planes: the mover's blueprints (with th
 its whole frame until the drop) and the opponent's. The second policy target (the next move) needs the next mover's
 blueprints after the row's move, and the row's value targets say who the next mover is (slot C1). The blueprints are
 the row's own, except after a drop with a move of the same player to come: the drop changes two blueprints of the
-mover, and the row does not say which drop was played. Those rows map with the row's frames, an error in that target
-only.
+mover, and the row does not say which drop was played. So in those rows the second policy target has the weight 0
+(mask_targets), at every symmetry.
 """
 
 import torch
@@ -47,7 +47,9 @@ STAR_LEVELS, NUM_POINT_LEVELS = 4, 3
 PLACE_PLANES = (1 + STAR_LEVELS + NUM_POINT_LEVELS) * HAND
 MY_HAND, THEIR_HAND = 60, 69       # + k: cells, + 3 + k: stars, + 6 + k: walls
 PICKED = 78                        # + k: the picked cell of blueprint k
+PICKED_INPUT = 9                   # the global input: 1 while a pick waits for its drop
 NEXT_MOVER_SLOT = 1                # the value targets' slot that says who moves next (+1 the row's mover, -1 not)
+NEXT_POLICY_WEIGHT = 28            # the global target: the weight of the second policy target (KataGo's C28)
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
 
 
@@ -182,3 +184,13 @@ def apply_symmetry_policy_targets(policy, symmetry, binary_inputs, global_inputs
     same_next = value_targets[:, NEXT_MOVER_SLOT, 0, 0] > 0
     same = torch.stack((torch.ones_like(same_next), same_next), dim=1)
     return _map_policy(policy, symmetry, mine, theirs, same)
+
+
+def mask_targets(binary_inputs, global_inputs, value_targets, global_targets):
+    """The rows' global targets (N, 80): the weight of the second policy target is 0 in the rows of a drop (a pick
+    waits for its drop) with a move of the same player to come, whose frames the row does not give (the module's
+    docstring). That weight also weighs the target's soft loss."""
+    unmapped = (global_inputs[:, PICKED_INPUT] > 0.5) & (value_targets[:, NEXT_MOVER_SLOT, 0, 0] > 0)
+    out = global_targets.clone()
+    out[:, NEXT_POLICY_WEIGHT].masked_fill_(unmapped, 0.0)
+    return out
