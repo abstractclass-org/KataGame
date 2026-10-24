@@ -43,8 +43,8 @@ VIEW_RADIUS, HAND, HAND_X, HAND_Y = 33, 3, 33, 1
 # A player's placements, + level * HAND + k for blueprint k: fits (level 0), takes at least 1 to 4 enemy stars (levels
 # 1 to 4), scores at least 25, 100 and 400 points (levels 5 to 7). All of them are anchors.
 MY_PLACES, THEIR_PLACES = 10, 34
-STAR_LEVELS = 4
-PLACE_PLANES = (1 + STAR_LEVELS + 3) * HAND
+STAR_LEVELS, NUM_POINT_LEVELS = 4, 3
+PLACE_PLANES = (1 + STAR_LEVELS + NUM_POINT_LEVELS) * HAND
 MY_HAND, THEIR_HAND = 60, 69       # + k: cells, + 3 + k: stars, + 6 + k: walls
 PICKED = 78                        # + k: the picked cell of blueprint k
 NEXT_MOVER_SLOT = 1                # the value targets' slot that says who moves next (+1 the row's mover, -1 not)
