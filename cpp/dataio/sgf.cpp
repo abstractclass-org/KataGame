@@ -128,15 +128,20 @@ static Loc parseSgfLocOrPass(const string& s, int xSize, int ySize) {
 static void writeSgfLoc(ostream& out, Loc loc, int xSize, int ySize) {
   if(loc == Board::PASS_LOC || loc == Board::NULL_LOC)
     return;
-  //KataGame fork (2026-10-25): SGF's letters reach 52 points. A board of 53 or more (Blueprints' 61) writes a move
-  //as the number of its Loc. No reader reads it back: these records are self-play's logs, and a game with several
-  //policy channels writes its actions there, not points.
-  if(xSize >= 53 || ySize >= 53) {
-    out << (int)loc;
+  //KataGame fork: a move's Loc is MOVE_LOC_BASE + the game's action, not a point (board.h). So a move writes the
+  //game's protocol text (Location::toString), as GTP and the analysis engine show it. A point (the start's pieces, AB
+  //and AW) keeps SGF's letters, which reach 52 points: a larger board (Blueprints' view of 67) writes its points as
+  //x,y numbers. No reader reads these back: the records are self-play's logs.
+  if(loc >= Board::MOVE_LOC_BASE) {
+    out << Location::toString(loc,xSize,ySize);
     return;
   }
   int x = Location::getX(loc,xSize);
   int y = Location::getY(loc,xSize);
+  if(xSize > 52 || ySize > 52) {
+    out << x << "," << y;
+    return;
+  }
   const char* chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
   out << chars[x];
   out << chars[y];

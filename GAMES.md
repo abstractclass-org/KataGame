@@ -186,6 +186,11 @@ tests use a Debug build with assertions and `-D_GLIBCXX_ASSERTIONS`, so these er
 - `NNPos::locToPos` took both a move and a point. It now takes moves only, and gives the action, which is the policy
   index. A point's spatial index comes from `NNPos::pointToPos`.
 
+**SGF records** (`dataio/sgf.cpp`, `writeSgfLoc`): a move writes the game's protocol text (`Location::toString`),
+since its `Loc` is not a point. A point (the start's pieces, `AB` and `AW`) keeps SGF's letters, which reach 52 points:
+a board larger than 52 (Blueprints' view of 67) writes its points as `x,y` numbers. No reader reads these back: the
+records are self-play's logs. The dashboard counts their moves (`;B[` and `;W[`).
+
 **The legal moves:** `Board` keeps the legal actions as a bitset (`bitset<NUM_ACTIONS>`), updated with the position,
 so `isLegal` is a lookup. The evaluator reads it by policy index, and the evaluator that uses no network
 (`debugSkipNeuralNet`) fills every policy entry.

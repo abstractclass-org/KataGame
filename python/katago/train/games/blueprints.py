@@ -88,26 +88,33 @@ def _shifts(inputs, symmetry, hand, picked=None):
     return mq, mr
 
 
-def _hand_image(x, y, k, row, symmetry, mq, mr):
-    """The image of hand points (x, y) of blueprint k in rows ``row``: the linear part, then the blueprint's shift."""
+def _hand_image(x, y, symmetry, mq, mr):
+    """The image of hand points (x, y), each of a blueprint whose shift is (mq, mr): the linear part, then the shift."""
     q, r = _linear(x - HAND_X, y - HAND_Y, symmetry)
-    return q - mq[row, k] + HAND_X, r - mr[row, k] + HAND_Y
+    return q - mq + HAND_X, r - mr + HAND_Y
 
 
-def _anchor_image(x, y, k, row, symmetry, mq, mr):
-    """The image of placement anchors (x, y) of blueprint k in rows ``row``: the pixel, then the blueprint's shift."""
+def _anchor_image(x, y, symmetry, mq, mr):
+    """The image of placement anchors (x, y), each of a blueprint whose shift is (mq, mr): the pixel, then the shift."""
     x, y = _pixel(x, y, symmetry)
-    return x + mq[row, k], y + mr[row, k]
+    return x + mq, y + mr
 
 
-def _remap_planes(out, inputs, first, count, image):
+def _inside(x, y):
+    """Whether the points (x, y) are on the board."""
+    return (x >= 0) & (x < MAX_BOARD_LEN) & (y >= 0) & (y < MAX_BOARD_LEN)
+
+
+def _remap_planes(out, inputs, first, count, image, symmetry, shifts):
     """Writes the image of the planes ``first`` to ``first + count - 1`` of ``inputs`` into ``out``, where they were
-    pixels: image(x, y, k, row) gives each point's image, k the plane's blueprint (its offset modulo HAND)."""
+    pixels: ``image`` (_hand_image or _anchor_image) moves each point by the ``shifts`` of its row and of its plane's
+    blueprint (the plane's offset modulo HAND)."""
     block = inputs[:, 1 + first:1 + first + count]
     out[:, 1 + first:1 + first + count] = 0
     row, j, y, x = (block > 0.5).nonzero(as_tuple=True)
-    nx, ny = image(x, y, j % HAND, row)
-    inside = (nx >= 0) & (nx < MAX_BOARD_LEN) & (ny >= 0) & (ny < MAX_BOARD_LEN)
+    k = j % HAND
+    nx, ny = image(x, y, symmetry, shifts[0][row, k], shifts[1][row, k])
+    inside = _inside(nx, ny)
     out[row[inside], 1 + first + j[inside], ny[inside], nx[inside]] = block[row, j, y, x][inside]
 
 
@@ -118,13 +125,11 @@ def apply_symmetry_inputs(binary_inputs, symmetry):
     out = apply_symmetry_points(binary_inputs, symmetry).clone()
     mine = _shifts(binary_inputs, symmetry, MY_HAND, PICKED)
     theirs = _shifts(binary_inputs, symmetry, THEIR_HAND)
-    hand = lambda m: (lambda x, y, k, row: _hand_image(x, y, k, row, symmetry, *m))
-    anchor = lambda m: (lambda x, y, k, row: _anchor_image(x, y, k, row, symmetry, *m))
-    _remap_planes(out, binary_inputs, MY_HAND, 3 * HAND, hand(mine))
-    _remap_planes(out, binary_inputs, THEIR_HAND, 3 * HAND, hand(theirs))
-    _remap_planes(out, binary_inputs, PICKED, HAND, hand(mine))
-    _remap_planes(out, binary_inputs, MY_PLACES, 3 * HAND, anchor(mine))
-    _remap_planes(out, binary_inputs, THEIR_PLACES, 3 * HAND, anchor(theirs))
+    _remap_planes(out, binary_inputs, MY_HAND, 3 * HAND, _hand_image, symmetry, mine)
+    _remap_planes(out, binary_inputs, THEIR_HAND, 3 * HAND, _hand_image, symmetry, theirs)
+    _remap_planes(out, binary_inputs, PICKED, HAND, _hand_image, symmetry, mine)
+    _remap_planes(out, binary_inputs, MY_PLACES, 3 * HAND, _anchor_image, symmetry, mine)
+    _remap_planes(out, binary_inputs, THEIR_PLACES, 3 * HAND, _anchor_image, symmetry, theirs)
     return out
 
 
@@ -140,12 +145,12 @@ def _map_policy(policy, symmetry, mine, theirs, same):
     use_mine = same[row, chan]
     mq = torch.where(use_mine, mine[0][row, k], theirs[0][row, k])
     mr = torch.where(use_mine, mine[1][row, k], theirs[1][row, k])
-    ax, ay = _pixel(x, y, symmetry)
-    hq, hr = _linear(x - HAND_X, y - HAND_Y, symmetry)
+    ax, ay = _anchor_image(x, y, symmetry, mq, mr)
+    hx, hy = _hand_image(x, y, symmetry, mq, mr)
     place = action < HAND
-    nx = torch.where(place, ax + mq, hq - mq + HAND_X)
-    ny = torch.where(place, ay + mr, hr - mr + HAND_Y)
-    inside = (nx >= 0) & (nx < MAX_BOARD_LEN) & (ny >= 0) & (ny < MAX_BOARD_LEN)
+    nx = torch.where(place, ax, hx)
+    ny = torch.where(place, ay, hy)
+    inside = _inside(nx, ny)
     out.index_put_((row[inside], chan[inside], ny[inside], nx[inside], action[inside]), values[inside],
                    accumulate=True)
     return torch.cat((out.reshape(n, c, -1), policy[:, :, -1:]), dim=2)

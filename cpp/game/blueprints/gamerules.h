@@ -89,8 +89,20 @@ inline Hash128 key(uint64_t a, uint64_t b) {
   return Hash128(mix64(a * 0x9E3779B97F4A7C15ULL + b + 0x632BE59BD9B4E019ULL),
                  mix64(a * 0xC2B2AE3D27D4EB4FULL + b + 0x165667B19E3779F9ULL));
 }
-// A point of the site's grid as one number, for the hash.
+// A point of the site's grid as one number, for the hash: a cell's key (by its site point) starts above 10^9.
 inline uint64_t site_key(int q, int r) { return uint64_t(q + 32768) << 16 | uint64_t(r + 32768); }
+// The first part of each other kind of the hash's keys, one range for each kind, so that no two keys meet. A
+// blueprint's cell has |q| <= 20 and 0 <= r <= 20, so its number (q + 32) * 64 + r + 32 is below 4,096.
+constexpr uint64_t KEY_HAND = 10000;     // + (player * HAND + k) * 4096 + a cell's number, and its type
+constexpr uint64_t KEY_PLY = 40000;      // + the ply
+constexpr uint64_t KEY_PICK = 41000;     // + k * 4096 + the picked cell's number, and its type
+constexpr uint64_t KEY_SCORE = 55000;    // + the player, and the score
+constexpr uint64_t KEY_BOX = 60000;      // + player * RECENT + i, and the recent placement's box
+constexpr uint64_t KEY_OFFSET = 60100;   // the offset
+constexpr uint64_t KEY_HISTORY = 70000;  // gameencoding.h's input_hash: + h * 2 * RULES_AREA + a point
+static_assert(KEY_HAND + 6 * 4096 <= KEY_PLY && KEY_PLY + 121 <= KEY_PICK && KEY_PICK + 3 * 4096 <= KEY_SCORE &&
+              KEY_SCORE + 2 <= KEY_BOX && KEY_BOX + 4 <= KEY_OFFSET && KEY_OFFSET < KEY_HISTORY,
+              "the hash's ranges of keys do not meet");
 
 // A blueprint: its cells (q, r) and their types, in the site's frame (normalize), except the picked blueprint's rest.
 struct Blueprint {
@@ -199,11 +211,30 @@ struct Footprint {
   int32_t stamped[MAX_CELLS] = {}, taken[MAX_TAKEN] = {};  // points of the rules board, y * RULES_LEN + x
 };
 
-// A placement's box on the rules board: the least and the most x and y of the cells that it stamped.
+// A box on the rules board: the least and the most x and y of some points (any: whether it holds a point), such as the
+// cells that a placement stamped.
 struct Box {
   bool any = false;
   int16_t x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+
+  void add(int x, int y) {
+    x0 = int16_t(any ? std::min<int>(x0, x) : x);
+    x1 = int16_t(any ? std::max<int>(x1, x) : x);
+    y0 = int16_t(any ? std::min<int>(y0, y) : y);
+    y1 = int16_t(any ? std::max<int>(y1, y) : y);
+    any = true;
+  }
+  void add(const Box& b) {
+    if(b.any) {
+      add(b.x0, b.y0);
+      add(b.x1, b.y1);
+    }
+  }
 };
+
+// Half the distance of the middle of lo..hi from the rules board's middle, rounded toward zero (as C++ divides), so
+// that it commutes with the symmetries (gameencoding.h): they negate and swap the coordinates around the middle.
+inline int half_off_middle(int lo, int hi) { return (lo + hi - 2 * RULES_RADIUS) / 2; }
 
 struct Position {
   int8_t cell[RULES_AREA] = {};  // [y * RULES_LEN + x]: cell_value
@@ -249,24 +280,14 @@ inline void set_cell(Position& p, int index, int8_t v) {
   p.cell[index] = v;
 }
 
-// The window's middle, a point of the rules board: the middle of the boxes of the player's last placements, rounded
-// toward zero from the board's middle (so that it commutes with the symmetries), or the board's middle when the
-// player has placed nothing.
+// The window's middle, a point of the rules board: the middle of the box of the player's last placements, rounded
+// toward zero from the board's middle (half_off_middle), or the board's middle when the player has placed nothing.
 inline void window_middle(const Position& p, int player, int& wx, int& wy) {
-  int x0 = RULES_LEN, x1 = -1, y0 = RULES_LEN, y1 = -1;
+  Box box;
   for(const Box& b : p.recent[player])
-    if(b.any) {
-      x0 = std::min<int>(x0, b.x0);
-      x1 = std::max<int>(x1, b.x1);
-      y0 = std::min<int>(y0, b.y0);
-      y1 = std::max<int>(y1, b.y1);
-    }
-  if(x1 < 0) {
-    wx = wy = RULES_RADIUS;
-    return;
-  }
-  wx = RULES_RADIUS + (x0 + x1 - 2 * RULES_RADIUS) / 2;  // C++ rounds toward zero
-  wy = RULES_RADIUS + (y0 + y1 - 2 * RULES_RADIUS) / 2;
+    box.add(b);
+  wx = RULES_RADIUS + (box.any ? half_off_middle(box.x0, box.x1) : 0);
+  wy = RULES_RADIUS + (box.any ? half_off_middle(box.y0, box.y1) : 0);
 }
 // The mover's window: the rules board's point of the view's point (0, 0).
 inline void view_origin(const Position& p, int& ox, int& oy) {
@@ -360,39 +381,56 @@ inline int taken_by(const Position& p, int player, const Blueprint& b, int x, in
   return n;
 }
 
-// Whether the picked cell can go to blueprint j at (q, r) (the site's pe, after the pick), on the hand's points.
+// The edit's drop (the site's pe, after the pick), for a pick that took the cell (pickQ, pickR) out of blueprint k of
+// the mover's blueprints hand (k's rest connected or not): whether the cell can go to blueprint j at (q, r), a point
+// next to j's cells, or (0, 0) when j is empty (the caller checks this). The point must be one of the hand's points
+// and not a cell of j. A drop into another blueprint needs k's rest connected. A drop within k needs a new place,
+// and k connected after it.
+inline bool drop_fits(const Blueprint* hand, int k, int pickQ, int pickR, bool restConnected, int j, int q, int r) {
+  if(j != k && !restConnected)
+    return false;
+  if(!on_view(q + HAND_X, r + HAND_Y) || hand[j].find(q, r) >= 0)
+    return false;
+  return j != k || (!(q == pickQ && r == pickR) && (restConnected || hand[j].connected(true, q, r)));
+}
+
+// Calls f(j, q, r) for each point (q, r) where a drop into blueprint j of hand can go: (0, 0) when j is empty, else
+// each point next to j's cells (some more than once). Stops, and returns true, when f returns true.
+template<class F>
+inline bool any_drop_point(const Blueprint* hand, F&& f) {
+  for(int j = 0; j < HAND; j++) {
+    const Blueprint& target = hand[j];
+    if(target.n == 0) {
+      if(f(j, 0, 0))
+        return true;
+      continue;
+    }
+    for(int i = 0; i < target.n; i++)
+      for(const auto& d : DIRS)
+        if(f(j, target.q[i] + d[0], target.r[i] + d[1]))
+          return true;
+  }
+  return false;
+}
+
+// Whether the picked cell can go to blueprint j at (q, r): a drop after the pick (drop_fits).
 inline bool can_drop(const Position& p, int j, int q, int r) {
-  if(p.picked < 0 || !on_view(q + HAND_X, r + HAND_Y))
+  if(p.picked < 0)
     return false;
-  const int mover = turn_of(p.ply);
-  const Blueprint& target = p.hand[mover][j];
-  if(target.find(q, r) >= 0)
+  const Blueprint* hand = p.hand[turn_of(p.ply)];
+  if(hand[j].n == 0 ? !(q == 0 && r == 0) : !hand[j].adjacent(q, r))
     return false;
-  if(target.n == 0 ? !(q == 0 && r == 0) : !target.adjacent(q, r))
-    return false;
-  if(j != p.picked)
-    return p.pickConnected;
-  if(q == p.pickQ && r == p.pickR)
-    return false;
-  return p.pickConnected || target.connected(true, q, r);
+  return drop_fits(hand, p.picked, p.pickQ, p.pickR, p.pickConnected, j, q, r);
 }
 
 // The drops after the pick, in ascending order of action.
 inline void drops(const Position& p, std::vector<int>& out) {
-  const int mover = turn_of(p.ply);
-  for(int j = 0; j < HAND; j++) {
-    const Blueprint& target = p.hand[mover][j];
-    auto consider = [&](int q, int r) {
-      if(can_drop(p, j, q, r))
-        out.push_back(action_at(q + HAND_X, r + HAND_Y, HAND_CHANNEL + j));
-    };
-    if(target.n == 0)
-      consider(0, 0);
-    else
-      for(int i = 0; i < target.n; i++)
-        for(const auto& d : DIRS)
-          consider(target.q[i] + d[0], target.r[i] + d[1]);
-  }
+  const Blueprint* hand = p.hand[turn_of(p.ply)];
+  any_drop_point(hand, [&](int j, int q, int r) {
+    if(drop_fits(hand, p.picked, p.pickQ, p.pickR, p.pickConnected, j, q, r))
+      out.push_back(action_at(q + HAND_X, r + HAND_Y, HAND_CHANNEL + j));
+    return false;
+  });
   std::sort(out.begin(), out.end());
   out.erase(std::unique(out.begin(), out.end()), out.end());
 }
@@ -410,36 +448,18 @@ inline void take(Position& p, int k, int q, int r) {
 }
 
 // Whether the pick of the cell (q, r) of the mover's blueprint k is legal: the cell exists and a drop follows. The
-// drops depend on the hand alone, so a copy of the hand stands in for the position.
+// drops depend on the hand alone, so a copy of the hand with the cell out stands in for the position.
 inline bool can_pick(const Position& p, int k, int q, int r) {
   const int mover = turn_of(p.ply);
   if(p.picked >= 0 || p.hand[mover][k].find(q, r) < 0)
     return false;
-  Blueprint rest = p.hand[mover][k];
-  rest.remove(rest.find(q, r));
-  const bool connected = rest.connected();
-  for(int j = 0; j < HAND; j++) {
-    const Blueprint& target = j == k ? rest : p.hand[mover][j];
-    if(j != k && !connected)
-      continue;
-    auto ok = [&](int dq, int dr) {
-      if(!on_view(dq + HAND_X, dr + HAND_Y) || target.find(dq, dr) >= 0)
-        return false;
-      if(j != k)
-        return true;
-      return !(dq == q && dr == r) && (connected || target.connected(true, dq, dr));
-    };
-    if(target.n == 0) {
-      if(ok(0, 0))
-        return true;
-      continue;
-    }
-    for(int i = 0; i < target.n; i++)
-      for(const auto& d : DIRS)
-        if(ok(target.q[i] + d[0], target.r[i] + d[1]))
-          return true;
-  }
-  return false;
+  Blueprint hand[HAND];
+  std::copy(p.hand[mover], p.hand[mover] + HAND, hand);
+  hand[k].remove(hand[k].find(q, r));
+  const bool restConnected = hand[k].connected();
+  return any_drop_point(hand, [&](int j, int dq, int dr) {
+    return drop_fits(hand, k, q, r, restConnected, j, dq, dr);
+  });
 }
 
 // Moves every point of the rules board by (-dx, -dy) in the position's own records: the history and the recent
@@ -468,34 +488,29 @@ inline void shift_records(Position& p, int dx, int dy) {
       }
 }
 
-// The bounding box of the cells on the rules board. False when the board is empty.
-inline bool cells_box(const Position& p, int& xmin, int& xmax, int& ymin, int& ymax) {
-  xmin = RULES_LEN, xmax = -1, ymin = RULES_LEN, ymax = -1;
+// The bounding box of the cells on the rules board (not any when the board is empty).
+inline Box cells_box(const Position& p) {
+  Box box;
   for(int y = 0; y < RULES_LEN; y++) {
     const int8_t* row = p.cell + y * RULES_LEN;
     for(int x = 0; x < RULES_LEN; x++)
-      if(row[x]) {
-        xmin = std::min(xmin, x);
-        xmax = std::max(xmax, x);
-        ymin = std::min(ymin, y);
-        ymax = std::max(ymax, y);
-      }
+      if(row[x])
+        box.add(x, y);
   }
-  return xmax >= 0;
+  return box;
 }
 
-// Moves the cells so that the box (xmin..xmax, ymin..ymax) of the rules board is in its middle, and the offset with
-// them. The shift is half the box's distance from the middle, rounded toward zero, so that it commutes with the
-// symmetries (gameencoding.h): they negate and swap the coordinates. The box holds every cell and is at most RULES_LEN
-// wide, so the cells stay on the board. The cells' hash keys on site coordinates, so it does not change.
-inline void center_box(Position& p, int xmin, int xmax, int ymin, int ymax) {
-  const int dx = (xmin + xmax - 2 * RULES_RADIUS) / 2, dy = (ymin + ymax - 2 * RULES_RADIUS) / 2;
+// Moves the cells so that the box of the rules board is in its middle, and the offset with them: by half the box's
+// distance from the middle (half_off_middle). The box holds every cell and is at most RULES_LEN wide, so the cells
+// stay on the board. The cells' hash keys on site coordinates, so it does not change.
+inline void center_box(Position& p, const Box& box) {
+  const int dx = half_off_middle(box.x0, box.x1), dy = half_off_middle(box.y0, box.y1);
   if(dx == 0 && dy == 0)
     return;
   static thread_local std::vector<int8_t> moved;
   moved.assign(RULES_AREA, 0);
-  for(int y = std::max(0, ymin); y <= std::min(RULES_LEN - 1, ymax); y++)
-    for(int x = std::max(0, xmin); x <= std::min(RULES_LEN - 1, xmax); x++)
+  for(int y = std::max(0, int(box.y0)); y <= std::min(RULES_LEN - 1, int(box.y1)); y++)
+    for(int x = std::max(0, int(box.x0)); x <= std::min(RULES_LEN - 1, int(box.x1)); x++)
       if(p.cell[y * RULES_LEN + x])
         moved[(y - dy) * RULES_LEN + x - dx] = p.cell[y * RULES_LEN + x];
   std::copy(moved.begin(), moved.end(), p.cell);
@@ -506,9 +521,9 @@ inline void center_box(Position& p, int xmin, int xmax, int ymin, int ymax) {
 
 // Moves the cells so that their bounding box is in the rules board's middle (center_box): after each placement.
 inline void recenter(Position& p) {
-  int xmin, xmax, ymin, ymax;
-  if(cells_box(p, xmin, xmax, ymin, ymax))
-    center_box(p, xmin, xmax, ymin, ymax);
+  const Box box = cells_box(p);
+  if(box.any)
+    center_box(p, box);
 }
 
 // Stamps blueprint b of the player with its (0, 0) cell at the rules point (x, y): the stamped cells, the enemy cells
@@ -526,67 +541,69 @@ inline void stamp(Position& p, int player, const Blueprint& b, int x, int y, Foo
   p.stars[enemy] = int16_t(p.stars[enemy] - removedStars);
   trace.nStamped = b.n;
   Box box;
-  box.any = true;
-  box.x0 = box.y0 = int16_t(RULES_LEN);
-  box.x1 = box.y1 = -1;
   for(int i = 0; i < b.n; i++) {
     const int cx = x + b.q[i], cy = y + b.r[i];
     trace.stamped[i] = cy * RULES_LEN + cx;
     set_cell(p, trace.stamped[i], cell_value(player, b.t[i]));
     p.stars[player] = int16_t(p.stars[player] + (b.t[i] == STAR));
-    box.x0 = int16_t(std::min<int>(box.x0, cx));
-    box.x1 = int16_t(std::max<int>(box.x1, cx));
-    box.y0 = int16_t(std::min<int>(box.y0, cy));
-    box.y1 = int16_t(std::max<int>(box.y1, cy));
+    box.add(cx, cy);
   }
   for(int i = RECENT - 1; i > 0; i--)
     p.recent[player][i] = p.recent[player][i - 1];
   p.recent[player][0] = box;
 }
 
-// Places the mover's blueprint k with its (0, 0) cell on the site's point (q, r), anywhere on the rules board: a move
-// of the site that the engine's actions cannot name (a placement with a cell outside the view), as a replay of a site's
-// game plays it. A placement that sticks out of the board moves the cells first, so that the box of the cells and the
-// placement is in the middle (the board recenters after a placement, and a long blueprint can reach past its edge).
-// False, and no change, when a pick waits or the placement does not fit: not legal, or the box of the cells and the
-// placement wider than the rules board.
-inline bool place_at_site(Position& p, int k, int q, int r) {
-  const int mover = turn_of(p.ply);
-  if(p.ply >= PLIES || p.picked >= 0 || k < 0 || k >= HAND || p.hand[mover][k].n == 0)
-    return false;
-  const Blueprint& b = p.hand[mover][k];
-  int x = q - p.offsetQ + RULES_RADIUS, y = r - p.offsetR + RULES_RADIUS;
-  bool off = false;
-  for(int i = 0; i < b.n; i++)
-    off = off || !on_rules(x + b.q[i], y + b.r[i]);
-  if(off) {
-    int xmin, xmax, ymin, ymax;
-    cells_box(p, xmin, xmax, ymin, ymax);
-    for(int i = 0; i < b.n; i++) {
-      xmin = std::min(xmin, x + b.q[i]);
-      xmax = std::max(xmax, x + b.q[i]);
-      ymin = std::min(ymin, y + b.r[i]);
-      ymax = std::max(ymax, y + b.r[i]);
-    }
-    if(xmax - xmin >= RULES_LEN || ymax - ymin >= RULES_LEN)
-      return false;
-    const Position before = p;
-    center_box(p, xmin, xmax, ymin, ymax);
-    x = q - p.offsetQ + RULES_RADIUS;
-    y = r - p.offsetR + RULES_RADIUS;
-    if(!fits(p, mover, b, x, y)) {
-      p = before;
-      return false;
-    }
-  }
-  else if(!fits(p, mover, b, x, y))
-    return false;
+// Makes room for the newest action at the front of the history. An action that leaves no points leaves it empty.
+inline void push_history(Position& p) {
   for(int h = HISTORY - 1; h > 0; h--)
     p.history[h] = p.history[h - 1];
   p.history[0] = Footprint();
+}
+
+// Plays the mover's placement of blueprint k with its (0, 0) cell at the rules point (x, y), which the caller checked,
+// after push_history: the stamp, the board back to its middle (recenter), and the ply.
+inline void place(Position& p, int k, int x, int y) {
+  const int mover = turn_of(p.ply);
   stamp(p, mover, p.hand[mover][k], x, y, p.history[0]);
   recenter(p);
   p.ply++;
+}
+
+// Places the mover's blueprint k with its (0, 0) cell on the site's point (q, r), anywhere on the rules board: a move
+// of the site that the engine's actions cannot name (a placement with a cell outside the view), as a replay of a site's
+// game plays it. First the site's rule: every cell empty, and one of them next to a cell of the mover (a point off the
+// board is empty, as at() reads it). Then a placement that sticks out of the board moves the cells, so that the box of
+// the cells and the placement is in the middle (the board recenters after a placement, and a long blueprint can reach
+// past its edge). False, and no change, when a pick waits, when the placement is not legal, or when the box of the
+// cells and the placement is wider than the rules board.
+inline bool place_at_site(Position& p, int k, int q, int r) {
+  if(p.ply >= PLIES || p.picked >= 0 || k < 0 || k >= HAND)
+    return false;
+  const int mover = turn_of(p.ply);
+  const Blueprint& b = p.hand[mover][k];
+  int x = q - p.offsetQ + RULES_RADIUS, y = r - p.offsetR + RULES_RADIUS;
+  bool touches = false, off = false;
+  for(int i = 0; i < b.n; i++) {
+    const int cx = x + b.q[i], cy = y + b.r[i];
+    if(at(p, cx, cy))
+      return false;
+    touches = touches || next_to_own(p, cx, cy, mover);
+    off = off || !on_rules(cx, cy);
+  }
+  if(!touches)
+    return false;
+  if(off) {
+    Box box = cells_box(p);
+    for(int i = 0; i < b.n; i++)
+      box.add(x + b.q[i], y + b.r[i]);
+    if(box.x1 - box.x0 >= RULES_LEN || box.y1 - box.y0 >= RULES_LEN)
+      return false;
+    center_box(p, box);
+    x = q - p.offsetQ + RULES_RADIUS;
+    y = r - p.offsetR + RULES_RADIUS;
+  }
+  push_history(p);
+  place(p, k, x, y);
   return true;
 }
 
@@ -616,22 +633,26 @@ inline void setup(Position& p) {
       Footprint start;
       stamp(p, player, p.hand[player][k], starts[player][k] + RULES_RADIUS, -1 + RULES_RADIUS, start);
     }
-    p.recent[player][0] = p.recent[player][1] = Box();
+    for(Box& b : p.recent[player])
+      b = Box();
   }
 }
 
-// A number's text: an integer of at most 4 digits.
-inline bool parse_int(const std::string& s, int& out) {
-  size_t i = 0;
-  if(!s.empty() && s[0] == '-')
-    i = 1;
-  if(i >= s.size() || s.size() - i > 4)
+// A number's text: an integer of at most `digits` digits (at most 9, so that it fits an int), with an optional minus.
+inline bool parse_int(const std::string& s, int& out, size_t digits = 4) {
+  const size_t sign = !s.empty() && s[0] == '-';
+  if(s.size() <= sign || s.size() - sign > digits)
     return false;
-  for(size_t j = i; j < s.size(); j++)
-    if(!std::isdigit((unsigned char)s[j]))
+  for(size_t i = sign; i < s.size(); i++)
+    if(!std::isdigit((unsigned char)s[i]))
       return false;
   out = std::atoi(s.c_str());
   return true;
+}
+// A type's letter: PLAIN, STAR or WALL for p, s or w (TYPE_LETTERS), else -1.
+inline int type_of(char letter) {
+  const char* found = letter ? std::strchr(TYPE_LETTERS, letter) : nullptr;
+  return found ? int(found - TYPE_LETTERS) : -1;
 }
 // A cell's text: "q,r", integers.
 inline bool parse_cell(const std::string& text, int& q, int& r) {
@@ -717,10 +738,7 @@ struct GameRules {
   }
   static void play(Position& p, int action) {
     const int mover = turn_of(p.ply);
-    // The history: the newest action first. Only a placement leaves points.
-    for(int h = HISTORY - 1; h > 0; h--)
-      p.history[h] = p.history[h - 1];
-    p.history[0] = Footprint();
+    push_history(p);  // only a placement leaves points
     if(action == PASS_ACTION) {
       // A timeout's pass ends the move. A pick without its drop goes back.
       if(p.picked >= 0) {
@@ -746,9 +764,7 @@ struct GameRules {
     else {
       int ox, oy;
       view_origin(p, ox, oy);
-      stamp(p, mover, p.hand[mover][channel - PLACE], x + ox, y + oy, p.history[0]);
-      recenter(p);
-      p.ply++;
+      place(p, channel - PLACE, x + ox, y + oy);
     }
   }
   static bool replay_tolerates(const Position&, int action) { return action == PASS_ACTION; }
@@ -759,29 +775,33 @@ struct GameRules {
   }
   static double score(const Position& p, int player) { return p.scores[player]; }
 
-  // The cells (cellHash, by site coordinates), each blueprint's cells, the ply, the pick, the scores, and the recent
-  // placements' boxes by site coordinates (they set the window, so the legal moves): a hash of the whole position.
+  // The cells (cellHash, by site coordinates), each blueprint's cells, the ply, the pick, the scores, the recent
+  // placements' boxes by site coordinates and the offset: a hash of the whole position (each kind with its own keys,
+  // KEY_HAND and the others). The boxes and the offset set the window, so the legal moves: the window's middle rounds
+  // toward the rules board's middle, so with the same boxes two offsets can give two windows (half_off_middle).
   static Hash128 hash(const Position& p) {
+    auto cell_number = [](int q, int r) { return uint64_t((q + 32) * 64 + r + 32); };
     Hash128 h = p.cellHash ^ key(1, 0);
     for(int player = 0; player < 2; player++)
       for(int k = 0; k < HAND; k++) {
         const Blueprint& b = p.hand[player][k];
         for(int i = 0; i < b.n; i++)
-          h ^= key(10000 + (player * HAND + k) * 4096 + (b.q[i] + 32) * 64 + (b.r[i] + 32), uint64_t(b.t[i]));
+          h ^= key(KEY_HAND + uint64_t(player * HAND + k) * 4096 + cell_number(b.q[i], b.r[i]), uint64_t(b.t[i]));
       }
-    h ^= key(40000 + uint64_t(p.ply), 0);
+    h ^= key(KEY_PLY + uint64_t(p.ply), 0);
     if(p.picked >= 0)
-      h ^= key(41000 + uint64_t(p.picked) * 4096 + (p.pickQ + 32) * 64 + (p.pickR + 32), uint64_t(p.pickType));
-    h ^= key(50000, uint64_t(uint32_t(p.scores[0])));
-    h ^= key(50001, uint64_t(uint32_t(p.scores[1])));
+      h ^= key(KEY_PICK + uint64_t(p.picked) * 4096 + cell_number(p.pickQ, p.pickR), uint64_t(p.pickType));
+    for(int player = 0; player < 2; player++)
+      h ^= key(KEY_SCORE + uint64_t(player), uint64_t(uint32_t(p.scores[player])));
+    const int dq = p.offsetQ - RULES_RADIUS, dr = p.offsetR - RULES_RADIUS;
     for(int player = 0; player < 2; player++)
       for(int i = 0; i < RECENT; i++) {
         const Box& b = p.recent[player][i];
-        if(!b.any)
-          continue;
-        const int dq = p.offsetQ - RULES_RADIUS, dr = p.offsetR - RULES_RADIUS;
-        h ^= key(60000 + uint64_t(player * RECENT + i), site_key(b.x0 + dq, b.y0 + dr) << 32 | site_key(b.x1 + dq, b.y1 + dr));
+        if(b.any)
+          h ^= key(KEY_BOX + uint64_t(player * RECENT + i),
+                   site_key(b.x0 + dq, b.y0 + dr) << 32 | site_key(b.x1 + dq, b.y1 + dr));
       }
+    h ^= key(KEY_OFFSET, site_key(p.offsetQ, p.offsetR));
     return h;
   }
 
@@ -866,7 +886,8 @@ struct GameRules {
         if(!board.empty())
           board += ';';
         const char letter = TYPE_LETTERS[cell_type(v)];
-        board += cell_text(x - RULES_RADIUS, y - RULES_RADIUS) + "," + char(cell_owner(v) ? std::toupper(letter) : letter);
+        board += cell_text(x - RULES_RADIUS, y - RULES_RADIUS) + "," +
+                 char(cell_owner(v) ? std::toupper(letter) : letter);
       }
     s += board.empty() ? "-" : board;
     for(int player = 0; player < 2; player++) {
@@ -911,23 +932,15 @@ struct GameRules {
     }
     static thread_local Position q;
     q = Position();
-    auto integer = [](const std::string& s, long& out) {
-      if(s.empty() || s.size() > 10)
-        return false;
-      for(size_t i = (s[0] == '-'); i < s.size(); i++)
-        if(!std::isdigit((unsigned char)s[i]))
-          return false;
-      out = std::atol(s.c_str());
-      return true;
-    };
-    long ply, s0, s1;
-    if(!integer(fields[0], ply) || ply < 0 || ply > PLIES || !integer(fields[1], s0) || !integer(fields[2], s1)) {
-      why = "the ply is 0 to " + std::to_string(PLIES) + ", and the scores are integers";
+    int ply, s0, s1;
+    if(!parse_int(fields[0], ply) || ply < 0 || ply > PLIES || !parse_int(fields[1], s0, 9) ||
+       !parse_int(fields[2], s1, 9)) {
+      why = "the ply is 0 to " + std::to_string(PLIES) + ", and the scores are integers of at most 9 digits";
       return false;
     }
     q.ply = int16_t(ply);
-    q.scores[0] = int32_t(s0);
-    q.scores[1] = int32_t(s1);
+    q.scores[0] = s0;
+    q.scores[1] = s1;
     int oq, orr;
     if(!parse_cell(fields[7], oq, orr)) {
       why = "the offset is q,r: the site's coordinates of the rules board's middle";
@@ -947,7 +960,8 @@ struct GameRules {
       for(const std::string& c : split(fields[3], ';')) {
         int cq, cr;
         char letter;
-        if(!cell3(c, cq, cr, letter) || !std::strchr(TYPE_LETTERS, std::tolower(letter)) || letter == 0) {
+        const int type = cell3(c, cq, cr, letter) ? type_of(char(std::tolower((unsigned char)letter))) : -1;
+        if(type < 0) {
           why = "a cell of the board is q,r,T with T one of psw (the first player) or PSW (the second): \"" + c + "\"";
           return false;
         }
@@ -957,7 +971,6 @@ struct GameRules {
           return false;
         }
         const int owner = std::isupper((unsigned char)letter) ? 1 : 0;
-        const int type = int(std::strchr(TYPE_LETTERS, std::tolower(letter)) - TYPE_LETTERS);
         set_cell(q, y * RULES_LEN + x, cell_value(owner, type));
         q.stars[owner] = int16_t(q.stars[owner] + (type == STAR));
       }
@@ -966,16 +979,17 @@ struct GameRules {
       int cq, cr;
       char letter;
       const std::string& f = fields[6];
-      const char* type = f.size() > 2 ? std::strchr(TYPE_LETTERS, f.back()) : nullptr;
-      if(f.size() < 7 || f[1] != ':' || f[0] < '1' || f[0] > '0' + HAND || !cell3(f.substr(2), cq, cr, letter) ||
-         !type || q.ply >= PLIES) {
-        why = "the pick is I:q,r,t (blueprint I from 1, t one of psw), before the end";
+      const bool form =
+          f.size() >= 7 && f[1] == ':' && f[0] >= '1' && f[0] <= '0' + HAND && cell3(f.substr(2), cq, cr, letter);
+      const int type = form ? type_of(letter) : -1;
+      if(type < 0 || !on_view(cq + HAND_X, cr + HAND_Y) || q.ply >= PLIES) {
+        why = "the pick is I:q,r,t (blueprint I from 1, t one of psw, the cell on the hand's points), before the end";
         return false;
       }
       q.picked = int8_t(f[0] - '1');
       q.pickQ = int8_t(cq);
       q.pickR = int8_t(cr);
-      q.pickType = int8_t(type - TYPE_LETTERS);
+      q.pickType = int8_t(type);
     }
     for(int player = 0; player < 2; player++) {
       const std::vector<std::string> bps = split(fields[4 + player], '|');
@@ -990,13 +1004,12 @@ struct GameRules {
           for(const std::string& c : split(bps[k], ';')) {
             int cq, cr;
             char letter;
-            const char* type = nullptr;
-            if(!cell3(c, cq, cr, letter) || !(type = std::strchr(TYPE_LETTERS, letter)) || letter == 0 ||
-               b.n == MAX_CELLS || b.find(cq, cr) >= 0 || !on_view(cq + HAND_X, cr + HAND_Y)) {
+            const int type = cell3(c, cq, cr, letter) ? type_of(letter) : -1;
+            if(type < 0 || b.n == MAX_CELLS || b.find(cq, cr) >= 0 || !on_view(cq + HAND_X, cr + HAND_Y)) {
               why = "a blueprint's cell is q,r,t with t one of psw, each once, on the hand's points: \"" + c + "\"";
               return false;
             }
-            b.add(cq, cr, int(type - TYPE_LETTERS));
+            b.add(cq, cr, type);
           }
         total += b.n;
         const bool rest = player == mover && k == q.picked;
@@ -1014,8 +1027,15 @@ struct GameRules {
       }
     }
     if(q.picked >= 0) {
-      if(q.hand[mover][q.picked].find(q.pickQ, q.pickR) >= 0) {
+      // The rest keeps the whole blueprint's frame until the drop (take): with the picked cell, it is the blueprint.
+      Blueprint whole = q.hand[mover][q.picked];
+      if(whole.find(q.pickQ, q.pickR) >= 0) {
         why = "the picked cell is still in its blueprint";
+        return false;
+      }
+      whole.add(q.pickQ, q.pickR, q.pickType);
+      if(!whole.framed() || !whole.connected()) {
+        why = "the picked cell and the rest of its blueprint are not connected or not in the site's frame";
         return false;
       }
       q.pickConnected = q.hand[mover][q.picked].connected();
@@ -1037,8 +1057,8 @@ struct GameRules {
         const std::vector<std::string> v = split(boxes[i], ',');
         int c[4];
         if(v.size() != 4 || !parse_int(v[0], c[0]) || !parse_int(v[1], c[1]) || !parse_int(v[2], c[2]) ||
-           !parse_int(v[3], c[3]) || c[0] > c[1] || c[2] > c[3] || !on_rules(c[0] + RULES_RADIUS, c[2] + RULES_RADIUS) ||
-           !on_rules(c[1] + RULES_RADIUS, c[3] + RULES_RADIUS)) {
+           !parse_int(v[3], c[3]) || c[0] > c[1] || c[2] > c[3] ||
+           !on_rules(c[0] + RULES_RADIUS, c[2] + RULES_RADIUS) || !on_rules(c[1] + RULES_RADIUS, c[3] + RULES_RADIUS)) {
           why = "a recent placement's box is q0,q1,r0,r1 on the rules board: \"" + boxes[i] + "\"";
           return false;
         }

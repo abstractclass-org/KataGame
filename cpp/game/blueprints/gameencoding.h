@@ -109,6 +109,10 @@ struct GameEncoding {
     const int mover = GameRules::next_player(p), opponent = 1 - mover;
     int ox, oy;
     view_origin(p, ox, oy);
+    // Each player's frontier in the view, as rules points (frontier_near gives the same), for the placements below.
+    static thread_local std::vector<int32_t> frontier[2];
+    frontier[0].clear();
+    frontier[1].clear();
     for(int y = 0; y < VIEW; y++)
       for(int x = 0; x < VIEW; x++) {
         const int rx = x + ox, ry = y + oy;
@@ -126,26 +130,24 @@ struct GameEncoding {
               set(x, y, owner == mover ? MY_OPEN : THEIR_OPEN);
           }
         }
-        else {
-          if(next_to_own(p, rx, ry, mover))
-            set(x, y, MY_FRONTIER);
-          if(next_to_own(p, rx, ry, opponent))
-            set(x, y, THEIR_FRONTIER);
-        }
+        else
+          for(int player : {mover, opponent})
+            if(next_to_own(p, rx, ry, player)) {
+              set(x, y, player == mover ? MY_FRONTIER : THEIR_FRONTIER);
+              frontier[player].push_back(ry * RULES_LEN + rx);
+            }
       }
     // The placements of each player in the view, on the board as it is: the mover's when no pick waits for its drop,
     // and the opponent's as if it moved now (its threats).
     if(!GameRules::terminal(p)) {
-      static thread_local std::vector<int32_t> frontier;
       for(int player : {mover, opponent}) {
         if(player == mover && p.picked >= 0)
           continue;
         const int places = player == mover ? MY_PLACES : THEIR_PLACES;
         const int taken = player == mover ? THEIRS_TAKEN : MINE_TAKEN;
-        frontier_near(p, player, ox, oy, frontier);
         for(int k = 0; k < HAND; k++) {
           const Blueprint& b = p.hand[player][k];
-          for_each_placement(p, player, b, ox, oy, frontier, [&](int x, int y) {
+          for_each_placement(p, player, b, ox, oy, frontier[player], [&](int x, int y) {
             set(x, y, places + k);
             int32_t points[MAX_TAKEN];
             const int n = taken_by(p, player, b, x + ox, y + oy, points);
@@ -195,7 +197,8 @@ struct GameEncoding {
       }
   }
 
-  // A score on a scale where 100 points is 1 and 10,000 is 2: the scores grow with the stars on the board.
+  // A score on a log scale, log10(1 + |points| / 10) / 2 with the score's sign: 100 points give 0.52, 1,000 give 1.00
+  // and 10,000 give 1.50. The scores grow with the stars on the board.
   static float squash(double points) {
     const double a = std::log10(1.0 + std::fabs(points) / 10.0) / 2.0;
     return float(points < 0 ? -a : a);
@@ -243,9 +246,9 @@ struct GameEncoding {
     for(int t = 0; t < HISTORY; t++) {
       const Footprint& f = p.history[t];
       for(int i = 0; i < f.nStamped; i++)
-        h ^= key(70000 + uint64_t(t) * 2 * RULES_AREA + uint64_t(f.stamped[i]), 0);
+        h ^= key(KEY_HISTORY + uint64_t(t) * 2 * RULES_AREA + uint64_t(f.stamped[i]), 0);
       for(int i = 0; i < f.nTaken; i++)
-        h ^= key(70000 + uint64_t(t) * 2 * RULES_AREA + RULES_AREA + uint64_t(f.taken[i]), 0);
+        h ^= key(KEY_HISTORY + uint64_t(t) * 2 * RULES_AREA + RULES_AREA + uint64_t(f.taken[i]), 0);
     }
     return h;
   }
@@ -260,10 +263,20 @@ struct GameEncoding {
 
   static constexpr unsigned SYMMETRIES = (1u << 0) | (1u << 3) | (1u << 4) | (1u << 7);
 
-  // The image of everything but the cells: each blueprint's cells at their images in the site's frame (the rest of a
-  // picked blueprint and the picked cell keep the frame of the whole blueprint's image, as the rest keeps the whole
-  // blueprint's frame until the drop), the history's points, the recent placements' boxes and the offset.
+  // The image of everything but the cells on the board: the scores, the counts, the ply and the pick as they are, each
+  // blueprint's cells at their images in the site's frame (the rest of a picked blueprint and the picked cell keep the
+  // frame of the whole blueprint's image, as the rest keeps the whole blueprint's frame until the drop), the history's
+  // points, the recent placements' boxes and the offset.
   static void sym_records(const Position& p, int symmetry, Position& s) {
+    std::copy(p.scores, p.scores + 2, s.scores);
+    std::copy(p.stars, p.stars + 2, s.stars);
+    std::copy(p.cells, p.cells + 2, s.cells);
+    s.ply = p.ply;
+    s.picked = p.picked;
+    s.pickQ = p.pickQ;
+    s.pickR = p.pickR;
+    s.pickType = p.pickType;
+    s.pickConnected = p.pickConnected;
     const int mover = GameRules::next_player(p);
     for(int player = 0; player < 2; player++)
       for(int k = 0; k < HAND; k++) {
@@ -298,16 +311,14 @@ struct GameEncoding {
       for(int i = 0; i < RECENT; i++) {
         const Box& b = p.recent[player][i];
         Box& image = s.recent[player][i];
-        image = b;
+        image = Box();
         if(!b.any)
           continue;
         int ax = b.x0, ay = b.y0, bx = b.x1, by = b.y1;
         sym_rules(ax, ay, symmetry);
         sym_rules(bx, by, symmetry);
-        image.x0 = int16_t(std::min(ax, bx));
-        image.x1 = int16_t(std::max(ax, bx));
-        image.y0 = int16_t(std::min(ay, by));
-        image.y1 = int16_t(std::max(ay, by));
+        image.add(ax, ay);
+        image.add(bx, by);
       }
     int oq = p.offsetQ, orr = p.offsetR;
     sym_offset(oq, orr, symmetry);
@@ -315,23 +326,30 @@ struct GameEncoding {
     s.offsetR = int16_t(orr);
   }
 
-  // The image: the rules board's cells at their pixels' images around its middle, the cells' hash again by the
-  // image's site coordinates, and the records (sym_records).
+  // Writes the images of p's cells in the rules board's columns x0 to x1 - 1 and rows y0 to y1 - 1 into s, whose cells
+  // are empty and whose offset is the image's (sym_records): each at its pixel's image around the board's middle. Then
+  // s's cells' hash, by the image's site coordinates.
+  static void sym_cells(const Position& p, int symmetry, int x0, int x1, int y0, int y1, Position& s) {
+    s.cellHash = Hash128();
+    for(int y = y0; y < y1; y++)
+      for(int x = x0; x < x1; x++) {
+        const int8_t v = p.cell[y * RULES_LEN + x];
+        if(!v)
+          continue;
+        int sx = x, sy = y;
+        sym_rules(sx, sy, symmetry);
+        s.cell[sy * RULES_LEN + sx] = v;
+        s.cellHash ^= key(site_key(sx - RULES_RADIUS + s.offsetQ, sy - RULES_RADIUS + s.offsetR), uint64_t(v));
+      }
+  }
+
+  // The image: the records (sym_records) and every cell (sym_cells).
   static Position sym_position(const Position& p, int symmetry) {
     if(symmetry == 0)
       return p;
-    Position s = p;
+    Position s;
     sym_records(p, symmetry, s);
-    s.cellHash = Hash128();
-    for(int i = 0; i < RULES_AREA; i++)
-      s.cell[i] = 0;
-    for(int i = 0; i < RULES_AREA; i++)
-      if(p.cell[i]) {
-        const int32_t j = sym_rules_index(i, symmetry);
-        s.cell[j] = p.cell[i];
-        const int q = j % RULES_LEN - RULES_RADIUS + s.offsetQ, r = j / RULES_LEN - RULES_RADIUS + s.offsetR;
-        s.cellHash ^= key(site_key(q, r), uint64_t(p.cell[i]));
-      }
+    sym_cells(p, symmetry, 0, RULES_LEN, 0, RULES_LEN, s);
     return s;
   }
 
@@ -341,36 +359,18 @@ struct GameEncoding {
     static thread_local std::vector<Position> buffer(1);
     Position& s = buffer[0];
     std::fill(s.cell, s.cell + RULES_AREA, int8_t(0));
-    s.scores[0] = p.scores[0];
-    s.scores[1] = p.scores[1];
-    s.stars[0] = p.stars[0];
-    s.stars[1] = p.stars[1];
-    s.cells[0] = p.cells[0];
-    s.cells[1] = p.cells[1];
-    s.ply = p.ply;
-    s.picked = p.picked;
-    s.pickQ = p.pickQ;
-    s.pickR = p.pickR;
-    s.pickType = p.pickType;
-    s.pickConnected = p.pickConnected;
     sym_records(p, symmetry, s);
     int ox, oy;
     view_origin(p, ox, oy);
-    for(int y = std::max(0, oy - INPUT_REACH); y < std::min(RULES_LEN, oy + VIEW + INPUT_REACH); y++)
-      for(int x = std::max(0, ox - INPUT_REACH); x < std::min(RULES_LEN, ox + VIEW + INPUT_REACH); x++) {
-        const int8_t v = p.cell[y * RULES_LEN + x];
-        if(!v)
-          continue;
-        int sx = x, sy = y;
-        sym_rules(sx, sy, symmetry);
-        s.cell[sy * RULES_LEN + sx] = v;
-      }
+    sym_cells(p, symmetry, std::max(0, ox - INPUT_REACH), std::min(RULES_LEN, ox + VIEW + INPUT_REACH),
+              std::max(0, oy - INPUT_REACH), std::min(RULES_LEN, oy + VIEW + INPUT_REACH), s);
     return s;
   }
 
   // A legal action's image, an action of sym_position: a placement's anchor is the lowest point of its stamped cells'
-  // images, in the image's view (the window's image), and a pick's or a drop's hand point moves by its blueprint's
-  // frame (frame_shift).
+  // images, which is the anchor's pixel moved by the blueprint's shift (frame_shift), in the image's view (the window's
+  // image). A pick's or a drop's hand point moves by the linear part, then by its blueprint's shift. The trainer's
+  // module maps both the same way.
   struct SymActionMap {
     int symmetry;
     Blueprint hand[HAND];  // the mover's
@@ -390,21 +390,14 @@ struct GameEncoding {
       if(symmetry == 0 || action == GameRules::PASS_ACTION)
         return action;
       const int x = action_x(action), y = action_y(action), channel = action_channel(action);
+      int mq, mr;
       if(channel < HAND_CHANNEL) {
-        const Blueprint& b = hand[channel - PLACE];
-        int ax = 0, ay = 0;
-        for(int i = 0; i < b.n; i++) {
-          int sx = x + ox + b.q[i], sy = y + oy + b.r[i];
-          sym_rules(sx, sy, symmetry);
-          if(i == 0 || sy < ay || (sy == ay && sx < ax)) {
-            ax = sx;
-            ay = sy;
-          }
-        }
-        return action_at(ax - imageOx, ay - imageOy, channel);
+        int ax = x + ox, ay = y + oy;
+        sym_rules(ax, ay, symmetry);
+        frame_shift(hand[channel - PLACE], symmetry, false, 0, 0, mq, mr);
+        return action_at(ax + mq - imageOx, ay + mr - imageOy, channel);
       }
       const int k = channel - HAND_CHANNEL;  // a pick from blueprint k, or a drop into it after a pick
-      int mq, mr;
       frame_shift(hand[k], symmetry, k == picked, pickQ, pickR, mq, mr);
       int q = x - HAND_X, r = y - HAND_Y;
       sym_offset(q, r, symmetry);
@@ -449,7 +442,7 @@ struct GameEncoding {
   static constexpr double SCORE_SCALE = 12.0;
   static constexpr double SCORE_UNIT = 200.0;
   // A game is 120 of the site's moves (moves_played counts them; a pick and its drop are one).
-  static constexpr double GAME_LENGTH = 120.0;
+  static constexpr double GAME_LENGTH = PLIES;
 };
 
 static_assert(GameInterface::checkEncoding<GameEncoding>(), "Blueprints' network encoding part");
