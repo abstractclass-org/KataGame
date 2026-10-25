@@ -131,37 +131,40 @@ struct GameEncoding {
     const int mover = GameRules::next_player(p), opponent = 1 - mover;
     int ox, oy;
     view_origin(p, ox, oy);
-    // Each player's frontier in the view, as rules points (frontier_near gives the same), for the placements below.
-    static thread_local std::vector<int32_t> frontier[2];
-    frontier[0].clear();
-    frontier[1].clear();
-    for(int y = 0; y < VIEW; y++)
-      for(int x = 0; x < VIEW; x++) {
-        const int rx = x + ox, ry = y + oy;
-        if(!on_rules(rx, ry))
-          continue;
-        const int8_t v = p.cell[ry * RULES_LEN + rx];
-        if(v) {
-          const int owner = cell_owner(v), type = cell_type(v);
-          set(x, y, (owner == mover ? MINE : THEIRS) + type);
-          if(type != WALL) {
-            bool open = false;
-            for(const auto& d : DIRS)
-              open = open || (on_rules(rx + d[0], ry + d[1]) && !p.cell[(ry + d[1]) * RULES_LEN + rx + d[0]]);
-            if(open)
-              set(x, y, owner == mover ? MY_OPEN : THEIR_OPEN);
-          }
-        }
-        else
-          for(int player : {mover, opponent})
-            if(next_to_own(p, rx, ry, player)) {
-              set(x, y, player == mover ? MY_FRONTIER : THEIR_FRONTIER);
-              frontier[player].push_back(ry * RULES_LEN + rx);
-            }
-      }
+    for(int y = 0; y < VIEW; y++) {
+      const int ry = y + oy;
+      if(ry < 0 || ry >= RULES_LEN)
+        continue;
+      const int8_t* row = p.cell.row(ry);
+      for(int x = std::max(0, -ox); x < std::min(VIEW, RULES_LEN - ox); x++)
+        if(const int8_t v = row[x + ox])
+          set(x, y, (cell_owner(v) == mover ? MINE : THEIRS) + cell_type(v));
+    }
+    // The open cells, the frontiers and the placements, from the view's rows of bits (gamerules.h, view_rows).
+    ViewRows rows;
+    view_rows(p, ox, oy, rows);
+    auto set_rows = [&](const ViewRow* r, int plane) {
+      for(int y = 0; y < VIEW; y++)
+        for_each_bit(r[y], [&](int x) { set(x, y, plane); });
+    };
+    set_rows(rows.open[mover], MY_OPEN);
+    set_rows(rows.open[opponent], THEIR_OPEN);
+    set_rows(rows.frontier[mover], MY_FRONTIER);
+    set_rows(rows.frontier[opponent], THEIR_FRONTIER);
     // The placements of each player in the view, on the board as it is: the mover's when no pick waits for its drop,
     // and the opponent's as if it moved now (its threats, which score with its own stars).
     if(!GameRules::terminal(p)) {
+      // What a placement of each player takes (taken_by), on the view's points and one point around it (padded: x + 1,
+      // y + 1): 1 on each enemy cell that is not a wall, 2 on an enemy star. A placement's cells lie in the view, so the
+      // cells next to them lie within one point of it.
+      constexpr int PADDED = VIEW + 2;
+      int8_t take[2][PADDED * PADDED] = {};
+      for(int j = 0; j < PADDED; j++)
+        for(int i = 0; i < PADDED; i++) {
+          const int8_t v = at(p, i - 1 + ox, j - 1 + oy);
+          if(v && cell_type(v) != WALL)
+            take[1 - cell_owner(v)][j * PADDED + i] = int8_t(cell_type(v) == STAR ? 2 : 1);
+        }
       for(int player : {mover, opponent}) {
         if(player == mover && p.picked >= 0)
           continue;
@@ -169,14 +172,31 @@ struct GameEncoding {
         const int taken = player == mover ? THEIRS_TAKEN : MINE_TAKEN;
         for(int k = 0; k < HAND; k++) {
           const Blueprint& b = p.hand[player][k];
-          for_each_placement(p, player, b, ox, oy, frontier[player], [&](int x, int y) {
+          // The points next to b's cells, each once, from b's (0, 0) cell: a placement takes the enemy's cells there
+          // (taken_by).
+          int8_t nq[6 * MAX_CELLS], nr[6 * MAX_CELLS];
+          int nn = 0;
+          for(int i = 0; i < b.n; i++)
+            for(const auto& d : DIRS) {
+              const int q = b.q[i] + d[0], r = b.r[i] + d[1];
+              int m = 0;
+              while(m < nn && !(nq[m] == q && nr[m] == r))
+                m++;
+              if(m == nn) {
+                nq[nn] = int8_t(q);
+                nr[nn] = int8_t(r);
+                nn++;
+              }
+            }
+          for_each_fit(b, rows.empty, rows.frontier[player], [&](int x, int y) {
             set(x, y, places + k);
-            int32_t points[MAX_TAKEN];
-            const int n = taken_by(p, player, b, x + ox, y + oy, points);
             int stars = 0;
-            for(int i = 0; i < n; i++) {
-              stars += cell_type(p.cell[points[i]]) == STAR;
-              const int tx = points[i] % RULES_LEN - ox, ty = points[i] / RULES_LEN - oy;
+            for(int m = 0; m < nn; m++) {
+              const int tx = x + nq[m], ty = y + nr[m];
+              const int8_t t = take[player][(ty + 1) * PADDED + tx + 1];
+              if(!t)
+                continue;
+              stars += t == 2;
               if(on_view(tx, ty))
                 set(tx, ty, taken);
             }

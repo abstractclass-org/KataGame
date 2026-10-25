@@ -32,6 +32,9 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 #include "../../core/hash.h"
 #include "../gameinterface.h"
@@ -378,35 +381,112 @@ inline bool fits_in_view(const Position& p, int player, const Blueprint& b, int 
   return b.n > 0 && in_view(b, x, y) && fits(p, player, b, x + ox, y + oy);
 }
 
-// The player's frontier in the view whose origin is the rules point (ox, oy): the empty points next to the player's
-// cells, as rules points. A placement within the view puts a cell on one of them.
-inline void frontier_near(const Position& p, int player, int ox, int oy, std::vector<int32_t>& out) {
-  out.clear();
-  for(int fy = std::max(0, oy); fy < std::min(RULES_LEN, oy + VIEW); fy++)
-    for(int fx = std::max(0, ox); fx < std::min(RULES_LEN, ox + VIEW); fx++)
-      if(!p.cell[fy * RULES_LEN + fx] && next_to_own(p, fx, fy, player))
-        out.push_back(fy * RULES_LEN + fx);
+// The view as bits: a row of VIEW bits for each of its rows, bit x for the view's point (x, y). The placements of a
+// blueprint are then a few operations on whole rows (for_each_fit), where a walk tried each cell of the blueprint on
+// each point of the frontier (abscls-iwsg).
+// 128 bits in two words (MSVC has no 128-bit integer): shifts by 0 to 63 bits, and, or, and the lowest bit set.
+struct ViewRow {
+  uint64_t lo = 0, hi = 0;
+
+  static ViewRow bit(int b) { return b < 64 ? ViewRow{uint64_t(1) << b, 0} : ViewRow{0, uint64_t(1) << (b - 64)}; }
+  ViewRow operator>>(int s) const { return s == 0 ? *this : ViewRow{lo >> s | hi << (64 - s), hi >> s}; }
+  ViewRow operator<<(int s) const { return s == 0 ? *this : ViewRow{lo << s, hi << s | lo >> (64 - s)}; }
+  ViewRow operator&(const ViewRow& o) const { return {lo & o.lo, hi & o.hi}; }
+  ViewRow operator|(const ViewRow& o) const { return {lo | o.lo, hi | o.hi}; }
+  ViewRow& operator&=(const ViewRow& o) { return *this = *this & o; }
+  ViewRow& operator|=(const ViewRow& o) { return *this = *this | o; }
+  explicit operator bool() const { return lo || hi; }
+  // The lowest bit set (the row holds one), and the row without it.
+  int lowest() const {
+    const uint64_t w = lo ? lo : hi;
+#ifdef _MSC_VER
+    unsigned long b;
+    _BitScanForward64(&b, w);
+#else
+    const int b = __builtin_ctzll(w);
+#endif
+    return int(b) + (lo ? 0 : 64);
+  }
+  void clear_lowest() {
+    if(lo)
+      lo &= lo - 1;
+    else
+      hi &= hi - 1;
+  }
+};
+static_assert(VIEW + 2 <= 128, "a row of the view, with a point on each side, fits in a ViewRow");
+const ViewRow VIEW_ROW_MASK{~uint64_t(0), (uint64_t(1) << (VIEW - 64)) - 1};
+static_assert(VIEW > 64, "VIEW_ROW_MASK's high word holds the view's last bits");
+// Bit x of the result is bit x + q of r, or 0 when x + q is off the view.
+inline ViewRow shift_row(const ViewRow& r, int q) { return q >= 0 ? r >> q : (r << -q) & VIEW_ROW_MASK; }
+// Calls f(x) for each bit x set in r, from the lowest.
+template<class F>
+inline void for_each_bit(ViewRow r, F&& f) {
+  for(; r; r.clear_lowest())
+    f(r.lowest());
+}
+
+// The rows of the view whose origin is the rules point (ox, oy): the empty points (on the rules board, no cell), each
+// player's frontier (the empty points next to a cell of the player: next_to_own), and each player's open cells (its
+// cells that are not walls, next to an empty point). A placement within the view puts a cell on its player's frontier.
+struct ViewRows {
+  ViewRow empty[VIEW], frontier[2][VIEW], open[2][VIEW];
+};
+inline void view_rows(const Position& p, int ox, int oy, ViewRows& out) {
+  // Rows -1 to VIEW of the view and its points -1 to VIEW, padded: row y + 1, bit x + 1. Off the rules board: nothing.
+  constexpr int PADDED = VIEW + 2;
+  ViewRow empty[PADDED] = {}, own[2][PADDED] = {}, notWall[2][PADDED] = {};
+  for(int j = 0; j < PADDED; j++) {
+    const int ry = j - 1 + oy;
+    if(ry < 0 || ry >= RULES_LEN)
+      continue;
+    const int8_t* row = p.cell.row(ry);
+    for(int b = std::max(0, 1 - ox); b < std::min(PADDED, RULES_LEN + 1 - ox); b++) {
+      const int8_t v = row[b - 1 + ox];
+      if(!v)
+        empty[j] |= ViewRow::bit(b);
+      else {
+        own[cell_owner(v)][j] |= ViewRow::bit(b);
+        if(cell_type(v) != WALL)
+          notWall[cell_owner(v)][j] |= ViewRow::bit(b);
+      }
+    }
+  }
+  // Bit x + 1 of the padded row j: a point of rows of set (padded) next to the point (x, j - 1), by DIRS: (x + 1, y),
+  // (x + 1, y - 1), (x, y - 1), (x - 1, y), (x - 1, y + 1), (x, y + 1).
+  auto next_to = [](const ViewRow* set, int j) {
+    return (set[j] >> 1) | (set[j] << 1) | (set[j - 1] >> 1) | set[j - 1] | (set[j + 1] << 1) | set[j + 1];
+  };
+  for(int y = 0; y < VIEW; y++) {
+    const int j = y + 1;
+    out.empty[y] = (empty[j] >> 1) & VIEW_ROW_MASK;
+    const ViewRow nextToEmpty = next_to(empty, j);
+    for(int player = 0; player < 2; player++) {
+      out.frontier[player][y] = out.empty[y] & (next_to(own[player], j) >> 1);
+      out.open[player][y] = ((notWall[player][j] & nextToEmpty) >> 1) & VIEW_ROW_MASK;
+    }
+  }
 }
 
 // Calls f(x, y) once for each point (x, y) of the view where the engine may place the player's blueprint b
-// (fits_in_view), the view's origin on the rules point (ox, oy): each anchor that puts a cell of b on a point of the
-// player's frontier (frontier_near).
+// (fits_in_view), from the view's rows (view_rows): every cell of b on an empty point of the view, and one on the
+// player's frontier. Row by row, then by x.
 template<class F>
-inline void for_each_placement(const Position& p, int player, const Blueprint& b, int ox, int oy,
-                               const std::vector<int32_t>& frontier, F&& f) {
+inline void for_each_fit(const Blueprint& b, const ViewRow* empty, const ViewRow* frontier, F&& f) {
   if(b.n == 0)
     return;
-  int8_t seen[VIEW_AREA] = {};
-  for(int32_t point : frontier) {
-    const int fx = point % RULES_LEN, fy = point / RULES_LEN;
-    for(int i = 0; i < b.n; i++) {
-      const int vx = fx - b.q[i] - ox, vy = fy - b.r[i] - oy;
-      if(!on_view(vx, vy) || seen[vy * VIEW + vx])
-        continue;
-      seen[vy * VIEW + vx] = 1;
-      if(fits_in_view(p, player, b, ox, oy, vx, vy))
-        f(vx, vy);
+  for(int y = 0; y < VIEW; y++) {
+    ViewRow fit = VIEW_ROW_MASK, touch;
+    for(int i = 0; i < b.n && fit; i++) {
+      const int cy = y + b.r[i];
+      if(cy < 0 || cy >= VIEW)
+        fit = ViewRow();
+      else {
+        fit &= shift_row(empty[cy], b.q[i]);
+        touch |= shift_row(frontier[cy], b.q[i]);
+      }
     }
+    for_each_bit(fit & touch, [&](int x) { f(x, y); });
   }
 }
 
@@ -763,11 +843,11 @@ struct GameRules {
     const int mover = turn_of(p.ply);
     int ox, oy;
     view_origin(p, ox, oy);
-    static thread_local std::vector<int32_t> frontier;
-    frontier_near(p, mover, ox, oy, frontier);
+    ViewRows rows;
+    view_rows(p, ox, oy, rows);
     for(int k = 0; k < HAND; k++)
-      for_each_placement(p, mover, p.hand[mover][k], ox, oy, frontier,
-                         [&](int x, int y) { out.push_back(action_at(x, y, PLACE + k)); });
+      for_each_fit(p.hand[mover][k], rows.empty, rows.frontier[mover],
+                   [&](int x, int y) { out.push_back(action_at(x, y, PLACE + k)); });
     // The picks.
     for(int k = 0; k < HAND; k++) {
       const Blueprint& b = p.hand[mover][k];
