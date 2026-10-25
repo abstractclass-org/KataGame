@@ -147,11 +147,15 @@ def random_batch(model, n=2):
             "globalTargetsNC": global_targets, "scoreDistrN": score, "valueTargetsNCHW": value_targets}
 
 
-def spatial_losses(game_name):
+def losses(game_name, flagged=1.0):
+    """Every loss sum of a random b6c96 of the game on a random batch of 2 rows (random_batch), with the flag C68 of C1
+    and the weight C34 of C4 at `flagged`."""
     torch.manual_seed(1)
-    model = Model(modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], game_name), 19)
+    model = Model(modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], game_name),
+                  games.get(game_name).MAX_BOARD_LEN)
     model.initialize()
     batch = random_batch(model)
+    batch["globalTargetsNC"][:, [34, 68]] = flagged
     with torch.no_grad():
         outputs = model(batch["binaryInputNCHW"], batch["globalInputNC"])
         metrics = Metrics(1, model).metrics_dict_batchwise(
@@ -159,8 +163,12 @@ def spatial_losses(game_name):
             soft_policy_weight_scale=8.0, disable_optimistic_policy=False, meta_kata_only_soft_policy=False,
             value_loss_scale=0.6, td_value_loss_scales=[0.6, 0.6, 0.6], seki_loss_scale=1.0,
             variance_time_loss_scale=1.0, main_loss_scale=None, intermediate_loss_scale=None)
-    return {k: float(metrics[k]) for k in ("oloss_sum", "skloss_sum", "fploss_sum", "sloss_sum", "iloss_sum",
-                                           "smloss_sum")}
+    return {k: float(v) for k, v in metrics.items() if k.endswith("_sum")}
+
+
+def spatial_losses(game_name):
+    out = losses(game_name)
+    return {k: out[k] for k in ("oloss_sum", "skloss_sum", "fploss_sum", "sloss_sum", "iloss_sum", "smloss_sum")}
 
 
 def test_a_game_without_the_ownership_target_trains_no_ownership(game_without_ownership):
@@ -275,22 +283,9 @@ def test_blueprints_ownership_loss_is_0_25_against_katagos_1_5(monkeypatch):
 
 
 def blueprints_losses(monkeypatch, coefficients, flagged):
-    """The losses of a random Blueprints b6c96 on a random batch of 2 rows (random_batch), with the loss coefficients
-    `coefficients` and the flag C68 of C1 and the weight C34 of C4 at `flagged`."""
+    """Blueprints' losses(), with the loss coefficients `coefficients` and C68 and C34 at `flagged`."""
     monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", coefficients)
-    torch.manual_seed(1)
-    model = Model(modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "blueprints"), 67)
-    model.initialize()
-    batch = random_batch(model)
-    batch["globalTargetsNC"][:, [34, 68]] = flagged
-    with torch.no_grad():
-        outputs = model(batch["binaryInputNCHW"], batch["globalInputNC"])
-        metrics = Metrics(1, model).metrics_dict_batchwise(
-            model, model.postprocess_output(outputs), None, batch, is_training=False,
-            soft_policy_weight_scale=8.0, disable_optimistic_policy=False, meta_kata_only_soft_policy=False,
-            value_loss_scale=0.6, td_value_loss_scales=[0.6, 0.6, 0.6], seki_loss_scale=1.0,
-            variance_time_loss_scale=1.0, main_loss_scale=None, intermediate_loss_scale=None)
-    return {k: float(v) for k, v in metrics.items() if k.endswith("_sum")}
+    return losses("blueprints", flagged)
 
 
 def test_blueprints_c1_loss_is_0_5_and_the_rows_of_versions_0_and_1_train_as_before(monkeypatch):
