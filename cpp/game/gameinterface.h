@@ -131,14 +131,15 @@
  *                           int to int) to its image, an action of sym_position(p, symmetry).
  *   TARGETS                 unsigned: the optional training targets that the game writes (GameTarget bits).
  *   training_targets(positions, numPositions, row, mover, values)
- *                           unsigned: the game's own training targets of a training row, the slots of TARGETS that
- *                           the front does not compute (all but FRONT_TARGETS). positions(j) is the game's position
- *                           after j moves (const Position&), for 0 <= j < numPositions, and the row is at
+ *                           unsigned: the game's own training targets of a training row, the slots of its own targets
+ *                           (ownTargets: all of TARGETS but the FRONT_TARGETS, by default). positions(j) is the game's
+ *                           position after j moves (const Position&), for 0 <= j < numPositions, and the row is at
  *                           positions(row). mover is the row's player to move. The game writes the values before the
  *                           row's storage (TargetValues), in values[channel * area + y * x_size + x], area = x_size *
- *                           y_size, where the front has written 0. It returns the slots (GameTarget bits) that hold a
- *                           target in this row, which the front's flags of the slots read (TrainingWriteBuffers). A
- *                           template on positions. A game whose TARGETS are all FRONT_TARGETS can leave it out.
+ *                           y_size, and its global targets after them, where the front has written 0. It returns the
+ *                           slots (GameTarget bits) that hold a target in this row, which the front's weights and
+ *                           flags of the slots read (TrainingWriteBuffers). A template on positions. A game without
+ *                           own targets can leave it out.
  *   SCORE_SCALE             double: the game's score spread against Go's. KataGo's constants in points scale by it
  *                           (the score distribution's bin width, the output multipliers, the Huber deltas).
  *   SCORE_UNIT              double: the search's score utility unit, in points, where KataGo uses the square root
@@ -163,6 +164,10 @@
  *                           so on, up to KOMI_BRACKET_LIMIT, until the win-loss value changes sign. Then it bisects on
  *                           the half-point grid. Default: KataGo's 1 and 32, the offsets 1, 2, 4, 8, 16 and 32
  *                           (komiBracketStep, komiBracketLimit).
+ *   OWN_TARGETS             unsigned: the slots of TARGETS that the game computes itself (training_targets). It holds
+ *                           every slot of TARGETS that is not one of the FRONT_TARGETS, and can hold those too: a game
+ *                           whose pieces() do not give such a target computes it, and the front then leaves that slot
+ *                           to the game. Default: TARGETS without the FRONT_TARGETS (ownTargets).
  */
 
 #include <algorithm>
@@ -192,26 +197,32 @@ struct InputOptions {
 enum GameTarget : unsigned {
   TARGET_OWNERSHIP = 1u << 0,      //C0: KataGo's ownership.
   TARGET_SEKI = 1u << 1,           //C1: KataGo's seki areas.
-  TARGET_FUTURE_PIECES = 1u << 2,  //C2-3: the pieces 8 and 32 moves later (pieces()), KataGo's future positions.
+  TARGET_FUTURE_PIECES = 1u << 2,  //C2-3: the front's, the pieces 8 and 32 moves later (pieces()), KataGo's future
+                                   //positions: -1, 0 or 1 a point.
   TARGET_SCORING = 1u << 3,        //C4: KataGo's scoring (final area).
   TARGET_INCOME = 1u << 4,         //C5-6: a value per point for each player.
-  TARGET_NEXT_PIECES = 1u << 5,    //C7: the next mover's pieces after the row's move.
+  TARGET_NEXT_PIECES = 1u << 5,    //C7: the front's, the next mover's pieces after the row's move.
 };
-//The slots that the front computes from pieces(). The game's training_targets gives every other slot of its TARGETS.
+//The slots that the front can compute from pieces(): it computes each of them that the game's TARGETS hold and its own
+//targets do not (OWN_TARGETS). The game's training_targets gives every other slot of its TARGETS.
 constexpr unsigned FRONT_TARGETS = TARGET_FUTURE_PIECES | TARGET_NEXT_PIECES;
 
-//The values of a row's spatial targets before the front stores them (TrainingWriteBuffers::addRow): channel c of
-//valueTargetsNCHW is values[c * area + y * x_size + x]. The front stores the slots that the game writes as follows:
+//The values of a row's targets before the front stores them (TrainingWriteBuffers::addRow): channel c of
+//valueTargetsNCHW is values[c * area + y * x_size + x], then the global targets that a game can write. The front
+//stores the slots that the game writes as follows, channel by channel (C0 to C7) and point by point:
 //- C0 (ownership), C4 (scoring), C5-6 (income): a value in [-1, 1], times 120, rounded at random to an integer so
 //  that the expected value is exact (KataGo's storage of its scoring target).
-//- C1 (seki): an integer class, as it is (KataGo's seki: -1, 0 or 1).
+//- C1 (seki), C2-3 (future pieces), C7 (next pieces): an integer, as it is (KataGo's seki and future positions: -1, 0
+//  or 1).
+//- The global targets G76 to G79 of the row (globalTargetsNC), which KataGo leaves unused: values[NUM_CHANNELS * area +
+//  i] is G(FIRST_GLOBAL + i), as it is.
 struct TargetValues {
   static constexpr int NUM_CHANNELS = 8;  //C0 to C7 (the rows' valueTargetsNCHW)
-  //The channels that a game's training_targets can write, in the order of the front's storage (and its random
-  //rounding), and the one stored as it is.
-  static constexpr int GAME_CHANNELS[5] = {0, 1, 4, 5, 6};
-  static constexpr int CLASS_CHANNEL = 1;
   static constexpr float STORAGE_SCALE = 120.0f;
+  static constexpr bool storedAsIs(int channel) { return channel == 1 || channel == 2 || channel == 3 || channel == 7; }
+  static constexpr int FIRST_GLOBAL = 76, NUM_GLOBALS = 4;
+  //The floats of a row's values on a board of that area.
+  static constexpr int size(int area) { return NUM_CHANNELS * area + NUM_GLOBALS; }
 };
 
 //KataGo's symmetry of a point on a board of xSize x ySize (SymmetryHelpers::getSymLoc): flip x, flip y, then
@@ -544,6 +555,15 @@ namespace encoding {
   GAMEINTERFACE_DETECT(HasKomiArea, double, G::KOMI_AREA)
   GAMEINTERFACE_DETECT(HasKomiBracketStep, double, G::KOMI_BRACKET_STEP)
   GAMEINTERFACE_DETECT(HasKomiBracketLimit, double, G::KOMI_BRACKET_LIMIT)
+  GAMEINTERFACE_DETECT(HasOwnTargets, unsigned, std::integral_constant<unsigned, G::OWN_TARGETS>::value)
+}
+
+//The slots of TARGETS that the game computes itself (training_targets): the game's, else all but the FRONT_TARGETS.
+template<class E> constexpr unsigned ownTargets() {
+  if constexpr(encoding::HasOwnTargets<E>::value)
+    return E::OWN_TARGETS;
+  else
+    return E::TARGETS & ~FRONT_TARGETS;
 }
 
 template<class E> constexpr bool checkEncoding() {
@@ -590,11 +610,15 @@ template<class E> constexpr bool checkEncoding() {
     static_assert(E::HISTORY_PLANE >= 0 && E::NUM_HISTORY_PLANES >= 0 &&
                     E::HISTORY_PLANE + E::NUM_HISTORY_PLANES <= E::NUM_SPATIAL_INPUTS,
                   "game interface, encoding part: the history planes are planes of the game's");
+  if constexpr(HasTargets<E>::value && HasOwnTargets<E>::value)
+    static_assert((E::OWN_TARGETS & ~E::TARGETS) == 0 && (E::TARGETS & ~FRONT_TARGETS & ~E::OWN_TARGETS) == 0,
+                  "game interface, encoding part: OWN_TARGETS holds slots of TARGETS only, and every slot of TARGETS "
+                  "that the front does not compute (FRONT_TARGETS)");
   if constexpr(HasTargets<E>::value)
-    static_assert((E::TARGETS & ~FRONT_TARGETS) == 0 || HasTrainingTargets<E>::value,
-                  "game interface, encoding part: the game's TARGETS hold a slot that the front does not compute, so "
-                  "the game gives training_targets(positions, int numPositions, int row, int mover, float* values) "
-                  "-> unsigned");
+    static_assert(ownTargets<E>() == 0 || HasTrainingTargets<E>::value,
+                  "game interface, encoding part: the game computes slots of its TARGETS itself (OWN_TARGETS, or a "
+                  "slot that the front does not compute), so the game gives training_targets(positions, int "
+                  "numPositions, int row, int mover, float* values) -> unsigned");
   if constexpr(HasRules<E>::value && HasPolicyChannels<E>::value) {
     using R = typename E::Rules;
     if constexpr(rules::HasMaxBoardLen<R>::value && rules::HasNumActions<R>::value)
@@ -654,7 +678,8 @@ template<class E> constexpr double komiBracketLimit() {
     return 32.0;
 }
 
-//The game's own training targets of a row (training_targets): none for a game whose TARGETS are all FRONT_TARGETS.
+//The game's own training targets of a row (training_targets): none for a game without own targets. values holds
+//TargetValues::size(area) floats.
 template<class E, class Positions>
 unsigned trainingTargets(const Positions& positions, int numPositions, int row, int mover, float* values) {
   if constexpr(encoding::HasTrainingTargets<E>::value)

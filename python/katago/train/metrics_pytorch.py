@@ -36,6 +36,10 @@ class Metrics:
         self.score_scale = raw_model.score_scale
         self.time_scale = raw_model.time_scale
         self.writes_ownership = bool(game.TARGETS & games.TARGET_OWNERSHIP)
+        # KataGame fork: the game's multipliers of the ownership and income losses, and the points where the income
+        # loss reads its target (katago/train/games: LOSS_SCALES, income_mask).
+        self.loss_scales = games.loss_scales(game)
+        self.income_mask = getattr(game, "income_mask", None)
         self.value_len = 3
         self.num_td_values = 3
         self.num_futurepos_values = 2
@@ -166,7 +170,7 @@ class Metrics:
             torch.nn.functional.binary_cross_entropy_with_logits(pred_logits, target_probs, reduction="none") * mask.view(-1,self.pos_area),
             dim=1,
         ) / mask_sum_hw
-        return 1.5 * global_weight * weight * loss
+        return 1.5 * self.loss_scales["ownership"] * global_weight * weight * loss  # KataGame fork: the game's scale
 
 
     def loss_scoring_samplewise(self, pred_scoring, target, weight, mask, mask_sum_hw, global_weight):
@@ -231,19 +235,27 @@ class Metrics:
             total = total - torch.logsumexp(log_p + r_norm.pow(2) * r, dim=0)
         return total / num_groups * n
 
-    def loss_income_samplewise(self, pred_logits, target, weight, mask, mask_sum_hw, global_weight):
+    def loss_income_samplewise(self, pred_logits, target, weight, mask, mask_sum_hw, global_weight, income_mask=None):
         # Enclosure fork (owner, 2026-10-03; iviazovetskyi's ownership target): each player's territory income per
         # point (its enclosed area in the unit square around the point, averaged over the remaining turn ends; the
         # mover's, then the opponent's), as binary cross-entropy, averaged over the board's points and both planes,
         # weighted as KataGo's ownership (1.5; iviazovetskyi's weight too).
+        # KataGame fork: with the game's income_mask (n, 2, y, x), averaged over each channel's points, then over the
+        # channels that have points (Blueprints' cells that can go), and times the game's scale.
         n = pred_logits.shape[0]
         assert pred_logits.shape == (n, 2, self.pos_len, self.pos_len)
         assert target.shape == (n, 2, self.pos_len, self.pos_len)
         assert mask.shape == (n, self.pos_len, self.pos_len)
         assert mask_sum_hw.shape == (n,)
         loss = torch.nn.functional.binary_cross_entropy_with_logits(pred_logits, target, reduction="none") * mask.unsqueeze(1)
-        loss = torch.sum(loss, dim=(1, 2, 3)) / (2.0 * mask_sum_hw)
-        return 1.5 * global_weight * weight * loss
+        if income_mask is None:
+            loss = torch.sum(loss, dim=(1, 2, 3)) / (2.0 * mask_sum_hw)
+        else:
+            assert income_mask.shape == (n, 2, self.pos_len, self.pos_len)
+            points = torch.sum(income_mask, dim=(2, 3))
+            per_channel = torch.sum(loss * income_mask, dim=(2, 3)) / torch.clamp(points, min=1.0)
+            loss = torch.sum(per_channel, dim=1) / torch.clamp(torch.sum((points > 0).to(loss.dtype), dim=1), min=1.0)
+        return 1.5 * self.loss_scales["income"] * global_weight * weight * loss
 
 
     def loss_edgecut_samplewise(self, pred_logits, target, weight, mask, mask_sum_hw, global_weight):
@@ -945,6 +957,7 @@ class Metrics:
             mask,
             mask_sum_hw,
             global_weight,
+            None if self.income_mask is None else self.income_mask(input_binary_nchw),
         ).sum()
         loss_scoremean = self.loss_scoremean_samplewise(
             pred_scoremean,

@@ -26,9 +26,11 @@
 //   moves as a pixel. A blueprint moves cell by cell, then goes back to the site's frame (its lowest cell at 0,0): so
 //   the hand's points, the anchors of the placements and the picks and drops move as pixels and then by each
 //   blueprint's shift. The inputs at a symmetry are the inputs of the position's image (sym_position).
-// - The training targets: the final board as ownership on the row's view (C0), and in C1 which player moves next, for
-//   the trainer's symmetries (no loss reads it). The value targets and the score targets are KataGo's, from the
-//   history's result: the final margin with the komi, where a margin of 0 is half a win.
+// - The training targets, on the row's view: the final board as ownership (C0), the stars 4 and 16 moves later
+//   (C2-3), the cells that go in the rest of the mover's turn and in the opponent's next turn (C5-6), and in the
+//   global target G76 which player moves next, for the trainer's symmetries (no loss reads it). The value targets and
+//   the score targets are KataGo's, from the history's result: the final margin with the komi, where a margin of 0
+//   is half a win.
 
 #include <cmath>
 #include <cstdint>
@@ -433,36 +435,121 @@ struct GameEncoding {
     }
   };
 
-  // C0, the final board as ownership, on the row's view: +1 on the mover's cells, -1 on the opponent's, 0 on an empty
-  // point. The final cells move by their site coordinates into the row's rules board, then into its view, and a final
-  // cell off the row's view counts for no point.
-  // C1 is no target: the slot carries which player makes the row's next move, for the trainer's symmetries of the
-  // second policy target (katago/train/games/blueprints.py): +1 on every point when it is the row's mover, -1 when it
-  // is the opponent, 0 at the end. The front stores the slot as it is, and its flag stays 0 (the returned slots hold
-  // no TARGET_SEKI), so no loss reads it. A pick and a placement with a move to come leave the move to the mover.
-  static constexpr unsigned TARGETS = GameInterface::TARGET_OWNERSHIP;
-  static constexpr int NEXT_MOVER_SLOT = 1;
+  // The training targets, all on the row's view: a later position's cells move by their site coordinates into the
+  // row's view (in_row_view), and a cell off the row's view counts for no point. The horizons count the site's moves
+  // (the ply, where a pick and its drop are one move), not actions.
+  // - C0, the final board as ownership: +1 on the mover's cells, -1 on the opponent's, 0 on an empty point.
+  // - C2-3, the stars FUTURE_MOVES[0] and [1] moves later: +1 on the mover's stars, -1 on the opponent's, 0 elsewhere,
+  //   in the first position with no pick waiting and at least that many moves more than the row (the end, when the
+  //   game ends sooner). A star there counts even if a star of the same player stood there and was taken before.
+  // - C5, the opponent's cells that go in the rest of the mover's turn: 1 on each of the opponent's cells of the row's
+  //   view, not a wall, that a placement takes before the opponent moves, else 0. C6, the mover's cells that go in the
+  //   opponent's next turn: the same on the mover's cells, in that turn. A cell goes when its site no longer holds it,
+  //   even if a cell of the same player comes there later. A turn that the game's end cuts off takes no cell. The
+  //   other points hold 0, and the trainer's loss reads only these cells (katago/train/games/blueprints.py,
+  //   income_mask).
+  // - G76, which player makes the row's next move, for the trainer's symmetries of the second policy target: +1 the
+  //   row's mover, -1 the opponent, 0 at the end. A pick and a placement with a move to come leave the move to the
+  //   mover. G77, the version of these targets, TARGETS_VERSION. The rows before it (version 0) hold the next mover in
+  //   C1 on every point, which the trainer reads in them, and no C2-3 or C5-6.
+  // A row whose positions stop before a horizon or a turn's end (a game that hit the turn limit) has no C2-3 or C5-6:
+  // their weight C33 and their flag C69 are 0.
+  static constexpr unsigned TARGETS = GameInterface::TARGET_OWNERSHIP | GameInterface::TARGET_FUTURE_PIECES |
+                                      GameInterface::TARGET_INCOME;
+  static constexpr unsigned OWN_TARGETS = TARGETS;  // C2-3 too: the front's would read each position's own view
+  static constexpr int FUTURE_MOVES[2] = {4, 16};
+  static constexpr int NEXT_MOVER_TARGET = 76, TARGETS_VERSION_TARGET = 77;  // global targets (TargetValues)
+  static constexpr int TARGETS_VERSION = 1;
+  static_assert(NEXT_MOVER_TARGET >= GameInterface::TargetValues::FIRST_GLOBAL &&
+                TARGETS_VERSION_TARGET < GameInterface::TargetValues::FIRST_GLOBAL +
+                                         GameInterface::TargetValues::NUM_GLOBALS,
+                "Blueprints' global targets are among those that a game writes");
+
+  // Calls f(x, y, v) for each point (x, y) of the row's view, the view of `now` whose origin is (ox, oy) on its rules
+  // board, with v the cell of `later` at the same site (0 when it holds none).
+  template<class F>
+  static void in_row_view(const Position& now, int ox, int oy, const Position& later, F&& f) {
+    const int dx = later.offsetQ - now.offsetQ - ox, dy = later.offsetR - now.offsetR - oy;
+    for(int y = 0; y < VIEW; y++)
+      for(int x = 0; x < VIEW; x++)
+        f(x, y, at(later, x - dx, y - dy));
+  }
+
   template<class Positions>
   static unsigned training_targets(const Positions& positions, int numPositions, int row, int mover, float* values) {
-    const Position& end = positions(numPositions - 1);
     const Position& now = positions(row);
     int ox, oy;
     view_origin(now, ox, oy);
-    const int dx = end.offsetQ - now.offsetQ - ox, dy = end.offsetR - now.offsetR - oy;
-    for(int i = 0; i < VIEW_AREA; i++)
-      values[i] = 0.0f;
-    float next = 0.0f;
+    float* globals = values + GameInterface::TargetValues::NUM_CHANNELS * VIEW_AREA;
+    const int firstGlobal = GameInterface::TargetValues::FIRST_GLOBAL;
+    unsigned slots = GameInterface::TARGET_OWNERSHIP;
+
     if(row + 1 < numPositions && !GameRules::terminal(positions(row + 1)))
-      next = GameRules::next_player(positions(row + 1)) == mover ? 1.0f : -1.0f;
-    for(int i = 0; i < VIEW_AREA; i++)
-      values[NEXT_MOVER_SLOT * VIEW_AREA + i] = next;
-    for(int y = 0; y < RULES_LEN; y++)
-      for(int x = 0; x < RULES_LEN; x++) {
-        const int owner = cell_owner(end.cell[y * RULES_LEN + x]);
-        if(owner >= 0 && on_view(x + dx, y + dy))
-          values[(y + dy) * VIEW + x + dx] = owner == mover ? 1.0f : -1.0f;
+      globals[NEXT_MOVER_TARGET - firstGlobal] = GameRules::next_player(positions(row + 1)) == mover ? 1.0f : -1.0f;
+    globals[TARGETS_VERSION_TARGET - firstGlobal] = float(TARGETS_VERSION);
+
+    in_row_view(now, ox, oy, positions(numPositions - 1), [&](int x, int y, int8_t v) {
+      if(v)
+        values[y * VIEW + x] = cell_owner(v) == mover ? 1.0f : -1.0f;
+    });
+
+    // The horizons: -1 when the positions stop before one.
+    int horizon[2];
+    for(int h = 0; h < 2; h++) {
+      const int ply = std::min(now.ply + FUTURE_MOVES[h], PLIES);
+      horizon[h] = -1;
+      for(int j = row + 1; j < numPositions && horizon[h] < 0; j++)
+        if(positions(j).picked < 0 && positions(j).ply >= ply)
+          horizon[h] = j;
+    }
+    if(horizon[0] >= 0 && horizon[1] >= 0) {
+      for(int h = 0; h < 2; h++)
+        in_row_view(now, ox, oy, positions(horizon[h]), [&](int x, int y, int8_t v) {
+          if(v && cell_type(v) == STAR)
+            values[(2 + h) * VIEW_AREA + y * VIEW + x] = cell_owner(v) == mover ? 1.0f : -1.0f;
+        });
+      slots |= GameInterface::TARGET_FUTURE_PIECES;
+    }
+
+    // The end of a player's turn after position `from`: the first position where the player no longer moves, or the
+    // game has ended. -1 when the positions stop before it.
+    auto turn_end = [&](int from, int player) {
+      for(int j = from + 1; j < numPositions; j++)
+        if(GameRules::terminal(positions(j)) || GameRules::next_player(positions(j)) != player)
+          return j;
+      return -1;
+    };
+    const int moverEnd = turn_end(row, mover);
+    const int opponentEnd =
+      moverEnd < 0 || GameRules::terminal(positions(moverEnd)) ? moverEnd : turn_end(moverEnd, 1 - mover);
+    if(opponentEnd >= 0) {
+      // Each cell of the row's view that can go (not a wall), and the first position where its site no longer holds
+      // it (-1: none up to the opponent's turn's end).
+      static thread_local std::vector<int8_t> start;
+      static thread_local std::vector<int> gone;
+      start.assign(VIEW_AREA, 0);
+      gone.assign(VIEW_AREA, -1);
+      in_row_view(now, ox, oy, now, [&](int x, int y, int8_t v) {
+        if(v && cell_type(v) != WALL)
+          start[y * VIEW + x] = v;
+      });
+      for(int j = row + 1; j <= opponentEnd; j++)
+        in_row_view(now, ox, oy, positions(j), [&](int x, int y, int8_t v) {
+          const int i = y * VIEW + x;
+          if(start[i] && gone[i] < 0 && v != start[i])
+            gone[i] = j;
+        });
+      for(int i = 0; i < VIEW_AREA; i++) {
+        if(!start[i] || gone[i] < 0)
+          continue;
+        if(cell_owner(start[i]) != mover && gone[i] <= moverEnd)
+          values[5 * VIEW_AREA + i] = 1.0f;
+        if(cell_owner(start[i]) == mover && gone[i] > moverEnd)
+          values[6 * VIEW_AREA + i] = 1.0f;
       }
-    return GameInterface::TARGET_OWNERSHIP;
+      slots |= GameInterface::TARGET_INCOME;
+    }
+    return slots;
   }
 
   // A capture late in a game scores tens of stars times tens of stars: margins of hundreds of points, against Go's

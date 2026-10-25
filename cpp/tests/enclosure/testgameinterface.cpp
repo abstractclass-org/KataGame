@@ -363,32 +363,34 @@ static void checkPinnedGame(const vector<R::Position>& game) {
     if(h != pin.images)
       fail("the images at ply " + Global::intToString(pin.ply) + ": digest " + Global::uint64ToHexString(h));
   }
-  //Every row's targets, each value in its slot's range (GameInterface::TargetValues; the front's slots stay 0), and
-  //the pinned rows' digests.
+  //Every row's targets, each value in its slot's range (GameInterface::TargetValues), the front's slots and the global
+  //targets 0, and the pinned rows' digests of the spatial slots.
   const int area = 19 * 19;
-  vector<float> values(GameInterface::TargetValues::NUM_CHANNELS * area);
+  static_assert(GameInterface::ownTargets<E>() == (E::TARGETS & ~GameInterface::FRONT_TARGETS),
+                "Enclosure leaves C2-3 and C7 to the front");
+  vector<float> values(GameInterface::TargetValues::size(area));
   for(int row = 0; row + 1 < (int)game.size(); row++) {
     fill(values.begin(), values.end(), 0.0f);
     const unsigned slots = GameInterface::trainingTargets<E>([&](int j) -> const R::Position& { return game[j]; },
                                                               (int)game.size(), row, R::next_player(game[row]),
                                                               values.data());
-    for(int c = 0; c < GameInterface::TargetValues::NUM_CHANNELS; c++)
-      for(int q = 0; q < area; q++) {
-        const float v = values[c * area + q];
-        const bool ok = c == GameInterface::TargetValues::CLASS_CHANNEL
-                          ? (v == -1.0f || v == 0.0f || v == 1.0f || v == 2.0f)
-                      : (c == 2 || c == 3 || c == 7) ? v == 0.0f
-                      : (v >= -1.0f && v <= 1.0f);
-        if(!ok) {
-          fail("the training targets of row " + Global::intToString(row) + ": a value out of its slot's range");
-          return;
-        }
+    for(int i = 0; i < (int)values.size(); i++) {
+      const int c = i / area;
+      const float v = values[i];
+      const bool ok = c == 1 ? (v == -1.0f || v == 0.0f || v == 1.0f || v == 2.0f)
+                    : (c == 2 || c == 3 || c >= 7) ? v == 0.0f
+                    : (v >= -1.0f && v <= 1.0f);
+      if(!ok) {
+        fail("the training targets of row " + Global::intToString(row) + ": a value out of its slot's range");
+        return;
       }
+    }
     for(const PinnedTargets& pin : PINNED_TARGETS) {
       if(pin.row != row)
         continue;
       pinnedGameChecks++;
-      const uint64_t h = digest(DIGEST_START, values.data(), values.size() * sizeof(float));
+      const uint64_t h =
+        digest(DIGEST_START, values.data(), GameInterface::TargetValues::NUM_CHANNELS * area * sizeof(float));
       if(slots != pin.slots || h != pin.values)
         fail("the training targets of row " + Global::intToString(row) + ": slots " + Global::intToString((int)slots) +
              ", digest " + Global::uint64ToHexString(h));

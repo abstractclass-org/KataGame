@@ -293,7 +293,8 @@ struct TrainingWriteBuffers {
   //fork, or RGSC off), 1 the vanilla buffer, 2 the swing buffer. Side positions carry their game's.
   //C75: Enclosure fork (2026-10-14): 1 if valueTargetsNCHW C7 holds the next mover's nodes (0 in rows with no next
   //move, and in rows written before it, which the shuffle pads to 8 channels).
-  //C76-79: Unused, zero-filled.
+  //C76-79: KataGame fork: the game's own global targets (GameInterface::TargetValues), 0 where the game writes none.
+  //Blueprints: C76 who makes the next move (+1 the mover, -1 the opponent, 0 none), C77 the version of its targets.
 
   NumpyBuffer<float> globalTargetsNC;
 
@@ -308,7 +309,8 @@ struct TrainingWriteBuffers {
   //Spatial value-related targets
   //KataGame fork: C0, C1, C4 and C5-6 hold the game's own targets (GameEncoding::TARGETS and training_targets, stored
   //as GameInterface::TargetValues gives), all 0 in a slot that the game does not write. C2-3 and C7 are the front's,
-  //from the game's pieces. Enclosure's meanings follow each slot (ENCLOSURE.md, "Spatial targets").
+  //from the game's pieces, unless the game computes them itself (GameInterface::ownTargets: Blueprints' C2-3).
+  //Enclosure's meanings follow each slot (ENCLOSURE.md, "Spatial targets").
   //C0: Final board ownership [-1,1], from the perspective of the player to move. All 0 if C27 has weight 0.
   //    Enclosure fork: the future occupancy (the mean over the turn ends after the row of +1 inside the mover's
   //    regions, -1 inside the opponent's), x 120 ([-120,120]).

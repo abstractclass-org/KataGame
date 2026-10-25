@@ -438,7 +438,7 @@ game's global inputs (V9 adds KataGo's 2 playout inputs after them).
 | `sym_position(p, s)` | The image of the position. | every edge mapped (`sym_edge`), the history's too |
 | `SymActionMap` | `SymActionMap(p, s)(a)`: the image of a legal action of `p` or pass, an action of `sym_position(p, s)`. Built once for each position and symmetry. | the edge's image, listed from its other end when that end comes first and is one of the mover's nodes |
 | `TARGETS` | The optional training targets that the game writes. | all six (below) |
-| `training_targets(positions, n, row, mover, values)` | The game's own targets of a training row: the slots of `TARGETS` that the front does not compute (all but `FRONT_TARGETS`), from the game's positions `positions(j)`, `0 <= j < n`, with the row at `positions(row)`, from the view of `mover`. It writes the values before the row's storage (`TargetValues`) and returns the slots that hold a target in this row. A template on `positions`. A game whose `TARGETS` are all `FRONT_TARGETS` can leave it out. | C0, C1, C4 and C5-6 (below), from the positions after the row |
+| `training_targets(positions, n, row, mover, values)` | The game's own targets of a training row: the slots of its own targets (`OWN_TARGETS`, by default all of `TARGETS` but `FRONT_TARGETS`), from the game's positions `positions(j)`, `0 <= j < n`, with the row at `positions(row)`, from the view of `mover`. It writes the values before the row's storage (`TargetValues`), then its global targets, and returns the slots that hold a target in this row. A template on `positions`. A game without own targets can leave it out. | C0, C1, C4 and C5-6 (below), from the positions after the row |
 | `SCORE_SCALE` | The game's score spread against Go's. KataGo's constants in points scale by it ("The score scale"). | 12 (ENCLOSURE.md, "Score scale") |
 | `SCORE_UNIT` | The search's score utility unit, in points, where KataGo uses the square root of the board's area. | 140.5845 = √(18 · 18 · 61) |
 | `GAME_LENGTH` | A game's mean length in moves, for KataGo's game-phase constants ("The game's length"). | 120 |
@@ -453,6 +453,7 @@ their values are those of KataGo's code (`testgameareas` and `testkomi` pin them
 | `LOOKAHEAD_AREA` | The area A that KataGo's look-ahead horizons read where KataGo reads the board's area ("The game's length"). The short-term value targets C4-7, C8-11 and C12-15 have lambda = 1 - 1 / (1 + A × c), for c = 0.176, 0.056 and 0.016: a mean look-ahead of A × c moves. Value-surprise weighting uses c = 0.016. | The board's area, `x_size * y_size` (`lookaheadArea`, `Board::lookaheadArea`) | 361, Go's: its 67 × 67 view holds the window, and its moves do not reach that far. The look-ahead is about 64, 20 and 6 actions, against 790, 251 and 72 with the view's 4,489, in a game of about 140 actions. |
 | `KOMI_AREA` | The area A that KataGo's komi sampler reads where KataGo reads the board's area (`PlayUtils::chooseExtraBlackAndKomi`): each configured standard deviation times √A / 19, and the number of handicap stones. The two spreads of `fancyKomiVarying` (`play.cpp`) still read the board's area. | The board's area (`komiArea`, `Board::komiArea`) | 361: the sampler draws a komi in the points that the config gives. The view's 4,489 multiplied each standard deviation by 67 / 19. |
 | `KOMI_BRACKET_STEP`, `KOMI_BRACKET_LIMIT` | The bracket of KataGo's even-komi search (`PlayUtils::evenKomiOffset`, for `adjustKomiToEven` and `computeLead`), in points. Around its guess, the search tries the offsets step, 2 × step and so on up to the limit, until White's win-loss value changes sign, then bisects on the half-point grid. Whole or half points. | KataGo's 1 and 32: the offsets 1, 2, 4, 8, 16 and 32 (`komiBracketStep`, `komiBracketLimit`) | 12 (`SCORE_SCALE`) and 3,000: the offsets 12, 24, 48 and so on to 1,536, then 3,000, the reach of self-play's widest komi. KataGo's 32 points are less than 3 of Go's points at this score scale. |
+| `OWN_TARGETS` | The slots of `TARGETS` that the game computes itself (`training_targets`). It holds every slot of `TARGETS` that is not one of the `FRONT_TARGETS`, and it can hold those too: the front then leaves that slot to the game. The check requires both. | `TARGETS` without the `FRONT_TARGETS` (`ownTargets`) | All of its `TARGETS`, C2-3 too: the front's future positions read each later position's own view at the row's points, and Blueprints' view moves with the mover's window. |
 
 `InputOptions` holds what the front gives the input members:
 
@@ -464,15 +465,18 @@ their values are those of KataGo's code (`testgameareas` and `testkomi` pin them
 
 **The training targets** are the slots of KataGo's spatial targets (`valueTargetsNCHW`) and the two that the fork
 added. `TARGETS` declares the slots that the game writes. The front computes C2-3 and C7 from `pieces`
-(`FRONT_TARGETS`). The game gives each other slot its own meaning and computes it (`training_targets`). The front
-writes 0 in each slot that the game does not write, and the slots with a weight or a flag of their own (C1, C2-3, C4,
-C5-6, C7) then have weight 0. C0 has none: C27 weighs it, so the trainer reads `TARGETS` to leave it out.
+(`FRONT_TARGETS`), unless the game computes them itself (`OWN_TARGETS`). The game gives each other slot its own
+meaning and computes it (`training_targets`). The front writes 0 in each slot that the game does not write, and the
+slots with a weight or a flag of their own (C1, C2-3, C4, C5-6, C7) then have weight 0. C0 has none: C27 weighs it, so
+the trainer reads `TARGETS` to leave it out.
 
 The front stores the game's values (`GameInterface::TargetValues`). C0, C4 and C5-6 hold a value in [-1, 1], times
-120 and rounded at random so that the expected value is exact (KataGo's storage of its scoring target). C1 holds an
-integer class as it is (KataGo's seki: -1, 0 or 1). The random rounding goes slot by slot (C0, C1, C4, C5, C6) and
-point by point. The slots that the member returns give the row's flags: C68 for C1, C69 for C5-6, and C34, the weight
-of C4. C27 stays KataGo's weight of C0, C1 and the score's targets: it is set when the row has the game's end.
+120 and rounded at random so that the expected value is exact (KataGo's storage of its scoring target). C1, C2-3 and
+C7 hold an integer as it is (KataGo's seki and future positions: -1, 0 or 1). The random rounding
+goes slot by slot (C0 to C7, of which only C0, C4, C5 and C6 draw) and point by point. After the slots, the game can
+write the global targets G76 to G79, which KataGo leaves unused. The slots that the member returns give the row's
+flags and weights: C68 for C1, C69 for C5-6, and C33 and C34, the weights of the game's own C2-3 and of C4. C27 stays
+KataGo's weight of C0, C1 and the score's targets: it is set when the row has the game's end.
 
 | Flag | Slot | Enclosure's meaning (ENCLOSURE.md, "Spatial targets") |
 |---|---|---|
@@ -520,6 +524,8 @@ its version.
 | `HISTORY_PLANE`, `NUM_HISTORY_PLANES` | As in C++ (the game's planes, newest first), for the history dropout. | The last 4 feature planes: 210, 4 | None: 0, 0 |
 | `apply_symmetry_inputs`, `apply_symmetry_policy_targets`, `apply_symmetry_policy` | The augmentation of the input planes, the policy targets (both channels) and a policy of the mover's moves (the q-values), at an allowed symmetry. The value targets move as pixels in every game (`games.apply_symmetry_points`). | An edge moves as an edge, with each channel's player's nodes | Every plane and the policy move as pixels, as KataGo's do. The mirror flips x on the network's 7 × 7 board, which a row of the standard board fills in width. |
 | `mask_targets` (optional) | The rows' global targets, with weight 0 for each target that the augmentation cannot map in a row. The trainer applies it to every batch, at every symmetry and without the symmetries (`games.mask_targets`: none without the member). Blueprints gives it: the second policy target (C28) after a drop with a move of the same player to come. | None | None |
+| `LOSS_SCALES` (optional) | A multiplier for each loss that it names, of `games.LOSS_SCALE_NAMES`: `ownership` (C0, KataGo's coefficient 1.5) and `income` (C5-6, Enclosure's 1.5). `games.get` refuses another name. Blueprints gives 0.25 / 1.5 and 0.5 / 1.5. | None: 1 for each | None |
+| `income_mask(binary_inputs)` (optional) | The points where the loss of C5-6 reads its target, from the batch's input planes at its symmetry: the loss averages each channel over its points, then over the channels that have points. Blueprints gives the cells of each player that can go (not walls). | None: the board's points, both channels together | None |
 
 The model's heads are the same in every game. The rows give each slot that the game does not write the weight 0, but
 not C0 (above). So the trainer leaves out C0 for a game without `TARGET_OWNERSHIP`.
@@ -610,7 +616,9 @@ move mapped by the action map: the image game stays the image of the game.
 
 It also checks the members of the turn, the pass and the standard board: Enclosure's values (two edges a turn, a pass
 at any time and nothing else in a replay, 19 × 19) through the front too (`Board()`, `BoardHistory::isLegalTolerant`),
-and the defaults with the stub game, also with a standard board of its own.
+and the defaults with the stub game, also with a standard board of its own. Enclosure's training targets keep the
+digests that the test pins, and Enclosure leaves C2-3, C7 and the global targets to the front. In the engine
+repository, `games/blueprints/tests/test_targets.py` checks Blueprints' own targets against the game record.
 
 Build and run it as the other standalone tests (`tests/enclosure/build.sh`, which runs the check of the game layer
 first), from `katagame/cpp`:

@@ -178,10 +178,11 @@ def test_a_game_without_mask_targets_keeps_the_weights():
     assert games.mask_targets(enclosure, None, None, None, global_targets) is global_targets
 
 
-def write_blueprints_rows(path):
+def write_blueprints_rows(path, version):
     """Four Blueprints rows as self-play writes them, empty but for what the second policy target's mask reads: a pick
-    waits for its drop (global input 9) or not, and the next mover is the row's mover (C1 +1) or not (C1 -1). Every
-    global target is 1."""
+    waits for its drop (global input 9) or not, and the next mover is the row's mover (+1) or not (-1). Rows of the
+    targets' version 1 hold the next mover in G76 (and the version in G77), older rows (version 0) in the slot C1.
+    Every other global target is 1. Returns the global targets."""
     game = games.get("blueprints")
     points = game.MAX_BOARD_LEN ** 2
     moves = policy_len(game.MAX_BOARD_LEN, game.POLICY_CHANNELS)
@@ -189,25 +190,34 @@ def write_blueprints_rows(path):
     global_inputs = np.zeros((4, game.NUM_GLOBAL_INPUTS), dtype=np.float32)
     global_inputs[:, game.PICKED_INPUT] = picked
     value_targets = np.zeros((4, VALUE_TARGETS_NCHW_CHANNELS, game.MAX_BOARD_LEN, game.MAX_BOARD_LEN), dtype=np.int8)
-    value_targets[:, game.NEXT_MOVER_SLOT] = np.array(next_mover, dtype=np.int8)[:, None, None]
+    global_targets = np.ones((4, GLOBAL_TARGETS_NC_CHANNELS), dtype=np.float32)
+    global_targets[:, game.TARGETS_VERSION_TARGET] = version
+    if version >= 1:
+        global_targets[:, game.NEXT_MOVER_TARGET] = next_mover
+    else:
+        value_targets[:, game.NEXT_MOVER_SLOT] = np.array(next_mover, dtype=np.int8)[:, None, None]
     np.savez_compressed(
         path,
         binaryInputNCHWPacked=np.zeros((4, 1 + game.NUM_SPATIAL_INPUTS, (points + 7) // 8), dtype=np.uint8),
         globalInputNC=global_inputs,
         policyTargetsNCMove=np.zeros((4, 2, moves), dtype=np.int16),
-        globalTargetsNC=np.ones((4, GLOBAL_TARGETS_NC_CHANNELS), dtype=np.float32),
+        globalTargetsNC=global_targets,
         scoreDistrN=np.zeros((4, 2 * points + 2 * games.ROW_EXTRA_SCORE_RADIUS), dtype=np.int8),
         valueTargetsNCHW=value_targets,
         qValueTargetsNCMove=np.zeros((4, games.ROW_QVALUE_TARGETS, moves), dtype=np.int16),
     )
+    return torch.from_numpy(global_targets)
 
 
+@pytest.mark.parametrize("version", [0, 1])
 @pytest.mark.parametrize("randomize_symmetries", [False, True])
-def test_blueprints_rows_of_a_drop_with_the_same_mover_next_have_no_next_policy_weight(tmp_path, randomize_symmetries):
+def test_blueprints_rows_of_a_drop_with_the_same_mover_next_have_no_next_policy_weight(tmp_path, randomize_symmetries,
+                                                                                       version):
     # The trainer cannot map their second policy target under a symmetry (katago/train/games/blueprints.py), so its
-    # weight, C28, is 0 in every batch, with or without the symmetries. Every other weight stays.
+    # weight, C28, is 0 in every batch, with or without the symmetries, in the rows of each version of the targets.
+    # Every other weight stays.
     path = tmp_path / "rows.npz"
-    write_blueprints_rows(path)
+    written = write_blueprints_rows(path, version)
     config = modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "blueprints")
     batches = list(read_npz_training_data([str(path)], batch_size=4, world_size=1, rank=0, pos_len=67, device="cpu",
                                           randomize_symmetries=randomize_symmetries, include_meta=False,
@@ -216,4 +226,72 @@ def test_blueprints_rows_of_a_drop_with_the_same_mover_next_have_no_next_policy_
     weights = batches[0]["globalTargetsNC"]
     assert weights[:, 28].tolist() == [1.0, 1.0, 0.0, 1.0]
     others = [c for c in range(GLOBAL_TARGETS_NC_CHANNELS) if c != 28]
-    assert torch.equal(weights[:, others], torch.ones(4, len(others)))
+    assert torch.equal(weights[:, others], written[:, others])
+
+
+def test_blueprints_next_mover_is_g76_in_new_rows_and_c1_in_old_rows():
+    game = games.get("blueprints")
+    value_targets = torch.zeros(3, VALUE_TARGETS_NCHW_CHANNELS, 67, 67)
+    value_targets[:, game.NEXT_MOVER_SLOT] = torch.tensor([1.0, -1.0, 1.0])[:, None, None]
+    global_targets = torch.zeros(3, GLOBAL_TARGETS_NC_CHANNELS)
+    global_targets[:, game.NEXT_MOVER_TARGET] = torch.tensor([-1.0, 1.0, 0.0])
+    global_targets[1:, game.TARGETS_VERSION_TARGET] = 1.0  # the first row is an old row
+    assert game.next_movers(value_targets, global_targets).tolist() == [1.0, 1.0, 0.0]
+    numpy = game.next_movers(value_targets.numpy(), global_targets.numpy())
+    assert numpy.tolist() == [1.0, 1.0, 0.0]
+
+
+def test_a_module_that_scales_an_unknown_loss_is_refused(monkeypatch):
+    stub = types.ModuleType("katago.train.games.badscales")
+    stub.__dict__.update({m: getattr(enclosure, m) for m in games.MEMBERS})
+    stub.NAME = "badscales"
+    stub.LOSS_SCALES = {"ownership": 0.5, "owner": 0.5}
+    monkeypatch.setitem(sys.modules, "katago.train.games.badscales", stub)
+    with pytest.raises(ValueError, match="scales no loss named owner"):
+        games.get("badscales")
+    assert games.loss_scales(enclosure) == {"ownership": 1.0, "income": 1.0}
+
+
+def blueprints_metrics(monkeypatch=None, plain=False):
+    """Metrics of a random Blueprints b6c96, with the game's scales and income mask, or without them (plain)."""
+    game = games.get("blueprints")
+    if plain:
+        monkeypatch.delattr(game, "LOSS_SCALES")
+        monkeypatch.delattr(game, "income_mask")
+    torch.manual_seed(2)
+    model = Model(modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "blueprints"), 67)
+    return Metrics(1, model)
+
+
+def test_blueprints_ownership_loss_is_0_25_against_katagos_1_5(monkeypatch):
+    torch.manual_seed(3)
+    pred, target = torch.randn(2, 1, 67, 67), torch.randint(-1, 2, (2, 67, 67)).float()
+    mask, weight, global_weight = torch.ones(2, 67, 67), torch.ones(2), torch.tensor([1.0, 0.5])
+    args = (pred, target, weight, mask, mask.sum(dim=(1, 2)), global_weight)
+    scaled = blueprints_metrics().loss_ownership_samplewise(*args)
+    plain = blueprints_metrics(monkeypatch, plain=True).loss_ownership_samplewise(*args)
+    assert torch.allclose(scaled, plain * 0.25 / 1.5)
+
+
+def test_blueprints_income_loss_averages_each_channel_over_its_cells():
+    # Row 0: cells that can go in both channels. Row 1: in C6 only, so its loss is C6's mean alone. Row 2: none.
+    metrics = blueprints_metrics()
+    torch.manual_seed(4)
+    pred, target = torch.randn(3, 2, 67, 67), (torch.rand(3, 2, 67, 67) < 0.3).float()
+    income_mask = torch.zeros(3, 2, 67, 67)
+    income_mask[0, 0, 10:12, 10:15] = 1.0
+    income_mask[0, 1, 20, 30:33] = 1.0
+    income_mask[1, 1, 5:9, 5] = 1.0
+    mask, weight, global_weight = torch.ones(3, 67, 67), torch.tensor([1.0, 1.0, 1.0]), torch.tensor([1.0, 2.0, 1.0])
+    loss = metrics.loss_income_samplewise(pred, target, weight, mask, mask.sum(dim=(1, 2)), global_weight, income_mask)
+    bce = torch.nn.functional.binary_cross_entropy_with_logits(pred, target, reduction="none")
+    mean = lambda r, c: bce[r, c][income_mask[r, c] > 0].mean()  # noqa: E731
+    expected = torch.stack((0.5 * (mean(0, 0) + mean(0, 1)) / 2, 0.5 * 2.0 * mean(1, 1), torch.tensor(0.0)))
+    assert torch.allclose(loss, expected)
+    # The mask of a batch's rows: the cells of the input planes, the opponent's (C5) and the mover's (C6), not walls.
+    game = games.get("blueprints")
+    inputs = torch.zeros(1, 1 + game.NUM_SPATIAL_INPUTS, 67, 67)
+    for plane, (x, y) in zip(range(6), ((1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1))):
+        inputs[0, 1 + plane, y, x] = 1.0  # the mover's plain, star and wall cells, then the opponent's
+    got = game.income_mask(inputs)[0]
+    assert got[0].nonzero().tolist() == [[1, 4], [1, 5]] and got[1].nonzero().tolist() == [[1, 1], [1, 2]]

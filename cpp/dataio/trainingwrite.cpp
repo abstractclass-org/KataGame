@@ -279,6 +279,8 @@ static const int GLOBAL_TARGET_NUM_CHANNELS = 80;
 //GameInterface::TargetValues.
 static const int VALUE_SPATIAL_TARGET_NUM_CHANNELS = GameInterface::TargetValues::NUM_CHANNELS;
 static const int QVALUE_SPATIAL_TARGET_NUM_CHANNELS = 3;
+static_assert(GameInterface::TargetValues::FIRST_GLOBAL + GameInterface::TargetValues::NUM_GLOBALS ==
+              GLOBAL_TARGET_NUM_CHANNELS, "a game's global targets are the row's last ones, C76-79");
 
 TrainingWriteBuffers::TrainingWriteBuffers(int iVersion, int maxRws, int numBChannels, int numFChannels, int xLen, int yLen, bool includeMetadata)
   :inputsVersion(iVersion),
@@ -754,10 +756,11 @@ void TrainingWriteBuffers::addRow(
   int8_t* rowOwnership = valueTargetsNCHW.data + curRows * VALUE_SPATIAL_TARGET_NUM_CHANNELS * posArea;
 
   //KataGame fork: the slots that the game's own training targets hold in this row (GameInterface::trainingTargets),
-  //all 0 until the game writes them.
+  //all 0 until the game writes them. The front computes the slots of FRONT_TARGETS that the game leaves to it.
+  constexpr unsigned ownTargets = GameInterface::ownTargets<GameEncoding>();
+  constexpr unsigned frontTargets = GameEncoding::TARGETS & GameInterface::FRONT_TARGETS & ~ownTargets;
   unsigned gameTargets = 0;
-  for(int c : GameInterface::TargetValues::GAME_CHANNELS)
-    std::fill(rowOwnership + c * posArea, rowOwnership + (c + 1) * posArea, (int8_t)0);
+  std::fill(rowOwnership, rowOwnership + VALUE_SPATIAL_TARGET_NUM_CHANNELS * posArea, (int8_t)0);
   if(finalOwnership == NULL || (actualGameEndHist.isGameFinished && actualGameEndHist.isNoResult)) {
     rowGlobal[27] = 0.0f;
     rowGlobal[20] = 0.0f;
@@ -781,29 +784,33 @@ void TrainingWriteBuffers::addRow(
     float score = nextPlayer == P_WHITE ? lastTargets.score : -lastTargets.score;
     rowGlobal[20] = score;
 
-    //KataGame fork: the game's own targets, in the slots C0-1, C4 and C5-6 (GameInterface::GameTarget), from the
-    //game's positions from this row on (posHistForFutureBoards, one move apart). Enclosure's: ENCLOSURE.md, "Spatial
-    //targets". The front stores each slot as GameInterface::TargetValues gives, and writes 0 where the game writes
-    //nothing. C68 and C69 flag the rows whose C1 and C5-6 hold a target, and C34 weighs C4 (below).
+    //KataGame fork: the game's own targets (GameInterface::ownTargets: Enclosure's C0-1, C4 and C5-6), from the
+    //game's positions from this row on (posHistForFutureBoards, one move apart), and its global targets C76-79.
+    //Enclosure's: ENCLOSURE.md, "Spatial targets". The front stores each slot as GameInterface::TargetValues gives,
+    //and writes 0 where the game writes nothing. C68 and C69 flag the rows whose C1 and C5-6 hold a target, and C33
+    //and C34 weigh C2-3 and C4 (below).
     testAssert(posHistForFutureBoards != NULL);
     {
       const vector<Board>& boards = *posHistForFutureBoards;
       testAssert(whiteValueTargetsIdx >= 0 && whiteValueTargetsIdx < (int)boards.size());
-      vector<float> values(GameInterface::TargetValues::NUM_CHANNELS * boardArea, 0.0f);
+      vector<float> values(GameInterface::TargetValues::size(boardArea), 0.0f);
       gameTargets = GameInterface::trainingTargets<GameEncoding>(
         [&](int j) -> const GameRules::Position& { return boards[j].pos; }, (int)boards.size(), whiteValueTargetsIdx,
         Board::indexOfPlayer(nextPlayer), values.data());
-      testAssert((gameTargets & ~(GameEncoding::TARGETS & ~GameInterface::FRONT_TARGETS)) == 0);
-      //C0, C4 and C5-6 times 120, rounded at random (the expected value is exact), and C1 as it is. The random
-      //rounding goes slot by slot, point by point.
-      for(int c : GameInterface::TargetValues::GAME_CHANNELS)
+      testAssert((gameTargets & ~ownTargets) == 0);
+      //C0, C4 and C5-6 times 120, rounded at random (the expected value is exact), and the others as they are. The
+      //random rounding goes slot by slot, point by point.
+      for(int c = 0; c < GameInterface::TargetValues::NUM_CHANNELS; c++)
         for(int y = 0; y < board.y_size; y++)
           for(int x = 0; x < board.x_size; x++) {
             const float v = values[c * boardArea + y * board.x_size + x];
             rowOwnership[c * posArea + NNPos::xyToPos(x,y,dataXLen)] =
-              c == GameInterface::TargetValues::CLASS_CHANNEL ? (int8_t)v
+              GameInterface::TargetValues::storedAsIs(c) ? (int8_t)v
               : clampToRadius120(v * GameInterface::TargetValues::STORAGE_SCALE, rand);
           }
+      for(int i = 0; i < GameInterface::TargetValues::NUM_GLOBALS; i++)
+        rowGlobal[GameInterface::TargetValues::FIRST_GLOBAL + i] =
+          values[GameInterface::TargetValues::NUM_CHANNELS * boardArea + i];
       rowGlobal[68] = (gameTargets & GameInterface::TARGET_SEKI) ? 1.0f : 0.0f;
       rowGlobal[69] = (gameTargets & GameInterface::TARGET_INCOME) ? 1.0f : 0.0f;
     }
@@ -831,8 +838,11 @@ void TrainingWriteBuffers::addRow(
   //Enclosure fork (owner, 2026-10-03): future nodes, KataGo's future-position target as it is: board.colors marks
   //each player's nodes and the boards are one edge apart, so C2-3 hold the nodes 8 and 32 edges later (KataGo's
   //19x19 numbers, kept as decisions: games/enclosure/docs/decisions/build.md, "Time constants split"). ENCLOSURE.md, 1.
-  //KataGame fork: for a game whose TARGETS have them (C2-3, from pieces()).
-  if(posHistForFutureBoards == NULL || (GameEncoding::TARGETS & GameInterface::TARGET_FUTURE_PIECES) == 0) {
+  //KataGame fork: for a game whose TARGETS have them and that leaves them to the front (C2-3, from pieces()). A game's
+  //own C2-3 are stored above, and C33 weighs them as KataGo's.
+  if(ownTargets & GameInterface::TARGET_FUTURE_PIECES)
+    rowGlobal[33] = (gameTargets & GameInterface::TARGET_FUTURE_PIECES) ? 1.0f : 0.0f;
+  else if(posHistForFutureBoards == NULL || (frontTargets & GameInterface::TARGET_FUTURE_PIECES) == 0) {
     rowGlobal[33] = 0.0f;
     for(int i = 0; i<posArea; i++) {
       rowOwnership[i+posArea*2] = 0;
@@ -874,11 +884,10 @@ void TrainingWriteBuffers::addRow(
   //(boards[t+1], where policy channel 1's search ran), flagged by C75. The trainer's symmetries need them to list
   //channel 1's moves between two of that player's nodes from their lower end (games/enclosure/docs/decisions/build.md, "The
   //training's symmetry handling"): the row's own inputs hold the mover's nodes before the move. KataGame fork: for a
-  //game whose TARGETS have it (C7, from pieces()).
-  rowGlobal[75] = 0.0f;
-  for(int i = 0; i<posArea; i++)
-    rowOwnership[i+posArea*7] = 0;
-  if((GameEncoding::TARGETS & GameInterface::TARGET_NEXT_PIECES) != 0 && policyTarget1 != NULL &&
+  //game whose TARGETS have it and that leaves it to the front (C7, from pieces(), 0 until here). A game's own C7 is
+  //stored above.
+  rowGlobal[75] = (gameTargets & GameInterface::TARGET_NEXT_PIECES) ? 1.0f : 0.0f;
+  if((frontTargets & GameInterface::TARGET_NEXT_PIECES) != 0 && policyTarget1 != NULL &&
      posHistForFutureBoards != NULL && whiteValueTargetsIdx+1 < (int)posHistForFutureBoards->size()) {
     const Board& nextBoard = (*posHistForFutureBoards)[whiteValueTargetsIdx+1];
     const Player nextMover = nextBoard.nextPla();

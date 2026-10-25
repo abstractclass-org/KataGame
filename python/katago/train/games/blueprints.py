@@ -14,15 +14,20 @@ by cell (the symmetry's linear part on axial offsets) and then goes back to the 
 
 Each row's shifts come from its own hand planes: the mover's blueprints (with the picked cell, whose blueprint keeps
 its whole frame until the drop) and the opponent's. The second policy target (the next move) needs the next mover's
-blueprints after the row's move, and the row's value targets say who the next mover is (slot C1). The blueprints are
-the row's own, except after a drop with a move of the same player to come: the drop changes two blueprints of the
-mover, and the row does not say which drop was played. So in those rows the second policy target has the weight 0
-(mask_targets), at every symmetry.
+blueprints after the row's move, and the row says who the next mover is (next_movers). The blueprints are the row's
+own, except after a drop with a move of the same player to come: the drop changes two blueprints of the mover, and the
+row does not say which drop was played. So in those rows the second policy target has the weight 0 (mask_targets), at
+every symmetry.
+
+The value targets are points of the row's view, so they move as pixels: the final board (C0), the stars 4 and 16
+moves later (C2-3), and the cells that go in the rest of the mover's turn (C5, the opponent's cells) and in the
+opponent's next turn (C6, the mover's cells). The loss of C5-6 reads only the cells that can go: the row's cells of
+that player that are not walls (income_mask).
 """
 
 import torch
 
-from . import TARGET_OWNERSHIP, apply_symmetry_points
+from . import TARGET_FUTURE_PIECES, TARGET_INCOME, TARGET_OWNERSHIP, apply_symmetry_points
 
 # The members of the game's module (C++ game/blueprints/gameencoding.h).
 NAME = "blueprints"
@@ -33,13 +38,19 @@ NUM_GLOBAL_INPUTS = 22   # the last, 21: the mover's effective margin (with the 
 HISTORY_PLANE = 81       # the points that each of the last 4 actions stamped and took, newest first
 NUM_HISTORY_PLANES = 8
 SYMMETRIES = (1 << 0) | (1 << 3) | (1 << 4) | (1 << 7)
-TARGETS = TARGET_OWNERSHIP   # C0: the final board (+1 the mover's cells, -1 the opponent's)
+# C0: the final board (+1 the mover's cells, -1 the opponent's). C2-3: the stars 4 and 16 moves later. C5-6: the cells
+# that go in the rest of the mover's turn and in the opponent's next turn.
+TARGETS = TARGET_OWNERSHIP | TARGET_FUTURE_PIECES | TARGET_INCOME
 SCORE_SCALE = 12.0
 GAME_LENGTH = 120.0      # the site's moves of a game
+# The ownership loss at 0.25, not KataGo's 1.5, beside the targets of C2-3 and C5-6, and the loss of C5-6 at 0.5, not
+# Enclosure's 1.5 (the multipliers of the trainer's coefficients). The score's targets keep their weight C27.
+LOSS_SCALES = {"ownership": 0.25 / 1.5, "income": 0.5 / 1.5}
 
 # The encoding's facts that the augmentation reads (gamerules.h, gameencoding.h). A plane's index in a batch is
 # 1 + its index here: KataGo's on-board plane comes first.
 VIEW_RADIUS, HAND, HAND_X, HAND_Y = 33, 3, 33, 1
+MINE, THEIRS = 0, 3                # each player's cells, + 0 plain, + 1 star, + 2 wall
 # A player's placements, + level * HAND + k for blueprint k: fits (level 0), takes at least 1 to 4 enemy stars (levels
 # 1 to 4), scores at least 25, 100 and 400 points (levels 5 to 7). All of them are anchors.
 MY_PLACES, THEIR_PLACES = 10, 34
@@ -48,8 +59,10 @@ PLACE_PLANES = (1 + STAR_LEVELS + NUM_POINT_LEVELS) * HAND
 MY_HAND, THEIR_HAND = 60, 69       # + k: cells, + 3 + k: stars, + 6 + k: walls
 PICKED = 78                        # + k: the picked cell of blueprint k
 PICKED_INPUT = 9                   # the global input: 1 while a pick waits for its drop
-NEXT_MOVER_SLOT = 1                # the value targets' slot that says who moves next (+1 the row's mover, -1 not)
 NEXT_POLICY_WEIGHT = 28            # the global target: the weight of the second policy target (KataGo's C28)
+# Who makes the next move (+1 the row's mover, -1 the opponent, 0 none): the global target G76 in the rows of the
+# targets' version 1 or later (G77), and the value targets' slot C1 in older rows, on every point.
+NEXT_MOVER_TARGET, TARGETS_VERSION_TARGET, NEXT_MOVER_SLOT = 76, 77, 1
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
 
 
@@ -172,16 +185,22 @@ def apply_symmetry_policy(policy, symmetry, binary_inputs, global_inputs):
     return _map_policy(policy, symmetry, mine, theirs, same)
 
 
-def apply_symmetry_policy_targets(policy, symmetry, binary_inputs, global_inputs, value_targets, global_targets):
-    """The policy targets (N, 2, policy): channel 0 the mover's move, channel 1 the next move.
+def next_movers(value_targets, global_targets):
+    """Who makes each row's next move (N,): +1 the row's mover, -1 the opponent, 0 none (C++ training_targets; no loss
+    reads it). G76 in the rows of the targets' version 1 or later (G77), the slot C1 in older rows. Torch tensors or
+    numpy arrays."""
+    new = global_targets[:, TARGETS_VERSION_TARGET] >= 1
+    return new * global_targets[:, NEXT_MOVER_TARGET] + ~new * value_targets[:, NEXT_MOVER_SLOT, 0, 0]
 
-    The row says who makes the next move: the value targets' slot C1 holds +1 when it is the row's mover and -1 when
-    it is the opponent (C++ training_targets, NEXT_MOVER_SLOT; no loss reads the slot)."""
+
+def apply_symmetry_policy_targets(policy, symmetry, binary_inputs, global_inputs, value_targets, global_targets):
+    """The policy targets (N, 2, policy): channel 0 the mover's move, channel 1 the next move, with the frames of the
+    player that next_movers names."""
     if symmetry == 0:
         return policy
     mine = _shifts(binary_inputs, symmetry, MY_HAND, PICKED)
     theirs = _shifts(binary_inputs, symmetry, THEIR_HAND)
-    same_next = value_targets[:, NEXT_MOVER_SLOT, 0, 0] > 0
+    same_next = next_movers(value_targets, global_targets) > 0
     same = torch.stack((torch.ones_like(same_next), same_next), dim=1)
     return _map_policy(policy, symmetry, mine, theirs, same)
 
@@ -190,7 +209,14 @@ def mask_targets(binary_inputs, global_inputs, value_targets, global_targets):
     """The rows' global targets (N, 80): the weight of the second policy target is 0 in the rows of a drop (a pick
     waits for its drop) with a move of the same player to come, whose frames the row does not give (the module's
     docstring). That weight also weighs the target's soft loss."""
-    unmapped = (global_inputs[:, PICKED_INPUT] > 0.5) & (value_targets[:, NEXT_MOVER_SLOT, 0, 0] > 0)
+    unmapped = (global_inputs[:, PICKED_INPUT] > 0.5) & (next_movers(value_targets, global_targets) > 0)
     out = global_targets.clone()
     out[:, NEXT_POLICY_WEIGHT].masked_fill_(unmapped, 0.0)
     return out
+
+
+def income_mask(binary_inputs):
+    """The points where the loss of C5-6 reads the target (N, 2, y, x): the row's cells that can go, not walls. C5 the
+    opponent's, C6 the mover's (the input planes of the cells, which move as pixels)."""
+    planes = binary_inputs[:, 1:]
+    return torch.stack((planes[:, THEIRS] + planes[:, THEIRS + 1], planes[:, MINE] + planes[:, MINE + 1]), dim=1)
