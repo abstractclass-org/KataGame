@@ -392,6 +392,7 @@ the helper. The rules part's check requires only that the members of a pair come
 | `TURN_MOVES` | The moves of a full turn, after which the clock's increment comes. The time controls give each move its share of the increment (`increment / TURN_MOVES`), and a move with more of its turn to come takes at most the time left divided by the moves left (`turn_moves_left`). | 1, a game that alternates (`turnMoves`) | 2: the site's increment comes once a turn of two edges (games/enclosure/docs/design/18-play-through-gtp.md) |
 | `replay_tolerates(p, action)` | Whether a replayed game (GTP, the analysis engine, SGF files, start positions: `BoardHistory::isLegalTolerant`) also plays this action of `p` where it is not legal: what a site plays beside the legal actions. `play` must accept it. Any `int` (false out of range). The search still plays the legal actions only. | None: a replay plays the legal actions only (`replayTolerates`) | A pass at any time: the site's pass on a clock's timeout, which forfeits the rest of the turn |
 | `continues_move(p)` | Whether the next action continues the move of the action before it, by the same player: one move of the game played as two actions. Self-play's `cheapSearchPerMove` reads it (`play.cpp`): such an action takes the search limits of the action before it, full or cheap, in place of its own draw. | False: each action is a move (`continuesMove`) | None: each edge is a move. Blueprints gives it: a drop, after its pick, continues the edit. |
+| `SETTINGS`, `set_setting(name, value, why)` | The game's own settings: each one's key in a config (a `std::array` of `const char*`), and the setter, which reads a value's text and returns false with the reason for a name or a value that the game does not have. Every command reads them from its config before its first game (`Setup::initializeSession`). A setting holds for the whole process, and the rules can read it, so a game replays only under the settings that played it. A config without a setting's key keeps the game's default. The Python binding gives `SETTINGS` and `set_setting(name, value)`. | None (`settingNames`, `setSetting`) | None. Blueprints gives `viewOrientation`, the rule of its views' orientations (the engine repository's `games/blueprints/README.md`). |
 
 ### A game's notation, and a site's own terms
 
@@ -622,7 +623,8 @@ move mapped by the action map: the image game stays the image of the game.
 
 It also checks the members of the turn, the pass and the standard board: Enclosure's values (two edges a turn, a pass
 at any time and nothing else in a replay, 19 × 19) through the front too (`Board()`, `BoardHistory::isLegalTolerant`),
-and the defaults with the stub game, also with a standard board of its own. Enclosure's training targets keep the
+and the defaults with the stub game, also with a standard board of its own. Neither game has settings, and the
+default's setter refuses a name with a reason. Enclosure's training targets keep the
 digests that the test pins, and Enclosure leaves C2-3, C7 and the global targets to the front. In the engine
 repository, `games/blueprints/tests/test_targets.py` checks Blueprints' own targets against the game record.
 

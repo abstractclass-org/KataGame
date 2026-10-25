@@ -24,8 +24,13 @@
 // - This port plays an edit as two actions of the mover: the pick ("I:q,r") and the drop ("J:q,r"). So the site's
 //   string of an edit is the pick's text, ">", then the drop's. A pick is legal only when a drop follows it.
 // - Pass is never legal. The site plays it when a clock runs out: a replay tolerates it, and it ends the move.
+// - The view has an orientation: the rules board turned by 0, 60 or 120 degrees around the window's middle before the
+//   crop. The actions, the inputs and the targets are in the view's own frame, the blueprints of the hand too. A rule
+//   gives each position its orientation (the setting viewOrientation; 0 by default, the port's view from before the
+//   orientations). So a game's actions replay only under the rule that played them.
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -54,7 +59,48 @@ constexpr const char* TYPE_LETTERS = "psw";  // plain, star, wall
 // The six neighbours of (q, r), in the site's order.
 constexpr int DIRS[6][2] = {{1, 0}, {1, -1}, {0, -1}, {-1, 0}, {-1, 1}, {0, 1}};
 
-// The actions: a point of the view and one of 6 channels, then pass.
+// The view's orientations. The view of orientation o shows the rules board turned: its point (x, y) holds the rules
+// point of the window's middle plus R^o (x - VIEW_RADIUS, y - VIEW_RADIUS), where R turns the hex grid by 60 degrees,
+// (q, r) -> (-r, q + r), and takes the six directions of DIRS to one another. The rule (view_rule) gives each
+// position 0, 1 or 2. The images of the symmetries (gameencoding.h) can have the others: R^3 turns by 180 degrees.
+constexpr int ORIENTATIONS = 6;
+// R^o as a matrix: (q, r) -> (qq * q + qr * r, rq * q + rr * r).
+struct Turn {
+  int qq, qr, rq, rr;
+};
+constexpr Turn TURNS[ORIENTATIONS] = {{1, 0, 0, 1},   {0, -1, 1, 1},  {-1, -1, 1, 0},
+                                      {-1, 0, 0, -1}, {0, 1, -1, -1}, {1, 1, -1, 0}};
+// Whether each matrix is R times the one before it (R (q, r) = (-r, q + r), on the columns), and R^6 the identity.
+constexpr bool turns_are_powers() {
+  if(TURNS[0].qq != 1 || TURNS[0].qr != 0 || TURNS[0].rq != 0 || TURNS[0].rr != 1)
+    return false;
+  for(int o = 0; o < ORIENTATIONS; o++) {
+    const Turn &a = TURNS[o], &b = TURNS[(o + 1) % ORIENTATIONS];
+    if(b.qq != -a.rq || b.rq != a.qq + a.rq || b.qr != -a.rr || b.rr != a.qr + a.rr)
+      return false;
+  }
+  return true;
+}
+static_assert(turns_are_powers(), "TURNS[o] is R^o");
+// Turns (q, r) by R^o.
+inline void turn(int& q, int& r, int o) {
+  const Turn& t = TURNS[o];
+  const int tq = t.qq * q + t.qr * r;
+  r = t.rq * q + t.rr * r;
+  q = tq;
+}
+// The orientation that turns back: R^back(o) R^o is the identity.
+inline int back(int o) { return (ORIENTATIONS - o) % ORIENTATIONS; }
+
+// The rule that gives each position its view's orientation (orient), the setting viewOrientation (GameRules::SETTINGS):
+// one orientation always (0, 1 or 2; 0 is the default), a draw from the position's board (VIEW_RANDOM), or the
+// orientation that holds the most legal placements of the mover (VIEW_MOST, ties to the lowest). It holds for the
+// whole process: a command sets it from its config before its first game (Setup::initializeSession).
+constexpr int VIEW_RANDOM = 3, VIEW_MOST = 4;
+inline int view_rule = 0;
+
+// The actions: a point of the view and one of 6 channels, then pass. The blueprints are in the view's frame: as they
+// are in orientation 0, turned with the board in the others (ViewHand).
 // - Channels 0-2: place blueprint K with its (0, 0) cell at the view's point (q + VIEW_RADIUS, r + VIEW_RADIUS), (q, r)
 //   from the window's middle.
 // - Channels 3-5: the cell (q, r) of blueprint K, at the hand's point (q + HAND_X, r + HAND_Y): a pick of that cell
@@ -99,9 +145,11 @@ constexpr uint64_t KEY_PICK = 41000;     // + k * 4096 + the picked cell's numbe
 constexpr uint64_t KEY_SCORE = 55000;    // + the player, and the score
 constexpr uint64_t KEY_BOX = 60000;      // + player * RECENT + i, and the recent placement's box
 constexpr uint64_t KEY_OFFSET = 60100;   // the offset
+constexpr uint64_t KEY_ORIENTATION = 60101;  // the view's orientation, when it is not 0
 constexpr uint64_t KEY_HISTORY = 70000;  // gameencoding.h's input_hash: + h * 2 * RULES_AREA + a point
 static_assert(KEY_HAND + 6 * 4096 <= KEY_PLY && KEY_PLY + 121 <= KEY_PICK && KEY_PICK + 3 * 4096 <= KEY_SCORE &&
-              KEY_SCORE + 2 <= KEY_BOX && KEY_BOX + 4 <= KEY_OFFSET && KEY_OFFSET < KEY_HISTORY,
+              KEY_SCORE + 2 <= KEY_BOX && KEY_BOX + 4 <= KEY_OFFSET && KEY_OFFSET < KEY_ORIENTATION &&
+              KEY_ORIENTATION < KEY_HISTORY,
               "the hash's ranges of keys do not meet");
 
 // A blueprint: its cells (q, r) and their types, in the site's frame (normalize), except the picked blueprint's rest.
@@ -201,6 +249,46 @@ struct Blueprint {
   }
 };
 
+// The shift (mq, mr) that puts the lowest of the images of b's cells under the linear map f (with the cell (extraQ,
+// extraR) when withExtra) at (0, 0): the site's frame of the image (normalize). (0, 0) for no cell.
+template<class F>
+inline void lowest_image(const Blueprint& b, F&& f, bool withExtra, int extraQ, int extraR, int& mq, int& mr) {
+  bool any = false;
+  mq = mr = 0;
+  auto consider = [&](int q, int r) {
+    f(q, r);
+    if(!any || r < mr || (r == mr && q < mq)) {
+      mq = q;
+      mr = r;
+      any = true;
+    }
+  };
+  for(int i = 0; i < b.n; i++)
+    consider(b.q[i], b.r[i]);
+  if(withExtra)
+    consider(extraQ, extraR);
+}
+
+// Blueprint b as a view of orientation o draws it (image): each cell turned by R^back(o), then by the shift (mq, mr)
+// into the turned blueprint's site frame, its lowest cell at (0, 0). With withExtra, the shift is the one of the cells
+// and (extraQ, extraR): the picked cell, whose blueprint's rest keeps the frame of the whole blueprint until the drop.
+// So the image's cell (q, r) is the cell R^o (q + mq, r + mr) of b. Orientation 0: b as it is, no shift.
+inline void view_blueprint(const Blueprint& b, int o, bool withExtra, int extraQ, int extraR, Blueprint& image,
+                           int& mq, int& mr) {
+  image = b;
+  mq = mr = 0;
+  if(o == 0)
+    return;
+  const int turnBack = back(o);
+  lowest_image(b, [turnBack](int& q, int& r) { turn(q, r, turnBack); }, withExtra, extraQ, extraR, mq, mr);
+  for(int i = 0; i < b.n; i++) {
+    int q = b.q[i], r = b.r[i];
+    turn(q, r, turnBack);
+    image.q[i] = int8_t(q - mq);
+    image.r[i] = int8_t(r - mr);
+  }
+}
+
 // The last actions that the network sees (the history planes, gameencoding.h): for each, the points of the rules
 // board that a placement stamped and whose cells it took. An edit's actions and a pass leave the board as it was: no
 // points. A connected shape of n cells has at most 2n + 4 cells next to it, so a placement takes at most 46.
@@ -297,6 +385,9 @@ struct Position {
   // The site's coordinates (q, r) of the rules board's middle point (RULES_RADIUS, RULES_RADIUS): the board follows the
   // game (recenter).
   int16_t offsetQ = 0, offsetR = 0;
+  // The view's orientation, 0 to 5 (the view's orientations, above): the rule's after each change (orient). A
+  // symmetry's image can have any of them (gameencoding.h).
+  int8_t orientation = 0;
   // The hash of the cells, by their site coordinates, kept as cells come and go (so a recentering keeps it).
   Hash128 cellHash;
   // The last HISTORY actions, the newest first. Not part of the game's state: hash() leaves it out, and the one-line
@@ -334,11 +425,72 @@ inline void window_middle(const Position& p, int player, int& wx, int& wy) {
   wx = RULES_RADIUS + (box.any ? half_off_middle(box.x0, box.x1) : 0);
   wy = RULES_RADIUS + (box.any ? half_off_middle(box.y0, box.y1) : 0);
 }
-// The mover's window: the rules board's point of the view's point (0, 0).
+// The mover's window: the rules board's point of the view's point (0, 0) in orientation 0.
 inline void view_origin(const Position& p, int& ox, int& oy) {
   window_middle(p, turn_of(p.ply), ox, oy);
   ox -= VIEW_RADIUS;
   oy -= VIEW_RADIUS;
+}
+
+// The mover's view: the rules point (wx, wy) of its middle (the mover's window's middle) and its orientation o.
+struct View {
+  int wx = 0, wy = 0, o = 0;
+  // The rules point (rx, ry) of the view's point (x, y), on the board or not.
+  void rules_point(int x, int y, int& rx, int& ry) const {
+    int q = x - VIEW_RADIUS, r = y - VIEW_RADIUS;
+    turn(q, r, o);
+    rx = wx + q;
+    ry = wy + r;
+  }
+  // The view's point (x, y) of the rules point (rx, ry), on the view or not.
+  void view_point(int rx, int ry, int& x, int& y) const {
+    int q = rx - wx, r = ry - wy;
+    turn(q, r, back(o));
+    x = q + VIEW_RADIUS;
+    y = r + VIEW_RADIUS;
+  }
+};
+inline View view_of(const Position& p) {
+  View view;
+  window_middle(p, turn_of(p.ply), view.wx, view.wy);
+  view.o = p.orientation;
+  return view;
+}
+
+// A player's three blueprints as the position's view draws them (view_blueprint), with each one's shift (mq, mr):
+// the view's hand point (q + HAND_X, r + HAND_Y) of blueprint k is the cell R^o (q + mq[k], r + mr[k]) of k's site
+// frame (hand_site). The mover's picked blueprint takes the shift of the whole blueprint, with the picked cell
+// (pickQ, pickR) in the same turned frame. Orientation 0: the blueprints as they are.
+struct ViewHand {
+  Blueprint b[HAND];
+  int mq[HAND] = {}, mr[HAND] = {};
+  int pickQ = 0, pickR = 0;
+};
+inline void view_hand(const Position& p, int player, ViewHand& out) {
+  const int o = p.orientation;
+  const bool picking = player == turn_of(p.ply) && p.picked >= 0;
+  for(int k = 0; k < HAND; k++)
+    view_blueprint(p.hand[player][k], o, picking && k == p.picked, p.pickQ, p.pickR, out.b[k], out.mq[k], out.mr[k]);
+  out.pickQ = p.pickQ;
+  out.pickR = p.pickR;
+  if(picking && o != 0) {
+    turn(out.pickQ, out.pickR, back(o));
+    out.pickQ -= out.mq[p.picked];
+    out.pickR -= out.mr[p.picked];
+  }
+}
+// The cell (q, r) of blueprint k's site frame at the view's hand point (x, y) of a view of orientation o: a pick's
+// cell, or a drop's point next to the blueprint.
+inline void hand_site(const ViewHand& h, int o, int k, int x, int y, int& q, int& r) {
+  q = x - HAND_X + h.mq[k];
+  r = y - HAND_Y + h.mr[k];
+  turn(q, r, o);
+}
+// The view's hand point (x, y) of the cell (q, r) of blueprint k's site frame (hand_site's inverse).
+inline void hand_view(const ViewHand& h, int o, int k, int q, int r, int& x, int& y) {
+  turn(q, r, back(o));
+  x = q - h.mq[k] + HAND_X;
+  y = r - h.mr[k] + HAND_Y;
 }
 
 inline bool next_to_own(const Position& p, int x, int y, int player) {
@@ -406,32 +558,46 @@ inline void for_each_bit(const ViewRow& r, F&& f) {
     f(64 + __builtin_ctzll(w));
 }
 
-// The rows of the view whose origin is the rules point (ox, oy): the empty points (on the rules board, no cell), each
-// player's frontier (the empty points next to a cell of the player: next_to_own), and each player's open cells (its
-// cells that are not walls, next to an empty point). A placement within the view puts a cell on its player's frontier.
+// The rows of a view: the empty points (on the rules board, no cell), each player's frontier (the empty points next
+// to a cell of the player: next_to_own), and each player's open cells (its cells that are not walls, next to an empty
+// point). A placement within the view puts a cell on its player's frontier. The view's turn keeps the neighbours, so
+// the rows of a view of any orientation come from the same operations on its points.
 struct ViewRows {
   ViewRow empty[VIEW], frontier[2][VIEW], open[2][VIEW];
 };
-inline void view_rows(const Position& p, int ox, int oy, ViewRows& out) {
+inline void view_rows(const Position& p, const View& view, ViewRows& out) {
   // Rows -1 to VIEW of the view and its points -1 to VIEW, padded: row y + 1, bit x + 1. Off the rules board: nothing.
   constexpr int PADDED = VIEW + 2;
   ViewRow empty[PADDED] = {}, own[2][PADDED] = {}, notWall[2][PADDED] = {};
-  for(int j = 0; j < PADDED; j++) {
-    const int ry = j - 1 + oy;
-    if(ry < 0 || ry >= RULES_LEN)
-      continue;
-    const int8_t* row = p.cell.row(ry);
-    for(int b = std::max(0, 1 - ox); b < std::min(PADDED, RULES_LEN + 1 - ox); b++) {
-      const int8_t v = row[b - 1 + ox];
-      if(!v)
-        empty[j] |= ViewRow::bit(b);
-      else {
-        own[cell_owner(v)][j] |= ViewRow::bit(b);
-        if(cell_type(v) != WALL)
-          notWall[cell_owner(v)][j] |= ViewRow::bit(b);
-      }
+  auto add = [&](int j, int b, int8_t v) {
+    if(!v)
+      empty[j] |= ViewRow::bit(b);
+    else {
+      own[cell_owner(v)][j] |= ViewRow::bit(b);
+      if(cell_type(v) != WALL)
+        notWall[cell_owner(v)][j] |= ViewRow::bit(b);
+    }
+  };
+  if(view.o == 0) {
+    // The rules board's rows, as they are.
+    const int ox = view.wx - VIEW_RADIUS, oy = view.wy - VIEW_RADIUS;
+    for(int j = 0; j < PADDED; j++) {
+      const int ry = j - 1 + oy;
+      if(ry < 0 || ry >= RULES_LEN)
+        continue;
+      const int8_t* row = p.cell.row(ry);
+      for(int b = std::max(0, 1 - ox); b < std::min(PADDED, RULES_LEN + 1 - ox); b++)
+        add(j, b, row[b - 1 + ox]);
     }
   }
+  else
+    for(int j = 0; j < PADDED; j++)
+      for(int b = 0; b < PADDED; b++) {
+        int rx, ry;
+        view.rules_point(b - 1, j - 1, rx, ry);
+        if(on_rules(rx, ry))
+          add(j, b, p.cell[ry * RULES_LEN + rx]);
+      }
   // Bit x + 1 of the padded row j: a point of rows of set (padded) next to the point (x, j - 1), by DIRS: (x + 1, y),
   // (x + 1, y - 1), (x, y - 1), (x - 1, y), (x - 1, y + 1), (x, y + 1).
   auto next_to = [](const ViewRow* set, int j) {
@@ -681,6 +847,77 @@ inline void place(Position& p, int k, int x, int y) {
   p.ply++;
 }
 
+// The hash of the position but its hands and its pick: the cells (cellHash, by site coordinates), the ply, the scores,
+// the recent placements' boxes by site coordinates and the offset, each kind with its own keys (KEY_PLY and the
+// others). GameRules::hash adds the rest.
+inline Hash128 board_hash(const Position& p) {
+  Hash128 h = p.cellHash ^ key(1, 0);
+  h ^= key(KEY_PLY + uint64_t(p.ply), 0);
+  for(int player = 0; player < 2; player++)
+    h ^= key(KEY_SCORE + uint64_t(player), uint64_t(uint32_t(p.scores[player])));
+  const int dq = p.offsetQ - RULES_RADIUS, dr = p.offsetR - RULES_RADIUS;
+  for(int player = 0; player < 2; player++)
+    for(int i = 0; i < RECENT; i++) {
+      const Box& b = p.recent[player][i];
+      if(b.any)
+        h ^= key(KEY_BOX + uint64_t(player * RECENT + i),
+                 site_key(b.x0 + dq, b.y0 + dr) << 32 | site_key(b.x1 + dq, b.y1 + dr));
+    }
+  h ^= key(KEY_OFFSET, site_key(p.offsetQ, p.offsetR));
+  return h;
+}
+
+// The mover's legal placements in the view of orientation o, with the mover's blueprints hand (a pick put back).
+inline int placements_in_view(const Position& p, const Blueprint* hand, int o) {
+  const int mover = turn_of(p.ply);
+  View view;
+  window_middle(p, mover, view.wx, view.wy);
+  view.o = o;
+  ViewRows rows;
+  view_rows(p, view, rows);
+  int n = 0;
+  for(int k = 0; k < HAND; k++) {
+    Blueprint image;
+    int mq, mr;
+    view_blueprint(hand[k], o, false, 0, 0, image, mq, mr);
+    for_each_fit(image, rows.empty, rows.frontier[mover], [&n](int, int) { n++; });
+  }
+  return n;
+}
+
+// Sets the view's orientation of a position that changed: the rule's (view_rule). The random rule draws it from the
+// position's board (board_hash), and the rule of the most placements counts the mover's legal placements in each
+// orientation. Neither reads the hands' edit in progress: a pick waiting for its drop counts as put back. So an edit's
+// drop keeps its pick's orientation, and the orientation depends on the position alone (the one-line position gives
+// it back).
+inline void orient(Position& p) {
+  if(view_rule < VIEW_RANDOM) {
+    p.orientation = int8_t(view_rule);
+    return;
+  }
+  if(view_rule == VIEW_RANDOM) {
+    p.orientation = int8_t(mix64(board_hash(p).hash0 ^ 0x5851F42D4C957F2DULL) % 3);
+    return;
+  }
+  int best = 0;
+  if(p.ply < PLIES) {
+    const int mover = turn_of(p.ply);
+    Blueprint hand[HAND];
+    std::copy(p.hand[mover], p.hand[mover] + HAND, hand);
+    if(p.picked >= 0)
+      hand[p.picked].add(p.pickQ, p.pickR, p.pickType);
+    int most = -1;
+    for(int o = 0; o < 3; o++) {
+      const int n = placements_in_view(p, hand, o);
+      if(n > most) {
+        most = n;
+        best = o;
+      }
+    }
+  }
+  p.orientation = int8_t(best);
+}
+
 // Places the mover's blueprint k with its (0, 0) cell on the site's point (q, r), anywhere on the rules board: a move
 // of the site that the engine's actions cannot name (a placement with a cell outside the view), as a replay of a site's
 // game plays it. First the site's rule: every cell empty, and one of them next to a cell of the mover (a point off the
@@ -716,6 +953,7 @@ inline bool place_at_site(Position& p, int k, int q, int r) {
   }
   push_history(p);
   place(p, k, x, y);
+  orient(p);
   return true;
 }
 
@@ -730,7 +968,7 @@ inline Blueprint flower(const int ring[6]) {
 }
 
 // The start: each player's three blueprints stamped at the site's places. The start's stamps set no recent placement,
-// so each player's first window is the board's middle.
+// so each player's first window is the board's middle. Then the view's orientation.
 inline void setup(Position& p) {
   p = Position();
   const int plain[6] = {PLAIN, PLAIN, PLAIN, PLAIN, PLAIN, PLAIN};
@@ -748,6 +986,7 @@ inline void setup(Position& p) {
     for(Box& b : p.recent[player])
       b = Box();
   }
+  orient(p);
 }
 
 // A number's text: an integer of at most `digits` digits (at most 9, so that it fits an int), with an optional minus.
@@ -809,28 +1048,41 @@ struct GameRules {
   static int moves_played(const Position& p) { return p.ply; }
   static bool terminal(const Position& p) { return p.ply >= PLIES; }
 
+  // The actions name the view's points and the cells of its hand, in the view's frame (gamerules.h, ViewHand).
   static void legal_actions(const Position& p, std::vector<int>& out) {
     out.clear();
     if(terminal(p))
       return;
+    const int mover = turn_of(p.ply), o = p.orientation;
+    ViewHand hand;
+    view_hand(p, mover, hand);
     if(p.picked >= 0) {
       drops(p, out);
+      if(o != 0) {
+        // The drops' points of the site's frames in the view's frames.
+        for(int& a : out) {
+          int x, y;
+          hand_view(hand, o, action_channel(a) - HAND_CHANNEL, action_x(a) - HAND_X, action_y(a) - HAND_Y, x, y);
+          a = action_at(x, y, action_channel(a));
+        }
+        std::sort(out.begin(), out.end());
+      }
       return;
     }
-    const int mover = turn_of(p.ply);
-    int ox, oy;
-    view_origin(p, ox, oy);
     ViewRows rows;
-    view_rows(p, ox, oy, rows);
+    view_rows(p, view_of(p), rows);
     for(int k = 0; k < HAND; k++)
-      for_each_fit(p.hand[mover][k], rows.empty, rows.frontier[mover],
+      for_each_fit(hand.b[k], rows.empty, rows.frontier[mover],
                    [&](int x, int y) { out.push_back(action_at(x, y, PLACE + k)); });
     // The picks.
     for(int k = 0; k < HAND; k++) {
       const Blueprint& b = p.hand[mover][k];
       for(int i = 0; i < b.n; i++)
-        if(can_pick(p, k, b.q[i], b.r[i]))
-          out.push_back(action_at(b.q[i] + HAND_X, b.r[i] + HAND_Y, HAND_CHANNEL + k));
+        if(can_pick(p, k, b.q[i], b.r[i])) {
+          int x, y;
+          hand_view(hand, o, k, b.q[i], b.r[i], x, y);
+          out.push_back(action_at(x, y, HAND_CHANNEL + k));
+        }
     }
     std::sort(out.begin(), out.end());
   }
@@ -838,15 +1090,31 @@ struct GameRules {
     if(action < 0 || action >= PASS_ACTION || terminal(p))
       return false;
     const int x = action_x(action), y = action_y(action), channel = action_channel(action);
-    if(channel >= HAND_CHANNEL)
-      return p.picked >= 0 ? can_drop(p, channel - HAND_CHANNEL, x - HAND_X, y - HAND_Y)
-                           : can_pick(p, channel - HAND_CHANNEL, x - HAND_X, y - HAND_Y);
-    if(p.picked >= 0)
-      return false;
-    int ox, oy;
-    view_origin(p, ox, oy);
     const int mover = turn_of(p.ply);
-    return fits_in_view(p, mover, p.hand[mover][channel - PLACE], ox, oy, x, y);
+    if(p.orientation == 0) {
+      if(channel >= HAND_CHANNEL)
+        return p.picked >= 0 ? can_drop(p, channel - HAND_CHANNEL, x - HAND_X, y - HAND_Y)
+                             : can_pick(p, channel - HAND_CHANNEL, x - HAND_X, y - HAND_Y);
+      if(p.picked >= 0)
+        return false;
+      int ox, oy;
+      view_origin(p, ox, oy);
+      return fits_in_view(p, mover, p.hand[mover][channel - PLACE], ox, oy, x, y);
+    }
+    ViewHand hand;
+    view_hand(p, mover, hand);
+    if(channel >= HAND_CHANNEL) {
+      const int k = channel - HAND_CHANNEL;
+      int q, r;
+      hand_site(hand, p.orientation, k, x, y, q, r);
+      return p.picked >= 0 ? can_drop(p, k, q, r) : can_pick(p, k, q, r);
+    }
+    const int k = channel - PLACE;
+    if(p.picked >= 0 || hand.b[k].n == 0 || !in_view(hand.b[k], x, y))
+      return false;
+    int rx, ry;
+    view_of(p).rules_point(x - hand.mq[k], y - hand.mr[k], rx, ry);
+    return fits(p, mover, p.hand[mover][k], rx, ry);
   }
   static void play(Position& p, int action) {
     const int mover = turn_of(p.ply);
@@ -860,24 +1128,37 @@ struct GameRules {
         p.picked = -1;
       }
       p.ply++;
+      orient(p);
       return;
     }
     const int x = action_x(action), y = action_y(action), channel = action_channel(action);
+    const int k = channel >= HAND_CHANNEL ? channel - HAND_CHANNEL : channel - PLACE;
+    // A cell of the hand's channels in its blueprint's site frame, and a placement's (0, 0) cell on the rules board.
+    int q = x - HAND_X, r = y - HAND_Y, rx, ry;
+    view_origin(p, rx, ry);
+    rx += x;
+    ry += y;
+    if(p.orientation != 0) {
+      ViewHand hand;
+      view_hand(p, mover, hand);
+      if(channel >= HAND_CHANNEL)
+        hand_site(hand, p.orientation, k, x, y, q, r);
+      else
+        view_of(p).rules_point(x - hand.mq[k], y - hand.mr[k], rx, ry);
+    }
     if(channel >= HAND_CHANNEL && p.picked >= 0) {  // the drop
-      const int j = channel - HAND_CHANNEL;
-      p.hand[mover][j].add(x - HAND_X, y - HAND_Y, p.pickType);
-      p.hand[mover][j].normalize();
+      p.hand[mover][k].add(q, r, p.pickType);
+      p.hand[mover][k].normalize();
       p.hand[mover][p.picked].normalize();
       p.picked = -1;
       p.ply++;
     }
-    else if(channel >= HAND_CHANNEL)  // the pick
-      take(p, channel - HAND_CHANNEL, x - HAND_X, y - HAND_Y);
-    else {
-      int ox, oy;
-      view_origin(p, ox, oy);
-      place(p, channel - PLACE, x + ox, y + oy);
-    }
+    else if(channel >= HAND_CHANNEL)  // the pick: the position keeps its orientation for the drop (orient)
+      take(p, k, q, r);
+    else
+      place(p, k, rx, ry);
+    if(p.picked < 0)
+      orient(p);
   }
   static bool replay_tolerates(const Position&, int action) { return action == PASS_ACTION; }
   // A pick waits for its drop: the drop continues the edit, the pick's move.
@@ -889,49 +1170,47 @@ struct GameRules {
   }
   static double score(const Position& p, int player) { return p.scores[player]; }
 
-  // The cells (cellHash, by site coordinates), each blueprint's cells, the ply, the pick, the scores, the recent
-  // placements' boxes by site coordinates and the offset: a hash of the whole position (each kind with its own keys,
-  // KEY_HAND and the others). The boxes and the offset set the window, so the legal moves: the window's middle rounds
-  // toward the rules board's middle, so with the same boxes two offsets can give two windows (half_off_middle).
+  // The board's part (board_hash: the cells, the ply, the scores, the recent placements' boxes and the offset), each
+  // blueprint's cells, the pick and the view's orientation (no key for orientation 0): a hash of the whole position
+  // (each kind with its own keys, KEY_HAND and the others). The boxes, the offset and the orientation set the view, so
+  // the legal moves: the window's middle rounds toward the rules board's middle, so with the same boxes two offsets
+  // can give two windows (half_off_middle).
   static Hash128 hash(const Position& p) {
     auto cell_number = [](int q, int r) { return uint64_t((q + 32) * 64 + r + 32); };
-    Hash128 h = p.cellHash ^ key(1, 0);
+    Hash128 h = board_hash(p);
     for(int player = 0; player < 2; player++)
       for(int k = 0; k < HAND; k++) {
         const Blueprint& b = p.hand[player][k];
         for(int i = 0; i < b.n; i++)
           h ^= key(KEY_HAND + uint64_t(player * HAND + k) * 4096 + cell_number(b.q[i], b.r[i]), uint64_t(b.t[i]));
       }
-    h ^= key(KEY_PLY + uint64_t(p.ply), 0);
     if(p.picked >= 0)
       h ^= key(KEY_PICK + uint64_t(p.picked) * 4096 + cell_number(p.pickQ, p.pickR), uint64_t(p.pickType));
-    for(int player = 0; player < 2; player++)
-      h ^= key(KEY_SCORE + uint64_t(player), uint64_t(uint32_t(p.scores[player])));
-    const int dq = p.offsetQ - RULES_RADIUS, dr = p.offsetR - RULES_RADIUS;
-    for(int player = 0; player < 2; player++)
-      for(int i = 0; i < RECENT; i++) {
-        const Box& b = p.recent[player][i];
-        if(b.any)
-          h ^= key(KEY_BOX + uint64_t(player * RECENT + i),
-                   site_key(b.x0 + dq, b.y0 + dr) << 32 | site_key(b.x1 + dq, b.y1 + dr));
-      }
-    h ^= key(KEY_OFFSET, site_key(p.offsetQ, p.offsetR));
+    if(p.orientation != 0)
+      h ^= key(KEY_ORIENTATION, uint64_t(p.orientation));
     return h;
   }
 
-  // The view's points: the mover's window.
+  // The view's points: the mover's view.
   static void pieces(const Position& p, int8_t* owners) {
-    int ox, oy;
-    view_origin(p, ox, oy);
+    const View view = view_of(p);
+    const int ox = view.wx - VIEW_RADIUS, oy = view.wy - VIEW_RADIUS;
     for(int y = 0; y < VIEW; y++)
-      for(int x = 0; x < VIEW; x++)
-        owners[y * VIEW + x] = int8_t(cell_owner(at(p, x + ox, y + oy)));
+      for(int x = 0; x < VIEW; x++) {
+        int rx = x + ox, ry = y + oy;
+        if(view.o != 0)
+          view.rules_point(x, y, rx, ry);
+        owners[y * VIEW + x] = int8_t(cell_owner(at(p, rx, ry)));
+      }
   }
   static void area(const Position& p, int8_t* owners) { pieces(p, owners); }
 
   // The strings: "K@q,r" (a placement, its cell from the window's middle) and "K:q,r" (a cell of blueprint K: a pick,
   // or a drop after a pick), with blueprints from 1. The site's string of an edit joins its pick's and its drop's with
-  // ">": "I:q,r>J:q,r". A string of a cell may start with ">", as the drop's part of the site's string does.
+  // ">": "I:q,r>J:q,r". A string of a cell may start with ">", as the drop's part of the site's string does. In a
+  // view of orientation 0 they are the site's strings, less the window's middle for a placement. In another, they
+  // name the view's points and the blueprints in the view's frames (ViewHand): games/blueprints/site.py turns them
+  // into the site's.
   static std::string action_text(int action) {
     if(action == PASS_ACTION)
       return "pass";
@@ -1036,7 +1315,8 @@ struct GameRules {
     return s;
   }
   // Checks the fields, the board's points, each blueprint's frame and connection, and the cells of each player's hand.
-  // Then the board goes to its middle (recenter), as play() keeps it.
+  // Then the board goes to its middle (recenter), as play() keeps it, and the rule gives the view's orientation
+  // (orient), which the text does not hold.
   static bool parse_position(const std::string& text, Position& p, std::string& why) {
     const std::vector<std::string> fields = split(text, ' ');
     if(fields.size() != 9) {
@@ -1185,8 +1465,28 @@ struct GameRules {
       }
     }
     recenter(q);
+    orient(q);
     p = q;
     return true;
+  }
+
+  // The game's settings (GameInterface): viewOrientation, the rule of the views' orientations (view_rule). Its values:
+  // 0, 1 or 2 (that orientation always; 0 is the default), random (a draw from each position's board) and
+  // mostPlacements (the orientation that holds the most legal placements of the mover).
+  static constexpr std::array<const char*, 1> SETTINGS = {"viewOrientation"};
+  static bool set_setting(const std::string& name, const std::string& value, std::string& why) {
+    if(name != SETTINGS[0]) {
+      why = "Blueprints has no setting " + name + " (its settings: viewOrientation)";
+      return false;
+    }
+    const char* values[] = {"0", "1", "2", "random", "mostPlacements"};
+    for(int rule = 0; rule <= VIEW_MOST; rule++)
+      if(value == values[rule]) {
+        view_rule = rule;
+        return true;
+      }
+    why = "viewOrientation is 0, 1, 2, random or mostPlacements, not \"" + value + "\"";
+    return false;
   }
 };
 

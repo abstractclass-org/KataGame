@@ -100,6 +100,14 @@
  *   continues_move(p)       bool: whether the next action continues the move of the action before it, by the same
  *                           player: Blueprints' drop, the second action of an edit, after its pick. Self-play's
  *                           cheapSearchPerMove reads it. Default: false, each action is a move (continuesMove).
+ *   SETTINGS, set_setting(name, value, why)
+ *                           a list of const char* (std::array), bool: the game's own settings, which every command
+ *                           reads from its config before its first game (Setup::initializeSession): each one's key in
+ *                           the config, and the setter, which reads a value's text and returns false with the reason
+ *                           for a name or a value that the game does not have. A setting holds for the whole process,
+ *                           and the rules read it, so a game replays only under the settings that played it. A config
+ *                           without a setting's key keeps the game's default. Blueprints' viewOrientation. A game gives
+ *                           both or neither. Default: none (settingNames, setSetting).
  *
  * The network encoding part (struct E):
  *   Rules                   the game's rules part (its GameRules).
@@ -338,6 +346,10 @@ namespace rules {
   GAMEINTERFACE_DETECT(HasTurnMoves, int, std::integral_constant<int, G::TURN_MOVES>::value)
   GAMEINTERFACE_DETECT(HasReplayTolerates, bool, G::replay_tolerates(std::declval<const P<G>&>(), 0))
   GAMEINTERFACE_DETECT(HasContinuesMove, bool, G::continues_move(std::declval<const P<G>&>()))
+  GAMEINTERFACE_DETECT(HasSettings, const char*, *std::begin(G::SETTINGS))
+  GAMEINTERFACE_DETECT(HasSetSetting, bool,
+                       G::set_setting(std::declval<const std::string&>(), std::declval<const std::string&>(),
+                                      std::declval<std::string&>()))
 }
 
 template<class R> constexpr bool checkRules() {
@@ -403,6 +415,10 @@ template<class R> constexpr bool checkRules() {
                   "game interface, rules part: the standard board fits the largest board");
   if constexpr(HasTurnMoves<R>::value)
     static_assert(R::TURN_MOVES >= 1, "game interface, rules part: a turn has at least one move (TURN_MOVES)");
+  static_assert(HasSettings<R>::value == HasSetSetting<R>::value,
+                "game interface, rules part: the game gives SETTINGS (the settings' names, const char*) and "
+                "set_setting(const std::string& name, const std::string& value, std::string& why) -> bool together, "
+                "or neither");
   return true;
 }
 
@@ -540,6 +556,26 @@ template<class R> bool continuesMove(const typename R::Position& p) {
     return R::continues_move(p);
   else {
     (void)p;
+    return false;
+  }
+}
+
+//The game's own settings, by their keys in a config: the game's, else none.
+template<class R> std::vector<std::string> settingNames() {
+  if constexpr(rules::HasSettings<R>::value)
+    return std::vector<std::string>(std::begin(R::SETTINGS), std::end(R::SETTINGS));
+  else
+    return {};
+}
+
+//Sets one of the game's own settings from a value's text, or returns false with the reason. A game without settings
+//has none to set.
+template<class R> bool setSetting(const std::string& name, const std::string& value, std::string& why) {
+  if constexpr(rules::HasSetSetting<R>::value)
+    return R::set_setting(name, value, why);
+  else {
+    (void)value;
+    why = std::string("the game ") + R::NAME + " has no setting " + name;
     return false;
   }
 }

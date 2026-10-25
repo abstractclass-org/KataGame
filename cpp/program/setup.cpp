@@ -10,7 +10,14 @@
 using namespace std;
 
 void Setup::initializeSession(ConfigParser& cfg) {
-  (void)cfg;
+  //KataGame fork: the game's own settings (GameInterface::settingNames), before the command's first game.
+  for(const string& name : GameInterface::settingNames<GameRules>()) {
+    if(!cfg.contains(name))
+      continue;
+    string why;
+    if(!GameInterface::setSetting<GameRules>(name, cfg.getString(name), why))
+      throw IOError("The game's setting " + name + " in the config: " + why);
+  }
   NeuralNet::globalInitialize();
 }
 

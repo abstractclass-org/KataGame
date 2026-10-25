@@ -436,6 +436,15 @@ static void checkOptionalMembers() {
                   !GameInterface::rules::HasContinuesMove<S>::value, "Enclosure's and the stub game's actions are moves");
     if(GameInterface::continuesMove<S>(stub::Position()))
       fail("the default of continuesMove: no action continues a move");
+    //No settings of their own, by default: Enclosure's and the stub game's. A setting's name is refused with a reason.
+    static_assert(!GameInterface::rules::HasSettings<R>::value && !GameInterface::rules::HasSetSetting<R>::value &&
+                  !GameInterface::rules::HasSettings<S>::value, "Enclosure and the stub game have no settings");
+    {
+      string why;
+      if(!GameInterface::settingNames<R>().empty() || !GameInterface::settingNames<S>().empty() ||
+         GameInterface::setSetting<S>("aSetting", "0", why) || why.empty())
+        fail("the default of the settings: none, and a setting's name refused with a reason");
+    }
     //The front: Board() is the standard board, and a replayed game passes at any time, while an edge is legal.
     Board board;
     BoardHistory hist(board, P_BLACK, Rules(), 0);

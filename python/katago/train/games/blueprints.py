@@ -19,6 +19,12 @@ own, except after a drop with a move of the same player to come: the drop change
 row does not say which drop was played. So in those rows the second policy target has the weight 0 (mask_targets), at
 every symmetry.
 
+The view has an orientation (the C++ gamerules.h): self-play can turn each position's view by 60 or 120 degrees, and
+the row is in its view's frame, the hand's planes too. So the augmentation does not read the orientation, and its 4
+symmetries on top of the views' 3 orientations give the hex grid's 12. The second policy target is a policy of the
+next position's view. When that view has another orientation (the global targets G78 and G79), the policy lies in a
+turned frame that the row does not give, so it has the weight 0 too.
+
 The value targets are points of the row's view, so they move as pixels: the final board (C0), the cells captured
 before the game's end (C1), the stars 4 and 16 moves later (C2-3), where the points are earned (C4), and the cells
 that go in the rest of the mover's turn (C5, the opponent's cells) and in the opponent's next turn (C6, the mover's
@@ -70,6 +76,9 @@ NEXT_POLICY_WEIGHT = 28            # the global target: the weight of the second
 # targets' version 1 or later (G77), and the value targets' slot C1 in older rows, on every point. From version 2, C1
 # holds the cells captured before the game's end.
 NEXT_MOVER_TARGET, TARGETS_VERSION_TARGET, NEXT_MOVER_SLOT = 76, 77, 1
+# The orientations of the row's view and of the next position's view (0 to 5, both 0 in the rows from before the
+# orientations): the global targets G78 and G79.
+ORIENTATION_TARGET, NEXT_ORIENTATION_TARGET = 78, 79
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
 
 
@@ -214,9 +223,11 @@ def apply_symmetry_policy_targets(policy, symmetry, binary_inputs, global_inputs
 
 def mask_targets(binary_inputs, global_inputs, value_targets, global_targets):
     """The rows' global targets (N, 80): the weight of the second policy target is 0 in the rows of a drop (a pick
-    waits for its drop) with a move of the same player to come, whose frames the row does not give (the module's
-    docstring). That weight also weighs the target's soft loss."""
+    waits for its drop) with a move of the same player to come, and in the rows whose next position's view has another
+    orientation: the row does not give that target's frames (the module's docstring). That weight also weighs the
+    target's soft loss."""
     unmapped = (global_inputs[:, PICKED_INPUT] > 0.5) & (next_movers(value_targets, global_targets) > 0)
+    unmapped |= global_targets[:, ORIENTATION_TARGET] != global_targets[:, NEXT_ORIENTATION_TARGET]
     out = global_targets.clone()
     out[:, NEXT_POLICY_WEIGHT].masked_fill_(unmapped, 0.0)
     return out
