@@ -310,22 +310,18 @@ static void checkBracket() {
     if(fabs(c) <= gameLimit)
       check(found && fabs(offset - c) <= 0.5,
             "the game's bracket: an even komi at the sign change, within half a point, at " + to_string(c));
-    else {
+    else
       check(offset == (c > 0 ? gameLimit : -gameLimit), "the game's bracket: the limit, beyond it, at " + to_string(c));
-      check(found == gameEndIsEven, "the game's bracket: beyond it, an even komi only under KataGo's rule");
-      check(gameEndIsEven || (int)tried.size() == 1 + offsets,
-            "the game's bracket: without an even komi, no bisection after the bracket's offsets");
-    }
     printf("a crossing at %8.2f: %2d values, %2d of them the bracket's offsets (the last %g), the result %8.2f (%s)\n",
            c, (int)tried.size(), offsets, tried[offsets], offset, found ? "an even komi" : "no even komi");
   }
 
   //The rules where the value keeps its sign up to the limit, on KataGo's bracket and on the game's: flat curves, and
-  //a monotone one that crosses 0 beyond the limit on either side. KataGo's rule: KataGo's result (for KataGo's
-  //bracket), the far end after the bisection (a flat curve's last window of half a point, which KataGo averages), an
-  //even komi. The other: the far end at once, after the value at 0 and the bracket's offsets, and no even komi. A
-  //curve flat at 0 has an even komi within the first offset, and a curve that crosses 0 at the limit has one there.
-  int notFound = 0;
+  //a monotone one that crosses 0 beyond the limit on either side. KataGo's rule: the far end after the bisection (a
+  //flat curve's last window of half a point, which KataGo averages), an even komi. The check of KataGo's bracket above
+  //compares such curves with KataGo's code. The other rule: the far end at once, after the value at 0 and the
+  //bracket's offsets, and no even komi. A curve flat at 0 has an even komi within the first offset, and a curve that
+  //crosses 0 at the limit has one there.
   for(const pair<double, double>& bracket : {make_pair(1.0, 32.0), make_pair(gameStep, gameLimit)}) {
     const double s = bracket.first, l = bracket.second;
     vector<pair<string, function<double(double)>>> keeping = {
@@ -338,24 +334,18 @@ static void checkBracket() {
       const auto& f = named.second;
       const double end = f(0.0) < 0 ? l : -l;
       for(bool rule : {true, false}) {
-        vector<double> tried, kataGoTried;
+        vector<double> tried;
         double offset;
         const bool found =
           PlayUtils::evenKomiOffset([&](double d) { tried.push_back(d); return f(d); }, s, l, rule, offset);
         const string what = "bracket " + to_string(s) + " to " + to_string(l) + ", " + named.first + ", " +
                             (rule ? "KataGo's rule" : "no even komi beyond the limit");
-        if(rule) {
+        if(rule)
           check(found && fabs(offset - end) <= 0.5, what + ": an even komi, the far end");
-          if(s == 1.0 && l == 32.0) {
-            const double kataGo = kataGoOffset([&](double d) { kataGoTried.push_back(d); return f(d); });
-            check(offset == kataGo && tried == kataGoTried, what + ": KataGo's code");
-          }
-        }
         else {
           check(!found && offset == end, what + ": no even komi, the far end");
           check((int)tried.size() == 1 + bracketOffsets(tried, s, l) && fabs(tried.back()) == l,
                 what + ": the value at 0 and the bracket's offsets only");
-          notFound++;
         }
       }
     }
@@ -367,8 +357,7 @@ static void checkBracket() {
           "a curve that crosses 0 at the limit: an even komi there");
   }
   printf("curves that keep their sign up to the limit, on KataGo's bracket and the game's: the far end under both "
-         "rules, an even komi under KataGo's, and %d cases of no even komi under the other, each after the bracket's "
-         "offsets\n", notFound);
+         "rules, an even komi under KataGo's, and no even komi under the other, after the bracket's offsets\n");
 }
 
 //The standard normal distribution function.

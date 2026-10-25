@@ -556,7 +556,6 @@ bool PlayUtils::evenKomiOffset(
   double upperDelta;
   double lowerWinLoss;
   double upperWinLoss;
-  bool crossed;
 
   //Grow window outward
   //KataGame fork: by the game's bracket, step, 2 * step and so on up to limit (KataGo: round(pow(2,i)) for i = 0 to 5,
@@ -573,7 +572,6 @@ bool PlayUtils::evenKomiOffset(
         if(upperWinLoss >= 0 || offset >= limit)
           break;
       }
-      crossed = upperWinLoss >= 0;
     }
     else {
       //Winning, so this is the upper bound
@@ -585,13 +583,12 @@ bool PlayUtils::evenKomiOffset(
         if(lowerWinLoss <= 0 || offset >= limit)
           break;
       }
-      crossed = lowerWinLoss <= 0;
     }
   }
-  //KataGame fork: no sign change up to the limit, and so no even komi under the game's rule. The bisection would only
-  //move to the far end.
-  if(!crossed && !endIsEven) {
-    delta = lowerDelta == 0.0 ? upperDelta : lowerDelta;
+  //KataGame fork: no sign change up to the limit (the end at 0 keeps its sign), and so no even komi under the game's
+  //rule. The bisection would only move to the far end, lowerDelta + upperDelta since the other end is 0.
+  if(!endIsEven && !(lowerWinLoss <= 0 && upperWinLoss >= 0)) {
+    delta = lowerDelta + upperDelta;
     return false;
   }
 
@@ -687,8 +684,7 @@ float PlayUtils::computeLead(
 
   //Smooth over area scoring 2-point granularity
   //Enclosure fork (owner, 2026-10-04): upstream's procedure kept (this winrate check is what ties the lead to the
-  //even komi), its point quantities x SCORE_SCALE: the half-point grid and window become 6 points (0.5 x 12).
-  //KataGame fork: that step is komiLeadStep's default.
+  //even komi), with the game's step (komiLeadStep, above) for its half point: 6 points for Enclosure (0.5 x 12).
 
   //If komi is exactly an integer, then we're good.
   if(naiveKomi == round(naiveKomi / (2.0 * step)) * (2.0 * step)) {

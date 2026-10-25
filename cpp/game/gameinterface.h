@@ -652,8 +652,7 @@ template<class E> constexpr bool checkEncoding() {
                   "game interface, encoding part: KOMI_BRACKET_STEP is at least half a point, KOMI_BRACKET_LIMIT is "
                   "at least KOMI_BRACKET_STEP, and both are whole or half points");
   if constexpr(HasKomiLeadStep<E>::value)
-    static_assert(E::KOMI_LEAD_STEP == 0.0 ||
-                    (E::KOMI_LEAD_STEP >= 0.5 && E::KOMI_LEAD_STEP * 2 == (double)(long long)(E::KOMI_LEAD_STEP * 2)),
+    static_assert(E::KOMI_LEAD_STEP >= 0.0 && E::KOMI_LEAD_STEP * 2 == (double)(long long)(E::KOMI_LEAD_STEP * 2),
                   "game interface, encoding part: KOMI_LEAD_STEP is 0, or whole or half points");
   return true;
 }

@@ -2374,13 +2374,9 @@ FinishedGameData* Play::runGame(
             break;
 
           //KataGame fork: without an even komi (computeLead's found), no lead target.
-          bool found;
-          const float lead =
-            PlayUtils::computeLead(botB,botW,board,hist,pla,playSettings.estimateLeadVisits,otherGameProps,&found);
-          if(found) {
-            gameData->whiteValueTargetsByTurn[turnAfterStart].lead = lead;
-            gameData->whiteValueTargetsByTurn[turnAfterStart].hasLead = true;
-          }
+          gameData->whiteValueTargetsByTurn[turnAfterStart].lead =
+            PlayUtils::computeLead(botB,botW,board,hist,pla,playSettings.estimateLeadVisits,otherGameProps,
+                                   &gameData->whiteValueTargetsByTurn[turnAfterStart].hasLead);
         }
         Move move = gameData->endHist.moveHistory[turnIdx];
         testAssert(move.pla == pla);
@@ -2404,13 +2400,9 @@ FinishedGameData* Play::runGame(
             break;
 
           //KataGame fork: without an even komi (computeLead's found), no lead target.
-          bool found;
-          const float lead =
-            PlayUtils::computeLead(botB,botW,sp->board,sp->hist,sp->pla,playSettings.estimateLeadVisits,otherGameProps,&found);
-          if(found) {
-            sp->whiteValueTargets.lead = lead;
-            sp->whiteValueTargets.hasLead = true;
-          }
+          sp->whiteValueTargets.lead =
+            PlayUtils::computeLead(botB,botW,sp->board,sp->hist,sp->pla,playSettings.estimateLeadVisits,otherGameProps,
+                                   &sp->whiteValueTargets.hasLead);
         }
       }
     }
