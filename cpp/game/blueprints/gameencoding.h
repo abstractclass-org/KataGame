@@ -111,6 +111,8 @@ struct GameEncoding {
                 "Blueprints' planes follow one another");
   static constexpr int NUM_GLOBAL_INPUTS = 22;
   static constexpr int MARGIN_INPUT = 21;  // the mover's effective margin / MARGIN_UNIT, not squashed
+  // Of the order of the site's margins (median 523 points, 90th percentile 2,101) and of self-play's komis (up to
+  // 3,000 points in a new game), so that the margin's input is of the order of 1.
   static constexpr double MARGIN_UNIT = 1000.0;
 
   template<class Set>
@@ -475,8 +477,8 @@ struct GameEncoding {
   static constexpr double LOOKAHEAD_AREA = 19 * 19;
   static constexpr double KOMI_AREA = 19 * 19;
   // The even-komi search's bracket: offsets of 12, 24, 48 and so on around its guess, up to 3,000 points, the reach of
-  // self-play's widest komi (3 standard deviations of 1,000 points). KataGo's offsets of 1 to 32 points are less than 3
-  // of Go's points at this SCORE_SCALE, and Blueprints' margins are hundreds of points.
+  // the widest komi of a new game in self-play (3 standard deviations of 1,000 points). KataGo's offsets of 1 to 32
+  // points are less than 3 of Go's points at this SCORE_SCALE, and Blueprints' margins are hundreds of points.
   static constexpr double KOMI_BRACKET_STEP = SCORE_SCALE;
   static constexpr double KOMI_BRACKET_LIMIT = 3000.0;
 };

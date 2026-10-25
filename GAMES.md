@@ -629,14 +629,16 @@ repository, `games/blueprints/tools/td_lambdas.py` checks the lambdas in Bluepri
 
 **Komi:** `testkomi` runs on a build of any game, with a self-play config as an optional argument. It plays a random
 game to its end and checks the history's result at komis of both signs, at 0, and at the komis that decide the game
-(the opposite of the earned margin, and half a point to either side): the final margin with the komi, the winner,
+(the half point nearest the opposite of the earned margin, a draw when the margin is on the half-point grid, and half
+a point to either side): the final margin with the komi, the winner,
 White's wins in the value targets (half a win at a margin of 0), the final score target, each side's own komi, and the
 network cache's hash, which changes with a nonzero komi only. It checks that the front's global inputs are the game's
 at the history's komi, and prints the inputs that change. It checks the even-komi search's bracket: the defaults
 with stub games, and the build's game against the bracket that the test pins for each game. With KataGo's bracket,
 `evenKomiOffset` tries the same offsets and gives the same result as a copy of KataGo's code on 1,929 win-loss
 curves. With the game's bracket, it finds the sign change of a monotone curve within half a point out to the limit, and
-the test prints how many values it reads. With a config, it draws 200,000 komis as a new game of `play.cpp` does, and
+the test prints how many values it reads. With a config, it makes 200,000 new games with `play.cpp`'s
+`GameInitializer`, as self-play does, and
 checks the shares of draws at 0 and beyond 3 standard deviations of `komiBigStdev` against the config's probabilities
 (the bigger draw overrides the big draw, which overrides `komiStdev`), and that each draw is on the half-point grid.
 
@@ -674,7 +676,9 @@ code and the work that remains for a third game.
 4. **The encoding part.** Add `cpp/game/<game>/gameencoding.h` (`struct GameEncoding`), ending with
    `static_assert(GameInterface::checkEncoding<GameEncoding>(), "...")`. Connect-4's is a short example. A board
    larger than the reach of the game's moves gives `LOOKAHEAD_AREA` and `KOMI_AREA` ("The network encoding part"), and
-   `tests/enclosure/testgameareas.cpp` pins the game's areas in any case. Build with
+   `tests/enclosure/testgameareas.cpp` pins the game's areas in any case. A game whose margins are much larger than
+   Go's gives `KOMI_BRACKET_STEP` and `KOMI_BRACKET_LIMIT`, and `tests/enclosure/testkomi.cpp` pins the game's bracket
+   in any case. Build with
    `-DGAME=<game>`, in a build folder for that game and backend: `pipeline/scripts/build_game.sh <game>` builds both
    backends and rebuilds the binding with the encoding's symmetries. Repeat the conformance suite to check them. Code of
    the game's own that uses the front (a command or a test of the search) goes outside the folder, in a file named after

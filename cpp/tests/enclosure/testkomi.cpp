@@ -4,9 +4,9 @@
 //   testkomi [SELFPLAY_CONFIG]
 //
 // - The result: a random game to its end, then the history's result at komis of both signs, at 0, and at the komis
-//   that decide the game (the opposite of the earned margin, and half a point to either side): the final margin with
-//   K, its winner, White's wins in the value targets (a margin of 0 is half a win), the final score target, each
-//   side's own komi, and the network cache's hash, which changes with a nonzero K only.
+//   that decide the game (the half point nearest the opposite of the earned margin, and half a point to either side):
+//   the final margin with K, its winner, White's wins in the value targets (a margin of 0 is half a win), the final
+//   score target, each side's own komi, and the network cache's hash, which changes with a nonzero K only.
 // - The inputs: at a position of that game, the front's global inputs (NNInputs::fillRowV8, which gives the game the
 //   history's komi) are the game's global_inputs at that komi. The test prints the global inputs that change with K.
 // - The even-komi search's bracket (PlayUtils::evenKomiOffset): the defaults with stub games, and the build's game's
@@ -14,10 +14,10 @@
 //   offsets and gives the same result as KataGo's own code (kataGoOffset, a copy) on many win-loss curves. With the
 //   game's bracket, it finds the sign change of a monotone curve within half a point out to the bracket's limit, ends
 //   at the limit beyond it, and the test prints the values that it reads.
-// - With a self-play config: the komi draws of new games, as play.cpp makes them (chooseExtraBlackAndKomi, then
-//   setKomiWithNoise), against the shares that the config's probabilities give: the draws of exactly 0, and the draws
-//   beyond 3 standard deviations of the middle spread (komiBigStdev). Every draw is on the half-point grid, and none
-//   is beyond 3 standard deviations of the widest spread.
+// - With a self-play config: the komi draws of new games, which play.cpp's GameInitializer makes as in self-play,
+//   against the shares that the config's probabilities give: the draws of exactly 0, and the draws beyond 3 standard
+//   deviations of the middle spread (komiBigStdev). Every draw is on the half-point grid, and none is beyond 3
+//   standard deviations of the widest spread.
 
 #include <algorithm>
 #include <cmath>
@@ -28,10 +28,13 @@
 #include <vector>
 
 #include "../../core/config_parser.h"
+#include "../../core/logger.h"
 #include "../../core/rand.h"
 #include "../../game/boardhistory.h"
 #include "../../neuralnet/nninputs.h"
+#include "../../program/play.h"
 #include "../../program/playutils.h"
+#include "../../search/searchparams.h"
 
 using namespace std;
 
@@ -127,15 +130,11 @@ static double kataGoOffset(const function<double(double)>& winLossAt) {
   return finalDelta;
 }
 
-static bool onHalfPoints(double x) { return x * 2.0 == round(x * 2.0); }
-
 //A move of a random game that often scores: of 20 random legal moves, the one after which the mover's margin is the
 //largest. NULL_LOC when no move is legal.
-static Loc scoringMove(const Board& board, const BoardHistory& hist, Player pla, Rand& rand) {
+static Loc scoringMove(const Board& board, Player pla, Rand& rand) {
   vector<Loc> legal;
-  for(Loc loc = 0; loc < Board::NUM_MOVE_LOCS; loc++)
-    if(hist.isLegal(board, loc, pla))
-      legal.push_back(loc);
+  board.getLegalMoveLocs(legal);
   Loc best = Board::NULL_LOC;
   double bestMargin = 0.0;
   for(int i = 0; i < 20 && !legal.empty(); i++) {
@@ -161,7 +160,7 @@ static void checkResults() {
   Board middle;
   BoardHistory middleHist(hist);
   while(!hist.isGameFinished) {
-    const Loc loc = scoringMove(board, hist, pla, rand);
+    const Loc loc = scoringMove(board, pla, rand);
     if(loc == Board::NULL_LOC) {
       check(false, "the random game has a legal move until its end");
       return;
@@ -176,7 +175,10 @@ static void checkResults() {
   const double margin = board.getScore(P_WHITE) - board.getScore(P_BLACK);
   printf("a random game of %d moves: White's earned margin %g\n", (int)hist.moveHistory.size(), margin);
   const Hash128 hashAtZero = BoardHistory::getSituationRulesAndKoHash(board, hist, pla, 0.5);
-  const double komis[] = {0.0, 12.5, -12.5, 3000.0, -3000.0, -margin, -margin + 0.5, -margin - 0.5};
+  //The komis that decide the game: the half point nearest the opposite of the earned margin (a draw when the margin is
+  //on the half-point grid, as Blueprints' whole points are), and half a point to either side. A komi is a half point.
+  const double even = 0.5 * round(-2.0 * margin);
+  const double komis[] = {0.0, 12.5, -12.5, 3000.0, -3000.0, even, even + 0.5, even - 0.5};
   for(double komi : komis) {
     BoardHistory h(hist);
     h.setKomi((float)komi);
@@ -265,7 +267,7 @@ static void checkBracket() {
     const double offset = PlayUtils::evenKomiOffset([&](double d) { tried.push_back(d); return f(d); }, gameStep, gameLimit);
     bool grid = true;
     for(double d : tried)
-      grid = grid && onHalfPoints(d) && fabs(d) <= gameLimit;
+      grid = grid && Rules::komiIsIntOrHalfInt((float)d) && fabs(d) <= gameLimit;
     check(grid, "the game's bracket: each offset is on the half-point grid, within the limit");
     if(fabs(c) <= gameLimit)
       check(fabs(offset - c) <= 0.5, "the game's bracket: the sign change within half a point, at " + to_string(c));
@@ -285,17 +287,16 @@ static double normalCdf(double x) { return 0.5 * erfc(-x / sqrt(2.0)); }
 //The komi draws of a self-play config's new games.
 static void checkDraws(const char* path) {
   ConfigParser cfg(path);
-  //The keys and the defaults of play.cpp's GameInitializer.
-  const float komiMean = cfg.contains("komiMean") ? cfg.getFloat("komiMean", Rules::MIN_USER_KOMI, Rules::MAX_USER_KOMI) : 0.0f;
-  const float komiStdev = cfg.contains("komiStdev") ? cfg.getFloat("komiStdev", 0.0f, (float)(60.0 * NNPos::SCORE_SCALE)) : 0.0f;
-  const double bigProb = cfg.contains("komiBigStdevProb") ? cfg.getDouble("komiBigStdevProb", 0.0, 1.0) : 0.0;
-  const float bigStdev = cfg.contains("komiBigStdev") ? cfg.getFloat("komiBigStdev", 0.0f, (float)(60.0 * NNPos::SCORE_SCALE)) : 10.0f;
-  const double biggerProb = cfg.contains("komiBiggerStdevProb") ? cfg.getDouble("komiBiggerStdevProb", 0.0, 1.0) : 0.0;
-  const float biggerStdev =
-    cfg.contains("komiBiggerStdev") ? cfg.getFloat("komiBiggerStdev", 0.0f, (float)(120.0 * NNPos::SCORE_SCALE)) : 30.0f;
-  const double allowIntegerProb = cfg.contains("komiAllowIntegerProb") ? cfg.getDouble("komiAllowIntegerProb", 0.0, 1.0) : 1.0;
-  printf("%s: komiMean %g, komiStdev %g, komiBigStdev %g at %g, komiBiggerStdev %g at %g, komiAllowIntegerProb %g\n",
-         path, komiMean, komiStdev, bigStdev, bigProb, biggerStdev, biggerProb, allowIntegerProb);
+  //The spreads, for the expected shares, with play.cpp's defaults. GameInitializer checks their ranges and draws.
+  auto value = [&](const char* key, double absent) { return cfg.contains(key) ? cfg.getDouble(key) : absent; };
+  const double komiMean = value("komiMean", 0.0);
+  const double komiStdev = value("komiStdev", 0.0);
+  const double bigProb = value("komiBigStdevProb", 0.0);
+  const double bigStdev = value("komiBigStdev", 10.0);
+  const double biggerProb = value("komiBiggerStdevProb", 0.0);
+  const double biggerStdev = value("komiBiggerStdev", 30.0);
+  printf("%s: komiMean %g, komiStdev %g, komiBigStdev %g at %g, komiBiggerStdev %g at %g\n", path, komiMean, komiStdev,
+         bigStdev, bigProb, biggerStdev, biggerProb);
 
   //The sampler's spreads (chooseExtraBlackAndKomi): the bigger draw overrides the big one, which overrides komiStdev.
   //Each spread is in the config's points times sqrt(komi area) / 19.
@@ -321,20 +322,24 @@ static void checkDraws(const char* path) {
     }
   }
 
-  const Board board;
-  BoardHistory h(board, P_BLACK, Rules(), 0);
-  Rand rand("testkomi draws");
+  Logger logger(nullptr, false, true, false, false);
+  GameInitializer gameInit(cfg, logger, "testkomi draws");
   const int n = 200000;
   int zeros = 0, beyond = 0, offGrid = 0;
   double largest = 0.0, sum = 0.0;
   for(int i = 0; i < n; i++) {
-    const ExtraBlackAndKomi drawn = PlayUtils::chooseExtraBlackAndKomi(
-      komiMean, komiStdev, allowIntegerProb, 0.0, 0, bigProb, bigStdev, biggerProb, biggerStdev, board, rand);
-    PlayUtils::setKomiWithNoise(drawn, h, rand);
-    const double komi = h.rules.komi;
+    Board board;
+    Player pla;
+    BoardHistory hist;
+    ExtraBlackAndKomi extraBlackAndKomi;
+    SearchParams params;  //Self-play's form, which also draws noResultStdev and drawRandRadius into the params.
+    OtherGameProperties otherGameProps;
+    gameInit.createGame(board, pla, hist, extraBlackAndKomi, params, NULL, PlaySettings(), otherGameProps, NULL,
+                        BoardHistoryModes());
+    const double komi = hist.rules.komi;
     zeros += komi == 0.0;
     beyond += fabs(komi) > edge;
-    offGrid += !onHalfPoints(komi);
+    offGrid += !Rules::komiIsIntOrHalfInt((float)komi);
     largest = max(largest, fabs(komi));
     sum += komi;
   }
@@ -344,7 +349,7 @@ static void checkDraws(const char* path) {
          n, 100.0 * zeros / n, 100.0 * zeroShare, 100.0 * beyond / n, edge, 100.0 * beyondShare, largest, widest, sum / n,
          offGrid);
   const double zeroSigma = sqrt(zeroShare * (1.0 - zeroShare) / n), beyondSigma = sqrt(beyondShare * (1.0 - beyondShare) / n);
-  check(komiMean != 0.0f || fabs((double)zeros / n - zeroShare) <= 5.0 * zeroSigma + 1e-9, "the share of draws at 0");
+  check(komiMean != 0.0 || fabs((double)zeros / n - zeroShare) <= 5.0 * zeroSigma + 1e-9, "the share of draws at 0");
   check(fabs((double)beyond / n - beyondShare) <= 5.0 * beyondSigma + 1e-9, "the share of draws beyond the big spread");
   check(offGrid == 0, "every draw on the half-point grid");
   check(largest <= widest + 0.5, "no draw beyond 3 sigma of the widest spread");
