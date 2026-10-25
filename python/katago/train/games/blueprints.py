@@ -29,7 +29,7 @@ NAME = "blueprints"
 MAX_BOARD_LEN = 67       # the view: |q|, |r| <= 33 from the mover's window, which follows its play (gamerules.h)
 POLICY_CHANNELS = 6      # place blueprint 1-3, then a cell of blueprint 1-3 (a pick, or a drop after a pick)
 NUM_SPATIAL_INPUTS = 89  # 90 with the on-board plane
-NUM_GLOBAL_INPUTS = 21
+NUM_GLOBAL_INPUTS = 22   # the last, 21: the mover's effective margin (with the komi) / 1000
 HISTORY_PLANE = 81       # the points that each of the last 4 actions stamped and took, newest first
 NUM_HISTORY_PLANES = 8
 SYMMETRIES = (1 << 0) | (1 << 3) | (1 << 4) | (1 << 7)

@@ -46,6 +46,7 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/tests/checkgamelayer_test.py` | The test of the check, on temporary trees with planted uses (Enclosure, Connect-4 and a made-up game with a short name). |
 | `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, and the defaults of the optional members with a stub game. |
 | `cpp/tests/enclosure/testgameareas.cpp` | The look-ahead area and the komi area (optional members of the encoding part) through the front, for the build's game: the short-term value targets' lambdas and the komi draw's standard deviation, against each game's pinned areas, and the defaults with stub games. |
+| `cpp/tests/enclosure/testkomi.cpp` | Komi through the front, for the build's game: the result and the value targets at komis that decide a game, the global inputs at the history's komi, the even-komi search's bracket (an optional member of the encoding part) against KataGo's code and each game's pinned bracket, and a self-play config's komi draws. |
 
 All members are static, and every file is a header. So the compiler sees the same code as in a build for one game, and
 the WebAssembly build, the binding and the standalone tests need no new source file.
@@ -443,14 +444,15 @@ game's global inputs (V9 adds KataGo's 2 playout inputs after them).
 | `GAME_LENGTH` | A game's mean length in moves, for KataGo's game-phase constants ("The game's length"). | 120 |
 
 The encoding part's optional members work as the rules part's ("Optional members"): `gameinterface.h` has a detector
-and a helper for each, and the front calls the helper, through `Board`. The encoding part's check requires each to be
-positive. Enclosure and Connect-4 give neither, so their values are those of KataGo's code (`testgameareas` pins
-them).
+and a helper for each, and the front calls the helper, through `Board` for the areas. The encoding part's check
+requires each to be positive, and the bracket's two members to come together. Enclosure and Connect-4 give none, so
+their values are those of KataGo's code (`testgameareas` and `testkomi` pin them).
 
 | Member | Meaning | Default (helper) | Blueprints |
 |---|---|---|---|
 | `LOOKAHEAD_AREA` | The area A that KataGo's look-ahead horizons read where KataGo reads the board's area ("The game's length"). The short-term value targets C4-7, C8-11 and C12-15 have lambda = 1 - 1 / (1 + A × c), for c = 0.176, 0.056 and 0.016: a mean look-ahead of A × c moves. Value-surprise weighting uses c = 0.016. | The board's area, `x_size * y_size` (`lookaheadArea`, `Board::lookaheadArea`) | 361, Go's: its 67 × 67 view holds the window, and its moves do not reach that far. The look-ahead is about 64, 20 and 6 actions, against 790, 251 and 72 with the view's 4,489, in a game of about 140 actions. |
 | `KOMI_AREA` | The area A that KataGo's komi sampler reads where KataGo reads the board's area (`PlayUtils::chooseExtraBlackAndKomi`): each configured standard deviation times √A / 19, and the number of handicap stones. The two spreads of `fancyKomiVarying` (`play.cpp`) still read the board's area. | The board's area (`komiArea`, `Board::komiArea`) | 361: the sampler draws a komi in the points that the config gives. The view's 4,489 multiplied each standard deviation by 67 / 19. |
+| `KOMI_BRACKET_STEP`, `KOMI_BRACKET_LIMIT` | The bracket of KataGo's even-komi search (`PlayUtils::evenKomiOffset`, for `adjustKomiToEven` and `computeLead`), in points. Around its guess, the search tries the offsets step, 2 × step and so on up to the limit, until White's win-loss value changes sign, then bisects on the half-point grid. Whole or half points. | KataGo's 1 and 32: the offsets 1, 2, 4, 8, 16 and 32 (`komiBracketStep`, `komiBracketLimit`) | 12 (`SCORE_SCALE`) and 3,000: the offsets 12, 24, 48 and so on to 1,536, then 3,000, the reach of self-play's widest komi. KataGo's 32 points are less than 3 of Go's points at this score scale. |
 
 `InputOptions` holds what the front gives the input members:
 
@@ -624,6 +626,19 @@ values that the test pins for each game, and the komi sampler's standard deviati
 It prints the lambdas of the short-term value targets beside their values with the board's area. A new game fails it
 until the test pins the game's areas. It builds and runs as `testgameinterface` does, with no argument. In the engine
 repository, `games/blueprints/tools/td_lambdas.py` checks the lambdas in Blueprints' rows.
+
+**Komi:** `testkomi` runs on a build of any game, with a self-play config as an optional argument. It plays a random
+game to its end and checks the history's result at komis of both signs, at 0, and at the komis that decide the game
+(the opposite of the earned margin, and half a point to either side): the final margin with the komi, the winner,
+White's wins in the value targets (half a win at a margin of 0), the final score target, each side's own komi, and the
+network cache's hash, which changes with a nonzero komi only. It checks that the front's global inputs are the game's
+at the history's komi, and prints the inputs that change. It checks the even-komi search's bracket: the defaults
+with stub games, and the build's game against the bracket that the test pins for each game. With KataGo's bracket,
+`evenKomiOffset` tries the same offsets and gives the same result as a copy of KataGo's code on 1,929 win-loss
+curves. With the game's bracket, it finds the sign change of a monotone curve within half a point out to the limit, and
+the test prints how many values it reads. With a config, it draws 200,000 komis as a new game of `play.cpp` does, and
+checks the shares of draws at 0 and beyond 3 standard deviations of `komiBigStdev` against the config's probabilities
+(the bigger draw overrides the big draw, which overrides `komiStdev`), and that each draw is on the half-point grid.
 
 **Connect-4's encoding part.** The conformance suite checks that its mirror maps the legal moves onto the image's. With
 a Connect-4 binary and network, the engine repository's `games/connect4/tests/test_network.py` checks two more things.

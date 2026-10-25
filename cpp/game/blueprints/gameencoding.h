@@ -12,7 +12,12 @@
 //   drops are, and the picked cell, a plane for each blueprint. Then the history: the points that each of the last 4
 //   actions stamped and took.
 // - The global inputs: the mover's seat, its moves left in the turn, the game's progress, the stars on the board, the
-//   scores, the pick, and each player's cells and stars outside the view.
+//   effective scores (with the komi), the pick, each player's cells and stars outside the view, and the mover's
+//   effective margin.
+// - The komi K is points added to the second player's final margin (KataGo's White), for the whole game. The rules'
+//   scores stay the earned ones, and the front's history adds K to the result (BoardHistory::endAndScoreGameNow). The
+//   inputs read K as a starting score of the side that it favours, the effective scores S0 + max(-K, 0) and S1 +
+//   max(K, 0). No rule reads a score, so a position at komi K plays as the position with those scores at komi 0.
 // - The policy: 6 channels a point, the actions of gamerules.h (placements, then the cells of the hand: picks, or
 //   drops after a pick).
 // - The symmetries: the 4 of KataGo's 8 that keep the hex neighbours (DIRS) on the axial square: the identity, the
@@ -22,8 +27,8 @@
 //   the hand's points, the anchors of the placements and the picks and drops move as pixels and then by each
 //   blueprint's shift. The inputs at a symmetry are the inputs of the position's image (sym_position).
 // - The training targets: the final board as ownership on the row's view (C0), and in C1 which player moves next, for
-//   the trainer's symmetries (no loss reads it). The value targets and the score targets are KataGo's, from the rules'
-//   result and score.
+//   the trainer's symmetries (no loss reads it). The value targets and the score targets are KataGo's, from the
+//   history's result: the final margin with the komi, where a margin of 0 is half a win.
 
 #include <cmath>
 #include <cstdint>
@@ -104,7 +109,9 @@ struct GameEncoding {
   static_assert(THEIR_PLACES == MY_PLACES + PLACE_PLANES && MINE_TAKEN == THEIR_PLACES + PLACE_PLANES &&
                 MY_HAND == THEIRS_TAKEN + 1 && PICKED == THEIR_HAND + 3 * HAND && HISTORY_PLANE == PICKED + HAND,
                 "Blueprints' planes follow one another");
-  static constexpr int NUM_GLOBAL_INPUTS = 21;
+  static constexpr int NUM_GLOBAL_INPUTS = 22;
+  static constexpr int MARGIN_INPUT = 21;  // the mover's effective margin / MARGIN_UNIT, not squashed
+  static constexpr double MARGIN_UNIT = 1000.0;
 
   template<class Set>
   static void spatial_inputs(const Position& p, const GameInterface::InputOptions& options, Set&& set) {
@@ -215,21 +222,27 @@ struct GameEncoding {
     const double a = std::log10(1.0 + std::fabs(points) / 10.0) / 2.0;
     return float(points < 0 ? -a : a);
   }
-  // The same at every symmetry: no input names a point. The cells and stars outside the view count what the planes
-  // do not show.
-  static void global_inputs(const Position& p, const GameInterface::InputOptions&, float* out) {
+  // A player's effective score: its earned score, and the komi K when K favours it (K > 0 favours the second player).
+  static double effective_score(const Position& p, int player, double komi) {
+    return p.scores[player] + std::max(player == 1 ? komi : -komi, 0.0);
+  }
+  // The same at every symmetry: no input names a point. The scores are the effective ones, and the margin's input
+  // gives the mover's effective margin linearly, where the squash flattens large margins. The cells and stars outside
+  // the view count what the planes do not show.
+  static void global_inputs(const Position& p, const GameInterface::InputOptions& options, float* out) {
     const int mover = GameRules::next_player(p), opponent = 1 - mover;
     for(int i = 0; i < NUM_GLOBAL_INPUTS; i++)
       out[i] = 0.0f;
+    const double mine = effective_score(p, mover, options.komi), theirs = effective_score(p, opponent, options.komi);
     out[0] = mover == 0 ? 1.0f : 0.0f;
     out[1] = GameRules::turn_moves_left(p) >= 2 ? 1.0f : 0.0f;
     out[2] = float(p.ply) / PLIES;
     out[3] = float(PLIES - p.ply) / PLIES;
     out[4] = float(p.stars[mover]) / 50.0f;
     out[5] = float(p.stars[opponent]) / 50.0f;
-    out[6] = squash(p.scores[mover]);
-    out[7] = squash(p.scores[opponent]);
-    out[8] = squash(double(p.scores[mover]) - p.scores[opponent]);
+    out[6] = squash(mine);
+    out[7] = squash(theirs);
+    out[8] = squash(mine - theirs);
     if(p.picked >= 0) {
       out[9] = 1.0f;
       out[10 + p.picked] = 1.0f;
@@ -251,6 +264,7 @@ struct GameEncoding {
     out[18] = float(p.cells[opponent] - cellsIn[opponent]) / 100.0f;
     out[19] = float(p.stars[mover] - starsIn[mover]) / 50.0f;
     out[20] = float(p.stars[opponent] - starsIn[opponent]) / 50.0f;
+    out[MARGIN_INPUT] = float((mine - theirs) / MARGIN_UNIT);
   }
   // What the inputs read beyond hash(): the history's points.
   static Hash128 input_hash(const Position& p) {
@@ -460,6 +474,11 @@ struct GameEncoding {
   // it draws a komi in the points that the config gives (GAMES.md, the encoding part's optional members).
   static constexpr double LOOKAHEAD_AREA = 19 * 19;
   static constexpr double KOMI_AREA = 19 * 19;
+  // The even-komi search's bracket: offsets of 12, 24, 48 and so on around its guess, up to 3,000 points, the reach of
+  // self-play's widest komi (3 standard deviations of 1,000 points). KataGo's offsets of 1 to 32 points are less than 3
+  // of Go's points at this SCORE_SCALE, and Blueprints' margins are hundreds of points.
+  static constexpr double KOMI_BRACKET_STEP = SCORE_SCALE;
+  static constexpr double KOMI_BRACKET_LIMIT = 3000.0;
 };
 
 static_assert(GameInterface::checkEncoding<GameEncoding>(), "Blueprints' network encoding part");

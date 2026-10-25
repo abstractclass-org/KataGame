@@ -1,6 +1,8 @@
 #ifndef PROGRAM_PLAY_UTILS_H_
 #define PROGRAM_PLAY_UTILS_H_
 
+#include <functional>
+
 #include "../core/config_parser.h"
 #include "../program/play.h"
 #include "../search/asyncbot.h"
@@ -66,6 +68,14 @@ namespace PlayUtils {
   );
 
   float roundAndClipKomi(double unrounded, const Board& board);
+
+  //KataGame fork: the last stage of KataGo's even-komi search (adjustKomiToEven, computeLead): the offset from the
+  //search's guess where White's win-loss value winLossAt(offset) is 0. It brackets the sign change from the guess
+  //(offset 0) on the side that the value at 0 points to, with the offsets step, 2 * step and so on up to limit, and
+  //bisects the bracket on the half-point grid to a window of half a point. Then it interpolates in that window.
+  //Without a sign change up to limit, the bisection ends at the far end. KataGo's bracket is step 1 and limit 32 (the
+  //game's: GameInterface::komiBracketStep and komiBracketLimit).
+  double evenKomiOffset(const std::function<double(double)>& winLossAt, double step, double limit);
 
   void adjustKomiToEven(
     Search* botB,

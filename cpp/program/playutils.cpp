@@ -524,29 +524,44 @@ static double getNaiveEvenKomiHelper(
   }
 
   //Try a small window and do a binary search
+  //KataGame fork: the window grows by the game's bracket (evenKomiOffset).
   auto evalWinLoss = [&](double delta) {
     double newKomi = hist.rules.komi + delta;
     double winLoss = evalKomi(scoreWLCache,botB,botW,board,hist,pla,numVisits,otherGameProps,PlayUtils::roundAndClipKomi(newKomi,board)).second;
     // cout << "Delta " << delta << " wr " << winLoss << endl;
     return winLoss;
   };
+  double finalDelta = PlayUtils::evenKomiOffset(
+    evalWinLoss, GameInterface::komiBracketStep<GameEncoding>(), GameInterface::komiBracketLimit<GameEncoding>()
+  );
 
+  double newKomi = hist.rules.komi + finalDelta;
+  // cout << "Final " << finalDelta << " " << newKomi << endl;
+
+  hist.setKomi(oldKomi);
+  return newKomi;
+}
+
+double PlayUtils::evenKomiOffset(const std::function<double(double)>& winLossAt, double step, double limit) {
+  testAssert(step >= 0.5 && limit >= step);
   double lowerDelta;
   double upperDelta;
   double lowerWinLoss;
   double upperWinLoss;
 
   //Grow window outward
+  //KataGame fork: by the game's bracket, step, 2 * step and so on up to limit (KataGo: round(pow(2,i)) for i = 0 to 5,
+  //the bracket of step 1 and limit 32).
   {
-    double winLossZero = evalWinLoss(0);
+    double winLossZero = winLossAt(0);
     if(winLossZero < 0) {
       //Losing, so this is the lower bound
       lowerDelta = 0.0;
       lowerWinLoss = winLossZero;
-      for(int i = 0; i<=5; i++) {
-        upperDelta = round(pow(2.0,i));
-        upperWinLoss = evalWinLoss(upperDelta);
-        if(upperWinLoss >= 0)
+      for(double offset = step; ; offset = std::min(2.0 * offset, limit)) {
+        upperDelta = offset;
+        upperWinLoss = winLossAt(upperDelta);
+        if(upperWinLoss >= 0 || offset >= limit)
           break;
       }
     }
@@ -554,18 +569,20 @@ static double getNaiveEvenKomiHelper(
       //Winning, so this is the upper bound
       upperDelta = 0.0;
       upperWinLoss = winLossZero;
-      for(int i = 0; i<=5; i++) {
-        lowerDelta = -round(pow(2.0,i));
-        lowerWinLoss = evalWinLoss(lowerDelta);
-        if(lowerWinLoss <= 0)
+      for(double offset = step; ; offset = std::min(2.0 * offset, limit)) {
+        lowerDelta = -offset;
+        lowerWinLoss = winLossAt(lowerDelta);
+        if(lowerWinLoss <= 0 || offset >= limit)
           break;
       }
     }
   }
 
   while(upperDelta - lowerDelta > 0.50001) {
-    double midDelta = 0.5 * (lowerDelta + upperDelta);
-    double midWinLoss = evalWinLoss(midDelta);
+    //KataGame fork: the midpoint on the half-point grid, so that the bisection ends at a window of half a point
+    //(KataGo's midpoint, 0.5 * (lowerDelta + upperDelta), which a bracket of powers of 2 keeps on the grid).
+    double midDelta = 0.5 * floor(lowerDelta + upperDelta);
+    double midWinLoss = winLossAt(midDelta);
     if(midWinLoss < 0) {
       lowerDelta = midDelta;
       lowerWinLoss = midWinLoss;
@@ -590,12 +607,7 @@ static double getNaiveEvenKomiHelper(
   //Interpolate
   else
     finalDelta = lowerDelta + (upperDelta - lowerDelta) * (0-lowerWinLoss) / (upperWinLoss-lowerWinLoss);
-
-  double newKomi = hist.rules.komi + finalDelta;
-  // cout << "Final " << finalDelta << " " << newKomi << endl;
-
-  hist.setKomi(oldKomi);
-  return newKomi;
+  return finalDelta;
 }
 
 void PlayUtils::adjustKomiToEven(

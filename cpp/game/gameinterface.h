@@ -157,6 +157,12 @@
  *                           the handicap's stones). With 361, the sampler draws a komi in the points that the config
  *                           gives. The spreads of fancyKomiVarying still read the board's area. Default: the board's
  *                           area, x_size * y_size (komiArea).
+ *   KOMI_BRACKET_STEP, KOMI_BRACKET_LIMIT
+ *                           double, double: the bracket of KataGo's even-komi search (PlayUtils::evenKomiOffset), in
+ *                           points. Around its guess, the search tries the offsets KOMI_BRACKET_STEP, twice that, and
+ *                           so on, up to KOMI_BRACKET_LIMIT, until the win-loss value changes sign. Then it bisects on
+ *                           the half-point grid. Default: KataGo's 1 and 32, the offsets 1, 2, 4, 8, 16 and 32
+ *                           (komiBracketStep, komiBracketLimit).
  */
 
 #include <algorithm>
@@ -536,6 +542,8 @@ namespace encoding {
   //The optional members.
   GAMEINTERFACE_DETECT(HasLookaheadArea, double, G::LOOKAHEAD_AREA)
   GAMEINTERFACE_DETECT(HasKomiArea, double, G::KOMI_AREA)
+  GAMEINTERFACE_DETECT(HasKomiBracketStep, double, G::KOMI_BRACKET_STEP)
+  GAMEINTERFACE_DETECT(HasKomiBracketLimit, double, G::KOMI_BRACKET_LIMIT)
 }
 
 template<class E> constexpr bool checkEncoding() {
@@ -598,6 +606,15 @@ template<class E> constexpr bool checkEncoding() {
     static_assert(E::LOOKAHEAD_AREA > 0, "game interface, encoding part: LOOKAHEAD_AREA is positive");
   if constexpr(HasKomiArea<E>::value)
     static_assert(E::KOMI_AREA > 0, "game interface, encoding part: KOMI_AREA is positive");
+  static_assert(HasKomiBracketStep<E>::value == HasKomiBracketLimit<E>::value,
+                "game interface, encoding part: the game gives both KOMI_BRACKET_STEP and KOMI_BRACKET_LIMIT, or "
+                "neither");
+  if constexpr(HasKomiBracketStep<E>::value && HasKomiBracketLimit<E>::value)
+    static_assert(E::KOMI_BRACKET_STEP >= 0.5 && E::KOMI_BRACKET_LIMIT >= E::KOMI_BRACKET_STEP &&
+                    E::KOMI_BRACKET_STEP * 2 == (double)(long long)(E::KOMI_BRACKET_STEP * 2) &&
+                    E::KOMI_BRACKET_LIMIT * 2 == (double)(long long)(E::KOMI_BRACKET_LIMIT * 2),
+                  "game interface, encoding part: KOMI_BRACKET_STEP is at least half a point, KOMI_BRACKET_LIMIT is "
+                  "at least KOMI_BRACKET_STEP, and both are whole or half points");
   return true;
 }
 
@@ -621,6 +638,20 @@ template<class E> constexpr double komiArea(int xSize, int ySize) {
   }
   else
     return (double)xSize * ySize;
+}
+
+//The bracket of KataGo's even-komi search, in points: its first offset and its largest. The game's, else KataGo's.
+template<class E> constexpr double komiBracketStep() {
+  if constexpr(encoding::HasKomiBracketStep<E>::value)
+    return E::KOMI_BRACKET_STEP;
+  else
+    return 1.0;
+}
+template<class E> constexpr double komiBracketLimit() {
+  if constexpr(encoding::HasKomiBracketLimit<E>::value)
+    return E::KOMI_BRACKET_LIMIT;
+  else
+    return 32.0;
 }
 
 //The game's own training targets of a row (training_targets): none for a game whose TARGETS are all FRONT_TARGETS.
