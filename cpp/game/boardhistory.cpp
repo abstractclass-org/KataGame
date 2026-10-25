@@ -7,6 +7,12 @@
 
 using namespace std;
 
+//Go's per-point state, unused: all false / empty (static storage, C_EMPTY is 0), never written.
+bool BoardHistory::wasEverOccupiedOrPlayed[Board::MAX_ARR_SIZE];
+bool BoardHistory::superKoBanned[Board::MAX_ARR_SIZE];
+bool BoardHistory::koRecapBlocked[Board::MAX_ARR_SIZE];
+Color BoardHistory::secondEncoreStartColors[Board::MAX_ARR_SIZE];
+
 BoardHistoryModes::BoardHistoryModes()
   : alwaysComputePassAliveUnderSuicideRules(false),
     excludeTerritoryAdjacentToAtari(false)
@@ -54,12 +60,7 @@ BoardHistory::BoardHistory()
     isPastNormalPhaseEnd(false),
     isGameFinished(false),winner(C_EMPTY),finalWhiteMinusBlackScore(0.0f),
     isScored(false),isNoResult(false),isResignation(false)
-{
-  std::fill(wasEverOccupiedOrPlayed, wasEverOccupiedOrPlayed+Board::MAX_ARR_SIZE, false);
-  std::fill(superKoBanned, superKoBanned+Board::MAX_ARR_SIZE, false);
-  std::fill(koRecapBlocked, koRecapBlocked+Board::MAX_ARR_SIZE, false);
-  std::fill(secondEncoreStartColors, secondEncoreStartColors+Board::MAX_ARR_SIZE, C_EMPTY);
-}
+{}
 
 BoardHistory::~BoardHistory()
 {}
@@ -100,10 +101,6 @@ void BoardHistory::clear(const Board& board, Player pla, const Rules& r, int ePh
     recentBoards[i] = board;
   currentRecentBoardIdx = 0;
   presumedNextMovePla = board.nextPla();
-  std::fill(wasEverOccupiedOrPlayed, wasEverOccupiedOrPlayed+Board::MAX_ARR_SIZE, false);
-  std::fill(superKoBanned, superKoBanned+Board::MAX_ARR_SIZE, false);
-  std::fill(koRecapBlocked, koRecapBlocked+Board::MAX_ARR_SIZE, false);
-  std::fill(secondEncoreStartColors, secondEncoreStartColors+Board::MAX_ARR_SIZE, C_EMPTY);
   consecutiveEndingPasses = 0;
   hashesBeforeBlackPass.clear();
   hashesBeforeWhitePass.clear();

@@ -37,6 +37,10 @@ const Hash128 Board::ZOBRIST_PASS_ENDS_PHASE = //Based on sha256 hash of Board::
   Hash128(0x853E097C279EBF4EULL, 0xE3153DEF9E14A62CULL);
 const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOBRIST_GAME_IS_OVER
   Hash128(0xb6f9e465597a77eeULL, 0xf1d583d960a4ce7fULL);
+//Go's chains, unused: all 0 (static storage), never written.
+Board::ChainData Board::chain_data[MAX_ARR_SIZE];
+Loc Board::chain_head[MAX_ARR_SIZE];
+Loc Board::next_in_chain[MAX_ARR_SIZE];
 
 //LOCATION (points, as in KataGo)----------------------------------------------------------
 void Location::getAdjacentOffsets(short adj_offsets[8], int x_size)
@@ -215,9 +219,6 @@ void Board::copyFrom(const Board& other)
   x_size = other.x_size;
   y_size = other.y_size;
   memcpy(colors, other.colors, sizeof(Color)*MAX_ARR_SIZE);
-  memcpy(chain_data, other.chain_data, sizeof(ChainData)*MAX_ARR_SIZE);
-  memcpy(chain_head, other.chain_head, sizeof(Loc)*MAX_ARR_SIZE);
-  memcpy(next_in_chain, other.next_in_chain, sizeof(Loc)*MAX_ARR_SIZE);
   ko_loc = other.ko_loc;
   pos_hash = other.pos_hash;
   numBlackCaptures = other.numBlackCaptures;
@@ -266,9 +267,6 @@ void Board::init(int xS, int yS)
   if(!GameRules::new_game(xS, yS, pos))
     throw StringError(string("The game ") + GameRules::NAME + " is not played on a " + Global::intToString(xS) +
                       " x " + Global::intToString(yS) + " board");
-  memset(chain_data, 0, sizeof(chain_data));
-  memset(chain_head, 0, sizeof(chain_head));
-  memset(next_in_chain, 0, sizeof(next_in_chain));
   ko_loc = NULL_LOC;
   numBlackCaptures = 0;
   numWhiteCaptures = 0;
