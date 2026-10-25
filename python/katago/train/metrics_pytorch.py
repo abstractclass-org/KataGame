@@ -36,8 +36,8 @@ class Metrics:
         self.score_scale = raw_model.score_scale
         self.time_scale = raw_model.time_scale
         self.writes_ownership = bool(game.TARGETS & games.TARGET_OWNERSHIP)
-        # KataGame fork: the game's coefficients of the ownership and income losses, and the points where the income
-        # loss reads its target (katago/train/games: LOSS_COEFFICIENTS, income_mask).
+        # KataGame fork: the game's coefficients of the ownership, seki and income losses, and the points where the
+        # income loss reads its target (katago/train/games: LOSS_COEFFICIENTS, income_mask).
         self.loss_coefficients = games.loss_coefficients(game)
         self.income_mask = getattr(game, "income_mask", None)
         self.value_len = 3
@@ -265,6 +265,8 @@ class Metrics:
         # board would dilute it by the empty share), with a plain weight of 1: KataGo's adaptive seki scale and its
         # "neutral" logit track how rare seki and unowned points are in Go and do not carry over (ENCLOSURE.md,
         # "Spatial targets", 2).
+        # KataGame fork: with the game's coefficient (Blueprints' cells captured before the game's end, class 2 on
+        # the points without a cell that a capture can take).
         n = pred_logits.shape[0]
         assert pred_logits.shape == (n, self.num_seki_logits, self.pos_len, self.pos_len)
         assert target.shape == (n, self.pos_len, self.pos_len)
@@ -273,7 +275,7 @@ class Metrics:
         sign_target = torch.stack((1.0 - torch.square(t), torch.nn.functional.relu(t), torch.nn.functional.relu(-t)), dim=1)
         loss = torch.sum(cross_entropy(pred_logits[:, 0:3, :, :], sign_target, dim=1) * on_edge, dim=(1, 2))
         loss = loss / torch.clamp(torch.sum(on_edge, dim=(1, 2)), min=1.0)
-        return global_weight * weight * loss
+        return self.loss_coefficients["seki"] * global_weight * weight * loss
 
     def loss_seki_samplewise(self, pred_logits, target, target_ownership, weight, mask, mask_sum_hw, global_weight, is_training, skip_moving_update):
         assert self.num_seki_logits == 4

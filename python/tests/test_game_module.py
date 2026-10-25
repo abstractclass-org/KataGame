@@ -249,8 +249,8 @@ def test_a_module_that_sets_an_unknown_loss_coefficient_is_refused(monkeypatch):
     monkeypatch.setitem(sys.modules, "katago.train.games.badcoefficients", stub)
     with pytest.raises(ValueError, match="sets the coefficient of no loss named owner"):
         games.get("badcoefficients")
-    assert games.loss_coefficients(enclosure) == {"ownership": 1.5, "income": 1.5}
-    assert games.loss_coefficients(games.get("blueprints")) == {"ownership": 0.25, "income": 0.5}
+    assert games.loss_coefficients(enclosure) == {"ownership": 1.5, "seki": 1.0, "income": 1.5}
+    assert games.loss_coefficients(games.get("blueprints")) == {"ownership": 0.25, "seki": 0.5, "income": 0.5}
 
 
 def blueprints_metrics(monkeypatch=None, plain=False):
@@ -272,6 +272,39 @@ def test_blueprints_ownership_loss_is_0_25_against_katagos_1_5(monkeypatch):
     blueprints = blueprints_metrics().loss_ownership_samplewise(*args)
     plain = blueprints_metrics(monkeypatch, plain=True).loss_ownership_samplewise(*args)
     assert torch.allclose(blueprints, plain * 0.25 / 1.5)
+
+
+def blueprints_losses(monkeypatch, coefficients, flagged):
+    """The losses of a random Blueprints b6c96 on a random batch of 2 rows (random_batch), with the loss coefficients
+    `coefficients` and the flag C68 of C1 and the weight C34 of C4 at `flagged`."""
+    monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", coefficients)
+    torch.manual_seed(1)
+    model = Model(modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "blueprints"), 67)
+    model.initialize()
+    batch = random_batch(model)
+    batch["globalTargetsNC"][:, [34, 68]] = flagged
+    with torch.no_grad():
+        outputs = model(batch["binaryInputNCHW"], batch["globalInputNC"])
+        metrics = Metrics(1, model).metrics_dict_batchwise(
+            model, model.postprocess_output(outputs), None, batch, is_training=False,
+            soft_policy_weight_scale=8.0, disable_optimistic_policy=False, meta_kata_only_soft_policy=False,
+            value_loss_scale=0.6, td_value_loss_scales=[0.6, 0.6, 0.6], seki_loss_scale=1.0,
+            variance_time_loss_scale=1.0, main_loss_scale=None, intermediate_loss_scale=None)
+    return {k: float(v) for k, v in metrics.items() if k.endswith("_sum")}
+
+
+def test_blueprints_c1_loss_is_0_5_and_the_rows_of_versions_0_and_1_train_as_before(monkeypatch):
+    # The rows of the targets' versions 0 and 1 have C68 = C34 = 0, so their losses are those of the coefficients
+    # before C1 trained (seki at its default, 1). The rows of version 2 have both: C1's loss is half the default's,
+    # and C4's loss is KataGo's scoring loss.
+    now, before = dict(games.get("blueprints").LOSS_COEFFICIENTS), {"ownership": 0.25, "income": 0.5}
+    old_rows = blueprints_losses(monkeypatch, now, 0.0)
+    assert old_rows == blueprints_losses(monkeypatch, before, 0.0)
+    assert old_rows["skloss_sum"] == old_rows["sloss_sum"] == 0.0
+    new_rows, new_rows_before = blueprints_losses(monkeypatch, now, 1.0), blueprints_losses(monkeypatch, before, 1.0)
+    assert new_rows["skloss_sum"] > 0 and new_rows["sloss_sum"] > 0
+    assert new_rows["skloss_sum"] == pytest.approx(0.5 * new_rows_before["skloss_sum"], rel=1e-6)
+    assert all(new_rows[k] == new_rows_before[k] for k in new_rows if k not in ("skloss_sum", "loss_sum")), new_rows
 
 
 def test_blueprints_income_loss_averages_each_channel_over_its_cells():

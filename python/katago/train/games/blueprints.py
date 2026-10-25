@@ -19,15 +19,19 @@ own, except after a drop with a move of the same player to come: the drop change
 row does not say which drop was played. So in those rows the second policy target has the weight 0 (mask_targets), at
 every symmetry.
 
-The value targets are points of the row's view, so they move as pixels: the final board (C0), the stars 4 and 16
-moves later (C2-3), and the cells that go in the rest of the mover's turn (C5, the opponent's cells) and in the
-opponent's next turn (C6, the mover's cells). The loss of C5-6 reads only the cells that can go: the row's cells of
-that player that are not walls (income_mask).
+The value targets are points of the row's view, so they move as pixels: the final board (C0), the cells captured
+before the game's end (C1), the stars 4 and 16 moves later (C2-3), where the points are earned (C4), and the cells
+that go in the rest of the mover's turn (C5, the opponent's cells) and in the opponent's next turn (C6, the mover's
+cells). The loss of C5-6 reads only the cells that can go: the row's cells of that player that are not walls
+(income_mask). The loss of C1 reads only the row's cells that are not walls: the others hold the class 2, which it
+leaves out. Each row trains the targets that its version has (G77, gameencoding.h): the rows of versions 0 and 1 have
+the flag C68 and the weight C34 at 0, so no loss reads their C1 or C4.
 """
 
 import torch
 
-from . import TARGET_FUTURE_PIECES, TARGET_INCOME, TARGET_OWNERSHIP, apply_symmetry_points
+from . import (TARGET_FUTURE_PIECES, TARGET_INCOME, TARGET_OWNERSHIP, TARGET_SCORING, TARGET_SEKI,
+               apply_symmetry_points)
 
 # The members of the game's module (C++ game/blueprints/gameencoding.h).
 NAME = "blueprints"
@@ -38,14 +42,16 @@ NUM_GLOBAL_INPUTS = 22   # the last, 21: the mover's effective margin (with the 
 HISTORY_PLANE = 81       # the points that each of the last 4 actions stamped and took, newest first
 NUM_HISTORY_PLANES = 8
 SYMMETRIES = (1 << 0) | (1 << 3) | (1 << 4) | (1 << 7)
-# C0: the final board (+1 the mover's cells, -1 the opponent's). C2-3: the stars 4 and 16 moves later. C5-6: the cells
-# that go in the rest of the mover's turn and in the opponent's next turn.
-TARGETS = TARGET_OWNERSHIP | TARGET_FUTURE_PIECES | TARGET_INCOME
+# C0: the final board (+1 the mover's cells, -1 the opponent's). C1: the cells captured before the game's end. C2-3: the
+# stars 4 and 16 moves later. C4: where the points are earned. C5-6: the cells that go in the rest of the mover's turn
+# and in the opponent's next turn.
+TARGETS = TARGET_OWNERSHIP | TARGET_SEKI | TARGET_FUTURE_PIECES | TARGET_SCORING | TARGET_INCOME
 SCORE_SCALE = 12.0
 GAME_LENGTH = 120.0      # the site's moves of a game
-# The ownership loss at 0.25, not KataGo's 1.5, beside the targets of C2-3 and C5-6, and the loss of C5-6 at 0.5, not
-# Enclosure's 1.5. The score's targets keep their weight C27.
-LOSS_COEFFICIENTS = {"ownership": 0.25, "income": 0.5}
+# The ownership loss at 0.25, not KataGo's 1.5, beside the new targets, and the losses of C1 and of C5-6 at 0.5, not
+# Enclosure's 1 and 1.5. The score's targets keep their weight C27. C4 has KataGo's scoring loss as it is (0.25, the
+# view's 4,489 points).
+LOSS_COEFFICIENTS = {"ownership": 0.25, "seki": 0.5, "income": 0.5}
 
 # The encoding's facts that the augmentation reads (gamerules.h, gameencoding.h). A plane's index in a batch is
 # 1 + its index here: KataGo's on-board plane comes first.
@@ -61,7 +67,8 @@ PICKED = 78                        # + k: the picked cell of blueprint k
 PICKED_INPUT = 9                   # the global input: 1 while a pick waits for its drop
 NEXT_POLICY_WEIGHT = 28            # the global target: the weight of the second policy target (KataGo's C28)
 # Who makes the next move (+1 the row's mover, -1 the opponent, 0 none): the global target G76 in the rows of the
-# targets' version 1 or later (G77), and the value targets' slot C1 in older rows, on every point.
+# targets' version 1 or later (G77), and the value targets' slot C1 in older rows, on every point. From version 2, C1
+# holds the cells captured before the game's end.
 NEXT_MOVER_TARGET, TARGETS_VERSION_TARGET, NEXT_MOVER_SLOT = 76, 77, 1
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
 

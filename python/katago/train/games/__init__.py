@@ -65,6 +65,7 @@ TARGET_NEXT_PIECES = 1 << 5    # C7, flagged in C75: the next mover's pieces aft
 # The trainer's losses whose coefficients a game's LOSS_COEFFICIENTS can set, and their defaults (metrics_pytorch).
 LOSS_COEFFICIENTS = {
     "ownership": 1.5,  # C0, KataGo's
+    "seki": 1.0,       # C1, with the classes of Enclosure's edges that get cut: Enclosure's
     "income": 1.5,     # C5-6, Enclosure's
 }
 

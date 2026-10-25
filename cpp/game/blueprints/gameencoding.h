@@ -26,9 +26,10 @@
 //   moves as a pixel. A blueprint moves cell by cell, then goes back to the site's frame (its lowest cell at 0,0): so
 //   the hand's points, the anchors of the placements and the picks and drops move as pixels and then by each
 //   blueprint's shift. The inputs at a symmetry are the inputs of the position's image (sym_position).
-// - The training targets, on the row's view: the final board as ownership (C0), the stars 4 and 16 moves later
-//   (C2-3), the cells that go in the rest of the mover's turn and in the opponent's next turn (C5-6), and in the
-//   global target G76 which player moves next, for the trainer's symmetries (no loss reads it). The value targets and
+// - The training targets, on the row's view: the final board as ownership (C0), the cells captured before the game's
+//   end (C1), the stars 4 and 16 moves later (C2-3), where the points are earned (C4), the cells that go in the rest
+//   of the mover's turn and in the opponent's next turn (C5-6), and in the global target G76 which player moves
+//   next, for the trainer's symmetries (no loss reads it). The value targets and
 //   the score targets are KataGo's, from the history's result: the final margin with the komi, where a margin of 0
 //   is half a win.
 
@@ -439,9 +440,17 @@ struct GameEncoding {
   // row's view (in_row_view), and a cell off the row's view counts for no point. The horizons count the site's moves
   // (the ply, where a pick and its drop are one move), not actions.
   // - C0, the final board as ownership: +1 on the mover's cells, -1 on the opponent's, 0 on an empty point.
+  // - C1, the cells captured before the game's end, as classes: on each cell of the row's view that is not a wall, +1
+  //   when a capture takes it and it is the mover's, -1 when it is the opponent's, 0 when it stays to the end. A cell
+  //   counts as captured even if a cell comes to its site again later. Class 2 on the other points (the empty points
+  //   and the walls, which no capture takes), which the loss leaves out. Its flag C68.
   // - C2-3, the stars FUTURE_MOVES[0] and [1] moves later: +1 on the mover's stars, -1 on the opponent's, 0 elsewhere,
   //   in the first position with no pick waiting and at least that many moves more than the row (the end, when the
   //   game ends sooner). A star there counts even if a star of the same player stood there and was taken before.
+  // - C4, where the points are earned: on each site, the points that the captures of the stars there earn from the
+  //   row on (for_each_earning: the capturer's stars on the board before its placement), the mover's less the
+  //   opponent's, / EARNED_UNIT and clipped to [-1, 1]. The points of the sites off the view, and the clip, make C4's
+  //   sum differ from the later margin. Its weight C34.
   // - C5, the opponent's cells that go in the rest of the mover's turn: 1 on each of the opponent's cells of the row's
   //   view, not a wall, that a placement takes before the opponent moves, else 0. C6, the mover's cells that go in the
   //   opponent's next turn: the same on the mover's cells, in that turn. A cell goes when its site no longer holds it,
@@ -450,18 +459,24 @@ struct GameEncoding {
   //   income_mask).
   // - G76, which player makes the row's next move, for the trainer's symmetries of the second policy target: +1 the
   //   row's mover, -1 the opponent, 0 at the end. A pick and a placement with a move to come leave the move to the
-  //   mover. G77, the version of these targets, TARGETS_VERSION. The rows before it (version 0) hold the next mover in
-  //   C1 on every point, which the trainer reads in them, and no C2-3 or C5-6.
+  //   mover. G77, the version of these targets, TARGETS_VERSION: 1 added C2-3, C5-6 and G76, and 2 added C1 and C4.
+  //   The rows before version 1 (version 0) hold the next mover in C1 on every point, which the trainer reads in
+  //   them, and no C2-3 or C5-6. The rows of version 1 hold 0 in C1. Neither has C1 or C4 as a target: C68 and C34
+  //   are 0.
   // A row whose positions stop before a horizon or a turn's end (a game that hit the turn limit) has no C2-3 or C5-6:
-  // their weight C33 and their flag C69 are 0.
-  static constexpr unsigned TARGETS = GameInterface::TARGET_OWNERSHIP | GameInterface::TARGET_FUTURE_PIECES |
+  // their weight C33 and their flag C69 are 0. A row whose positions stop before the game's end has no C1 or C4.
+  static constexpr unsigned TARGETS = GameInterface::TARGET_OWNERSHIP | GameInterface::TARGET_SEKI |
+                                      GameInterface::TARGET_FUTURE_PIECES | GameInterface::TARGET_SCORING |
                                       GameInterface::TARGET_INCOME;
   static constexpr unsigned OWN_TARGETS = TARGETS;  // C2-3 too: the front's would read each position's own view
   // The horizons of C2-3 in the site's moves, from bpj's design review (games/blueprints/docs/decisions/training.md,
   // "bpj2's targets"). KataGo's are 8 and 32 moves of Go.
   static constexpr int FUTURE_MOVES[2] = {4, 16};
+  // The points on a site at which C4 reaches 1, from the same review. The highest level of the placements' points
+  // (POINT_LEVELS) is 400 too.
+  static constexpr double EARNED_UNIT = 400.0;
   static constexpr int NEXT_MOVER_TARGET = 76, TARGETS_VERSION_TARGET = 77;  // global targets (TargetValues)
-  static constexpr int TARGETS_VERSION = 1;
+  static constexpr int TARGETS_VERSION = 2;
   static_assert(NEXT_MOVER_TARGET >= GameInterface::TargetValues::FIRST_GLOBAL &&
                 TARGETS_VERSION_TARGET < GameInterface::TargetValues::FIRST_GLOBAL +
                                          GameInterface::TargetValues::NUM_GLOBALS,
@@ -475,6 +490,49 @@ struct GameEncoding {
     for(int y = 0; y < VIEW; y++)
       for(int x = 0; x < VIEW; x++)
         f(x, y, at(later, x - dx, y - dy));
+  }
+
+  // Calls f(j, q, r, v) for each cell v that the action after positions(j) captures, for from <= j < numPositions - 1,
+  // (q, r) its site. The action's footprint, positions(j + 1).history[0], gives the points that its placement filled
+  // (they hold cells, so they stay on the board when it recenters), and the cells that it captured are those that
+  // taken_by gives for these points on positions(j). The footprint's own list of captured points loses those that the
+  // recentering moves off the board. A pick, a drop and a pass fill no point.
+  template<class Positions, class F>
+  static void for_each_capture(const Positions& positions, int numPositions, int from, F&& f) {
+    for(int j = from; j + 1 < numPositions; j++) {
+      const Position& before = positions(j);
+      const Position& after = positions(j + 1);
+      const Footprint& footprint = after.history[0];
+      if(footprint.nStamped == 0)
+        continue;
+      // The filled points as a blueprint on before's board, from the first of them (taken_by reads the cells' points
+      // only): a point of after's board is the point of before's board at the same site.
+      const int ax = footprint.stamped[0] % RULES_LEN, ay = footprint.stamped[0] / RULES_LEN;
+      Blueprint filled;
+      for(int i = 0; i < footprint.nStamped; i++)
+        filled.add(footprint.stamped[i] % RULES_LEN - ax, footprint.stamped[i] / RULES_LEN - ay, PLAIN);
+      int32_t taken[MAX_TAKEN];
+      const int n = taken_by(before, GameRules::next_player(before), filled, ax + after.offsetQ - before.offsetQ,
+                             ay + after.offsetR - before.offsetR, taken);
+      for(int i = 0; i < n; i++)
+        f(j, taken[i] % RULES_LEN - RULES_RADIUS + before.offsetQ, taken[i] / RULES_LEN - RULES_RADIUS + before.offsetR,
+          before.cell[taken[i]]);
+    }
+  }
+
+  // Where the points are earned from positions(from) on, C4's ledger before the view and the clip: calls f(q, r,
+  // points) for each star that a capture takes, (q, r) its site, with the points that it earns, the capturer's stars
+  // on the board before its placement (as stamp scores), positive when the capturer is `player` and negative when it
+  // is the other player. Over every site, the points add up to player's later points less the other player's.
+  template<class Positions, class F>
+  static void for_each_earning(const Positions& positions, int numPositions, int from, int player, F&& f) {
+    for_each_capture(positions, numPositions, from, [&](int j, int q, int r, int8_t v) {
+      if(cell_type(v) != STAR)
+        return;
+      const int capturer = GameRules::next_player(positions(j));
+      const int points = positions(j).stars[capturer];
+      f(q, r, capturer == player ? points : -points);
+    });
   }
 
   template<class Positions>
@@ -549,6 +607,33 @@ struct GameEncoding {
           values[6 * VIEW_AREA + i] = 1.0f;
       }
       slots |= GameInterface::TARGET_INCOME;
+    }
+
+    // The captures up to the game's end: none in a record that stops before it.
+    if(GameRules::terminal(positions(numPositions - 1))) {
+      float* captured = values + VIEW_AREA;  // C1
+      in_row_view(now, ox, oy, now, [&](int x, int y, int8_t v) {
+        captured[y * VIEW + x] = v && cell_type(v) != WALL ? 0.0f : 2.0f;
+      });
+      // A site's point of the row's view is the site plus (dq, dr).
+      const int dq = RULES_RADIUS - now.offsetQ - ox, dr = RULES_RADIUS - now.offsetR - oy;
+      for_each_capture(positions, numPositions, row, [&](int, int q, int r, int8_t v) {
+        const int x = q + dq, y = r + dr;
+        if(!on_view(x, y))
+          return;
+        // A cell of the row is the first that a capture takes from its site: a cell goes only by a capture.
+        float& c = captured[y * VIEW + x];
+        if(c == 0.0f)
+          c = cell_owner(v) == mover ? 1.0f : -1.0f;
+      });
+      float* earned = values + 4 * VIEW_AREA;  // C4: the points first, then / EARNED_UNIT and clipped
+      for_each_earning(positions, numPositions, row, mover, [&](int q, int r, int points) {
+        if(on_view(q + dq, r + dr))
+          earned[(r + dr) * VIEW + q + dq] += float(points);
+      });
+      for(int i = 0; i < VIEW_AREA; i++)
+        earned[i] = std::max(-1.0f, std::min(1.0f, earned[i] / float(EARNED_UNIT)));
+      slots |= GameInterface::TARGET_SEKI | GameInterface::TARGET_SCORING;
     }
     return slots;
   }
