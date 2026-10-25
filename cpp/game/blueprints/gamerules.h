@@ -236,8 +236,54 @@ struct Box {
 // that it commutes with the symmetries (gameencoding.h): they negate and swap the coordinates around the middle.
 inline int half_off_middle(int lo, int hi) { return (lo + hi - 2 * RULES_RADIUS) / 2; }
 
+// The rules board's cells, [y * RULES_LEN + x]: cell_value. The box `used` holds every cell (it can be larger than the
+// cells' box), and every point outside it is empty. So a copy, a clear and a scan of the cells read that box, not the
+// RULES_AREA points (a copy of the whole board was the largest part of a position's copy: abscls-iwsg). Every write
+// goes through set(), which grows the box.
+class Cells {
+  int8_t v[RULES_AREA] = {};
+
+  void clear_box(const Box& b) {
+    if(b.any)
+      for(int y = b.y0; y <= b.y1; y++)
+        std::memset(v + y * RULES_LEN + b.x0, 0, size_t(b.x1 - b.x0 + 1));
+  }
+  void copy_box(const Cells& o) {
+    const Box& b = o.used;
+    if(b.any)
+      for(int y = b.y0; y <= b.y1; y++)
+        std::memcpy(v + y * RULES_LEN + b.x0, o.v + y * RULES_LEN + b.x0, size_t(b.x1 - b.x0 + 1));
+  }
+
+ public:
+  Box used;
+
+  Cells() = default;
+  Cells(const Cells& o) : used(o.used) { copy_box(o); }
+  Cells& operator=(const Cells& o) {
+    if(this != &o) {
+      clear_box(used);
+      copy_box(o);
+      used = o.used;
+    }
+    return *this;
+  }
+  int8_t operator[](int index) const { return v[index]; }
+  const int8_t* row(int y) const { return v + y * RULES_LEN; }
+  void set(int index, int8_t value) {
+    v[index] = value;
+    if(value)
+      used.add(index % RULES_LEN, index / RULES_LEN);
+  }
+  // Every point empty.
+  void clear() {
+    clear_box(used);
+    used = Box();
+  }
+};
+
 struct Position {
-  int8_t cell[RULES_AREA] = {};  // [y * RULES_LEN + x]: cell_value
+  Cells cell;
   Blueprint hand[2][HAND];
   int32_t scores[2] = {0, 0};
   int16_t stars[2] = {0, 0};  // each player's stars on the board
@@ -277,7 +323,7 @@ inline void set_cell(Position& p, int index, int8_t v) {
     p.cellHash ^= key(site_key(x, y), uint64_t(v));
     p.cells[cell_owner(v)]++;
   }
-  p.cell[index] = v;
+  p.cell.set(index, v);
 }
 
 // The window's middle, a point of the rules board: the middle of the box of the player's last placements, rounded
@@ -488,15 +534,18 @@ inline void shift_records(Position& p, int dx, int dy) {
       }
 }
 
-// The bounding box of the cells on the rules board (not any when the board is empty).
+// The bounding box of the cells on the rules board (not any when the board is empty): a scan of the box that holds
+// them (Cells::used).
 inline Box cells_box(const Position& p) {
   Box box;
-  for(int y = 0; y < RULES_LEN; y++) {
-    const int8_t* row = p.cell + y * RULES_LEN;
-    for(int x = 0; x < RULES_LEN; x++)
-      if(row[x])
-        box.add(x, y);
-  }
+  const Box& used = p.cell.used;
+  if(used.any)
+    for(int y = used.y0; y <= used.y1; y++) {
+      const int8_t* row = p.cell.row(y);
+      for(int x = used.x0; x <= used.x1; x++)
+        if(row[x])
+          box.add(x, y);
+    }
   return box;
 }
 
@@ -507,13 +556,19 @@ inline void center_box(Position& p, const Box& box) {
   const int dx = half_off_middle(box.x0, box.x1), dy = half_off_middle(box.y0, box.y1);
   if(dx == 0 && dy == 0)
     return;
+  // The cells of the box, then the board cleared and each cell set at its new point.
+  const int x0 = std::max(0, int(box.x0)), x1 = std::min(RULES_LEN - 1, int(box.x1));
+  const int y0 = std::max(0, int(box.y0)), y1 = std::min(RULES_LEN - 1, int(box.y1));
+  const int width = x1 - x0 + 1;
   static thread_local std::vector<int8_t> moved;
-  moved.assign(RULES_AREA, 0);
-  for(int y = std::max(0, int(box.y0)); y <= std::min(RULES_LEN - 1, int(box.y1)); y++)
-    for(int x = std::max(0, int(box.x0)); x <= std::min(RULES_LEN - 1, int(box.x1)); x++)
-      if(p.cell[y * RULES_LEN + x])
-        moved[(y - dy) * RULES_LEN + x - dx] = p.cell[y * RULES_LEN + x];
-  std::copy(moved.begin(), moved.end(), p.cell);
+  moved.resize(size_t(width) * (y1 - y0 + 1));
+  for(int y = y0; y <= y1; y++)
+    std::memcpy(moved.data() + (y - y0) * width, p.cell.row(y) + x0, size_t(width));
+  p.cell.clear();
+  for(int y = y0; y <= y1; y++)
+    for(int x = x0; x <= x1; x++)
+      if(const int8_t v = moved[(y - y0) * width + x - x0])
+        p.cell.set((y - dy) * RULES_LEN + x - dx, v);
   shift_records(p, dx, dy);
   p.offsetQ = int16_t(p.offsetQ + dx);
   p.offsetR = int16_t(p.offsetR + dy);

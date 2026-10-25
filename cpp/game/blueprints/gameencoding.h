@@ -359,9 +359,17 @@ struct GameEncoding {
 
   // Writes the images of p's cells in the rules board's columns x0 to x1 - 1 and rows y0 to y1 - 1 into s, whose cells
   // are empty and whose offset is the image's (sym_records): each at its pixel's image around the board's middle. Then
-  // s's cells' hash, by the image's site coordinates.
+  // s's cells' hash, by the image's site coordinates. Only the part of those columns and rows in the box that holds
+  // p's cells (Cells::used) can hold a cell.
   static void sym_cells(const Position& p, int symmetry, int x0, int x1, int y0, int y1, Position& s) {
     s.cellHash = Hash128();
+    const Box& used = p.cell.used;
+    if(!used.any)
+      return;
+    x0 = std::max<int>(x0, used.x0);
+    x1 = std::min<int>(x1, used.x1 + 1);
+    y0 = std::max<int>(y0, used.y0);
+    y1 = std::min<int>(y1, used.y1 + 1);
     for(int y = y0; y < y1; y++)
       for(int x = x0; x < x1; x++) {
         const int8_t v = p.cell[y * RULES_LEN + x];
@@ -369,7 +377,7 @@ struct GameEncoding {
           continue;
         int sx = x, sy = y;
         sym_rules(sx, sy, symmetry);
-        s.cell[sy * RULES_LEN + sx] = v;
+        s.cell.set(sy * RULES_LEN + sx, v);
         s.cellHash ^= key(site_key(sx - RULES_RADIUS + s.offsetQ, sy - RULES_RADIUS + s.offsetR), uint64_t(v));
       }
   }
@@ -389,7 +397,7 @@ struct GameEncoding {
   static const Position& near_image(const Position& p, int symmetry) {
     static thread_local std::vector<Position> buffer(1);
     Position& s = buffer[0];
-    std::fill(s.cell, s.cell + RULES_AREA, int8_t(0));
+    s.cell.clear();
     sym_records(p, symmetry, s);
     int ox, oy;
     view_origin(p, ox, oy);
