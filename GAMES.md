@@ -46,6 +46,7 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/tests/checkgamelayer_test.py` | The test of the check, on temporary trees with planted uses (Enclosure, Connect-4 and a made-up game with a short name). |
 | `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, and the defaults of the optional members with a stub game. |
 | `cpp/tests/enclosure/testgameareas.cpp` | The look-ahead area and the komi area (optional members of the encoding part) through the front, for the build's game: the short-term value targets' lambdas and the komi draw's standard deviation, against each game's pinned areas, and the defaults with stub games. |
+| `cpp/tests/enclosure/testcheapsearch.cpp` | Self-play's full and cheap searches (`play.cpp`'s `GameRunner`), for the build's game: the share of full searches among the actions that draw one, and with `cheapSearchPerMove`, the search of an action that continues a move. |
 | `cpp/tests/enclosure/testkomi.cpp` | Komi through the front, for the build's game: the result and the value targets at komis that decide a game, the global inputs at the history's komi, the even-komi search's bracket (an optional member of the encoding part) against KataGo's code and each game's pinned bracket, the two rules where the win-loss value keeps its sign up to the limit (no even komi, or KataGo's bracket end), each game's pinned lead step, and a self-play config's komi draws. |
 
 All members are static, and every file is a header. So the compiler sees the same code as in a build for one game, and
@@ -659,18 +660,21 @@ checks the shares of draws at 0 and beyond 3 standard deviations of `komiBigStde
 (the bigger draw overrides the big draw, which overrides `komiStdev`), and that each draw is on the half-point grid.
 
 **Self-play's cheap searches:** `testcheapsearch SELFPLAY_CONFIG MODEL GAMES [OVERRIDES]` runs on a build of any game,
-with a network of the game (a small random one is enough: `python/enclosure_nn_check.py make` with `-config b2c16`,
-then its export; the model loader refuses `b1c6nbt`: "trunk: all numbers of channels must be positive"). It plays
-the games one
-after the other as self-play does (`play.cpp`'s `GameRunner`), with fixed seeds and one search thread, and the config
-with the overrides (`key=value,...`, as `-override-config`). For each game it prints a digest of the actions, their
-full or cheap searches and their weights, so that two builds or two settings that draw the same searches in the same
-order print the same digests. It checks that the share of full searches among the actions that draw their own is
-`1 - cheapSearchProb` within 4 standard deviations. With `cheapSearchPerMove`, it checks that each action that
-continues a move (`continues_move`: Blueprints' drop) has the decision and the weight of the action before it. Without
-it, those actions draw their own. It prints the share of full searches among the picks and among their drops: the
-choice of a pick depends on its search, so with the setting the drops' share is the picks', which can differ from
-`1 - cheapSearchProb`.
+with a network of the game. A small random one is enough: `python/enclosure_nn_check.py make` with `-config b2c16`,
+then its export (the model loader refuses `b1c6nbt`: "trunk: all numbers of channels must be positive"). It plays the
+games one after the other as self-play does (`play.cpp`'s `GameRunner`), with fixed seeds and one search thread, and
+the config with the overrides (`key=value,...`, as `-override-config`). For each game it prints a digest of the
+actions, their full or cheap searches and their weights, so that two builds or two settings that draw the same
+searches in the same order print the same digests. It checks that the share of full searches among the actions that
+draw their own is `1 - cheapSearchProb` within 4 standard deviations. With `cheapSearchPerMove`, it checks that each
+action that continues a move (`continues_move`: Blueprints' drop) has the decision and the weight of the action before
+it. Without it, those actions draw their own. It prints the share of full searches among the picks and among their
+drops: the choice of a pick depends on its search, so with the setting the drops' share is the picks', which can
+differ from `1 - cheapSearchProb`. Two runs play the same games only with the same config and overrides: the size of
+the network's cache (`nnCacheSizePowerOfTwo`) changes the games once the cache is full. KataGo's asymmetric playouts
+(`normalAsymmetricPlayoutProb`) need at least 5 visits in each search. In a game with them, a cheap search of fewer
+visits stops the test with an error ("asymmetric playout doubling resulted in fewer than 5 visits"). So with very few
+visits, set that probability to 0, or use a set of games that has no such game.
 
 **Connect-4's encoding part.** The conformance suite checks that its mirror maps the legal moves onto the image's. With
 a Connect-4 binary and network, the engine repository's `games/connect4/tests/test_network.py` checks two more things.

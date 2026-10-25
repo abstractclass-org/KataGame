@@ -53,7 +53,7 @@ static void check(bool ok, const string& what) {
 
 //64-bit FNV-1a, over the bytes of a value.
 struct Digest {
-  uint64_t h = 1469598103934665603ULL;
+  uint64_t h = 14695981039346656037ULL;
   template<class T> void add(const T& v) {
     const unsigned char* b = reinterpret_cast<const unsigned char*>(&v);
     for(size_t i = 0; i < sizeof(T); i++)
@@ -66,7 +66,7 @@ struct Counts {
   int actions = 0, actionsFull = 0;
   int draws = 0, drawsFull = 0;          //the actions that drew their decision
   int drops = 0, dropsFull = 0;          //the actions that continue the move of the action before them, in the loop
-  int picks = 0, picksFull = 0;          //the actions before those
+  int picksFull = 0;                     //the drops whose pick, the action before them, had a full search
   int bothFull = 0;                      //the drops with their picks, both full
   int differ = 0;                        //the drops whose decision or weight is not their pick's
 };
@@ -99,7 +99,6 @@ static void readGame(int gameIdx, const FinishedGameData& data, bool perMove, Co
       drops++;
       counts.drops++;
       counts.dropsFull += !cheap;
-      counts.picks++;
       counts.picksFull += !pickCheap;
       counts.bothFull += !cheap && !pickCheap;
       counts.differ += cheap != pickCheap || weight != data.targetWeightByTurnUnrounded[t - 1];
@@ -119,6 +118,11 @@ static void readGame(int gameIdx, const FinishedGameData& data, bool perMove, Co
 }
 
 static double share(int hits, int n) { return n > 0 ? (double)hits / n : 0.0; }
+
+//Whether hits of n trials are the share q, within 4 standard deviations.
+static bool nearShare(int hits, int n, double q) {
+  return n > 0 && fabs(share(hits, n) - q) <= 4.0 * sqrt(q * (1.0 - q) / n);
+}
 
 int main(int argc, char** argv) {
   if(argc < 4 || argc > 5) {
@@ -164,32 +168,28 @@ int main(int argc, char** argv) {
   botSpec.nnEval = nnEval;
   botSpec.baseParams = baseParams;
   ForkData* forkData = new ForkData();
-  Counts counts;
+  Counts c;
   for(int g = 0; g < numGames; g++) {
     FinishedGameData* data = gameRunner->runGame("testcheapsearch game " + to_string(g), botSpec, botSpec, forkData,
                                                  NULL, logger, nullptr, nullptr, nullptr, nullptr, nullptr);
     check(data != NULL, "the game ends");
     if(data == NULL)
       break;
-    readGame(g, *data, perMove, counts);
+    readGame(g, *data, perMove, c);
     delete data;
   }
 
   const double q = 1.0 - playSettings.cheapSearchProb;
-  const Counts& c = counts;
   printf("draws: %d of %d actions, %d full (%.4f, expected %.4f)\n", c.draws, c.actions, c.drawsFull,
          share(c.drawsFull, c.draws), q);
   printf("full searches: %.4f of the actions, %.4f of the %d picks, %.4f of their drops; %d with both full (%.4f); "
-         "%d drops differ from their pick\n", share(c.actionsFull, c.actions), share(c.picksFull, c.picks), c.picks,
+         "%d drops differ from their pick\n", share(c.actionsFull, c.actions), share(c.picksFull, c.drops), c.drops,
          share(c.dropsFull, c.drops), c.bothFull, share(c.bothFull, c.drops), c.differ);
-  const double sigma = c.draws > 0 ? sqrt(q * (1.0 - q) / c.draws) : 0.0;
-  check(fabs(share(c.drawsFull, c.draws) - q) <= 4.0 * sigma + 1e-12, "the share of full searches among the draws");
+  check(nearShare(c.drawsFull, c.draws, q), "the share of full searches among the draws");
   if(perMove)
     check(c.differ == 0, "each drop takes its pick's decision and weight");
-  else if(c.drops > 0) {
-    const double dropSigma = sqrt(q * (1.0 - q) / c.drops);
-    check(fabs(share(c.dropsFull, c.drops) - q) <= 4.0 * dropSigma, "the drops draw their own");
-  }
+  else if(c.drops > 0)
+    check(nearShare(c.dropsFull, c.drops, q), "the drops draw their own");
 
   delete forkData;
   delete gameRunner;
