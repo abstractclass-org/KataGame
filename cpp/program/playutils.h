@@ -69,15 +69,20 @@ namespace PlayUtils {
 
   float roundAndClipKomi(double unrounded, const Board& board);
 
-  //KataGame fork: the last stage of KataGo's even-komi search (adjustKomiToEven, computeLead): the offset from the
-  //search's guess where White's win-loss value winLossAt(offset) is 0. It brackets the sign change from the guess
+  //KataGame fork: the last stage of KataGo's even-komi search (adjustKomiToEven, computeLead): the offset delta from
+  //the search's guess where White's win-loss value winLossAt(offset) is 0. It brackets the sign change from the guess
   //(offset 0) on the side that the value at 0 points to, with the offsets step, 2 * step and so on up to limit, and
   //bisects the bracket on the half-point grid to a window of half a point. Then it interpolates in that window.
-  //Without a sign change up to limit, the bisection ends at the far end. KataGo's bracket is step 1 and limit 32 (the
-  //game's: GameInterface::komiBracketStep and komiBracketLimit).
-  double evenKomiOffset(const std::function<double(double)>& winLossAt, double step, double limit);
+  //Without a sign change up to limit, it returns false at once, with delta the far end, unless endIsEven: KataGo's
+  //rule, under which the bisection ends at the far end, and that end counts as the even komi. Else it returns true.
+  //KataGo's bracket is step 1 and limit 32, with its rule (the game's: GameInterface::komiBracketStep,
+  //komiBracketLimit and komiBracketEndIsEven).
+  bool evenKomiOffset(
+    const std::function<double(double)>& winLossAt, double step, double limit, bool endIsEven, double& delta
+  );
 
-  void adjustKomiToEven(
+  //KataGame fork: returns false when the search finds no even komi (evenKomiOffset), and then leaves the komi as it was.
+  bool adjustKomiToEven(
     Search* botB,
     Search* botW, //can be NULL if only one bot
     const Board& board,
@@ -89,6 +94,8 @@ namespace PlayUtils {
   );
 
   //Lead from WHITE's perspective
+  //KataGame fork: found, when given, tells whether the search found an even komi (evenKomiOffset). Without one, the
+  //lead is the bracket's far end, not a measurement.
   float computeLead(
     Search* botB,
     Search* botW, //can be NULL if only one bot
@@ -96,7 +103,8 @@ namespace PlayUtils {
     BoardHistory& hist,
     Player pla,
     int64_t numVisits,
-    const OtherGameProperties& otherGameProps
+    const OtherGameProperties& otherGameProps,
+    bool* found = NULL
   );
 
   double getSearchFactor(

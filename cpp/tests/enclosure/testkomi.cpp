@@ -9,11 +9,14 @@
 //   score target, each side's own komi, and the network cache's hash, which changes with a nonzero K only.
 // - The inputs: at a position of that game, the front's global inputs (NNInputs::fillRowV8, which gives the game the
 //   history's komi) are the game's global_inputs at that komi. The test prints the global inputs that change with K.
-// - The even-komi search's bracket (PlayUtils::evenKomiOffset): the defaults with stub games, and the build's game's
-//   bracket against the values pinned below. With KataGo's bracket (1 to 32 points), the search tries the same
-//   offsets and gives the same result as KataGo's own code (kataGoOffset, a copy) on many win-loss curves. With the
-//   game's bracket, it finds the sign change of a monotone curve within half a point out to the bracket's limit, ends
-//   at the limit beyond it, and the test prints the values that it reads.
+// - The even-komi search (PlayUtils::evenKomiOffset): the defaults with stub games, and the build's game's bracket,
+//   rule and lead step (GameInterface::komiLeadStep) against the values pinned below. With KataGo's bracket (1 to 32
+//   points) and KataGo's rule, the search tries the same offsets and gives the same result as KataGo's own code
+//   (kataGoOffset, a copy) on many win-loss curves, and it always finds an even komi. With the game's bracket, it finds
+//   the sign change of a monotone curve within half a point out to the bracket's limit, ends at the limit beyond it,
+//   and the test prints the values that it reads. Beyond the limit, and on curves that keep their sign, the rule
+//   decides: KataGo's takes the far end as the even komi after the bisection. The other finds no even komi, and stops
+//   after the bracket's offsets.
 // - With a self-play config: the komi draws of new games, which play.cpp's GameInitializer makes as in self-play,
 //   against the shares that the config's probabilities give: the draws of exactly 0, and the draws beyond 3 standard
 //   deviations of the middle spread (komiBigStdev). Every draw is on the half-point grid, and none is beyond 3
@@ -25,6 +28,7 @@
 #include <cstring>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../../core/config_parser.h"
@@ -48,29 +52,40 @@ static void check(bool ok, const string& what) {
   }
 }
 
-//A game that gives no bracket, and one that gives its own.
-struct NoBracket {};
+//A game that gives none of the even-komi search's members, and one that gives them all.
+struct NoBracket {
+  static constexpr double SCORE_SCALE = 12.0;
+};
 struct OwnBracket {
+  static constexpr double SCORE_SCALE = 12.0;
   static constexpr double KOMI_BRACKET_STEP = 6.0;
   static constexpr double KOMI_BRACKET_LIMIT = 500.0;
+  static constexpr double KOMI_LEAD_STEP = 0.0;
 };
-static_assert(GameInterface::komiBracketStep<NoBracket>() == 1.0 && GameInterface::komiBracketLimit<NoBracket>() == 32.0,
-              "KataGo's bracket by default");
+static_assert(GameInterface::komiBracketStep<NoBracket>() == 1.0 && GameInterface::komiBracketLimit<NoBracket>() == 32.0 &&
+                GameInterface::komiBracketEndIsEven<NoBracket>() && GameInterface::komiLeadStep<NoBracket>() == 6.0,
+              "KataGo's bracket and rule by default, and KataGo's lead step times SCORE_SCALE");
 static_assert(GameInterface::komiBracketStep<OwnBracket>() == 6.0 &&
-                GameInterface::komiBracketLimit<OwnBracket>() == 500.0,
-              "a game's own bracket");
+                GameInterface::komiBracketLimit<OwnBracket>() == 500.0 &&
+                !GameInterface::komiBracketEndIsEven<OwnBracket>() && GameInterface::komiLeadStep<OwnBracket>() == 0.0,
+              "a game's own bracket, with no even komi beyond it, and its own lead step");
 
-//The bracket of each game of KataGame: its first offset, then its limit. Blueprints' scores reach thousands of points.
-//The other games give none, so they keep KataGo's.
-static bool pinnedBracket(double& step, double& limit) {
+//The even-komi search of each game of KataGame: its bracket's first offset and limit, whether the bracket's end counts
+//as the even komi, and the lead's step. Blueprints' scores reach thousands of points, and its margins have no parity.
+//The other games give none of these, so they keep KataGo's bracket and rule, and KataGo's lead step times SCORE_SCALE.
+static bool pinnedSearch(double& step, double& limit, bool& endIsEven, double& leadStep) {
   if(strcmp(GameRules::NAME, "blueprints") == 0) {
     step = 12.0;
     limit = 3000.0;
+    endIsEven = false;
+    leadStep = 0.0;
     return true;
   }
   if(strcmp(GameRules::NAME, "enclosure") == 0 || strcmp(GameRules::NAME, "connect4") == 0) {
     step = 1.0;
     limit = 32.0;
+    endIsEven = true;
+    leadStep = strcmp(GameRules::NAME, "enclosure") == 0 ? 6.0 : 0.5;
     return true;
   }
   return false;
@@ -226,17 +241,33 @@ static void checkResults() {
   }
 }
 
-//The even-komi search's bracket: KataGo's against KataGo's code, and the game's on monotone curves.
+//The bracket's offsets among the values that the search read (tried): after the value at 0, step, then each the double
+//of the last, or the limit.
+static int bracketOffsets(const vector<double>& tried, double step, double limit) {
+  int offsets = 0;
+  while(offsets + 1 < (int)tried.size() && fabs(tried[offsets + 1]) == min(step * pow(2.0, offsets), limit))
+    offsets++;
+  return offsets;
+}
+
+//The even-komi search: KataGo's bracket against KataGo's code, the game's bracket on monotone curves, and the two
+//rules where the win-loss value keeps its sign up to the limit.
 static void checkBracket() {
-  double step = 0.0, limit = 0.0;
-  check(pinnedBracket(step, limit), "the build's game has a pinned bracket");
+  double step = 0.0, limit = 0.0, leadStep = -1.0;
+  bool endIsEven = false;
+  check(pinnedSearch(step, limit, endIsEven, leadStep), "the build's game has a pinned even-komi search");
   const double gameStep = GameInterface::komiBracketStep<GameEncoding>();
   const double gameLimit = GameInterface::komiBracketLimit<GameEncoding>();
-  check(gameStep == step && gameLimit == limit, "the game's bracket");
-  printf("game %s: the even-komi search's bracket, offsets from %g up to %g points\n", GameRules::NAME, gameStep, gameLimit);
+  const bool gameEndIsEven = GameInterface::komiBracketEndIsEven<GameEncoding>();
+  const double gameLeadStep = GameInterface::komiLeadStep<GameEncoding>();
+  check(gameStep == step && gameLimit == limit && gameEndIsEven == endIsEven && gameLeadStep == leadStep,
+        "the game's bracket, its rule and its lead step");
+  printf("game %s: the even-komi search's bracket, offsets from %g up to %g points; beyond it, %s; the lead's step %g "
+         "points\n", GameRules::NAME, gameStep, gameLimit,
+         gameEndIsEven ? "the bracket's end is the even komi (KataGo's rule)" : "no even komi", gameLeadStep);
 
-  //KataGo's bracket: on curves that cross 0 at c with a width s, some with a wobble that crosses them more than once,
-  //and on flat ones, the same offsets in the same order and the same result as KataGo's code.
+  //KataGo's bracket and rule: on curves that cross 0 at c with a width s, some with a wobble that crosses them more
+  //than once, and on flat ones, the same offsets in the same order and the same result as KataGo's code.
   int curves = 0;
   vector<function<double(double)>> shapes;
   for(double c = -40.0; c <= 40.0; c += 0.25)
@@ -247,13 +278,16 @@ static void checkBracket() {
     shapes.push_back([=](double) noexcept { return flat; });
   for(const auto& f : shapes) {
     vector<double> tried, kataGoTried;
-    const double offset = PlayUtils::evenKomiOffset([&](double d) { tried.push_back(d); return f(d); }, 1.0, 32.0);
+    double offset;
+    const bool found =
+      PlayUtils::evenKomiOffset([&](double d) { tried.push_back(d); return f(d); }, 1.0, 32.0, true, offset);
     const double kataGo = kataGoOffset([&](double d) { kataGoTried.push_back(d); return f(d); });
-    check(tried == kataGoTried && offset == kataGo, "KataGo's bracket: the offsets and the result of KataGo's code");
+    check(found && tried == kataGoTried && offset == kataGo,
+          "KataGo's bracket and rule: an even komi, with the offsets and the result of KataGo's code");
     curves++;
   }
-  printf("KataGo's bracket (1 to 32 points): the same offsets and results as KataGo's code on %d win-loss curves\n",
-         curves);
+  printf("KataGo's bracket (1 to 32 points) and rule: the same offsets and results as KataGo's code on %d win-loss "
+         "curves, each an even komi\n", curves);
 
   //The game's bracket: a monotone curve that crosses 0 at c, as wide as the bracket's limit, so that it does not go
   //flat between the bracket's offsets.
@@ -264,21 +298,77 @@ static void checkBracket() {
   for(double c : crossings) {
     vector<double> tried;
     const auto f = [=](double d) { return tanh((d - c) / width); };
-    const double offset = PlayUtils::evenKomiOffset([&](double d) { tried.push_back(d); return f(d); }, gameStep, gameLimit);
+    double offset;
+    const bool found = PlayUtils::evenKomiOffset(
+      [&](double d) { tried.push_back(d); return f(d); }, gameStep, gameLimit, gameEndIsEven, offset
+    );
     bool grid = true;
     for(double d : tried)
       grid = grid && Rules::komiIsIntOrHalfInt((float)d) && fabs(d) <= gameLimit;
     check(grid, "the game's bracket: each offset is on the half-point grid, within the limit");
+    const int offsets = bracketOffsets(tried, gameStep, gameLimit);
     if(fabs(c) <= gameLimit)
-      check(fabs(offset - c) <= 0.5, "the game's bracket: the sign change within half a point, at " + to_string(c));
-    else
+      check(found && fabs(offset - c) <= 0.5,
+            "the game's bracket: an even komi at the sign change, within half a point, at " + to_string(c));
+    else {
       check(offset == (c > 0 ? gameLimit : -gameLimit), "the game's bracket: the limit, beyond it, at " + to_string(c));
-    int offsets = 0;  //after the value at 0, the bracket's offsets: step, then each the double of the last, or the limit
-    while(offsets + 1 < (int)tried.size() && fabs(tried[offsets + 1]) == min(gameStep * pow(2.0, offsets), gameLimit))
-      offsets++;
-    printf("a crossing at %8.2f: %2d values, %2d of them the bracket's offsets (the last %g), the result %8.2f\n", c,
-           (int)tried.size(), offsets, tried[offsets], offset);
+      check(found == gameEndIsEven, "the game's bracket: beyond it, an even komi only under KataGo's rule");
+      check(gameEndIsEven || (int)tried.size() == 1 + offsets,
+            "the game's bracket: without an even komi, no bisection after the bracket's offsets");
+    }
+    printf("a crossing at %8.2f: %2d values, %2d of them the bracket's offsets (the last %g), the result %8.2f (%s)\n",
+           c, (int)tried.size(), offsets, tried[offsets], offset, found ? "an even komi" : "no even komi");
   }
+
+  //The rules where the value keeps its sign up to the limit, on KataGo's bracket and on the game's: flat curves, and
+  //a monotone one that crosses 0 beyond the limit on either side. KataGo's rule: KataGo's result (for KataGo's
+  //bracket), the far end after the bisection (a flat curve's last window of half a point, which KataGo averages), an
+  //even komi. The other: the far end at once, after the value at 0 and the bracket's offsets, and no even komi. A
+  //curve flat at 0 has an even komi within the first offset, and a curve that crosses 0 at the limit has one there.
+  int notFound = 0;
+  for(const pair<double, double>& bracket : {make_pair(1.0, 32.0), make_pair(gameStep, gameLimit)}) {
+    const double s = bracket.first, l = bracket.second;
+    vector<pair<string, function<double(double)>>> keeping = {
+      {"flat at -0.5", [](double) noexcept { return -0.5; }},
+      {"flat at 0.5", [](double) noexcept { return 0.5; }},
+      {"crossing beyond +limit", [=](double d) noexcept { return tanh((d - 1.25 * l) / l); }},
+      {"crossing beyond -limit", [=](double d) noexcept { return tanh((d + 1.25 * l) / l); }},
+    };
+    for(const auto& named : keeping) {
+      const auto& f = named.second;
+      const double end = f(0.0) < 0 ? l : -l;
+      for(bool rule : {true, false}) {
+        vector<double> tried, kataGoTried;
+        double offset;
+        const bool found =
+          PlayUtils::evenKomiOffset([&](double d) { tried.push_back(d); return f(d); }, s, l, rule, offset);
+        const string what = "bracket " + to_string(s) + " to " + to_string(l) + ", " + named.first + ", " +
+                            (rule ? "KataGo's rule" : "no even komi beyond the limit");
+        if(rule) {
+          check(found && fabs(offset - end) <= 0.5, what + ": an even komi, the far end");
+          if(s == 1.0 && l == 32.0) {
+            const double kataGo = kataGoOffset([&](double d) { kataGoTried.push_back(d); return f(d); });
+            check(offset == kataGo && tried == kataGoTried, what + ": KataGo's code");
+          }
+        }
+        else {
+          check(!found && offset == end, what + ": no even komi, the far end");
+          check((int)tried.size() == 1 + bracketOffsets(tried, s, l) && fabs(tried.back()) == l,
+                what + ": the value at 0 and the bracket's offsets only");
+          notFound++;
+        }
+      }
+    }
+    double offset;
+    check(PlayUtils::evenKomiOffset([](double) noexcept { return 0.0; }, s, l, false, offset) && fabs(offset) <= s,
+          "a curve flat at 0: an even komi within the first offset");
+    check(PlayUtils::evenKomiOffset([=](double d) noexcept { return tanh((d - l) / l); }, s, l, false, offset) &&
+            fabs(offset - l) <= 0.5,
+          "a curve that crosses 0 at the limit: an even komi there");
+  }
+  printf("curves that keep their sign up to the limit, on KataGo's bracket and the game's: the far end under both "
+         "rules, an even komi under KataGo's, and %d cases of no even komi under the other, each after the bracket's "
+         "offsets\n", notFound);
 }
 
 //The standard normal distribution function.

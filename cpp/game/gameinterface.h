@@ -162,8 +162,19 @@
  *                           double, double: the bracket of KataGo's even-komi search (PlayUtils::evenKomiOffset), in
  *                           points. Around its guess, the search tries the offsets KOMI_BRACKET_STEP, twice that, and
  *                           so on, up to KOMI_BRACKET_LIMIT, until the win-loss value changes sign. Then it bisects on
- *                           the half-point grid. Default: KataGo's 1 and 32, the offsets 1, 2, 4, 8, 16 and 32
- *                           (komiBracketStep, komiBracketLimit).
+ *                           the half-point grid. When the value keeps its sign up to the limit, a game that gives its
+ *                           bracket has no even komi: the lead's search gives the position no lead target, and the
+ *                           compensation of an uneven game keeps the game's komi. Default: KataGo's 1 and 32, the
+ *                           offsets 1, 2, 4, 8, 16 and 32, and KataGo's rule, which takes the bracket's end as the
+ *                           even komi (komiBracketStep, komiBracketLimit, komiBracketEndIsEven).
+ *   KOMI_LEAD_STEP          double: the step of the lead's smoothing over a coarse score (PlayUtils::computeLead), in
+ *                           points. When the even komi is not a multiple of 2 * KOMI_LEAD_STEP, computeLead reads the
+ *                           win-loss value at the komis KOMI_LEAD_STEP apart around it, averages each pair 2 *
+ *                           KOMI_LEAD_STEP apart, and interpolates. KataGo's is half a point, for Go's area scoring:
+ *                           there the margins of a full board have one parity, so the result changes every 2 points
+ *                           of komi. 0 for a game whose margins have no parity: the lead is the search's even komi, as
+ *                           in KataGo for territory scoring. Default: KataGo's half point times SCORE_SCALE
+ *                           (komiLeadStep).
  *   OWN_TARGETS             unsigned: the slots of TARGETS that the game computes itself (training_targets). It holds
  *                           every slot of TARGETS that is not one of the FRONT_TARGETS, and can hold those too: a game
  *                           whose pieces() do not give such a target computes it, and the front then leaves that slot
@@ -555,6 +566,7 @@ namespace encoding {
   GAMEINTERFACE_DETECT(HasKomiArea, double, G::KOMI_AREA)
   GAMEINTERFACE_DETECT(HasKomiBracketStep, double, G::KOMI_BRACKET_STEP)
   GAMEINTERFACE_DETECT(HasKomiBracketLimit, double, G::KOMI_BRACKET_LIMIT)
+  GAMEINTERFACE_DETECT(HasKomiLeadStep, double, G::KOMI_LEAD_STEP)
   GAMEINTERFACE_DETECT(HasOwnTargets, unsigned, std::integral_constant<unsigned, G::OWN_TARGETS>::value)
 }
 
@@ -639,6 +651,10 @@ template<class E> constexpr bool checkEncoding() {
                     E::KOMI_BRACKET_LIMIT * 2 == (double)(long long)(E::KOMI_BRACKET_LIMIT * 2),
                   "game interface, encoding part: KOMI_BRACKET_STEP is at least half a point, KOMI_BRACKET_LIMIT is "
                   "at least KOMI_BRACKET_STEP, and both are whole or half points");
+  if constexpr(HasKomiLeadStep<E>::value)
+    static_assert(E::KOMI_LEAD_STEP == 0.0 ||
+                    (E::KOMI_LEAD_STEP >= 0.5 && E::KOMI_LEAD_STEP * 2 == (double)(long long)(E::KOMI_LEAD_STEP * 2)),
+                  "game interface, encoding part: KOMI_LEAD_STEP is 0, or whole or half points");
   return true;
 }
 
@@ -676,6 +692,18 @@ template<class E> constexpr double komiBracketLimit() {
     return E::KOMI_BRACKET_LIMIT;
   else
     return 32.0;
+}
+//Whether the even-komi search takes its bracket's end as the even komi when the win-loss value keeps its sign up to
+//the limit: KataGo's rule, for a game that keeps KataGo's bracket. A game that gives its bracket has no even komi there.
+template<class E> constexpr bool komiBracketEndIsEven() { return !encoding::HasKomiBracketLimit<E>::value; }
+
+//The step of the lead's smoothing over a coarse score, in points: the game's, else KataGo's half point times the
+//game's SCORE_SCALE.
+template<class E> constexpr double komiLeadStep() {
+  if constexpr(encoding::HasKomiLeadStep<E>::value)
+    return E::KOMI_LEAD_STEP;
+  else
+    return 0.5 * E::SCORE_SCALE;
 }
 
 //The game's own training targets of a row (training_targets): none for a game without own targets. values holds

@@ -651,9 +651,14 @@ struct GameEncoding {
   static constexpr double KOMI_AREA = 19 * 19;
   // The even-komi search's bracket: offsets of 12, 24, 48 and so on around its guess, up to 3,000 points, the reach of
   // the widest komi of a new game in self-play (3 standard deviations of 1,000 points). KataGo's offsets of 1 to 32
-  // points are less than 3 of Go's points at this SCORE_SCALE, and Blueprints' margins are hundreds of points.
+  // points are less than 3 of Go's points at this SCORE_SCALE, and Blueprints' margins are hundreds of points. Beyond
+  // 3,000 points from the guess, the search finds no even komi (GameInterface::komiBracketEndIsEven).
   static constexpr double KOMI_BRACKET_STEP = SCORE_SCALE;
   static constexpr double KOMI_BRACKET_LIMIT = 3000.0;
+  // No smoothing of the lead: KataGo's smooths over the parity of Go's area scoring, where the result changes every 2
+  // points of komi. Blueprints' margins are whole points of both parities (in the site's finished games, 426 even and
+  // 311 odd), so each half point of komi can change the result, and the search's even komi is the lead.
+  static constexpr double KOMI_LEAD_STEP = 0.0;
 };
 
 static_assert(GameInterface::checkEncoding<GameEncoding>(), "Blueprints' network encoding part");

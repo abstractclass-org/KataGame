@@ -460,7 +460,9 @@ static std::pair<double,double> evalKomi(
   return result;
 }
 
-static double getNaiveEvenKomiHelper(
+//KataGame fork: returns false when the search finds no even komi (PlayUtils::evenKomiOffset). evenKomi is the komi that
+//it ends at.
+static bool getNaiveEvenKomiHelper(
   map<float,std::pair<double,double>>& scoreWLCache,
   Search* botB,
   Search* botW,
@@ -468,7 +470,8 @@ static double getNaiveEvenKomiHelper(
   BoardHistory& hist,
   Player pla,
   int64_t numVisits,
-  const OtherGameProperties& otherGameProps
+  const OtherGameProperties& otherGameProps,
+  double& evenKomi
 ) {
   float oldKomi = hist.rules.komi;
 
@@ -531,23 +534,29 @@ static double getNaiveEvenKomiHelper(
     // cout << "Delta " << delta << " wr " << winLoss << endl;
     return winLoss;
   };
-  double finalDelta = PlayUtils::evenKomiOffset(
-    evalWinLoss, GameInterface::komiBracketStep<GameEncoding>(), GameInterface::komiBracketLimit<GameEncoding>()
+  double finalDelta;
+  const bool found = PlayUtils::evenKomiOffset(
+    evalWinLoss, GameInterface::komiBracketStep<GameEncoding>(), GameInterface::komiBracketLimit<GameEncoding>(),
+    GameInterface::komiBracketEndIsEven<GameEncoding>(), finalDelta
   );
 
   double newKomi = hist.rules.komi + finalDelta;
   // cout << "Final " << finalDelta << " " << newKomi << endl;
 
   hist.setKomi(oldKomi);
-  return newKomi;
+  evenKomi = newKomi;
+  return found;
 }
 
-double PlayUtils::evenKomiOffset(const std::function<double(double)>& winLossAt, double step, double limit) {
+bool PlayUtils::evenKomiOffset(
+  const std::function<double(double)>& winLossAt, double step, double limit, bool endIsEven, double& delta
+) {
   testAssert(step >= 0.5 && limit >= step);
   double lowerDelta;
   double upperDelta;
   double lowerWinLoss;
   double upperWinLoss;
+  bool crossed;
 
   //Grow window outward
   //KataGame fork: by the game's bracket, step, 2 * step and so on up to limit (KataGo: round(pow(2,i)) for i = 0 to 5,
@@ -564,6 +573,7 @@ double PlayUtils::evenKomiOffset(const std::function<double(double)>& winLossAt,
         if(upperWinLoss >= 0 || offset >= limit)
           break;
       }
+      crossed = upperWinLoss >= 0;
     }
     else {
       //Winning, so this is the upper bound
@@ -575,7 +585,14 @@ double PlayUtils::evenKomiOffset(const std::function<double(double)>& winLossAt,
         if(lowerWinLoss <= 0 || offset >= limit)
           break;
       }
+      crossed = lowerWinLoss <= 0;
     }
+  }
+  //KataGame fork: no sign change up to the limit, and so no even komi under the game's rule. The bisection would only
+  //move to the far end.
+  if(!crossed && !endIsEven) {
+    delta = lowerDelta == 0.0 ? upperDelta : lowerDelta;
+    return false;
   }
 
   while(upperDelta - lowerDelta > 0.50001) {
@@ -607,10 +624,11 @@ double PlayUtils::evenKomiOffset(const std::function<double(double)>& winLossAt,
   //Interpolate
   else
     finalDelta = lowerDelta + (upperDelta - lowerDelta) * (0-lowerWinLoss) / (upperWinLoss-lowerWinLoss);
-  return finalDelta;
+  delta = finalDelta;
+  return true;
 }
 
-void PlayUtils::adjustKomiToEven(
+bool PlayUtils::adjustKomiToEven(
   Search* botB,
   Search* botW,
   const Board& board,
@@ -621,7 +639,9 @@ void PlayUtils::adjustKomiToEven(
   Rand& rand
 ) {
   map<float,std::pair<double,double>> scoreWLCache;
-  double newKomi = getNaiveEvenKomiHelper(scoreWLCache,botB,botW,board,hist,pla,numVisits,otherGameProps);
+  double newKomi;
+  if(!getNaiveEvenKomiHelper(scoreWLCache,botB,botW,board,hist,pla,numVisits,otherGameProps,newKomi))
+    return false;
   double lower = floor(newKomi * 2.0) * 0.5;
   double upper = lower + 0.5;
   if(rand.nextBool((newKomi - lower) / (upper - lower)))
@@ -629,6 +649,7 @@ void PlayUtils::adjustKomiToEven(
   else
     newKomi = lower;
   hist.setKomi(PlayUtils::roundAndClipKomi(newKomi,board));
+  return true;
 }
 
 float PlayUtils::computeLead(
@@ -638,13 +659,21 @@ float PlayUtils::computeLead(
   BoardHistory& hist,
   Player pla,
   int64_t numVisits,
-  const OtherGameProperties& otherGameProps
+  const OtherGameProperties& otherGameProps,
+  bool* found
 ) {
   map<float,std::pair<double,double>> scoreWLCache;
   float oldKomi = hist.rules.komi;
-  double naiveKomi = getNaiveEvenKomiHelper(scoreWLCache,botB,botW,board,hist,pla,numVisits,otherGameProps);
+  double naiveKomi;
+  const bool even = getNaiveEvenKomiHelper(scoreWLCache,botB,botW,board,hist,pla,numVisits,otherGameProps,naiveKomi);
+  if(found != NULL)
+    *found = even;
 
-  bool granularityIsCoarse = hist.rules.scoringRule == Rules::SCORING_AREA && !hist.rules.hasButton;
+  //KataGame fork: the game's step of the smoothing (GameInterface::komiLeadStep), and none for a step of 0 or without
+  //an even komi.
+  const double step = GameInterface::komiLeadStep<GameEncoding>();
+  bool granularityIsCoarse =
+    hist.rules.scoringRule == Rules::SCORING_AREA && !hist.rules.hasButton && step > 0.0 && even;
   if(!granularityIsCoarse) {
     testAssert(hist.rules.komi == oldKomi);
     return (float)(oldKomi - naiveKomi);
@@ -659,7 +688,7 @@ float PlayUtils::computeLead(
   //Smooth over area scoring 2-point granularity
   //Enclosure fork (owner, 2026-10-04): upstream's procedure kept (this winrate check is what ties the lead to the
   //even komi), its point quantities x SCORE_SCALE: the half-point grid and window become 6 points (0.5 x 12).
-  const double step = 0.5 * NNPos::SCORE_SCALE;
+  //KataGame fork: that step is komiLeadStep's default.
 
   //If komi is exactly an integer, then we're good.
   if(naiveKomi == round(naiveKomi / (2.0 * step)) * (2.0 * step)) {

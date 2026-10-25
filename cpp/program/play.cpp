@@ -1599,9 +1599,11 @@ FinishedGameData* Play::runGame(
     BoardHistory h(b,makeFairPla,startHist.rules,startHist.encorePhase,hist.modes);
     //Restore baseline on empty hist, adjust empty hist to fair, then apply to real history.
     PlayUtils::setKomiWithoutNoise(extraBlackAndKomi,h);
-    PlayUtils::adjustKomiToEven(botB,botW,b,h,makeFairPla,playSettings.compensateKomiVisits,otherGameProps,gameRand);
-    extraBlackAndKomi.komiMean = h.rules.komi;
-    PlayUtils::setKomiWithNoise(extraBlackAndKomi,hist,gameRand);
+    //KataGame fork: without an even komi (adjustKomiToEven), the game keeps the komi that it drew.
+    if(PlayUtils::adjustKomiToEven(botB,botW,b,h,makeFairPla,playSettings.compensateKomiVisits,otherGameProps,gameRand)) {
+      extraBlackAndKomi.komiMean = h.rules.komi;
+      PlayUtils::setKomiWithNoise(extraBlackAndKomi,hist,gameRand);
+    }
   }
   if(extraBlackAndKomi.extraBlack > 0 && !hist.isGameFinished) {
     double extraBlackTemperature = playSettings.handicapTemperature;
@@ -1611,10 +1613,15 @@ FinishedGameData* Play::runGame(
   }
   if(extraBlackAndKomi.makeGameFair) {
     //Restore baseline on hist, adjust hist to fair, then apply it with noise.
+    //KataGame fork: without an even komi (adjustKomiToEven), the game keeps the komi that it drew.
+    const float drawnKomi = hist.rules.komi;
     PlayUtils::setKomiWithoutNoise(extraBlackAndKomi,hist);
-    PlayUtils::adjustKomiToEven(botB,botW,board,hist,pla,playSettings.compensateKomiVisits,otherGameProps,gameRand);
-    extraBlackAndKomi.komiMean = hist.rules.komi;
-    PlayUtils::setKomiWithNoise(extraBlackAndKomi,hist,gameRand);
+    if(PlayUtils::adjustKomiToEven(botB,botW,board,hist,pla,playSettings.compensateKomiVisits,otherGameProps,gameRand)) {
+      extraBlackAndKomi.komiMean = hist.rules.komi;
+      PlayUtils::setKomiWithNoise(extraBlackAndKomi,hist,gameRand);
+    }
+    else
+      hist.setKomi(drawnKomi);
   }
   else if((extraBlackAndKomi.extraBlack > 0 || otherGameProps.isFork) &&
           playSettings.fancyKomiVarying &&
@@ -1622,14 +1629,18 @@ FinishedGameData* Play::runGame(
     double origKomi = hist.rules.komi;
     //Restore baseline on hist, adjust hist to fair, then apply it with noise.
     PlayUtils::setKomiWithoutNoise(extraBlackAndKomi,hist);
-    PlayUtils::adjustKomiToEven(botB,botW,board,hist,pla,playSettings.compensateKomiVisits,otherGameProps,gameRand);
-    double newKomi = hist.rules.komi;
+    //KataGame fork: without an even komi (adjustKomiToEven), the game keeps the komi that it drew.
+    if(PlayUtils::adjustKomiToEven(botB,botW,board,hist,pla,playSettings.compensateKomiVisits,otherGameProps,gameRand)) {
+      double newKomi = hist.rules.komi;
 
-    //Now, randomize between the old and new komi, with extra noise
-    double randKomi = gameRand.nextDouble(min(origKomi,newKomi),max(origKomi,newKomi));
-    randKomi += 0.75 * sqrt(board.x_size * board.y_size) * gameRand.nextGaussianTruncated(2.5);
-    extraBlackAndKomi.komiMean = (float)randKomi;
-    PlayUtils::setKomiWithNoise(extraBlackAndKomi,hist,gameRand);
+      //Now, randomize between the old and new komi, with extra noise
+      double randKomi = gameRand.nextDouble(min(origKomi,newKomi),max(origKomi,newKomi));
+      randKomi += 0.75 * sqrt(board.x_size * board.y_size) * gameRand.nextGaussianTruncated(2.5);
+      extraBlackAndKomi.komiMean = (float)randKomi;
+      PlayUtils::setKomiWithNoise(extraBlackAndKomi,hist,gameRand);
+    }
+    else
+      hist.setKomi((float)origKomi);
   }
   //Vary komi more when things are completely random to set a better prior for how komi affects evals
   if(playSettings.fancyKomiVarying &&
@@ -1719,8 +1730,9 @@ FinishedGameData* Play::runGame(
         playSettings.compensateAfterPolicyInitProb > 0.0 && gameRand.nextBool(playSettings.compensateAfterPolicyInitProb);
       if(gameData->mode != FinishedGameData::MODE_NORMAL)
         shouldCompensate = extraBlackAndKomi.makeGameFair;
-      if(shouldCompensate) {
-        PlayUtils::adjustKomiToEven(botB,botW,board,hist,pla,playSettings.compensateKomiVisits,otherGameProps,gameRand);
+      //KataGame fork: without an even komi (adjustKomiToEven), the game keeps its komi.
+      if(shouldCompensate &&
+         PlayUtils::adjustKomiToEven(botB,botW,board,hist,pla,playSettings.compensateKomiVisits,otherGameProps,gameRand)) {
         extraBlackAndKomi.komiMean = hist.rules.komi;
         PlayUtils::setKomiWithNoise(extraBlackAndKomi,hist,gameRand);
       }
@@ -1744,9 +1756,11 @@ FinishedGameData* Play::runGame(
 
     if(!hist.isGameFinished) {
       //Even out the game
-      PlayUtils::adjustKomiToEven(botB, botW, board, hist, pla, playSettings.compensateKomiVisits, otherGameProps, gameRand);
-      extraBlackAndKomi.komiMean = hist.rules.komi;
-      PlayUtils::setKomiWithNoise(extraBlackAndKomi,hist,gameRand);
+      //KataGame fork: without an even komi (adjustKomiToEven), the game keeps its komi.
+      if(PlayUtils::adjustKomiToEven(botB, botW, board, hist, pla, playSettings.compensateKomiVisits, otherGameProps, gameRand)) {
+        extraBlackAndKomi.komiMean = hist.rules.komi;
+        PlayUtils::setKomiWithNoise(extraBlackAndKomi,hist,gameRand);
+      }
 
       //Randomly set to one of the encore phases
       //Since we played out the game a bunch we should get a good mix of stones that were present or not present at the start
@@ -2359,9 +2373,14 @@ FinishedGameData* Play::runGame(
           if(shouldStop != nullptr && shouldStop())
             break;
 
-          gameData->whiteValueTargetsByTurn[turnAfterStart].lead =
-            PlayUtils::computeLead(botB,botW,board,hist,pla,playSettings.estimateLeadVisits,otherGameProps);
-          gameData->whiteValueTargetsByTurn[turnAfterStart].hasLead = true;
+          //KataGame fork: without an even komi (computeLead's found), no lead target.
+          bool found;
+          const float lead =
+            PlayUtils::computeLead(botB,botW,board,hist,pla,playSettings.estimateLeadVisits,otherGameProps,&found);
+          if(found) {
+            gameData->whiteValueTargetsByTurn[turnAfterStart].lead = lead;
+            gameData->whiteValueTargetsByTurn[turnAfterStart].hasLead = true;
+          }
         }
         Move move = gameData->endHist.moveHistory[turnIdx];
         testAssert(move.pla == pla);
@@ -2384,9 +2403,14 @@ FinishedGameData* Play::runGame(
           if(shouldStop != nullptr && shouldStop())
             break;
 
-          sp->whiteValueTargets.lead =
-            PlayUtils::computeLead(botB,botW,sp->board,sp->hist,sp->pla,playSettings.estimateLeadVisits,otherGameProps);
-          sp->whiteValueTargets.hasLead = true;
+          //KataGame fork: without an even komi (computeLead's found), no lead target.
+          bool found;
+          const float lead =
+            PlayUtils::computeLead(botB,botW,sp->board,sp->hist,sp->pla,playSettings.estimateLeadVisits,otherGameProps,&found);
+          if(found) {
+            sp->whiteValueTargets.lead = lead;
+            sp->whiteValueTargets.hasLead = true;
+          }
         }
       }
     }
