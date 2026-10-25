@@ -431,6 +431,10 @@ static void checkOptionalMembers() {
        GameInterface::replayTolerates<R>(start, -1) ||
        GameInterface::replayTolerates<S>(stub::Position(), S::PASS_ACTION))
       fail("the replay's tolerance: Enclosure's pass at any time, nothing else, and none for the stub game");
+    //Each action is a move of its own, by default: Enclosure's edges too.
+    static_assert(!GameInterface::rules::HasContinuesMove<R>::value, "Enclosure's actions are moves");
+    if(GameInterface::continuesMove<R>(start) || GameInterface::continuesMove<S>(stub::Position()))
+      fail("no action continues a move: Enclosure's and the stub game's");
     //The front: Board() is the standard board, and a replayed game passes at any time, while an edge is legal.
     Board board;
     BoardHistory hist(board, P_BLACK, Rules(), 0);

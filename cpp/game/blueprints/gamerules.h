@@ -880,6 +880,8 @@ struct GameRules {
     }
   }
   static bool replay_tolerates(const Position&, int action) { return action == PASS_ACTION; }
+  // A pick waits for its drop: the drop continues the edit, the pick's move.
+  static bool continues_move(const Position& p) { return p.picked >= 0; }
 
   // The higher score wins. Equal scores: a draw.
   static float result(const Position& p) {

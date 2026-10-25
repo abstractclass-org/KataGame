@@ -45,6 +45,11 @@ struct PlaySettings {
   double cheapSearchProb;
   int cheapSearchVisits;
   float cheapSearchTargetWeight;
+  //KataGame fork: one draw of the cheap search for each move, not for each action. An action that continues the move
+  //of the action before it (GameInterface::continuesMove: Blueprints' drop after its pick) takes that action's
+  //search limits (cheap or full, the visits, the weight, the root noise). A hint's search and a forced full search
+  //keep their own. Reanalysis (useReanalyze) still redoes each action alone.
+  bool cheapSearchPerMove;
 
   //Attenuate the number of visits used in positions where one player or the other is extremely winning
   bool reduceVisits;

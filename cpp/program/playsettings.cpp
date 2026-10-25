@@ -10,7 +10,7 @@ PlaySettings::PlaySettings()
    estimateLeadVisits(10),estimateLeadProb(0.0),
    earlyForkGameProb(0.0),earlyForkGameExpectedMoveProp(0.0),forkGameProb(0.0),forkGameMinChoices(1),earlyForkGameMaxChoices(1),forkGameMaxChoices(1),
    sekiForkHackProb(0.0),fancyKomiVarying(false),
-   cheapSearchProb(0),cheapSearchVisits(0),cheapSearchTargetWeight(0.0f),
+   cheapSearchProb(0),cheapSearchVisits(0),cheapSearchTargetWeight(0.0f),cheapSearchPerMove(false),
    reduceVisits(false),reduceVisitsThreshold(100.0),reduceVisitsThresholdLookback(1),reducedVisitsMin(0),reducedVisitsWeight(1.0f),
    policySurpriseDataWeight(0.0),valueSurpriseDataWeight(0.0),useSearchValueSurprise(false),scaleDataWeight(1.0),
    useReanalyze(false),reanalyzeProp(0.0),
@@ -103,6 +103,7 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg, bool isDistributed
   playSettings.cheapSearchProb = cfg.getDouble("cheapSearchProb",0.0,1.0);
   playSettings.cheapSearchVisits = cfg.getInt("cheapSearchVisits",1,10000000);
   playSettings.cheapSearchTargetWeight = cfg.getFloat("cheapSearchTargetWeight",0.0f,1.0f);
+  playSettings.cheapSearchPerMove = cfg.contains("cheapSearchPerMove") ? cfg.getBool("cheapSearchPerMove") : false;
   playSettings.reduceVisits = cfg.getBool("reduceVisits");
   playSettings.reduceVisitsThreshold = cfg.getDouble("reduceVisitsThreshold",0.0,0.999999);
   playSettings.reduceVisitsThresholdLookback = cfg.getInt("reduceVisitsThresholdLookback",0,1000);

@@ -97,6 +97,9 @@
  *                           plays this action of p where it is not legal: what a site plays beside the legal actions,
  *                           such as a pass on a clock's timeout. play must accept it. Any int (false out of range).
  *                           The search still plays the legal actions only. Default: none (replayTolerates).
+ *   continues_move(p)       bool: whether the next action continues the move of the action before it, by the same
+ *                           player: Blueprints' drop, the second action of an edit, after its pick. Self-play's
+ *                           cheapSearchPerMove reads it. Default: false, each action is a move (continuesMove).
  *
  * The network encoding part (struct E):
  *   Rules                   the game's rules part (its GameRules).
@@ -334,6 +337,7 @@ namespace rules {
   GAMEINTERFACE_DETECT(HasStandardYSize, int, std::integral_constant<int, G::STANDARD_Y_SIZE>::value)
   GAMEINTERFACE_DETECT(HasTurnMoves, int, std::integral_constant<int, G::TURN_MOVES>::value)
   GAMEINTERFACE_DETECT(HasReplayTolerates, bool, G::replay_tolerates(std::declval<const P<G>&>(), 0))
+  GAMEINTERFACE_DETECT(HasContinuesMove, bool, G::continues_move(std::declval<const P<G>&>()))
 }
 
 template<class R> constexpr bool checkRules() {
@@ -526,6 +530,16 @@ template<class R> bool replayTolerates(const typename R::Position& p, int action
   else {
     (void)p;
     (void)action;
+    return false;
+  }
+}
+
+//Whether the next action continues the move of the action before it: the game's, else never.
+template<class R> bool continuesMove(const typename R::Position& p) {
+  if constexpr(rules::HasContinuesMove<R>::value)
+    return R::continues_move(p);
+  else {
+    (void)p;
     return false;
   }
 }

@@ -390,6 +390,7 @@ the helper. The rules part's check requires only that the members of a pair come
 | `STANDARD_X_SIZE`, `STANDARD_Y_SIZE` | The game's standard board, on which `new_game` succeeds: the front's default board (`Board()`, `Board::DEFAULT_X_SIZE` and `DEFAULT_Y_SIZE`, GTP's board when its config names none) and the Python binding's `Position()`. | The largest board, `MAX_BOARD_LEN` × `MAX_BOARD_LEN` (`standardXSize`, `standardYSize`) | None: the default gives 19 × 19. Connect-4 gives 7 × 6. |
 | `TURN_MOVES` | The moves of a full turn, after which the clock's increment comes. The time controls give each move its share of the increment (`increment / TURN_MOVES`), and a move with more of its turn to come takes at most the time left divided by the moves left (`turn_moves_left`). | 1, a game that alternates (`turnMoves`) | 2: the site's increment comes once a turn of two edges (games/enclosure/docs/design/18-play-through-gtp.md) |
 | `replay_tolerates(p, action)` | Whether a replayed game (GTP, the analysis engine, SGF files, start positions: `BoardHistory::isLegalTolerant`) also plays this action of `p` where it is not legal: what a site plays beside the legal actions. `play` must accept it. Any `int` (false out of range). The search still plays the legal actions only. | None: a replay plays the legal actions only (`replayTolerates`) | A pass at any time: the site's pass on a clock's timeout, which forfeits the rest of the turn |
+| `continues_move(p)` | Whether the next action continues the move of the action before it, by the same player: one move of the game played as two actions. Self-play's `cheapSearchPerMove` reads it (`play.cpp`): such an action takes the search limits of the action before it, full or cheap, in place of its own draw. | False: each action is a move (`continuesMove`) | None: each edge is a move. Blueprints gives it: a drop, after its pick, continues the edit. |
 
 ### A game's notation, and a site's own terms
 
@@ -656,6 +657,20 @@ offsets, and no even komi. With a config, it makes 200,000 new games with `play.
 `GameInitializer`, as self-play does, and
 checks the shares of draws at 0 and beyond 3 standard deviations of `komiBigStdev` against the config's probabilities
 (the bigger draw overrides the big draw, which overrides `komiStdev`), and that each draw is on the half-point grid.
+
+**Self-play's cheap searches:** `testcheapsearch SELFPLAY_CONFIG MODEL GAMES [OVERRIDES]` runs on a build of any game,
+with a network of the game (a small random one is enough: `python/enclosure_nn_check.py make` with `-config b2c16`,
+then its export; the model loader refuses `b1c6nbt`: "trunk: all numbers of channels must be positive"). It plays
+the games one
+after the other as self-play does (`play.cpp`'s `GameRunner`), with fixed seeds and one search thread, and the config
+with the overrides (`key=value,...`, as `-override-config`). For each game it prints a digest of the actions, their
+full or cheap searches and their weights, so that two builds or two settings that draw the same searches in the same
+order print the same digests. It checks that the share of full searches among the actions that draw their own is
+`1 - cheapSearchProb` within 4 standard deviations. With `cheapSearchPerMove`, it checks that each action that
+continues a move (`continues_move`: Blueprints' drop) has the decision and the weight of the action before it. Without
+it, those actions draw their own. It prints the share of full searches among the picks and among their drops: the
+choice of a pick depends on its search, so with the setting the drops' share is the picks', which can differ from
+`1 - cheapSearchProb`.
 
 **Connect-4's encoding part.** The conformance suite checks that its mirror maps the legal moves onto the image's. With
 a Connect-4 binary and network, the engine repository's `games/connect4/tests/test_network.py` checks two more things.

@@ -1116,13 +1116,17 @@ struct SearchLimitsThisMove {
 //Only the first numHistoricalMctsValuesToUse entries of historicalMctsWinLossValues count as the past for this
 //turn - during the game that is all of them, while post-game reanalysis of a cheap-search position passes the
 //turn index so as to reproduce the state as of that turn.
+//KataGame fork: moveLimits, when not NULL, are the limits of the action before this one, whose move this action
+//continues (PlaySettings::cheapSearchPerMove). This action takes them in place of its own draw, unless it is the
+//hint's turn or they were the hint's.
 static SearchLimitsThisMove getSearchLimitsThisMove(
   const Search* toMoveBot, Player pla, const PlaySettings& playSettings, Rand& gameRand,
   const vector<double>& historicalMctsWinLossValues,
   size_t numHistoricalMctsValuesToUse,
   bool clearBotBeforeSearch,
   const OtherGameProperties& otherGameProps,
-  bool forceFullSearch
+  bool forceFullSearch,
+  const SearchLimitsThisMove* moveLimits
 ) {
   bool doAlterVisitsPlayouts = false;
   int64_t numAlterVisits = toMoveBot->searchParams.maxVisits;
@@ -1147,6 +1151,8 @@ static SearchLimitsThisMove getSearchLimitsThisMove(
       numAlterPlayouts = (int64_t)ceil(std::min(cap, numAlterPlayouts * 4.0));
     }
   }
+  if(!forceFullSearch && moveLimits != NULL && hintLoc == Board::NULL_LOC && moveLimits->hintLoc == Board::NULL_LOC)
+    return *moveLimits;
   //For the first few turns after a hint move or fork, reduce the probability of cheap search
   if((otherGameProps.hintLoc != Board::NULL_LOC || otherGameProps.isHintFork) && otherGameProps.hintTurn + 6 > hist.moveHistory.size()) {
     cheapSearchProb *= 0.5;
@@ -1466,7 +1472,7 @@ static void reanalyzeCheapSearchPositions(
       //of the turns leading up to this one.
       SearchLimitsThisMove limits = getSearchLimitsThisMove(
         toMoveBot, pla, playSettings, gameRand, historicalMctsWinLossValues, (size_t)turnAfterStart,
-        clearBotBeforeSearch, otherGameProps, true
+        clearBotBeforeSearch, otherGameProps, true, NULL
       );
       runBotWithLimits(toMoveBot, pla, playSettings, limits);
 
@@ -1794,6 +1800,8 @@ FinishedGameData* Play::runGame(
   vector<double> historicalMctsScoreStdevs;
   vector<ReportedSearchValues> rawNNValues;
   vector<bool> wasCheapSearchByTurn;
+  //KataGame fork: the last action's search limits, for an action that continues its move (cheapSearchPerMove).
+  SearchLimitsThisMove lastLimits = SearchLimitsThisMove();
 
   ClockTimer timer;
 
@@ -1830,10 +1838,16 @@ FinishedGameData* Play::runGame(
       toMoveBot->setKomiIfNew((float)(plaFactor * currentKomiBonus + hist.rules.komi));
     }
 
+    //KataGame fork (cheapSearchPerMove): an action that continues the last action's move takes its limits. The
+    //loop's first action draws its own, even when the moves before the loop (policy init, a fork) left a move to
+    //continue.
+    const bool continuesMove =
+      playSettings.cheapSearchPerMove && i > 0 && GameInterface::continuesMove<GameRules>(board.pos);
     SearchLimitsThisMove limits = getSearchLimitsThisMove(
       toMoveBot, pla, playSettings, gameRand, historicalMctsWinLossValues, historicalMctsWinLossValues.size(),
-      clearBotBeforeSearch, otherGameProps, false
+      clearBotBeforeSearch, otherGameProps, false, continuesMove ? &lastLimits : NULL
     );
+    lastLimits = limits;
     Loc loc;
     if(playSettings.recordTimePerMove) {
       double t0 = timer.getSeconds();
