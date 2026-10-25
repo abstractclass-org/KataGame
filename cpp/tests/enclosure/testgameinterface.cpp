@@ -445,6 +445,16 @@ static void checkOptionalMembers() {
          GameInterface::setSetting<S>("aSetting", "0", why) || why.empty())
         fail("the default of the settings: none, and a setting's name refused with a reason");
     }
+    //No draws at a new game's start, by default: the start stays as it is, and no random number is taken.
+    static_assert(!GameInterface::rules::HasDrawStart<R>::value && !GameInterface::rules::HasDrawStart<S>::value,
+                  "Enclosure and the stub game draw nothing at the start");
+    {
+      R::Position drawn = start;
+      int draws = 0;
+      GameInterface::drawStart<R>(drawn, [&draws]() { draws++; return uint64_t(1); });
+      if(draws != 0 || R::position_text(drawn) != R::position_text(start) || !(R::hash(drawn) == R::hash(start)))
+        fail("the default of drawStart: no draw, and the start as it was");
+    }
     //The front: Board() is the standard board, and a replayed game passes at any time, while an edge is legal.
     Board board;
     BoardHistory hist(board, P_BLACK, Rules(), 0);

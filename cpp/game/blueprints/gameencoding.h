@@ -70,10 +70,7 @@ inline void frame_shift(const Blueprint& b, int symmetry, bool withExtra, int ex
 // linear part S times R^o times S's inverse. That is R^o for the identity and the turn by 180 degrees, which commute
 // with the turns, and R^back(o) for the reflections (the linear part's determinant -1: an odd number of its flips and
 // its transpose).
-inline int sym_orientation(int o, int symmetry) {
-  const int reflections = (symmetry & 1) + ((symmetry >> 1) & 1) + ((symmetry >> 2) & 1);
-  return reflections % 2 == 0 ? o : back(o);
-}
+inline int sym_orientation(int o, int symmetry) { return __builtin_parity(unsigned(symmetry) & 7u) ? back(o) : o; }
 
 // A rules point's image: its pixel on the rules board, as symPoint gives it.
 inline void sym_rules(int& x, int& y, int symmetry) { GameInterface::symPoint(x, y, symmetry, RULES_LEN, RULES_LEN); }
@@ -150,16 +147,14 @@ struct GameEncoding {
   static void write_inputs(const Position& p, bool history, Set& set) {
     const int mover = GameRules::next_player(p), opponent = 1 - mover;
     const View view = view_of(p);
-    // The rules board's point of the view's point (0, 0) in orientation 0, where the view's points are the rules
-    // board's, moved.
-    const int ox = view.wx - VIEW_RADIUS, oy = view.wy - VIEW_RADIUS;
     auto cell_at = [&](int x, int y) {
-      int rx = x + ox, ry = y + oy;
-      if(view.o != 0)
-        view.rules_point(x, y, rx, ry);
+      int rx, ry;
+      view.rules_point(x, y, rx, ry);
       return at(p, rx, ry);
     };
-    if(view.o == 0)
+    if(view.o == 0) {
+      // The rules board's rows, as they are: the view's point (0, 0) is the rules point (ox, oy).
+      const int ox = view.wx - VIEW_RADIUS, oy = view.wy - VIEW_RADIUS;
       for(int y = 0; y < VIEW; y++) {
         const int ry = y + oy;
         if(ry < 0 || ry >= RULES_LEN)
@@ -169,6 +164,7 @@ struct GameEncoding {
           if(const int8_t v = row[x + ox])
             set(x, y, (cell_owner(v) == mover ? MINE : THEIRS) + cell_type(v));
       }
+    }
     else
       for(int y = 0; y < VIEW; y++)
         for(int x = 0; x < VIEW; x++)
@@ -268,9 +264,8 @@ struct GameEncoding {
       for(int h = 0; h < HISTORY; h++) {
         const Footprint& f = p.history[h];
         auto mark = [&](int32_t point, int plane) {
-          int x = point % RULES_LEN - ox, y = point / RULES_LEN - oy;
-          if(view.o != 0)
-            view.view_point(point % RULES_LEN, point / RULES_LEN, x, y);
+          int x, y;
+          view.view_point(point % RULES_LEN, point / RULES_LEN, x, y);
           if(on_view(x, y))
             set(x, y, plane);
         };
@@ -375,32 +370,18 @@ struct GameEncoding {
     s.ply = p.ply;
     s.orientation = int8_t(sym_orientation(p.orientation, symmetry));
     s.picked = p.picked;
-    s.pickQ = p.pickQ;
-    s.pickR = p.pickR;
     s.pickType = p.pickType;
     s.pickConnected = p.pickConnected;
     const int mover = GameRules::next_player(p);
+    int pickQ = p.pickQ, pickR = p.pickR;  // in the image's frame of the picked blueprint (map_blueprint)
     for(int player = 0; player < 2; player++)
       for(int k = 0; k < HAND; k++) {
-        const Blueprint& b = p.hand[player][k];
-        const bool rest = player == mover && k == p.picked;
         int mq, mr;
-        frame_shift(b, symmetry, rest, p.pickQ, p.pickR, mq, mr);
-        Blueprint& image = s.hand[player][k];
-        image = b;
-        for(int i = 0; i < b.n; i++) {
-          int q = b.q[i], r = b.r[i];
-          sym_offset(q, r, symmetry);
-          image.q[i] = int8_t(q - mq);
-          image.r[i] = int8_t(r - mr);
-        }
-        if(rest) {
-          int q = p.pickQ, r = p.pickR;
-          sym_offset(q, r, symmetry);
-          s.pickQ = int8_t(q - mq);
-          s.pickR = int8_t(r - mr);
-        }
+        map_blueprint(p.hand[player][k], [symmetry](int& q, int& r) { sym_offset(q, r, symmetry); },
+                      player == mover && k == p.picked, pickQ, pickR, s.hand[player][k], mq, mr);
       }
+    s.pickQ = int8_t(pickQ);
+    s.pickR = int8_t(pickR);
     for(int h = 0; h < HISTORY; h++) {
       s.history[h] = p.history[h];
       Footprint& f = s.history[h];
@@ -564,13 +545,6 @@ struct GameEncoding {
   static void in_row_view(const Position& now, const View& view, const Position& later, F&& f) {
     // A point of later's rules board less (dq, dr) is the point of now's board at the same site.
     const int dq = later.offsetQ - now.offsetQ, dr = later.offsetR - now.offsetR;
-    if(view.o == 0) {
-      const int dx = dq - (view.wx - VIEW_RADIUS), dy = dr - (view.wy - VIEW_RADIUS);
-      for(int y = 0; y < VIEW; y++)
-        for(int x = 0; x < VIEW; x++)
-          f(x, y, at(later, x - dx, y - dy));
-      return;
-    }
     for(int y = 0; y < VIEW; y++)
       for(int x = 0; x < VIEW; x++) {
         int rx, ry;

@@ -19,11 +19,12 @@ own, except after a drop with a move of the same player to come: the drop change
 row does not say which drop was played. So in those rows the second policy target has the weight 0 (mask_targets), at
 every symmetry.
 
-The view has an orientation (the C++ gamerules.h): self-play can turn each position's view by 60 or 120 degrees, and
-the row is in its view's frame, the hand's planes too. So the augmentation does not read the orientation, and its 4
-symmetries on top of the views' 3 orientations give the hex grid's 12. The second policy target is a policy of the
-next position's view. When that view has another orientation (the global targets G78 and G79), the policy lies in a
-turned frame that the row does not give, so it has the weight 0 too.
+The view has an orientation (the C++ gamerules.h): self-play can turn each position's or each game's view by 60 or
+120 degrees, and the row is in its view's frame, the hand's planes too. So the augmentation does not read the
+orientation, and its 4 symmetries on top of the views' 3 orientations give the hex grid's 12. The second policy target
+is a policy of the next position's view. When that view has another orientation (the global targets G78 and G79), the
+policy lies in a turned frame that the row does not give, so it has the weight 0 too. With one orientation a game, no
+row has a next view of another orientation.
 
 The value targets are points of the row's view, so they move as pixels: the final board (C0), the cells captured
 before the game's end (C1), the stars 4 and 16 moves later (C2-3), where the points are earned (C4), and the cells

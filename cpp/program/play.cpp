@@ -597,6 +597,13 @@ void GameInitializer::createGameSharedUnsynchronized(
     int xSize = allowedBSizes[bSizeIdx].first;
     int ySize = allowedBSizes[bSizeIdx].second;
     board = Board(xSize,ySize);
+    //KataGame fork: the game's own draws at its start (GameInterface::drawStart), such as Blueprints' view
+    //orientation of the game. A game that draws nothing takes no random number, so the draws below stay as they were.
+    if constexpr(GameInterface::rules::HasDrawStart<GameRules>::value) {
+      GameRules::Position start = board.pos;
+      GameInterface::drawStart<GameRules>(start, [this]() { return rand.nextUInt64(); });
+      board.setPosition(start);
+    }
     pla = P_BLACK;
     hist.clear(board,pla,rules,0);
 

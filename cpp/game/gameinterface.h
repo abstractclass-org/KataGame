@@ -108,6 +108,13 @@
  *                           and the rules read it, so a game replays only under the settings that played it. A config
  *                           without a setting's key keeps the game's default. Blueprints' viewOrientation. A game gives
  *                           both or neither. Default: none (settingNames, setSetting).
+ *   draw_start(p, random)   void: the game's own draws in the start position p of a new game, which self-play's games
+ *                           from the standard start make (GameInitializer). random() gives a uniform uint64_t from
+ *                           self-play's random numbers: the game calls it only for the draws that it makes, so a game
+ *                           that draws nothing leaves self-play's other draws as they are. The position then holds the
+ *                           draws, its one-line position too: a replay or an analysis from that text gives them back.
+ *                           Self-play's SGF records do not hold them. Blueprints' view orientation under
+ *                           viewOrientation = randomGame. Default: none (drawStart).
  *
  * The network encoding part (struct E):
  *   Rules                   the game's rules part (its GameRules).
@@ -350,6 +357,7 @@ namespace rules {
   GAMEINTERFACE_DETECT(HasSetSetting, bool,
                        G::set_setting(std::declval<const std::string&>(), std::declval<const std::string&>(),
                                       std::declval<std::string&>()))
+  GAMEINTERFACE_DETECT(HasDrawStart, void, G::draw_start(std::declval<P<G>&>(), std::declval<uint64_t (&)()>()))
 }
 
 template<class R> constexpr bool checkRules() {
@@ -577,6 +585,17 @@ template<class R> bool setSetting(const std::string& name, const std::string& va
     (void)value;
     why = std::string("the game ") + R::NAME + " has no setting " + name;
     return false;
+  }
+}
+
+//The game's own draws in a new game's start position p, from random(), a uniform uint64_t a call: the game's, else
+//none (random() is not called).
+template<class R, class Random> void drawStart(typename R::Position& p, Random&& random) {
+  if constexpr(rules::HasDrawStart<R>::value)
+    R::draw_start(p, random);
+  else {
+    (void)p;
+    (void)random;
   }
 }
 
