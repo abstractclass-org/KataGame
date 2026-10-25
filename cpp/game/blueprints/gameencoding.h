@@ -457,6 +457,8 @@ struct GameEncoding {
   static constexpr unsigned TARGETS = GameInterface::TARGET_OWNERSHIP | GameInterface::TARGET_FUTURE_PIECES |
                                       GameInterface::TARGET_INCOME;
   static constexpr unsigned OWN_TARGETS = TARGETS;  // C2-3 too: the front's would read each position's own view
+  // The horizons of C2-3 in the site's moves, from bpj's design review (games/blueprints/docs/decisions/training.md,
+  // "bpj2's targets"). KataGo's are 8 and 32 moves of Go.
   static constexpr int FUTURE_MOVES[2] = {4, 16};
   static constexpr int NEXT_MOVER_TARGET = 76, TARGETS_VERSION_TARGET = 77;  // global targets (TargetValues)
   static constexpr int TARGETS_VERSION = 1;
@@ -525,10 +527,9 @@ struct GameEncoding {
     if(opponentEnd >= 0) {
       // Each cell of the row's view that can go (not a wall), and the first position where its site no longer holds
       // it (-1: none up to the opponent's turn's end).
-      static thread_local std::vector<int8_t> start;
-      static thread_local std::vector<int> gone;
-      start.assign(VIEW_AREA, 0);
-      gone.assign(VIEW_AREA, -1);
+      int8_t start[VIEW_AREA] = {};
+      int gone[VIEW_AREA];
+      std::fill(gone, gone + VIEW_AREA, -1);
       in_row_view(now, ox, oy, now, [&](int x, int y, int8_t v) {
         if(v && cell_type(v) != WALL)
           start[y * VIEW + x] = v;

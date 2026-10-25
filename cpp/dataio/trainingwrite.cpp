@@ -279,6 +279,7 @@ static const int GLOBAL_TARGET_NUM_CHANNELS = 80;
 //GameInterface::TargetValues.
 static const int VALUE_SPATIAL_TARGET_NUM_CHANNELS = GameInterface::TargetValues::NUM_CHANNELS;
 static const int QVALUE_SPATIAL_TARGET_NUM_CHANNELS = 3;
+//KataGame fork: a game's global targets (GameInterface::TargetValues) are the row's last ones.
 static_assert(GameInterface::TargetValues::FIRST_GLOBAL + GameInterface::TargetValues::NUM_GLOBALS ==
               GLOBAL_TARGET_NUM_CHANNELS, "a game's global targets are the row's last ones, C76-79");
 
@@ -838,18 +839,10 @@ void TrainingWriteBuffers::addRow(
   //Enclosure fork (owner, 2026-10-03): future nodes, KataGo's future-position target as it is: board.colors marks
   //each player's nodes and the boards are one edge apart, so C2-3 hold the nodes 8 and 32 edges later (KataGo's
   //19x19 numbers, kept as decisions: games/enclosure/docs/decisions/build.md, "Time constants split"). ENCLOSURE.md, 1.
-  //KataGame fork: for a game whose TARGETS have them and that leaves them to the front (C2-3, from pieces()). A game's
-  //own C2-3 are stored above, and C33 weighs them as KataGo's.
-  if(ownTargets & GameInterface::TARGET_FUTURE_PIECES)
-    rowGlobal[33] = (gameTargets & GameInterface::TARGET_FUTURE_PIECES) ? 1.0f : 0.0f;
-  else if(posHistForFutureBoards == NULL || (frontTargets & GameInterface::TARGET_FUTURE_PIECES) == 0) {
-    rowGlobal[33] = 0.0f;
-    for(int i = 0; i<posArea; i++) {
-      rowOwnership[i+posArea*2] = 0;
-      rowOwnership[i+posArea*3] = 0;
-    }
-  }
-  else {
+  //KataGame fork: for a game whose TARGETS have them and that leaves them to the front (C2-3, from pieces(), 0 until
+  //here). A game's own C2-3 are stored above, and C33 weighs them as KataGo's.
+  rowGlobal[33] = (gameTargets & GameInterface::TARGET_FUTURE_PIECES) ? 1.0f : 0.0f;
+  if((frontTargets & GameInterface::TARGET_FUTURE_PIECES) != 0 && posHistForFutureBoards != NULL) {
     const vector<Board>& boards = *posHistForFutureBoards;
     testAssert(boards.size() == whiteValueTargets.size());
     testAssert(boards.size() > 0);
@@ -862,10 +855,6 @@ void TrainingWriteBuffers::addRow(
     testAssert(board2.y_size == board.y_size && board2.x_size == board.x_size);
     testAssert(board3.y_size == board.y_size && board3.x_size == board.x_size);
 
-    for(int i = 0; i<posArea; i++) {
-      rowOwnership[i+posArea*2] = 0;
-      rowOwnership[i+posArea*3] = 0;
-    }
     Player pla = nextPlayer;
     Player opp = getOpp(nextPlayer);
     for(int y = 0; y<board.y_size; y++) {

@@ -32,15 +32,15 @@ and the augmentation, for each allowed symmetry (KataGo's numbers: bit 0 flips y
 
 The value targets are planes of points, so every game maps them with apply_symmetry_points.
 
-A module may also give these optional members (mask_targets and loss_scales below give the defaults):
+A module may also give these optional members (mask_targets and loss_coefficients below give the defaults):
 
   mask_targets(binary_inputs, global_inputs, value_targets, global_targets)
                         the rows' global targets (N, 80), with weight 0 for each target that the game's augmentation
                         cannot map in a row. The arguments are the rows' as read, before any symmetry. The trainer
                         applies it to every batch, at every symmetry and without the symmetries, so that the weights do
                         not depend on the draw. Default: the global targets as they are.
-  LOSS_SCALES           a dict: a multiplier for each of the trainer's losses that it names (LOSS_SCALE_NAMES below,
-                        with the trainer's coefficient). Default: 1 for each.
+  LOSS_COEFFICIENTS     a dict: the coefficient of each of the trainer's losses that it names, of LOSS_COEFFICIENTS
+                        below. Default: those of LOSS_COEFFICIENTS below.
   income_mask(binary_inputs)
                         the points where the loss of C5-6 reads the target (N, 2, y, x), from the batch's input planes
                         at its symmetry: the loss averages each channel over its points, then over the channels that
@@ -62,11 +62,11 @@ TARGET_SCORING = 1 << 3        # C4, its weight C34
 TARGET_INCOME = 1 << 4         # C5-6, flagged in C69
 TARGET_NEXT_PIECES = 1 << 5    # C7, flagged in C75: the next mover's pieces after the row's move (not a loss)
 
-# The trainer's losses that a game's LOSS_SCALES can scale, and their coefficients in the trainer (metrics_pytorch).
-LOSS_SCALE_NAMES = (
-    "ownership",  # C0, 1.5 (KataGo's)
-    "income",     # C5-6, 1.5 (Enclosure's)
-)
+# The trainer's losses whose coefficients a game's LOSS_COEFFICIENTS can set, and their defaults (metrics_pytorch).
+LOSS_COEFFICIENTS = {
+    "ownership": 1.5,  # C0, KataGo's
+    "income": 1.5,     # C5-6, Enclosure's
+}
 
 # A training row as the C++ row writer lays it out (dataio/trainingwrite.cpp, TrainingWriteBuffers): the channels of
 # its arrays that do not depend on the game. The shuffle holds rows uncompressed, so a row's bytes bound its memory.
@@ -121,10 +121,10 @@ def get(name: str):
         raise ValueError(f"the trainer's module of the game {name!r} lacks {', '.join(missing)}")
     if game.NAME != name:
         raise ValueError(f"the trainer's module katago/train/games/{name}.py names the game {game.NAME!r}")
-    unknown = sorted(set(getattr(game, "LOSS_SCALES", {})) - set(LOSS_SCALE_NAMES))
+    unknown = sorted(set(getattr(game, "LOSS_COEFFICIENTS", {})) - set(LOSS_COEFFICIENTS))
     if unknown:
-        raise ValueError(f"the trainer's module of the game {name!r} scales no loss named {', '.join(unknown)} "
-                         f"(LOSS_SCALE_NAMES: {', '.join(LOSS_SCALE_NAMES)})")
+        raise ValueError(f"the trainer's module of the game {name!r} sets the coefficient of no loss named "
+                         f"{', '.join(unknown)} (LOSS_COEFFICIENTS: {', '.join(LOSS_COEFFICIENTS)})")
     return game
 
 
@@ -141,11 +141,10 @@ def mask_targets(game, binary_inputs, global_inputs, value_targets, global_targe
     return mask(binary_inputs, global_inputs, value_targets, global_targets)
 
 
-def loss_scales(game):
-    """The game's multiplier of each loss of LOSS_SCALE_NAMES: its LOSS_SCALES, and 1 for each loss that it does not
-    name."""
-    scales = getattr(game, "LOSS_SCALES", {})
-    return {name: float(scales.get(name, 1.0)) for name in LOSS_SCALE_NAMES}
+def loss_coefficients(game):
+    """The game's coefficient of each loss of LOSS_COEFFICIENTS: its LOSS_COEFFICIENTS, and the default for each loss
+    that it does not name."""
+    return {**LOSS_COEFFICIENTS, **getattr(game, "LOSS_COEFFICIENTS", {})}
 
 
 def apply_symmetry_points(tensor, symmetry):

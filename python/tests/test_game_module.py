@@ -241,22 +241,23 @@ def test_blueprints_next_mover_is_g76_in_new_rows_and_c1_in_old_rows():
     assert numpy.tolist() == [1.0, 1.0, 0.0]
 
 
-def test_a_module_that_scales_an_unknown_loss_is_refused(monkeypatch):
-    stub = types.ModuleType("katago.train.games.badscales")
+def test_a_module_that_sets_an_unknown_loss_coefficient_is_refused(monkeypatch):
+    stub = types.ModuleType("katago.train.games.badcoefficients")
     stub.__dict__.update({m: getattr(enclosure, m) for m in games.MEMBERS})
-    stub.NAME = "badscales"
-    stub.LOSS_SCALES = {"ownership": 0.5, "owner": 0.5}
-    monkeypatch.setitem(sys.modules, "katago.train.games.badscales", stub)
-    with pytest.raises(ValueError, match="scales no loss named owner"):
-        games.get("badscales")
-    assert games.loss_scales(enclosure) == {"ownership": 1.0, "income": 1.0}
+    stub.NAME = "badcoefficients"
+    stub.LOSS_COEFFICIENTS = {"ownership": 0.5, "owner": 0.5}
+    monkeypatch.setitem(sys.modules, "katago.train.games.badcoefficients", stub)
+    with pytest.raises(ValueError, match="sets the coefficient of no loss named owner"):
+        games.get("badcoefficients")
+    assert games.loss_coefficients(enclosure) == {"ownership": 1.5, "income": 1.5}
+    assert games.loss_coefficients(games.get("blueprints")) == {"ownership": 0.25, "income": 0.5}
 
 
 def blueprints_metrics(monkeypatch=None, plain=False):
-    """Metrics of a random Blueprints b6c96, with the game's scales and income mask, or without them (plain)."""
+    """Metrics of a random Blueprints b6c96, with the game's coefficients and income mask, or without them (plain)."""
     game = games.get("blueprints")
     if plain:
-        monkeypatch.delattr(game, "LOSS_SCALES")
+        monkeypatch.delattr(game, "LOSS_COEFFICIENTS")
         monkeypatch.delattr(game, "income_mask")
     torch.manual_seed(2)
     model = Model(modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "blueprints"), 67)
@@ -268,9 +269,9 @@ def test_blueprints_ownership_loss_is_0_25_against_katagos_1_5(monkeypatch):
     pred, target = torch.randn(2, 1, 67, 67), torch.randint(-1, 2, (2, 67, 67)).float()
     mask, weight, global_weight = torch.ones(2, 67, 67), torch.ones(2), torch.tensor([1.0, 0.5])
     args = (pred, target, weight, mask, mask.sum(dim=(1, 2)), global_weight)
-    scaled = blueprints_metrics().loss_ownership_samplewise(*args)
+    blueprints = blueprints_metrics().loss_ownership_samplewise(*args)
     plain = blueprints_metrics(monkeypatch, plain=True).loss_ownership_samplewise(*args)
-    assert torch.allclose(scaled, plain * 0.25 / 1.5)
+    assert torch.allclose(blueprints, plain * 0.25 / 1.5)
 
 
 def test_blueprints_income_loss_averages_each_channel_over_its_cells():

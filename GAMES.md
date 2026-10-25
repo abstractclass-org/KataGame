@@ -444,9 +444,11 @@ game's global inputs (V9 adds KataGo's 2 playout inputs after them).
 | `GAME_LENGTH` | A game's mean length in moves, for KataGo's game-phase constants ("The game's length"). | 120 |
 
 The encoding part's optional members work as the rules part's ("Optional members"): `gameinterface.h` has a detector
-and a helper for each, and the front calls the helper, through `Board` for the areas. The encoding part's check
-requires each to be positive, and the bracket's two members to come together. Enclosure and Connect-4 give none, so
-their values are those of KataGo's code (`testgameareas` and `testkomi` pin them).
+and a helper for each. The front calls the helpers of the two areas through `Board`, and the row writer calls
+`ownTargets`. The encoding part's check requires each area to be positive, the bracket's two members to come
+together, and `OWN_TARGETS` to hold the slots that the table gives. Enclosure and Connect-4 give none. So their areas
+and their bracket are those of KataGo's code (`testgameareas` and `testkomi` pin them), and the front computes each
+slot of `FRONT_TARGETS` in their `TARGETS`.
 
 | Member | Meaning | Default (helper) | Blueprints |
 |---|---|---|---|
@@ -524,7 +526,7 @@ its version.
 | `HISTORY_PLANE`, `NUM_HISTORY_PLANES` | As in C++ (the game's planes, newest first), for the history dropout. | The last 4 feature planes: 210, 4 | None: 0, 0 |
 | `apply_symmetry_inputs`, `apply_symmetry_policy_targets`, `apply_symmetry_policy` | The augmentation of the input planes, the policy targets (both channels) and a policy of the mover's moves (the q-values), at an allowed symmetry. The value targets move as pixels in every game (`games.apply_symmetry_points`). | An edge moves as an edge, with each channel's player's nodes | Every plane and the policy move as pixels, as KataGo's do. The mirror flips x on the network's 7 × 7 board, which a row of the standard board fills in width. |
 | `mask_targets` (optional) | The rows' global targets, with weight 0 for each target that the augmentation cannot map in a row. The trainer applies it to every batch, at every symmetry and without the symmetries (`games.mask_targets`: none without the member). Blueprints gives it: the second policy target (C28) after a drop with a move of the same player to come. | None | None |
-| `LOSS_SCALES` (optional) | A multiplier for each loss that it names, of `games.LOSS_SCALE_NAMES`: `ownership` (C0, KataGo's coefficient 1.5) and `income` (C5-6, Enclosure's 1.5). `games.get` refuses another name. Blueprints gives 0.25 / 1.5 and 0.5 / 1.5. | None: 1 for each | None |
+| `LOSS_COEFFICIENTS` (optional) | The coefficient of each loss that it names, of `games.LOSS_COEFFICIENTS`: `ownership` (C0) and `income` (C5-6). `games.get` refuses another name. Blueprints gives 0.25 and 0.5. | None: `games.LOSS_COEFFICIENTS`, 1.5 for each (KataGo's ownership, Enclosure's income) | None |
 | `income_mask(binary_inputs)` (optional) | The points where the loss of C5-6 reads its target, from the batch's input planes at its symmetry: the loss averages each channel over its points, then over the channels that have points. Blueprints gives the cells of each player that can go (not walls). | None: the board's points, both channels together | None |
 
 The model's heads are the same in every game. The rows give each slot that the game does not write the weight 0, but

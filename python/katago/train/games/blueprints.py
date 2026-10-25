@@ -44,8 +44,8 @@ TARGETS = TARGET_OWNERSHIP | TARGET_FUTURE_PIECES | TARGET_INCOME
 SCORE_SCALE = 12.0
 GAME_LENGTH = 120.0      # the site's moves of a game
 # The ownership loss at 0.25, not KataGo's 1.5, beside the targets of C2-3 and C5-6, and the loss of C5-6 at 0.5, not
-# Enclosure's 1.5 (the multipliers of the trainer's coefficients). The score's targets keep their weight C27.
-LOSS_SCALES = {"ownership": 0.25 / 1.5, "income": 0.5 / 1.5}
+# Enclosure's 1.5. The score's targets keep their weight C27.
+LOSS_COEFFICIENTS = {"ownership": 0.25, "income": 0.5}
 
 # The encoding's facts that the augmentation reads (gamerules.h, gameencoding.h). A plane's index in a batch is
 # 1 + its index here: KataGo's on-board plane comes first.
