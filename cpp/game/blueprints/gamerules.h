@@ -32,9 +32,6 @@
 #include <cstring>
 #include <string>
 #include <vector>
-#ifdef _MSC_VER
-#include <intrin.h>
-#endif
 
 #include "../../core/hash.h"
 #include "../gameinterface.h"
@@ -239,12 +236,12 @@ struct Box {
 // that it commutes with the symmetries (gameencoding.h): they negate and swap the coordinates around the middle.
 inline int half_off_middle(int lo, int hi) { return (lo + hi - 2 * RULES_RADIUS) / 2; }
 
-// The rules board's cells, [y * RULES_LEN + x]: cell_value. The box `used` holds every cell (it can be larger than the
+// The rules board's cells, [y * RULES_LEN + x]: cell_value. A box (box()) holds every cell (it can be larger than the
 // cells' box), and every point outside it is empty. So a copy, a clear and a scan of the cells read that box, not the
-// RULES_AREA points (a copy of the whole board was the largest part of a position's copy: abscls-iwsg). Every write
-// goes through set(), which grows the box.
+// RULES_AREA points. Every write goes through set(), which grows the box.
 class Cells {
   int8_t v[RULES_AREA] = {};
+  Box used;
 
   void clear_box(const Box& b) {
     if(b.any)
@@ -259,8 +256,6 @@ class Cells {
   }
 
  public:
-  Box used;
-
   Cells() = default;
   Cells(const Cells& o) : used(o.used) { copy_box(o); }
   Cells& operator=(const Cells& o) {
@@ -273,6 +268,7 @@ class Cells {
   }
   int8_t operator[](int index) const { return v[index]; }
   const int8_t* row(int y) const { return v + y * RULES_LEN; }
+  const Box& box() const { return used; }
   void set(int index, int8_t value) {
     v[index] = value;
     if(value)
@@ -382,9 +378,8 @@ inline bool fits_in_view(const Position& p, int player, const Blueprint& b, int 
 }
 
 // The view as bits: a row of VIEW bits for each of its rows, bit x for the view's point (x, y). The placements of a
-// blueprint are then a few operations on whole rows (for_each_fit), where a walk tried each cell of the blueprint on
-// each point of the frontier (abscls-iwsg).
-// 128 bits in two words (MSVC has no 128-bit integer): shifts by 0 to 63 bits, and, or, and the lowest bit set.
+// blueprint are then a few operations on whole rows (for_each_fit).
+// 128 bits in two 64-bit words: shifts by 0 to 63 bits, and, or.
 struct ViewRow {
   uint64_t lo = 0, hi = 0;
 
@@ -396,23 +391,6 @@ struct ViewRow {
   ViewRow& operator&=(const ViewRow& o) { return *this = *this & o; }
   ViewRow& operator|=(const ViewRow& o) { return *this = *this | o; }
   explicit operator bool() const { return lo || hi; }
-  // The lowest bit set (the row holds one), and the row without it.
-  int lowest() const {
-    const uint64_t w = lo ? lo : hi;
-#ifdef _MSC_VER
-    unsigned long b;
-    _BitScanForward64(&b, w);
-#else
-    const int b = __builtin_ctzll(w);
-#endif
-    return int(b) + (lo ? 0 : 64);
-  }
-  void clear_lowest() {
-    if(lo)
-      lo &= lo - 1;
-    else
-      hi &= hi - 1;
-  }
 };
 static_assert(VIEW + 2 <= 128, "a row of the view, with a point on each side, fits in a ViewRow");
 const ViewRow VIEW_ROW_MASK{~uint64_t(0), (uint64_t(1) << (VIEW - 64)) - 1};
@@ -421,9 +399,11 @@ static_assert(VIEW > 64, "VIEW_ROW_MASK's high word holds the view's last bits")
 inline ViewRow shift_row(const ViewRow& r, int q) { return q >= 0 ? r >> q : (r << -q) & VIEW_ROW_MASK; }
 // Calls f(x) for each bit x set in r, from the lowest.
 template<class F>
-inline void for_each_bit(ViewRow r, F&& f) {
-  for(; r; r.clear_lowest())
-    f(r.lowest());
+inline void for_each_bit(const ViewRow& r, F&& f) {
+  for(uint64_t w = r.lo; w; w &= w - 1)
+    f(__builtin_ctzll(w));
+  for(uint64_t w = r.hi; w; w &= w - 1)
+    f(64 + __builtin_ctzll(w));
 }
 
 // The rows of the view whose origin is the rules point (ox, oy): the empty points (on the rules board, no cell), each
@@ -615,10 +595,10 @@ inline void shift_records(Position& p, int dx, int dy) {
 }
 
 // The bounding box of the cells on the rules board (not any when the board is empty): a scan of the box that holds
-// them (Cells::used).
+// them (Cells::box).
 inline Box cells_box(const Position& p) {
   Box box;
-  const Box& used = p.cell.used;
+  const Box& used = p.cell.box();
   if(used.any)
     for(int y = used.y0; y <= used.y1; y++) {
       const int8_t* row = p.cell.row(y);
@@ -636,19 +616,16 @@ inline void center_box(Position& p, const Box& box) {
   const int dx = half_off_middle(box.x0, box.x1), dy = half_off_middle(box.y0, box.y1);
   if(dx == 0 && dy == 0)
     return;
-  // The cells of the box, then the board cleared and each cell set at its new point.
-  const int x0 = std::max(0, int(box.x0)), x1 = std::min(RULES_LEN - 1, int(box.x1));
-  const int y0 = std::max(0, int(box.y0)), y1 = std::min(RULES_LEN - 1, int(box.y1));
-  const int width = x1 - x0 + 1;
-  static thread_local std::vector<int8_t> moved;
-  moved.resize(size_t(width) * (y1 - y0 + 1));
-  for(int y = y0; y <= y1; y++)
-    std::memcpy(moved.data() + (y - y0) * width, p.cell.row(y) + x0, size_t(width));
+  // A copy of the cells, then the board cleared and each cell set at its new point.
+  static thread_local Cells old;
+  old = p.cell;
   p.cell.clear();
-  for(int y = y0; y <= y1; y++)
-    for(int x = x0; x <= x1; x++)
-      if(const int8_t v = moved[(y - y0) * width + x - x0])
-        p.cell.set((y - dy) * RULES_LEN + x - dx, v);
+  const Box& used = old.box();
+  if(used.any)
+    for(int y = used.y0; y <= used.y1; y++)
+      for(int x = used.x0; x <= used.x1; x++)
+        if(const int8_t v = old[y * RULES_LEN + x])
+          p.cell.set((y - dy) * RULES_LEN + x - dx, v);
   shift_records(p, dx, dy);
   p.offsetQ = int16_t(p.offsetQ + dx);
   p.offsetR = int16_t(p.offsetR + dy);

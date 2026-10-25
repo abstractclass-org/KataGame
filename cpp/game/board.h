@@ -303,11 +303,10 @@ struct Board
   int x_size;                  //The position's board (GameRules::x_size, y_size)
   int y_size;
   Color colors[MAX_ARR_SIZE];  //Whose piece each point holds (GameRules::pieces; C_WALL off the board).
-  //Unused (Go): all 0, one copy for every board, so that a copy of a board does not move them (abscls-iwsg: they
-  //were 47 KB of each copy of a Blueprints board).
-  static ChainData chain_data[MAX_ARR_SIZE];
-  static Loc chain_head[MAX_ARR_SIZE];
-  static Loc next_in_chain[MAX_ARR_SIZE];
+  //Unused (Go): all 0 and constant, one copy for every board, so that a copy of a board does not move them.
+  static const ChainData chain_data[MAX_ARR_SIZE];
+  static const Loc chain_head[MAX_ARR_SIZE];
+  static const Loc next_in_chain[MAX_ARR_SIZE];
   Loc ko_loc;   //Always NULL_LOC.
 
   Hash128 pos_hash; //GameRules::hash of the position, with KataGo's hash of the player to move.

@@ -7,11 +7,11 @@
 
 using namespace std;
 
-//Go's per-point state, unused: all false / empty (static storage, C_EMPTY is 0), never written.
-bool BoardHistory::wasEverOccupiedOrPlayed[Board::MAX_ARR_SIZE];
-bool BoardHistory::superKoBanned[Board::MAX_ARR_SIZE];
-bool BoardHistory::koRecapBlocked[Board::MAX_ARR_SIZE];
-Color BoardHistory::secondEncoreStartColors[Board::MAX_ARR_SIZE];
+static_assert(C_EMPTY == 0, "secondEncoreStartColors, all 0, is all empty");
+const bool BoardHistory::wasEverOccupiedOrPlayed[Board::MAX_ARR_SIZE] = {};
+const bool BoardHistory::superKoBanned[Board::MAX_ARR_SIZE] = {};
+const bool BoardHistory::koRecapBlocked[Board::MAX_ARR_SIZE] = {};
+const Color BoardHistory::secondEncoreStartColors[Board::MAX_ARR_SIZE] = {};
 
 BoardHistoryModes::BoardHistoryModes()
   : alwaysComputePassAliveUnderSuicideRules(false),

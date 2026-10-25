@@ -29,6 +29,7 @@ int main(int argc, char** argv) {
   std::mt19937_64 rng(1);
   std::vector<GameRules::Position> positions;
   std::vector<int> legal;
+  static GameRules::Position c;
   for(int g = 0; g < games; g++) {
     GameRules::Position p;
     GameRules::new_game(GameRules::MAX_BOARD_LEN, GameRules::MAX_BOARD_LEN, p);
@@ -43,7 +44,6 @@ int main(int argc, char** argv) {
       if(g % 2 == 1) {
         const int mover = GameRules::next_player(p);
         double best = 0;
-        static GameRules::Position c;
         for(int a : legal) {
           c = p;
           GameRules::play(c, a);
@@ -93,7 +93,6 @@ int main(int argc, char** argv) {
     return (long long)globals[0];
   });
   time("hash", [&](size_t i) { return (long long)GameRules::hash(positions[i]).hash0; });
-  static GameRules::Position c;
   time("Position copy", [&](size_t i) {
     c = positions[i];
     return (long long)GameRules::moves_played(c);

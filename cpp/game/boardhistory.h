@@ -56,10 +56,10 @@ struct BoardHistory {
   //The player to move (from the position: turns are 1-2-2, not alternating)
   Player presumedNextMovePla;
 
-  //Go per-point state, all false / empty: one copy for every history, so that a copy of a history does not move
-  //the arrays (abscls-iwsg)
-  static bool wasEverOccupiedOrPlayed[Board::MAX_ARR_SIZE];
-  static bool superKoBanned[Board::MAX_ARR_SIZE];
+  //Go per-point state, all false / empty and constant: one copy for every history, so that a copy of a history does
+  //not move the arrays
+  static const bool wasEverOccupiedOrPlayed[Board::MAX_ARR_SIZE];
+  static const bool superKoBanned[Board::MAX_ARR_SIZE];
   int consecutiveEndingPasses; //0
   std::vector<Hash128> hashesBeforeBlackPass;
   std::vector<Hash128> hashesBeforeWhitePass;
@@ -67,11 +67,11 @@ struct BoardHistory {
   int numTurnsThisPhase;
   int numApproxValidTurnsThisPhase;
   int numConsecValidTurnsThisGame;
-  static bool koRecapBlocked[Board::MAX_ARR_SIZE];
+  static const bool koRecapBlocked[Board::MAX_ARR_SIZE];
   Hash128 koRecapBlockHash;
   STRUCT_NAMED_TRIPLE(Hash128,posHashBeforeMove,Loc,moveLoc,Player,movePla,EncoreKoCapture);
   std::vector<EncoreKoCapture> koCapturesInEncore;
-  static Color secondEncoreStartColors[Board::MAX_ARR_SIZE];
+  static const Color secondEncoreStartColors[Board::MAX_ARR_SIZE];
 
   float whiteBonusScore; //0
   float whiteHandicapBonusScore; //0

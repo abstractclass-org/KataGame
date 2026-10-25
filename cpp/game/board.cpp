@@ -37,10 +37,9 @@ const Hash128 Board::ZOBRIST_PASS_ENDS_PHASE = //Based on sha256 hash of Board::
   Hash128(0x853E097C279EBF4EULL, 0xE3153DEF9E14A62CULL);
 const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOBRIST_GAME_IS_OVER
   Hash128(0xb6f9e465597a77eeULL, 0xf1d583d960a4ce7fULL);
-//Go's chains, unused: all 0 (static storage), never written.
-Board::ChainData Board::chain_data[MAX_ARR_SIZE];
-Loc Board::chain_head[MAX_ARR_SIZE];
-Loc Board::next_in_chain[MAX_ARR_SIZE];
+const Board::ChainData Board::chain_data[MAX_ARR_SIZE] = {};
+const Loc Board::chain_head[MAX_ARR_SIZE] = {};
+const Loc Board::next_in_chain[MAX_ARR_SIZE] = {};
 
 //LOCATION (points, as in KataGo)----------------------------------------------------------
 void Location::getAdjacentOffsets(short adj_offsets[8], int x_size)

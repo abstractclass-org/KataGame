@@ -154,9 +154,9 @@ struct GameEncoding {
     // The placements of each player in the view, on the board as it is: the mover's when no pick waits for its drop,
     // and the opponent's as if it moved now (its threats, which score with its own stars).
     if(!GameRules::terminal(p)) {
-      // What a placement of each player takes (taken_by), on the view's points and one point around it (padded: x + 1,
-      // y + 1): 1 on each enemy cell that is not a wall, 2 on an enemy star. A placement's cells lie in the view, so the
-      // cells next to them lie within one point of it.
+      // What a placement of each player captures (taken_by), on the view's points and one point around it (padded:
+      // x + 1, y + 1): 1 on each of the opponent's cells that is not a wall, 2 on the opponent's star. A placement's
+      // cells lie in the view, so the cells next to them lie within one point of it.
       constexpr int PADDED = VIEW + 2;
       int8_t take[2][PADDED * PADDED] = {};
       for(int j = 0; j < PADDED; j++)
@@ -172,8 +172,8 @@ struct GameEncoding {
         const int taken = player == mover ? THEIRS_TAKEN : MINE_TAKEN;
         for(int k = 0; k < HAND; k++) {
           const Blueprint& b = p.hand[player][k];
-          // The points next to b's cells, each once, from b's (0, 0) cell: a placement takes the enemy's cells there
-          // (taken_by).
+          // The points next to b's cells, each once, from b's (0, 0) cell: a placement captures the opponent's cells
+          // there (taken_by).
           int8_t nq[6 * MAX_CELLS], nr[6 * MAX_CELLS];
           int nn = 0;
           for(int i = 0; i < b.n; i++)
@@ -380,10 +380,10 @@ struct GameEncoding {
   // Writes the images of p's cells in the rules board's columns x0 to x1 - 1 and rows y0 to y1 - 1 into s, whose cells
   // are empty and whose offset is the image's (sym_records): each at its pixel's image around the board's middle. Then
   // s's cells' hash, by the image's site coordinates. Only the part of those columns and rows in the box that holds
-  // p's cells (Cells::used) can hold a cell.
+  // p's cells (Cells::box) can hold a cell.
   static void sym_cells(const Position& p, int symmetry, int x0, int x1, int y0, int y1, Position& s) {
     s.cellHash = Hash128();
-    const Box& used = p.cell.used;
+    const Box& used = p.cell.box();
     if(!used.any)
       return;
     x0 = std::max<int>(x0, used.x0);
