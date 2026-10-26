@@ -59,7 +59,6 @@
 #include <iterator>
 #include <map>
 #include <memory>
-#include <set>
 #include <sstream>
 #include <type_traits>
 #include <vector>
@@ -90,16 +89,8 @@ struct Process {
 };
 Process P;
 
-// A network that the caller holds and lends through a reader (modelReader): its size, SHA-256 and reader.
-struct PendingReader {
-  size_t len = 0;
-  string sha256;
-  std::function<size_t(size_t, char*, size_t)> read;
-};
-
 struct Engine {
   vector<char> pending;  // a network's bytes, written by the caller (modelBuffer), until load_model reads them
-  PendingReader pendingReader;  // or the caller's reader of them (modelReader)
   string modelName, modelSha;
   size_t modelBytes = 0;
   Logger* logger = nullptr;
@@ -139,15 +130,14 @@ Pos& scratch(int i) {
   return *positions[i];
 }
 
-// A game of a request: the front's board and history, the player to move, the site's moves played, and those that
-// played outside the view. On the heap: a BoardHistory holds 7 boards of Blueprints' rules board.
+// A game of a request: the front's board and history, the site's moves played, and those that played outside the
+// view. On the heap: a BoardHistory holds 7 boards of Blueprints' rules board.
 struct Game {
   Board board;
   BoardHistory hist;
-  Player pla = P_BLACK;
-  Rules rules;
   int moves = 0;
   vector<int> outside;
+  Player pla() const { return board.nextPla(); }  // the player to move, as the history takes it
 };
 
 // The site's hex of the rules board's point (x, y).
@@ -159,6 +149,11 @@ int rulesY(const Pos& p, int r) { return r - p.offsetR + bp::RULES_RADIUS; }
 
 string playerName(int player) { return player == 0 ? "b" : "r"; }
 
+// The site's placement "K@q,r" of blueprint k with its anchor cell on the rules point (x, y).
+string placementText(const Pos& p, int k, int x, int y) {
+  return std::to_string(k + 1) + "@" + bp::cell_text(siteQ(p, x), siteR(p, y));
+}
+
 // The site's string of the engine's action at p, pass excepted: a placement names its anchor hex in the board's
 // coordinates, a pick or a drop its cell in the blueprint's frame (the view's turns undone, gamerules.h ViewHand).
 string siteText(const Pos& p, int action) {
@@ -169,7 +164,7 @@ string siteText(const Pos& p, int action) {
     const int k = channel - bp::PLACE;
     int rx, ry;
     bp::view_of(p).rules_point(x - hand.mq[k], y - hand.mr[k], rx, ry);
-    return std::to_string(k + 1) + "@" + bp::cell_text(siteQ(p, rx), siteR(p, ry));
+    return placementText(p, k, rx, ry);
   }
   const int k = channel - bp::HAND_CHANNEL;
   int q, r;
@@ -223,19 +218,26 @@ void forEachSitePlacement(const Pos& p, F&& f) {
   const bp::Box cells = bp::cells_box(p);
   if(!cells.any)
     return;
-  std::set<std::pair<int, int>> frontier;
+  // Each point once, in order.
+  auto sorted = [](vector<std::pair<int, int>>& points) {
+    std::sort(points.begin(), points.end());
+    points.erase(std::unique(points.begin(), points.end()), points.end());
+  };
+  vector<std::pair<int, int>> frontier, anchors;
   for(int y = cells.y0; y <= cells.y1; y++)
     for(int x = cells.x0; x <= cells.x1; x++)
       if(bp::cell_owner(p.cell[y * bp::RULES_LEN + x]) == mover)
         for(const auto& d : bp::DIRS)
           if(!bp::at(p, x + d[0], y + d[1]))
-            frontier.insert({x + d[0], y + d[1]});
+            frontier.push_back({x + d[0], y + d[1]});
+  sorted(frontier);
   for(int k = 0; k < bp::HAND; k++) {
     const bp::Blueprint& b = p.hand[mover][k];
-    std::set<std::pair<int, int>> anchors;
+    anchors.clear();
     for(const auto& [fx, fy] : frontier)
       for(int i = 0; i < b.n; i++)
-        anchors.insert({fx - b.q[i], fy - b.r[i]});
+        anchors.push_back({fx - b.q[i], fy - b.r[i]});
+    sorted(anchors);
     for(const auto& [x, y] : anchors)
       if(siteFits(p, k, x, y))
         f(k, x, y, spanWith(cells, b, x, y));
@@ -271,9 +273,7 @@ enum class Played { OK, ILLEGAL, LIMIT };
 
 // Plays one action of the engine in g, through the front.
 void playAction(Game& g, int action) {
-  const bool ok = g.hist.makeBoardMoveTolerant(g.board, Board::moveLocOfAction(action), g.pla, false);
-  (void)ok;
-  g.pla = g.hist.presumedNextMovePla;
+  g.hist.makeBoardMoveTolerant(g.board, Board::moveLocOfAction(action), g.pla(), false);
 }
 
 // Plays the site's move `text` in g: a placement as one action of the view, or through place_at_site outside it (then
@@ -320,12 +320,11 @@ Played playSiteMove(Game& g, const string& text, bool& outsideView, string& why)
     // position keeps its own record of the last actions (the network's history planes), and the turn number goes on.
     Pos& next = scratch(0);
     next = p;
-    const bool placed = bp::place_at_site(next, k, q, r);
-    (void)placed;
+    bp::place_at_site(next, k, q, r);
     const int64_t turn = g.hist.getCurrentTurnNumber();
+    const Rules rules = g.hist.rules;
     g.board.setPosition(next);
-    g.pla = g.board.nextPla();
-    g.hist.clear(g.board, g.pla, g.rules, 0);
+    g.hist.clear(g.board, g.pla(), rules, 0);
     g.hist.setInitialTurnNumber(turn + 1);
     outsideView = true;
     return Played::OK;
@@ -387,16 +386,15 @@ bool buildPosition(const json& q, Game& g, Fail& f, const std::function<void(con
   else
     GameRules::new_game(bp::VIEW, bp::VIEW, start);
   g.board.setPosition(start);
-  g.pla = g.board.nextPla();
-  g.rules = Rules::getTrompTaylorish();
+  Rules rules = Rules::getTrompTaylorish();
   if(const json* k = field(q, "komi")) {
     if(!k->is_number()) {
       f = {"komi", "komi is a number: points added to Red's final score"};
       return false;
     }
-    g.rules.komi = k->get<float>();
+    rules.komi = k->get<float>();
   }
-  g.hist.clear(g.board, g.pla, g.rules, 0);
+  g.hist.clear(g.board, g.pla(), rules, 0);
   // The game's turn number counts from the start, so the move temperature's early phase is the game's.
   g.hist.setInitialTurnNumber(GameRules::moves_played(start));
   if(each)
@@ -424,15 +422,24 @@ bool buildPosition(const json& q, Game& g, Fail& f, const std::function<void(con
   return true;
 }
 
-// The board's cells by their hexes, in strategyjam.org's form: {"q,r": [owner, kind]}, owner 0 for Blue, 1 for Red.
-json cellsJson(const Pos& p) {
-  json cells = json::object();
+// Calls f(q, r, v) for each cell of p, in the order of the rules board's rows: its site hex q,r and its value.
+template<class F>
+void forEachCell(const Pos& p, F&& f) {
   const bp::Box& box = p.cell.box();
   if(box.any)
     for(int y = box.y0; y <= box.y1; y++)
       for(int x = box.x0; x <= box.x1; x++)
         if(const int8_t v = p.cell[y * bp::RULES_LEN + x])
-          cells[bp::cell_text(siteQ(p, x), siteR(p, y))] = {bp::cell_owner(v), KINDS[bp::cell_type(v)]};
+          f(siteQ(p, x), siteR(p, y), v);
+}
+
+// A cell in strategyjam.org's form: [owner, kind], owner 0 for Blue, 1 for Red.
+json cellJson(int8_t v) { return {bp::cell_owner(v), KINDS[bp::cell_type(v)]}; }
+
+// The board's cells by their hexes, in strategyjam.org's form: {"q,r": [owner, kind]}.
+json cellsJson(const Pos& p) {
+  json cells = json::object();
+  forEachCell(p, [&](int q, int r, int8_t v) { cells[bp::cell_text(q, r)] = cellJson(v); });
   return cells;
 }
 
@@ -490,19 +497,14 @@ void moveEffect(const Pos& before, const Pos& after, json& out) {
   vector<string> footprint;
   json captured = json::object();
   auto empty = [](const Pos& p, int q, int r) { return bp::at(p, rulesX(p, q), rulesY(p, r)) == 0; };
-  const bp::Box& b = before.cell.box();
-  if(b.any)
-    for(int y = b.y0; y <= b.y1; y++)
-      for(int x = b.x0; x <= b.x1; x++)
-        if(const int8_t v = before.cell[y * bp::RULES_LEN + x])
-          if(empty(after, siteQ(before, x), siteR(before, y)))
-            captured[bp::cell_text(siteQ(before, x), siteR(before, y))] = {bp::cell_owner(v), KINDS[bp::cell_type(v)]};
-  const bp::Box& a = after.cell.box();
-  if(a.any)
-    for(int y = a.y0; y <= a.y1; y++)
-      for(int x = a.x0; x <= a.x1; x++)
-        if(after.cell[y * bp::RULES_LEN + x] && empty(before, siteQ(after, x), siteR(after, y)))
-          footprint.push_back(bp::cell_text(siteQ(after, x), siteR(after, y)));
+  forEachCell(before, [&](int q, int r, int8_t v) {
+    if(empty(after, q, r))
+      captured[bp::cell_text(q, r)] = cellJson(v);
+  });
+  forEachCell(after, [&](int q, int r, int8_t) {
+    if(empty(before, q, r))
+      footprint.push_back(bp::cell_text(q, r));
+  });
   const int mover = bp::turn_of(before.ply);
   out["footprint"] = footprint;
   out["captured"] = std::move(captured);
@@ -519,12 +521,10 @@ void legalMoves(const Pos& p, vector<string>& legal, vector<string>& outsideView
     return;
   vector<int> actions, drops;
   GameRules::legal_actions(p, actions);
-  std::set<string> inView, all;
   for(int a : actions) {
     const string text = siteText(p, a);
     if(!isPick(p, a)) {
-      inView.insert(text);
-      all.insert(text);
+      legal.push_back(text);
       continue;
     }
     Pos& picked = scratch(2);
@@ -532,17 +532,22 @@ void legalMoves(const Pos& p, vector<string>& legal, vector<string>& outsideView
     GameRules::play(picked, a);
     GameRules::legal_actions(picked, drops);
     for(int d : drops)
-      all.insert(text + ">" + siteText(picked, d));
+      legal.push_back(text + ">" + siteText(picked, d));
   }
+  std::sort(legal.begin(), legal.end());
+  legal.erase(std::unique(legal.begin(), legal.end()), legal.end());
   forEachSitePlacement(p, [&](int k, int x, int y, int span) {
     if(span > bp::RULES_LEN)
       return;
-    const string text = std::to_string(k + 1) + "@" + bp::cell_text(siteQ(p, x), siteR(p, y));
-    if(all.insert(text).second)
-      outsideView.push_back(text);
+    string text = placementText(p, k, x, y);
+    if(!std::binary_search(legal.begin(), legal.end(), text))
+      outsideView.push_back(std::move(text));
   });
-  legal.assign(all.begin(), all.end());
+  // The placements outside the view come once each: one anchor a blueprint (forEachSitePlacement).
   std::sort(outsideView.begin(), outsideView.end());
+  const size_t inView = legal.size();
+  legal.insert(legal.end(), outsideView.begin(), outsideView.end());
+  std::inplace_merge(legal.begin(), legal.begin() + inView, legal.end());
 }
 
 json describe(const json& q) {
@@ -641,8 +646,9 @@ json modelInfo() {
 }
 
 json queryVersion(const json& q) {
-  // The outputs that Blueprints' networks train. The lead (scoreLead) trains since bpj2's restart of 2026-10-26, and a
-  // release lists it once its network passes the lead's check (games/blueprints/README.md, "The browser build").
+  // The outputs that Blueprints' networks train. The lead (scoreLead) trains since bpj2's restart with the lead's
+  // targets, and a release lists it once its network passes the lead's check (games/blueprints/README.md, "The browser
+  // build").
   const json trained = json::array({"winrate", "scoreSelfplay", "scoreStdev", "policy", "ownership"});
   return {
     {"id", q["id"]}, {"protocol", PROTOCOL}, {"build", P.build}, {"search", searchName()},
@@ -669,7 +675,7 @@ json loadModel(const json& q) {
   }
   else {
 #ifdef MODEL_FROM_MEMORY
-    if(E.pending.empty() && !E.pendingReader.read)
+    if(E.pending.empty())
       return errorReply(q["id"], {"", "no network: give a path, or fill the model buffer first"});
 #else
     return errorReply(q["id"], {"path", "this build loads a network from a file: give its path"});
@@ -697,16 +703,6 @@ json loadModel(const json& q) {
     E.modelSha = sha256(fileBytes);
     E.modelBytes = fileBytes.size();
     file = path->get<string>();
-  }
-  else if(E.pendingReader.read) {
-    // The caller's bytes, read where it holds them: the module never copies the whole network.
-    E.modelSha = E.pendingReader.sha256;
-    E.modelBytes = E.pendingReader.len;
-#ifdef MODEL_FROM_MEMORY
-    ModelDesc::registerInMemoryModelReader("engine", E.pendingReader.len, E.pendingReader.read);
-#endif
-    E.pendingReader = PendingReader();
-    file = "memory:engine";
   }
   else {
     E.modelSha = sha256(E.pending);
@@ -757,6 +753,12 @@ void dropGoFields(json& j) {
     j.erase(key);
 }
 
+// The query's "seed" as text (default 0): a string as it is, a non-negative integer in decimal (analyze checks it).
+string seedText(const json& q) {
+  const json* s = field(q, "seed");
+  return s == nullptr ? "0" : s->is_string() ? s->get<string>() : std::to_string(s->get<uint64_t>());
+}
+
 // The drop of the highest prior after the root's pick: from the policy of the pick's node, or, for a pick that the
 // search did not expand (a symmetric twin's), from one evaluation of the position after it.
 int bestDrop(const Game& g, int pick) {
@@ -778,7 +780,7 @@ int bestDrop(const Game& g, int pick) {
     playAction(*after, pick);
     NNResultBuf buf;
     buf.symmetryFromHash = true;
-    E.nnEval->evaluate(after->board, after->hist, after->pla, MiscNNInputParams(), buf, false, false);
+    E.nnEval->evaluate(after->board, after->hist, after->pla(), MiscNNInputParams(), buf, false, false);
     evaluated = buf.result;
     out = evaluated.get();
   }
@@ -793,23 +795,23 @@ int bestDrop(const Game& g, int pick) {
   return best;
 }
 
-// A line of the engine's actions from the root, as the site's moves: each pick joined with the drop after it. A
-// candidate's line (its first action the candidate) joins a pick that ends it with the best drop (bestDrop); any other
-// line stops before such a pick. ends: the index of each site move's last action, for KataGo's numbers by action
-// (pvVisits).
-void siteLine(const Game& g, const vector<int>& actions, bool candidate, vector<string>& moves, vector<size_t>& ends) {
+// A candidate's line of the engine's actions from the root (its first action the candidate), as at most maxMoves of the
+// site's moves: each pick joined with the drop after it. A pick that ends the line takes the best drop (bestDrop) when
+// it is the candidate, and the line stops before it otherwise. ends: the index of each site move's last action, for
+// KataGo's numbers by action (pvVisits).
+void siteLine(const Game& g, const vector<int>& actions, size_t maxMoves, vector<string>& moves, vector<size_t>& ends) {
   moves.clear();
   ends.clear();
   Pos& cur = scratch(2);
   cur = g.board.pos;
-  for(size_t i = 0; i < actions.size(); i++) {
+  for(size_t i = 0; i < actions.size() && moves.size() < maxMoves; i++) {
     const int a = actions[i];
     if(a < 0 || a == GameRules::PASS_ACTION)
       break;
     string text = siteText(cur, a);
     if(isPick(cur, a)) {
       const bool inLine = i + 1 < actions.size() && actions[i + 1] >= 0;
-      const int drop = inLine ? actions[i + 1] : i == 0 && candidate ? bestDrop(g, a) : -1;
+      const int drop = inLine ? actions[i + 1] : i == 0 ? bestDrop(g, a) : -1;
       if(drop < 0)
         break;
       GameRules::play(cur, a);
@@ -846,7 +848,7 @@ json analysisReply(const json& q, const Game& g, bool during) {
       actions.push_back(actionOf(m));
     if(actions.empty())
       actions.push_back(actionOf(mi["move"]));
-    siteLine(g, actions, true, moves, ends);
+    siteLine(g, actions, std::max(pvLen, 1), moves, ends);
     if(moves.empty())
       continue;
     named[actions[0]] = moves[0];
@@ -863,16 +865,21 @@ json analysisReply(const json& q, const Game& g, bool during) {
     dropGoFields(mi);
     moveInfos.push_back(std::move(mi));
   }
+  // The site's move of a root action, as its candidate names it: a pick joined with its best drop.
+  auto siteMove = [&](int a) -> json {
+    auto it = named.find(a);
+    if(it != named.end())
+      return it->second;
+    siteLine(g, {a}, 1, moves, ends);
+    return moves.empty() ? json(nullptr) : json(moves[0]);
+  };
   // A symmetric twin names the candidate that was searched (design 04, "Symmetric twins").
   for(json& mi : moveInfos)
-    if(mi.contains("isSymmetryOf")) {
-      const int a = actionOf(mi["isSymmetryOf"]);
-      auto it = named.find(a);
-      mi["isSymmetryOf"] = it != named.end() ? json(it->second) : json(siteText(g.board.pos, a));
-    }
+    if(mi.contains("isSymmetryOf"))
+      mi["isSymmetryOf"] = siteMove(actionOf(mi["isSymmetryOf"]));
   json rootInfo = std::move(out["rootInfo"]);
   dropGoFields(rootInfo);
-  rootInfo["currentPlayer"] = playerName(g.pla == P_BLACK ? 0 : 1);
+  rootInfo["currentPlayer"] = playerName(g.pla() == P_BLACK ? 0 : 1);
   json reply = {
     {"id", q["id"]}, {"isDuringSearch", during}, {"turnNumber", g.moves}, {"engine", engineTag()},
     {"rootInfo", std::move(rootInfo)}, {"moveInfos", std::move(moveInfos)}, {"movesOutsideView", g.outside},
@@ -881,22 +888,9 @@ json analysisReply(const json& q, const Game& g, bool during) {
     // The move KataGo's GTP engine would play (Search::getChosenMoveLoc), drawn with the chosen-move temperature and
     // seeded by the query's "seed" (default 0) and the position, never by earlier requests. A pick names its edit,
     // as its candidate does.
-    const json* s = field(q, "seed");
-    const string seed = s == nullptr ? "0" : s->is_string() ? s->get<string>() : std::to_string(s->get<uint64_t>());
-    Rand rand("chosenMove:" + seed + ":" + g.board.pos_hash.toString());
+    Rand rand("chosenMove:" + seedText(q) + ":" + g.board.pos_hash.toString());
     const Loc loc = E.search->getChosenMoveLoc(rand);
-    if(loc == Board::NULL_LOC)
-      reply["chosenMove"] = nullptr;
-    else {
-      const int a = Board::actionOfMoveLoc(loc);
-      auto it = named.find(a);
-      if(it != named.end())
-        reply["chosenMove"] = it->second;
-      else {
-        siteLine(g, {a}, true, moves, ends);
-        reply["chosenMove"] = moves.empty() ? json(nullptr) : json(moves[0]);
-      }
-    }
+    reply["chosenMove"] = loc == Board::NULL_LOC ? json(nullptr) : siteMove(Board::actionOfMoveLoc(loc));
   }
   if(flag(q, "includePolicy")) {
     // The root's network policy over every legal action, highest first: a placement by its site string, and a pick by
@@ -1054,15 +1048,14 @@ json analyze(const json& q) {
   E.search->setParams(p);
   // The root's ownership needs its evaluation with the ownership head's map.
   E.search->setAlwaysIncludeOwnerMap(flag(q, "includeOwnership"));
-  E.search->setPosition(g->pla, g->board, g->hist);
+  E.search->setPosition(g->pla(), g->board, g->hist);
   // Root noise draws from the search thread's random numbers, seeded with the query's "seed" in place of the engine's
   // and the count of searches reset, so the same request draws the same noise whatever came before (design 04,
   // "Reproducible analysis").
-  E.search->randSeed = "analysis:" + (seed == nullptr ? string("0") : seed->is_string() ? seed->get<string>()
-                                                                    : std::to_string(seed->get<uint64_t>()));
+  E.search->randSeed = "analysis:" + seedText(q);
   E.search->numSearchesBegun = 0;
   if(slice == nullptr) {
-    E.search->runWholeSearch(g->pla);
+    E.search->runWholeSearch(g->pla());
     return analysisReply(q, *g, false);
   }
   RUN = new Running{q, std::move(g), nullptr, visits, 0, 0, sliceVisits, sliceSeconds};
@@ -1119,18 +1112,8 @@ void BlueprintsProtocol::setup(const string& configText, const string& build) {
 }
 
 char* BlueprintsProtocol::modelBuffer(size_t len) {
-  E.pendingReader = PendingReader();
   E.pending.assign(std::max<size_t>(len, 1), 0);
   return E.pending.data();
-}
-
-void BlueprintsProtocol::modelReader(
-  size_t len, const string& sha256, const std::function<size_t(size_t, char*, size_t)>& read
-) {
-  vector<char>().swap(E.pending);
-  E.pendingReader.len = len;
-  E.pendingReader.sha256 = sha256;
-  E.pendingReader.read = read;
 }
 
 string BlueprintsProtocol::handle(const string& request) {
