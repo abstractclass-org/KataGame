@@ -136,7 +136,7 @@ Input version V8 (`NNInputs::fillRowV8`, and the Python reference is the Enclosu
 ```mermaid
 flowchart TD
     M["Plane 0: on board, all ones<br/>(the mask the backends read)"]
-    E["Planes 1-192: edges, 4 kinds x 48 offsets<br/>Blue's edges, Red's edges,<br/>Blue's protected or just placed, Red's protected or just placed"]
+    E["Planes 1-192: edges, 4 kinds x 48 offsets<br/>Blue's edges, Red's edges,<br/>Blue's invincible or just placed, Red's invincible or just placed"]
     F["Planes 193-214: 22 feature planes<br/>9 per player, then 4 history planes"]
     G["Globals 0-4: player to move, edges left in the turn / 2,<br/>move count / 120, Blue's and Red's scores / (18 x 18 x 61)"]
     SI["Spatial inputs<br/>215 channels"]

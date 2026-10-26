@@ -167,7 +167,7 @@ int runenclosuretests(const vector<string>& args) {
   //Red has two sides of a 3x3 square; only the other two sides together close it (area 9, scored after both
   //remaining turns: 18 against Blue's 16). Any other pair loses: the one-edge triangle gives 4.5, the other
   //quadrilaterals 7.5 (15 against 16). Blue's two edges are out of Red's reach (Red cannot leave Blue without a
-  //move) and Blue cannot reach Red's old edges; Red's new ones are protected. Checked exhaustively on the
+  //move) and Blue cannot reach Red's old edges; Red's new ones are invincible. Checked exhaustively on the
   //Enclosure repository's Python engine: 2 of Red's 45,601 two-edge turns win, all others lose.
   //A search that negated values across Red's own turn would avoid the win.
   //Then the same on the position's image under each symmetry: the mirrored position gets the mirrored moves.

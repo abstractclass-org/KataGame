@@ -38,7 +38,7 @@ static Board boardWith(const vector<enclosure::Edge>& blue, const vector<enclosu
   Board board;
   board.pos.edges[0] = blue;
   board.pos.edges[1] = red;
-  board.pos.protected_.clear();
+  board.pos.invincible.clear();
   board.pos.placed.clear();
   return board;
 }
@@ -59,13 +59,13 @@ int main() {
     edge(7, 7, 9, 7), edge(9, 7, 11, 7), edge(11, 7, 11, 9), edge(11, 9, 11, 11),
     edge(11, 11, 9, 11), edge(9, 11, 7, 11), edge(7, 11, 7, 9), edge(7, 9, 7, 7),
   };
-  //Position 2: nodes at the same four corners, but their edges run away from the window.
+  //Position 2: points at the same four corners, but their edges run away from the window.
   const vector<enclosure::Edge> loose = {
     edge(7, 7, 4, 4), edge(11, 7, 14, 4), edge(7, 11, 4, 14), edge(11, 11, 14, 14),
   };
   Hash128 closed = hasher.getHash(boardWith(wall, redNet), st, P_WHITE);
   Hash128 open = hasher.getHash(boardWith(loose, redNet), st, P_WHITE);
-  check(closed != open, "a closed wall and loose nodes at the same points share a bucket");
+  check(closed != open, "a closed wall and loose edges from the same points share a bucket");
 
   //Edges wholly outside the window do not matter (the network judges the rest of the board).
   vector<enclosure::Edge> wallAndFar = wall;
@@ -85,13 +85,13 @@ int main() {
   //Owner matters: the same edges with colours swapped are a different shape.
   check(hasher.getHash(boardWith(redNet, wall), st, P_WHITE) != closed, "swapping the owners keeps the bucket");
 
-  //Protection matters: a protected wall edge cannot be cut this turn.
-  Board protectedWall = boardWith(wall, redNet);
-  protectedWall.pos.protected_.push_back(edge(11, 9, 11, 11));
-  check(hasher.getHash(protectedWall, st, P_WHITE) != closed, "protecting an edge in the window keeps the bucket");
-  Board protectedFar = boardWith(wallAndFar, redNet);
-  protectedFar.pos.protected_.push_back(edge(1, 1, 3, 2));
-  check(hasher.getHash(protectedFar, st, P_WHITE) == closed, "protecting an edge outside the window changes the bucket");
+  //Invincibility matters: an invincible wall edge cannot be cut this turn.
+  Board invincibleWall = boardWith(wall, redNet);
+  invincibleWall.pos.invincible.push_back(edge(11, 9, 11, 11));
+  check(hasher.getHash(invincibleWall, st, P_WHITE) != closed, "an invincible edge in the window keeps the bucket");
+  Board invincibleFar = boardWith(wallAndFar, redNet);
+  invincibleFar.pos.invincible.push_back(edge(1, 1, 3, 2));
+  check(hasher.getHash(invincibleFar, st, P_WHITE) == closed, "an invincible edge outside the window changes the bucket");
 
   //The mover matters, and the window follows the move's source point.
   check(hasher.getHash(boardWith(wall, redNet), st, P_BLACK) != closed, "the mover is not in the key");

@@ -4,9 +4,9 @@ positions.
 
     python enclosure_next_move_probe.py RUN_DIR NAME [NAME ...]
 
-C++ lists a move between two of its player's own nodes only from the lower end, so a listing from the upper end is
+C++ lists a move between two of its player's own points only from the lower end, so a listing from the upper end is
 never a legal move and never a correct target. Until 2026-10-14 the trainer mapped policy channel 1 (the next move)
-with the mover's nodes, so in some symmetries it put the next mover's closing moves on such listings, and the
+with the mover's points, so in some symmetries it put the next mover's closing moves on such listings, and the
 networks learned that (games/enclosure/docs/decisions/build.md, "The training's symmetry handling"). For each checkpoint NAME
 (models/ or models_extra/, SWA weights) and symmetry: the main policy's mass on the mover's never-legal listings, and
 the next-move head's on the next mover's, split by who moves next (the opponent after a turn's last edge, the same
@@ -23,7 +23,7 @@ import torch
 from enclosure_symmetry_spread import SIZE, checkpoint_dirs, load, load_positions
 from katago.train import modelconfigs
 from katago.train.data_processing_pytorch import fit_global_input_nc
-from katago.train.games.enclosure import NUM_ACTIONS, NUM_OFFSETS, NUM_SYMMETRIES, OFFSETS, apply_symmetry_inputs, player_nodes
+from katago.train.games.enclosure import NUM_ACTIONS, NUM_OFFSETS, NUM_SYMMETRIES, OFFSETS, apply_symmetry_inputs, player_points
 
 
 def never_legal_tables():
@@ -50,8 +50,8 @@ def main():
     print(f"{binary.shape[0]} positions; the opponent moves next in {int(last_edge.sum())}")
 
     def share(p, x, who):
-        nodes = player_nodes(x, who)
-        return (p[:, :NUM_ACTIONS] * (nodes[:, src] & nodes[:, dst] & upper)).sum(dim=1)
+        points = player_points(x, who)
+        return (p[:, :NUM_ACTIONS] * (points[:, src] & points[:, dst] & upper)).sum(dim=1)
 
     for name in sys.argv[2:]:
         model, weights = load(dirs[name] / "model.ckpt")

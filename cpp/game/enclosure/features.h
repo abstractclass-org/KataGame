@@ -54,10 +54,10 @@ struct HopNeighbours {
 };
 inline const HopNeighbours hop_neighbours;
 
-// Hop distances from `player`'s nodes (heuristic.hops): a hop is a segment of
+// Hop distances from `player`'s points (heuristic.hops): a hop is a segment of
 // Chebyshev length <= 3 crossing at most one enemy edge. dist[x * SIZE + y].
 // With turn_reach (owner, 2026-10-03, the turn-safe plane): also the points `player` can start a cut from in its coming
-// turn of turn_edges edges, as a by-product of the first layer: its nodes, and with two edges the points one hop
+// turn of turn_edges edges, as a by-product of the first layer: its points, and with two edges the points one hop
 // reaches without crossing a guarded edge (guard_hits nonzero). See solid_flags and coming_turn.
 inline void hop_distances(const Position& p, int player, int* dist, const std::vector<int16_t>* enemy_hits = nullptr,
                           uint8_t* turn_reach = nullptr, int turn_edges = 0, const std::vector<uint8_t>* guard_hits = nullptr) {
@@ -129,10 +129,10 @@ inline void solid_flags(const Position& p, int player, const int* opp_dist, std:
 // The turn-safe plane's turn (owner, 2026-10-03; planes.turn_safe_edges is the Python reference): the opponent's coming
 // turn, against `player`'s edges. It is the current turn when the opponent is to move, else its next, after `player`
 // finishes this one (as many edges as remain, at most 2). Returns its edge count; `guarded` gets `player`'s edges the
-// opponent may not cut in it: its protected edges, or, when it is to move, its edges placed this turn.
+// opponent may not cut in it: its invincible edges, or, when it is to move, its edges placed this turn.
 inline int coming_turn(const Position& p, int player, std::vector<Edge>& guarded) {
   guarded.clear();
-  const std::vector<Edge>& marked = p.player == player ? p.placed : p.protected_;
+  const std::vector<Edge>& marked = p.player == player ? p.placed : p.invincible;
   for (const Edge& e : marked)
     if (contains(p.edges[player], e)) guarded.push_back(e);
   return p.player == player ? std::min(TURN_EDGES, MAX_MOVES - p.move_count - p.moves_left) : p.moves_left;
@@ -150,10 +150,11 @@ inline void mark_crossings(const std::vector<Edge>& edges, std::vector<uint8_t>&
 // Feature planes (planes.feature_planes) as 0/1 bytes, channels last:
 // out[(y * SIZE + x) * FEATURE_PLANES + f].
 // Each player's plane 7 holds the points of its turn-safe edges: those the opponent cannot cut in its coming turn
-// (coming_turn, planes.turn_safe_edges). Protection lasts one turn, which the steady-state planes (Solid, the hops,
-// Unreached) ignore; this plane states it for that turn only. Plane 8 stays zero: it held the openings of held ground
-// (a max flow, about 15% of self-play's CPU), which V2 dropped (games/enclosure/docs/decisions/inputs-and-targets.md). These were
-// the input options ENCLOSURE_TURN_SAFE and ENCLOSURE_NO_HELD_GROUND until 2026-10-08, when they became the only way.
+// (coming_turn, planes.turn_safe_edges). An edge is invincible for one turn, which the steady-state planes
+// (Solid, the hops, Unreached) ignore; this plane states it for that turn only. Plane 8 stays zero: it held the
+// openings of held ground (a max flow, about 15% of self-play's CPU), which V2 dropped
+// (games/enclosure/docs/decisions/inputs-and-targets.md). These were the input options ENCLOSURE_TURN_SAFE and
+// ENCLOSURE_NO_HELD_GROUND until 2026-10-08, when they became the only way.
 inline void feature_planes(const Position& p, uint8_t* out) {
   // Each player's crossing counts, computed once and shared by the hops and solidity.
   static thread_local std::vector<int16_t> counts[2];
@@ -222,7 +223,7 @@ inline Position mirror_position(const Position& p) {
   };
   flip(m.edges[0]);
   flip(m.edges[1]);
-  flip(m.protected_);
+  flip(m.invincible);
   flip(m.placed);
   for (int h = 0; h < HISTORY_TURNS; ++h)
     for (int i = 0; i < m.history_n[h]; ++i) {
@@ -233,7 +234,7 @@ inline Position mirror_position(const Position& p) {
 }
 
 // The mirror of `action`, as listed in the mirrored position's sorted `legal`
-// list (-1 if absent). Between two own nodes only one direction is listed,
+// list (-1 if absent). Between two own points only one direction is listed,
 // and the flip can change which, so the reverse direction is tried too.
 inline int mirror_action(int action, const std::vector<int>& legal) {
   if (action == PASS) return std::binary_search(legal.begin(), legal.end(), PASS) ? PASS : -1;

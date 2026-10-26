@@ -7,7 +7,7 @@
 //   D10-G10x                  a move in a game record: `x` marks a move that cuts an opponent's edge. Readers
 //                             accept a move with or without it, and refuse it on a move that cuts nothing.
 //   A10-D10 Q10-T10 b1 0/0 0  a position: Blue's edges, Red's edges, the mover and the edges left in its turn,
-//                             the scores (Blue's/Red's), the edge count. `*` marks a protected edge (the opponent's
+//                             the scores (Blue's/Red's), the edge count. `*` marks an invincible edge (the opponent's
 //                             last turn), `+` a placed edge (the mover's edges of this turn), `-` an empty list.
 //
 // A position holds the rules' state only: its history planes come back empty. Header only, so the game layer, the
@@ -140,7 +140,7 @@ inline std::string position_string(const Position& p) {
     for (const Edge& e : es) {
       if (!field.empty()) field += ",";
       field += edge_name(e);
-      if (contains(p.protected_, e)) field += "*";
+      if (contains(p.invincible, e)) field += "*";
       else if (contains(p.placed, e)) field += "+";
     }
     out += (field.empty() ? "-" : field) + " ";
@@ -165,7 +165,7 @@ inline bool parse_position(const std::string& text, Position& p, std::string& wh
     return false;
   }
   Position q;
-  q.edges[0].clear(); q.edges[1].clear(); q.protected_.clear(); q.placed.clear();
+  q.edges[0].clear(); q.edges[1].clear(); q.invincible.clear(); q.placed.clear();
   q.player = turn[0] == 'b' ? 0 : 1;
   q.moves_left = turn[1] - '0';
   for (int side = 0; side < 2; ++side) {
@@ -183,7 +183,7 @@ inline bool parse_position(const std::string& text, Position& p, std::string& wh
       q.edges[side].push_back(e);
       if (mark == '*') {
         if (side == q.player) { why = edge_name(e) + "* is the mover's: protected edges are the opponent's"; return false; }
-        q.protected_.push_back(e);
+        q.invincible.push_back(e);
       }
       else if (mark == '+') {
         if (side != q.player) { why = edge_name(e) + "+ is the opponent's: placed edges are the mover's"; return false; }
@@ -191,7 +191,7 @@ inline bool parse_position(const std::string& text, Position& p, std::string& wh
       }
     }
   }
-  if (q.protected_.size() > 2 || q.placed.size() > 2) {
+  if (q.invincible.size() > 2 || q.placed.size() > 2) {
     why = "a turn has at most 2 edges: at most 2 protected and 2 placed";
     return false;
   }

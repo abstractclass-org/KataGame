@@ -58,7 +58,7 @@ inline Off INTERIOR[NOFF][2];
 inline std::vector<int> CROSSINGS[NOFF];  // Per enemy-edge offset: relative candidate indices.
 // Enclosure fork (owner, 2026-10-06; CPU trick 5a): the same candidates grouped by where they start, relative to the
 // enemy edge's anchor (dx, dy), each group the offsets oc of its candidates: legal_actions counts only the groups that
-// start at the mover's nodes, the only candidates it reads.
+// start at the mover's points, the only candidates it reads.
 struct CrossingGroup { int dx, dy; std::vector<int> ocs; };
 inline std::vector<CrossingGroup> CROSSING_GROUPS[NOFF];
 
@@ -132,7 +132,7 @@ inline double snap(double v) { return std::nearbyint(v / EPSILON) * EPSILON; }  
 // --- Enclosed area --------------------------------------------------------
 //
 // Own edges only meet at shared endpoints or cross at interior points (an
-// endpoint may not lie inside an own edge, nor a node inside a new edge), so
+// endpoint may not lie inside an own edge, nor an own point inside a new edge), so
 // the arrangement's vertices are endpoints and exact rational crossings.
 // Faces are traced with half-edges; the union of enclosed regions is the sum
 // of bounded face cycles minus the outer cycles of components that sit inside
@@ -156,7 +156,7 @@ inline RPt reduce(long long x, long long y, long long d) {
   return {x, y, d};
 }
 
-// Lattice points on the given edges (nodes and points inside them): on[x * SIZE + y].
+// Lattice points on the given edges (their ends and the points inside them): on[x * SIZE + y].
 inline void edge_points(const std::vector<Edge>& edges, uint8_t* on) {
   std::fill(on, on + SIZE * SIZE, 0);
   for (const Edge& e : edges) {
@@ -253,7 +253,7 @@ inline double enclosed_area(const std::vector<Edge>& edges, uint8_t* inside_poin
         if (!t_end) along[i].push_back({t, id});
         if (!u_end) along[j].push_back({u, id});
       }
-      // Parallel edges cannot overlap (no node may lie inside an own edge).
+      // Parallel edges cannot overlap (no own point may lie inside an own edge).
     }
   }
   // Sub-edges between consecutive points on each segment.
@@ -384,13 +384,13 @@ inline double enclosed_area(const std::vector<Edge>& edges, uint8_t* inside_poin
 
 struct Position {
   std::vector<Edge> edges[2];
-  std::vector<Edge> protected_, placed;
+  std::vector<Edge> invincible, placed;
   double scores[2] = {0.0, 0.0};
   int player = 0, moves_left = 1, move_count = 0;
   double areas[2] = {0.0, 0.0};
   bool area_ok[2] = {true, true};
   // Edges placed in earlier turns, newest first (engine.Position.history): turn h
-  // is the one h + 1 turns before protected_. A turn places at most two edges.
+  // is the one h + 1 turns before invincible. A turn places at most two edges.
   // Network input only; the rules never read it. Fixed arrays: no allocation when
   // the search copies positions.
   Edge history[HISTORY_TURNS][2];
@@ -415,12 +415,12 @@ struct Position {
     if (terminal()) return;
     const auto& own = edges[player];
     const auto& enemy = edges[1 - player];
-    bool node[SIZE][SIZE] = {};
+    bool point[SIZE][SIZE] = {};
     bool inside_own[SIZE][SIZE] = {};
     static thread_local std::vector<uint64_t> own_dir;  // bitmask of offsets per point
     own_dir.assign(SIZE * SIZE, 0);
     for (const Edge& e : own) {
-      node[e.ax][e.ay] = node[e.bx][e.by] = true;
+      point[e.ax][e.ay] = point[e.bx][e.by] = true;
       int k = OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
       int kr = OFF_INDEX[e.ax - e.bx + 3][e.ay - e.by + 3];
       own_dir[e.ax * SIZE + e.ay] |= 1ull << k;
@@ -432,15 +432,15 @@ struct Position {
     if (hits.empty()) { hits.assign(GRID * GRID * NOFF, 0); blocked.assign(GRID * GRID * NOFF, 0); }
     touched.clear();
     // Enclosure fork (owner, 2026-10-06; CPU trick 5a): the counts below are read only for candidates that start at
-    // the mover's nodes, so only those are counted (CROSSING_GROUPS: about 70 start points an enemy edge, against
+    // the mover's points, so only those are counted (CROSSING_GROUPS: about 70 start points an enemy edge, against
     // about 400 candidates); each count read is the same as counting them all. Nothing carries over between
-    // positions: each call counts for its own position's nodes and clears what it counted.
+    // positions: each call counts for its own position's points and clears what it counted.
     for (const Edge& e : enemy) {
       int oe = OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
-      bool guarded = contains(protected_, e);
+      bool guarded = contains(invincible, e);
       for (const CrossingGroup& g : CROSSING_GROUPS[oe]) {
         const int sx = e.ax + g.dx, sy = e.ay + g.dy;
-        if (sx < 0 || sx >= SIZE || sy < 0 || sy >= SIZE || !node[sx][sy]) continue;
+        if (sx < 0 || sx >= SIZE || sy < 0 || sy >= SIZE || !point[sx][sy]) continue;
         const int start = ((sx + PAD) * GRID + sy + PAD) * NOFF;
         for (int oc : g.ocs) {
           int idx = start + oc;
@@ -452,18 +452,18 @@ struct Position {
     }
     for (int ax = 0; ax < SIZE; ++ax)
       for (int ay = 0; ay < SIZE; ++ay) {
-        if (!node[ax][ay] || inside_own[ax][ay]) continue;
+        if (!point[ax][ay] || inside_own[ax][ay]) continue;
         for (int k = 0; k < NOFF; ++k) {
           int bx = ax + OFFS[k].dx, by = ay + OFFS[k].dy;
           if (bx < 0 || bx >= SIZE || by < 0 || by >= SIZE) continue;
           bool b_first = bx < ax || (bx == ax && by < ay);
-          if (node[bx][by] && b_first) continue;
+          if (point[bx][by] && b_first) continue;
           if (own_dir[ax * SIZE + ay] >> k & 1) continue;
           if (inside_own[bx][by]) continue;
-          bool blocked_node = false;
+          bool blocked_point = false;
           for (int s = 0; s < INTERIOR_N[k]; ++s)
-            if (node[ax + INTERIOR[k][s].dx][ay + INTERIOR[k][s].dy]) blocked_node = true;
-          if (blocked_node) continue;
+            if (point[ax + INTERIOR[k][s].dx][ay + INTERIOR[k][s].dy]) blocked_point = true;
+          if (blocked_point) continue;
           int idx = ((ax + PAD) * GRID + ay + PAD) * NOFF + k;
           if (hits[idx] > 1 || blocked[idx] > 0) continue;
           out.push_back(action_at(ax, ay, k));
@@ -487,14 +487,14 @@ struct Position {
     action_source(action, ax, ay, k);
     const int bx = ax + OFFS[k].dx, by = ay + OFFS[k].dy;
     if (bx < 0 || bx >= SIZE || by < 0 || by >= SIZE) return false;
-    bool a_node = false, b_node = false, a_inside = false, b_inside = false, mid_node = false;
+    bool a_point = false, b_point = false, a_inside = false, b_inside = false, mid_point = false;
     const Edge self = make_edge(ax, ay, bx, by);
     for (const Edge& e : edges[player]) {
       if (e == self) return false;  // own_dir: the edge exists
       auto at = [&](int x, int y) { return (e.ax == x && e.ay == y) || (e.bx == x && e.by == y); };
-      a_node |= at(ax, ay);
-      b_node |= at(bx, by);
-      for (int s = 0; s < INTERIOR_N[k]; ++s) mid_node |= at(ax + INTERIOR[k][s].dx, ay + INTERIOR[k][s].dy);
+      a_point |= at(ax, ay);
+      b_point |= at(bx, by);
+      for (int s = 0; s < INTERIOR_N[k]; ++s) mid_point |= at(ax + INTERIOR[k][s].dx, ay + INTERIOR[k][s].dy);
       const int ke = OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
       for (int s = 0; s < INTERIOR_N[ke]; ++s) {
         const int px = e.ax + INTERIOR[ke][s].dx, py = e.ay + INTERIOR[ke][s].dy;
@@ -502,12 +502,12 @@ struct Position {
         b_inside |= px == bx && py == by;
       }
     }
-    if (!a_node || a_inside || b_inside || mid_node) return false;
-    if (b_node && (bx < ax || (bx == ax && by < ay))) return false;  // listed from b's side
+    if (!a_point || a_inside || b_inside || mid_point) return false;
+    if (b_point && (bx < ax || (bx == ax && by < ay))) return false;  // listed from b's side
     int hits = 0;
     for (const Edge& e : edges[1 - player])
       if (intersects(ax, ay, bx, by, e.ax, e.ay, e.bx, e.by)) {
-        if (++hits > 1 || contains(protected_, e)) return false;
+        if (++hits > 1 || contains(invincible, e)) return false;
       }
     return true;
   }
@@ -519,9 +519,9 @@ struct Position {
       history[h][0] = history[h - 1][0];
       history[h][1] = history[h - 1][1];
     }
-    history_n[0] = uint8_t(std::min<size_t>(2, protected_.size()));
-    for (int i = 0; i < history_n[0]; ++i) history[0][i] = protected_[i];
-    protected_ = placed;
+    history_n[0] = uint8_t(std::min<size_t>(2, invincible.size()));
+    for (int i = 0; i < history_n[0]; ++i) history[0][i] = invincible[i];
+    invincible = placed;
     placed.clear();
     player = 1 - player;
     moves_left = std::min(TURN_EDGES, MAX_MOVES - move_count);
@@ -574,7 +574,7 @@ struct Position {
         int k = OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
         int base = (e.ay * SIZE + e.ax) * PLANES;
         idx[n++] = base + owner * NOFF + k;
-        if (contains(protected_, e) || contains(placed, e)) idx[n++] = base + (owner + 2) * NOFF + k;
+        if (contains(invincible, e) || contains(placed, e)) idx[n++] = base + (owner + 2) * NOFF + k;
       }
     observation_scalars(scalars);
     return n;

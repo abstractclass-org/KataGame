@@ -44,7 +44,7 @@ bool read_query_position(const Json& p, Position& position, std::string& why) {
   if(edges.size() != 2)
     why = "edges must have 2 lists: Blue's edges, then Red's";
   bool ok = edges.size() == 2 && edgesOf(edges[0], position.edges[0]) && edgesOf(edges[1], position.edges[1]) &&
-            edgesOf(p.at("protected"), position.protected_) && edgesOf(p.at("placed"), position.placed);
+            edgesOf(p.at("protected"), position.invincible) && edgesOf(p.at("placed"), position.placed);
   const std::vector<double> scores = p.at("scores").template get<std::vector<double>>();
   position.player = p.at("player").template get<int>();
   position.moves_left = p.at("movesLeft").template get<int>();

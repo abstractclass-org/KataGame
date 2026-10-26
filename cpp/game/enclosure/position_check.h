@@ -106,15 +106,15 @@ inline std::vector<Reason> check(const Position& p) {
       }
 
   for (int side = 0; side < 2; ++side) {
-    std::vector<std::pair<int, int>> nodes;
+    std::vector<std::pair<int, int>> points;
     for (const Edge& e : edges[side]) {
-      nodes.push_back({e.ax, e.ay});
-      nodes.push_back({e.bx, e.by});
+      points.push_back({e.ax, e.ay});
+      points.push_back({e.bx, e.by});
     }
-    std::sort(nodes.begin(), nodes.end());
-    nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+    std::sort(points.begin(), points.end());
+    points.erase(std::unique(points.begin(), points.end()), points.end());
     for (const Edge& e : edges[side])
-      for (const auto& q : nodes) {
+      for (const auto& q : points) {
         const bool end = (q.first == e.ax && q.second == e.ay) || (q.first == e.bx && q.second == e.by);
         if (!end && on_segment(q.first, q.second, e.ax, e.ay, e.bx, e.by))
           reason("node-inside", std::string(NAME[side]) + "'s node " + point_name(q.first, q.second) + " lies inside " +
@@ -138,25 +138,27 @@ inline std::vector<Reason> check(const Position& p) {
                                 NAME[mover] + " edge: an edge starts at one of its player's nodes.", {e});
     }
 
-  std::vector<Edge> prot = p.protected_;
-  std::sort(prot.begin(), prot.end(), edge_less);
-  const int mostProtected = previous_turn_size(n);
-  if ((int)prot.size() > mostProtected)
+  std::vector<Edge> invincible = p.invincible;
+  std::sort(invincible.begin(), invincible.end(), edge_less);
+  const int mostInvincible = previous_turn_size(n);
+  if ((int)invincible.size() > mostInvincible)
     reason("protected", "After " + plural(n, "edge") + ", " + NAME[opponent] + "'s last turn placed at most " +
-                        plural(mostProtected, "edge") + ", not " + std::to_string(prot.size()) + " protected.", prot);
-  else if (!prot.empty() && (n % 2 == 1 || n >= MAX_MOVES)) {
-    // No edge of the opponent's has been cut since its last turn: each of that turn's edges started at a node of an
+                        plural(mostInvincible, "edge") + ", not " + std::to_string(invincible.size()) + " protected.",
+           invincible);
+  else if (!invincible.empty() && (n % 2 == 1 || n >= MAX_MOVES)) {
+    // No edge of the opponent's has been cut since its last turn: each of that turn's edges started at an end of an
     // older opponent edge, or of the turn's other edge.
-    std::vector<bool> joined(prot.size(), false);
-    for (size_t i = 0; i < prot.size(); ++i)
+    std::vector<bool> joined(invincible.size(), false);
+    for (size_t i = 0; i < invincible.size(); ++i)
       for (const Edge& f : edges[opponent])
-        if (!contains(p.protected_, f) && shares_end(prot[i], f)) joined[i] = true;
-    if (prot.size() == 2 && joined[0] != joined[1] && shares_end(prot[0], prot[1])) joined[0] = joined[1] = true;
-    for (size_t i = 0; i < prot.size(); ++i)
+        if (!contains(p.invincible, f) && shares_end(invincible[i], f)) joined[i] = true;
+    if (invincible.size() == 2 && joined[0] != joined[1] && shares_end(invincible[0], invincible[1]))
+      joined[0] = joined[1] = true;
+    for (size_t i = 0; i < invincible.size(); ++i)
       if (!joined[i])
-        reason("protected-joined", std::string(NAME[opponent]) + "'s protected edge " + edge_name(prot[i]) +
+        reason("protected-joined", std::string(NAME[opponent]) + "'s protected edge " + edge_name(invincible[i]) +
                                    " joins no other " + NAME[opponent] + " edge: an edge starts at one of its player's nodes.",
-               {prot[i]});
+               {invincible[i]});
   }
 
   const int ended = turns_ended(n);

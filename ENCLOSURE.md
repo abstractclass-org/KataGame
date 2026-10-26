@@ -33,8 +33,8 @@ A `Loc` names a point or a move, and the moves start after the points (GAMES.md,
   that the front's code had before the interface:
   - `pieces` gives KataGo's `colors`: `C_BLACK` where the point is one of Blue's nodes, `C_WHITE` where it is one of
     Red's, and `C_EMPTY` otherwise. So the display and "whose point is this" work as before.
-  - `hash` covers the edges by owner, the protected and placed edges, the edge count, the edges left in the turn and the
-    scores. These are the fields that the engine's `same_position` compares. `GameRules` draws the tables from
+  - `hash` covers the edges by owner, the invincible and placed edges, the edge count, the edges left in the turn and
+    the scores. These are the fields that the engine's `same_position` compares. `GameRules` draws the tables from
     `Board::initHash`'s original seed and order at its first call. A function-local static makes that initialization
     thread safe, and the hash keeps its values from before the interface. The edge count and the edges left in the turn
     determine the player to move in every reachable position.
@@ -109,9 +109,9 @@ corrects new nodes in the same bucket (`docs/KataGoMethods.md`).
 - **Enclosure keeps the intention:** the same local tactic in the same local shape shares a bucket.
 - **`LocalPatternHasher::getHash`** centres a **7×7** window on the edge's source point, which covers the whole edge.
   It hashes every edge of either player with an endpoint in the window (the owner and the exact edge), and whether
-  each edge is protected.
+  each edge is invincible.
   - Point colours alone would miss which nodes are joined: a closed wall and four loose nodes would share a bucket.
-  - Protection has the role of Go's atari flag.
+  - Invincibility has the role of Go's atari flag.
 - **Unchanged:** λ = 0.30 (the self-play config), α, and the last two moves of the key. The mover comes from the
   history.
 - **`getHashWithSym`** (the pattern bonus table, off by default) refused to run until edge symmetries existed
@@ -121,12 +121,13 @@ corrects new nodes in the same bucket (`docs/KataGoMethods.md`).
 
 A query of the analysis engine can start from a position instead of the standard start. Enclosure's own field
 `enclosurePosition` (the rules part's query position field, read in `game/enclosure/queryposition.h`) carries
-`engine.Position`'s fields. These are the edges of each player, the protected and placed edges, the scores, the
-player to move, the edges left in the turn, the move count, and the history planes' turns. `Board::setPosition` sets
-the board from them, and the query's `moves` are played after it. meaf.us gives a board and not its moves, so the move
-server (`games/enclosure/katagame/katagobot.py`) uses this field. The generic field `position` (every game's) takes
-the one-line position (`GameRules::parse_position`) instead. It has no history turns, so it gives what
-`enclosurePosition` gives with an empty `history`. A query gives one of the two fields or neither.
+`engine.Position`'s fields. These are the edges of each player, the invincible edges (the key `protected`) and the
+placed edges, the scores, the player to move, the edges left in the turn, the move count, and the history planes'
+turns. `Board::setPosition` sets the board from them, and the query's `moves` are played after it. meaf.us gives a
+board and not its moves, so the move server (`games/enclosure/katagame/katagobot.py`) uses this field. The generic
+field `position` (every game's) takes the one-line position (`GameRules::parse_position`) instead. It has no history
+turns, so it gives what `enclosurePosition` gives with an empty `history`. A query gives one of the two fields or
+neither.
 
 - **The same network inputs:** the history planes come from `Position::history`, not from KataGo's move history, and
   the cache hash includes them (the encoding part's `input_hash`). At symmetry 0, a position gives the same policy and
@@ -176,7 +177,7 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
 
 - **Spatial, 215 planes** (`NUM_FEATURES_SPATIAL_V8`):
   - 0: on board, all ones. KataGo's backends and PyTorch model take the board mask from channel 0, so it stays first.
-  - 1-192: the observation's edge planes, `4 × 48`: each player's edges, then each player's protected or just-placed
+  - 1-192: the observation's edge planes, `4 × 48`: each player's edges, then each player's invincible or just-placed
     edges. An edge is set at its lower end (the canonical `Edge`'s a), in the plane of its offset, and at its upper
     end, in the plane of the opposite offset.
   - 193-214: the 22 feature planes (`features.h`, `planes.feature_planes`): 9 per player, then 4 history planes.
@@ -222,7 +223,7 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
 
 **Measured** (`tests/enclosure/testsymmetry.cpp`): for each of KataGo's 8 symmetries, the test played 100 random games
 on the board and on its image, with each move mapped. Over 12,000 moves per symmetry, the image game was always the
-image of the game: the legal moves (one to one), the edges, the protected and placed edges, the history, and the
+image of the game: the legal moves (one to one), the edges, the invincible and placed edges, the history, and the
 exact scores. The feature planes also moved point by point.
 
 | Symmetry | Rules respect it | Fixes the start position |
@@ -248,7 +249,7 @@ can look at it again. The code handles all 8. The game's set of allowed symmetri
     `SymmetryHelpers::SymActionMap`, which builds it from a `Board`.
   - Between two of the mover's own nodes, only one direction is listed as legal. So the image move is listed from
     its far end exactly when that end comes first and is one of the mover's nodes, which the position knows.
-- **Root symmetry pruning:** a symmetry is valid when the position (edges, protected and placed edges) is its own
+- **Root symmetry pruning:** a symmetry is valid when the position (edges, invincible and placed edges) is its own
   image.
 - **Tests:**
   - `testsymmetry`: the measurement above. It also does 153,600 round trips and compositions (the inverse maps back,

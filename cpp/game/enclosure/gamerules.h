@@ -52,12 +52,12 @@ struct GameRules {
   static float result(const Position& p) { return p.result(); }
   static double score(const Position& p, int player) { return p.scores[player]; }
 
-  // The tables of the hash: the edges by owner, the protected and the placed edges, the edge count and the edges left
+  // The tables of the hash: the edges by owner, the invincible and the placed edges, the edge count and the edges left
   // in the turn. They are drawn at the first call, from the seed and in the order that Board::initHash used before the
   // interface, so the hash keeps its values.
   struct HashTables {
     Hash128 edge[2][PASS];
-    Hash128 protectedEdge[PASS];
+    Hash128 invincibleEdge[PASS];
     Hash128 placedEdge[PASS];
     Hash128 moveCount[MAX_MOVES + 2];
     Hash128 movesLeft[3];
@@ -72,7 +72,7 @@ struct GameRules {
         for(int i = 0; i < PASS; i++)
           edge[owner][i] = next();
       for(int i = 0; i < PASS; i++) {
-        protectedEdge[i] = next();
+        invincibleEdge[i] = next();
         placedEdge[i] = next();
       }
       for(int i = 0; i < MAX_MOVES + 2; i++)
@@ -96,8 +96,8 @@ struct GameRules {
     for(int owner = 0; owner < 2; owner++)
       for(const Edge& e : p.edges[owner])
         h ^= t.edge[owner][edge_action(e)];
-    for(const Edge& e : p.protected_)
-      h ^= t.protectedEdge[edge_action(e)];
+    for(const Edge& e : p.invincible)
+      h ^= t.invincibleEdge[edge_action(e)];
     for(const Edge& e : p.placed)
       h ^= t.placedEdge[edge_action(e)];
     h ^= t.moveCount[std::min(p.move_count, MAX_MOVES + 1)];
@@ -107,9 +107,9 @@ struct GameRules {
     return h;
   }
 
-  // A point holds a player's piece where it is one of that player's nodes. In a position that a game reaches, no
-  // point is a node of both players: an edge that touches an enemy edge cuts it. In a position given otherwise, such a
-  // point is Red's, as in Board::syncFromPosition.
+  // A point holds a player's piece where one of that player's edges ends. In a position that a game reaches, no point
+  // is both players': an edge that touches an enemy edge cuts it. In a position given otherwise, such a point is Red's,
+  // as in Board::syncFromPosition.
   static void pieces(const Position& p, int8_t* owner) {
     std::fill(owner, owner + SIZE * SIZE, int8_t(-1));
     for(int player = 0; player < 2; player++)
@@ -176,11 +176,11 @@ struct GameRules {
   }
 
   // The position near a point, for the search's local pattern hash (ENCLOSURE.md, "Subtree value bias"). An edge has no
-  // single point, and nodes alone do not show which of them are joined, so the window hashes the edges of either
-  // player with an end inside it, and whether each is protected (KataGo's atari flag marks what is fragile now; a
-  // protected edge cannot be cut this turn). The keys: each owner's edges by the edge's action, then the protected
-  // edges, in the order that the hasher drew them before the interface. The window of 7 covers a whole edge from its
-  // source (offsets up to 3).
+  // single point, and the players' points alone do not show which of them are joined, so the window hashes the edges
+  // of either player with an end inside it, and whether each is invincible (KataGo's atari flag marks what is fragile
+  // now; an invincible edge cannot be cut this turn). The keys: each owner's edges by the edge's action, then the
+  // invincible edges, in the order that the hasher drew them before the interface. The window of 7 covers a whole edge
+  // from its source (offsets up to 3).
   static constexpr int NUM_LOCAL_KEYS = 3 * PASS;
   static constexpr int LOCAL_WINDOW = 7;
   static Hash128 local_hash(const Position& p, int cx, int cy, int xRadius, int yRadius, bool flipPlayers,
@@ -193,7 +193,7 @@ struct GameRules {
           continue;
         const int idx = edge_action(e);
         h ^= keys[(flipPlayers ? 1 - owner : owner) * PASS + idx];
-        if(contains(p.protected_, e))
+        if(contains(p.invincible, e))
           h ^= keys[2 * PASS + idx];
       }
     return h;

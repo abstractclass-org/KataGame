@@ -20,7 +20,7 @@ struct GameEncoding {
   using Rules = GameRules;
   using Position = GameRules::Position;
 
-  // The observation's 4 * NOFF edge planes (each player's edges, then each player's protected or just-placed edges),
+  // The observation's 4 * NOFF edge planes (each player's edges, then each player's invincible or just-placed edges),
   // then the feature planes (9 per player, then the history planes).
   static constexpr int EDGE_PLANES = 4 * NOFF;
   static constexpr int NUM_SPATIAL_INPUTS = EDGE_PLANES + FEATURE_PLANES;
@@ -110,7 +110,7 @@ struct GameEncoding {
     sym_point(bx, by, symmetry);
     return make_edge(ax, ay, bx, by);
   }
-  // Every edge (both players', protected, placed, history) mapped. The scores and the turn state do not change.
+  // Every edge (both players', invincible, placed, history) mapped. The scores and the turn state do not change.
   static Position sym_position(const Position& p, int symmetry) {
     Position s = p;
     auto map = [&](std::vector<Edge>& v) {
@@ -119,7 +119,7 @@ struct GameEncoding {
     };
     map(s.edges[0]);
     map(s.edges[1]);
-    map(s.protected_);
+    map(s.invincible);
     map(s.placed);
     for(int h = 0; h < HISTORY_TURNS; h++)
       for(int i = 0; i < s.history_n[h]; i++)
@@ -127,14 +127,14 @@ struct GameEncoding {
     s.area_ok[0] = s.area_ok[1] = false;
     return s;
   }
-  // Between two of the mover's nodes, only one direction is legal: from the lexicographically first end. So the image
-  // is listed from its far end exactly when that end is one of the mover's nodes and comes first.
+  // Between two of the mover's points, only one direction is legal: from the lexicographically first end. So the image
+  // is listed from its far end exactly when that end is one of the mover's points and comes first.
   struct SymActionMap {
     int symmetry;
-    bool node[SIZE][SIZE];
-    SymActionMap(const Position& p, int sym) : symmetry(sym), node() {
+    bool point[SIZE][SIZE];
+    SymActionMap(const Position& p, int sym) : symmetry(sym), point() {
       for(const Edge& e : p.edges[p.player])
-        node[e.ax][e.ay] = node[e.bx][e.by] = true;
+        point[e.ax][e.ay] = point[e.bx][e.by] = true;
     }
     int operator()(int action) const {
       if(action == PASS || symmetry == 0)
@@ -142,10 +142,10 @@ struct GameEncoding {
       int ax, ay, k;
       action_point(action, ax, ay, k);
       int bx = ax + OFFS[k].dx, by = ay + OFFS[k].dy;
-      const bool farNode = node[bx][by];
+      const bool farPoint = point[bx][by];
       sym_point(ax, ay, symmetry);
       sym_point(bx, by, symmetry);
-      const bool fromB = farNode && (bx < ax || (bx == ax && by < ay));
+      const bool fromB = farPoint && (bx < ax || (bx == ax && by < ay));
       if(fromB)
         return action_between(bx, by, ax, ay);
       return action_between(ax, ay, bx, by);
@@ -153,14 +153,14 @@ struct GameEncoding {
   };
 
   // C0: the future occupancy (the mean over the turn ends after the row of +1 inside the mover's regions, -1 inside
-  // the opponent's). C1: the edges that get cut. C2-3: the nodes 8 and 32 edges later. C4: the region occupancy 4
-  // rounds later. C5-6: the territory income. C7: the next mover's nodes (ENCLOSURE.md, "Spatial targets").
+  // the opponent's). C1: the edges that get cut. C2-3: the points 8 and 32 edges later. C4: the region occupancy 4
+  // rounds later. C5-6: the territory income. C7: the next mover's points (ENCLOSURE.md, "Spatial targets").
   static constexpr unsigned TARGETS = GameInterface::TARGET_OWNERSHIP | GameInterface::TARGET_SEKI |
                                       GameInterface::TARGET_FUTURE_PIECES | GameInterface::TARGET_SCORING |
                                       GameInterface::TARGET_INCOME | GameInterface::TARGET_NEXT_PIECES;
 
   // C0, C1, C4 and C5-6 (C2-3 and C7 are the front's). The positions after the row are one edge apart. A turn end is
-  // a position right after one: the turn's placed edges have become protected.
+  // a position right after one: the turn's placed edges have become invincible.
   template<class Positions>
   static unsigned training_targets(const Positions& positions, int numPositions, int row, int mover, float* values) {
     float* occupancy = values;                                         // C0

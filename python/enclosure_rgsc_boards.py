@@ -4,7 +4,7 @@
     python enclosure_rgsc_boards.py BUFFER_FILE OUT.html [--top 24] [--by regret|restarts]
 
 Each buffer entry (program/rgsc.cpp's file: "entry REGRET RESTARTS LENGTH LOC PLAYER ...") is replayed in the Python
-engine and drawn as an SVG board: each player's edges, the last turn's edges (protected) thicker, each player's
+engine and drawn as an SVG board: each player's edges, the last turn's edges (invincible) thicker, each player's
 enclosed regions filled. Under each board: its regret, restarts drawn, depth in moves, the side to move and the
 scores. A move's Loc is MOVE_LOC_BASE + the engine's action index (katagame/cpp/game/board.h), MOVE_LOC_BASE being
 (19 + 1) * (19 + 2) + 1 = 421 for the 19-point board.
@@ -69,7 +69,7 @@ def svg(p):
     for k in range(2):
         for a, b in p.edges[k]:
             (x1, y1), (x2, y2) = xy(a), xy(b)
-            thick = 3.4 if (a, b) in p.protected else 1.8
+            thick = 3.4 if (a, b) in p.invincible else 1.8
             out.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{COLORS[k]}" stroke-width="{thick}" '
                        f'stroke-linecap="round"/>')
     out.append("</svg>")
@@ -102,7 +102,7 @@ def main():
 figure{{display:inline-block;margin:6px;text-align:center}} figcaption{{font-size:12px;color:#555}}</style>
 <h1>RGSC buffer states</h1>
 <p>{html.escape(os.path.basename(args.buffer))}: {len(es)} states, regret {min(regrets):.3f}–{max(regrets):.3f},
-depth {min(depths)}–{max(depths)} moves. Top {args.top} by {args.by}. Thick edges: the last turn's (protected).
+depth {min(depths)}–{max(depths)} moves. Top {args.top} by {args.by}. Thick edges: the last turn's (invincible).
 Shaded: each player's enclosed regions.</p>
 {"".join(cards)}"""
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

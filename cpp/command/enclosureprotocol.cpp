@@ -29,7 +29,9 @@
 // (rootMaps), from one evaluation of the root, not from the search.
 // The rules come through the game interface (GameRules: the moves and the position in the notation, the legal moves,
 // the end, the scores). Enclosure's own parts stay Enclosure's: the history planes' edges, the describe action's edges,
-// nodes and regions, the cut edge, the outcome's text and the position check.
+// points and regions, the cut edge, the outcome's text and the position check.
+// The protocol's names stay as design 04 gives them, also where the code takes the glossary's words: "protected" holds
+// the invincible edges, and "nodes", "removedNodes" and "futureNodes" hold points.
 // Results are reproducible: each evaluation's symmetry comes from its cache key (nnSymmetryFromHash), and the search's
 // random numbers (root noise) from the query's "seed" and the position, so the same request gives the same reply
 // whatever came before, and a search in slices equals one whole search (with one search
@@ -264,14 +266,14 @@ vector<string> sortedEdgeNames(const vector<enclosure::Edge>& edges) {
   return out;
 }
 
-vector<string> nodeNames(const vector<enclosure::Edge>& edges) {
-  std::set<std::pair<int, int>> nodes;
+vector<string> pointNames(const vector<enclosure::Edge>& edges) {
+  std::set<std::pair<int, int>> points;
   for(const auto& e : edges) {
-    nodes.insert({e.ax, e.ay});
-    nodes.insert({e.bx, e.by});
+    points.insert({e.ax, e.ay});
+    points.insert({e.bx, e.by});
   }
   vector<string> out;
-  for(const auto& [x, y] : nodes)
+  for(const auto& [x, y] : points)
     out.push_back(nt::point_name(x, y));
   return out;
 }
@@ -329,7 +331,7 @@ json boardFields(const enclosure::Position& p) {
     {"moveCount", GameRules::moves_played(p)},
     {"scores", {GameRules::score(p, 0), GameRules::score(p, 1)}},
     {"edges", std::move(edges)},
-    {"protected", sortedEdgeNames(p.protected_)},
+    {"protected", sortedEdgeNames(p.invincible)},
     {"placed", sortedEdgeNames(p.placed)},
     {"regions", std::move(regions)},
     {"areas", std::move(areas)},
@@ -345,11 +347,11 @@ json describe(const json& q) {
   if(!buildPosition(q, board, hist, pla, f))
     return errorReply(q["id"], f);
   const enclosure::Position& p = board.pos;
-  json reply = boardFields(p), nodes = json::object();
+  json reply = boardFields(p), points = json::object();
   for(int side = 0; side < 2; side++)
-    nodes[string(1, nt::PLAYERS[side])] = nodeNames(p.edges[side]);
+    points[string(1, nt::PLAYERS[side])] = pointNames(p.edges[side]);
   reply["id"] = q["id"];
-  reply["nodes"] = std::move(nodes);
+  reply["nodes"] = std::move(points);
   reply["legal"] = legalNames(p);
   reply["check"] = positionCheck(hist.initialBoard.pos);
   return reply;
@@ -420,10 +422,10 @@ json play(const json& q) {
   GameRules::play(after, action);  // PASS forfeits the rest of the turn (a timeout)
   const int enemy = 1 - before.player;
   const json cuts = cutEdge(before, after);
-  const vector<string> nodesBefore = nodeNames(before.edges[enemy]), nodesAfter = nodeNames(after.edges[enemy]);
+  const vector<string> pointsBefore = pointNames(before.edges[enemy]), pointsAfter = pointNames(after.edges[enemy]);
   json removed = json::array();
-  for(const string& n : nodesBefore)
-    if(std::find(nodesAfter.begin(), nodesAfter.end(), n) == nodesAfter.end())
+  for(const string& n : pointsBefore)
+    if(std::find(pointsAfter.begin(), pointsAfter.end(), n) == pointsAfter.end())
       removed.push_back(n);
   return {
     {"id", q["id"]}, {"legal", true}, {"move", GameRules::action_text(action)}, {"cuts", cuts},
@@ -614,17 +616,17 @@ void dropGoFields(json& j) {
 // games/enclosure/docs/design/06-ownership-and-spatial-targets.md), for "includeWeakWalls" and "includeFutureNodes":
 // one evaluation of the root, with the root's inputs and the symmetry of its cache key (the root's own with
 // nnSymmetryFromHash, the default), not the search (design 04, "The root's maps"). Called after setPosition. NNOutput::auxMap holds them raw from the mover's side, point (x, y) at y * nnXLen + x of each
-// channel: 0-1 the future nodes 8 and 32 edges later (tanh: +1 the mover's node, -1 the opponent's), 4-6 the edges
+// channel: 0-1 the points 8 and 32 edges later (tanh: +1 the mover's point, -1 the opponent's), 4-6 the edges
 // that get cut (softmax: no cut, a cut of the mover's edge, a cut of the opponent's). Each map is a list of the 361
 // points, y * 19 + x (row 1 first), as the ownership:
 //   "weakWalls": {"b", "r"}: at each point of the player's edges (their ends and the points they pass through), the
 //                chance that an edge of the player's there is cut before the game ends; null at the other points.
-//   "futureNodes": {"8", "32"}: at each point, the expected +1 for a Blue node 8 (32) edges later and -1 for a Red
-//                  one: Blue's side, as the ownership.
+//   "futureNodes": {"8", "32"}: at each point, the expected +1 for one of Blue's points 8 (32) edges later and -1 for
+//                  one of Red's: Blue's side, as the ownership.
 json rootMaps(const json& q, const Board& board, Player pla) {
   json maps = json::object();
-  const bool walls = flag(q, "includeWeakWalls"), nodes = flag(q, "includeFutureNodes");
-  if(!walls && !nodes)
+  const bool walls = flag(q, "includeWeakWalls"), points = flag(q, "includeFutureNodes");
+  if(!walls && !points)
     return maps;
   NNResultBuf buf;
   buf.includeAuxOutputs = true;
@@ -634,7 +636,7 @@ json rootMaps(const json& q, const Board& board, Player pla) {
   testAssert(out.auxMap != NULL);
   const int S = enclosure::SIZE, area = out.nnXLen * out.nnYLen;
   const int mover = pla == P_BLACK ? 0 : 1;
-  const int futureNodes = 0, noCut = 4, moverCut = 5, opponentCut = 6;  // auxMap's channels, as above
+  const int futurePoints = 0, noCut = 4, moverCut = 5, opponentCut = 6;  // auxMap's channels, as above
   auto channel =[&](int c, int x, int y) { return (double)out.auxMap[c * area + NNPos::xyToPos(x, y, out.nnXLen)]; };
   // Rounded as KataGo rounds the ownership (Search::getAverageTreeOwnership), and never -0.
   auto rounded = [](double v) { return Global::roundStatic(v, 1000000.0) + 0.0; };
@@ -661,7 +663,7 @@ json rootMaps(const json& q, const Board& board, Player pla) {
     }
     maps["weakWalls"] = std::move(map);
   }
-  if(nodes) {
+  if(points) {
     json map = json::object();
     const double sign = mover == 0 ? 1.0 : -1.0;
     const char* horizons[2] = {"8", "32"};
@@ -669,7 +671,7 @@ json rootMaps(const json& q, const Board& board, Player pla) {
       json list = json::array();
       for(int y = 0; y < S; y++)
         for(int x = 0; x < S; x++)
-          list.push_back(rounded(sign * std::tanh(channel(futureNodes + h, x, y))));
+          list.push_back(rounded(sign * std::tanh(channel(futurePoints + h, x, y))));
       map[horizons[h]] = std::move(list);
     }
     maps["futureNodes"] = std::move(map);

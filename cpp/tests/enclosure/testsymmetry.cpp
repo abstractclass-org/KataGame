@@ -6,7 +6,7 @@
 // random games are played twice: on the board, and on its image under the
 // symmetry, each move mapped by SymmetryHelpers::getSymMoveLoc (the game's SymActionMap). After every move
 // the image game must be the image of the game: the same legal moves (mapped
-// one to one), the same edges, protected and placed edges and history, and the
+// one to one), the same edges, invincible and placed edges and history, and the
 // same scores. The feature planes (net1's inputs) of the image must be the
 // feature planes moved point by point. The start position's own symmetries
 // are reported too.
@@ -60,7 +60,7 @@ static int stateDifferences(const enclosure::Position& a, const enclosure::Posit
     d += a.scores[k] != b.scores[k];
     maxScoreDiff = max(maxScoreDiff, fabs(a.scores[k] - b.scores[k]));
   }
-  d += edgeSet(a.protected_) != edgeSet(b.protected_);
+  d += edgeSet(a.invincible) != edgeSet(b.invincible);
   d += edgeSet(a.placed) != edgeSet(b.placed);
   d += a.player != b.player || a.moves_left != b.moves_left || a.move_count != b.move_count;
   for(int h = 0; h < enclosure::HISTORY_TURNS; h++)

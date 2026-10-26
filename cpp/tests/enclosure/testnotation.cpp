@@ -31,7 +31,7 @@ static bool same_state(const Position& a, const Position& b) {
   for(int s = 0; s < 2; s++)
     if(!(sorted_edges(a.edges[s]) == sorted_edges(b.edges[s])) || a.scores[s] != b.scores[s])
       return false;
-  return sorted_edges(a.protected_) == sorted_edges(b.protected_) && sorted_edges(a.placed) == sorted_edges(b.placed) &&
+  return sorted_edges(a.invincible) == sorted_edges(b.invincible) && sorted_edges(a.placed) == sorted_edges(b.placed) &&
          a.player == b.player && a.moves_left == b.moves_left && a.move_count == b.move_count;
 }
 

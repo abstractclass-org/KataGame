@@ -8,11 +8,11 @@ For each position and symmetry in SYM_FILE: the augmented V8 inputs must equal t
 image position (fillRowV8 of getSymBoard), and every legal move's policy entry must land on the C++
 image move (getSymMoveLoc, the game's SymActionMap), in both policy channels:
 
-- channel 0 (the mover's move), mapped with the mover's nodes from the row's inputs;
+- channel 0 (the mover's move), mapped with the mover's points from the row's inputs;
 - channel 1 (the next move, which C++ lists for the next mover; 2026-10-14): the position stands for the next
   position, the row's own inputs keep its planes but name the other player as the mover, and valueTargetsNCHW C7
-  (flagged by globalTargetsNC C75) holds the position's mover's nodes, as trainingwrite.cpp writes them. A mapping
-  that took channel 1's nodes from the row's mover fails here; the count of such failures is printed too.
+  (flagged by globalTargetsNC C75) holds the position's mover's points, as trainingwrite.cpp writes them. A mapping
+  that took channel 1's points from the row's mover fails here; the count of such failures is printed too.
 
 Exit code 0 when all agree.
 """
@@ -22,9 +22,9 @@ import sys
 import numpy as np
 import torch
 
-from katago.train.games.enclosure import (FEATURE_PLANES_START, FEATURES_PER_PLAYER, NEXT_NODES_FLAG, NEXT_NODES_PLANE,
-                                          NUM_ACTIONS, SIZE, apply_symmetry_inputs, apply_symmetry_policy,
-                                          apply_symmetry_policy_targets)
+from katago.train.games.enclosure import (FEATURE_PLANES_START, FEATURES_PER_PLAYER, NEXT_POINTS_FLAG,
+                                          NEXT_POINTS_PLANE, NUM_ACTIONS, SIZE, apply_symmetry_inputs,
+                                          apply_symmetry_policy, apply_symmetry_policy_targets)
 
 CHANNELS = 215
 GLOBALS = 5
@@ -71,14 +71,14 @@ def main():
         targets[0, 1, actions] = numbers
         g_row = g.clone()
         g_row[0, 0] = 1 - mover
-        value = torch.zeros(1, NEXT_NODES_PLANE + 1, SIZE, SIZE)
-        value[0, NEXT_NODES_PLANE] = x[0, FEATURE_PLANES_START + FEATURES_PER_PLAYER * mover]
-        global_targets = torch.zeros(1, NEXT_NODES_FLAG + 5)
-        global_targets[0, NEXT_NODES_FLAG] = 1
+        value = torch.zeros(1, NEXT_POINTS_PLANE + 1, SIZE, SIZE)
+        value[0, NEXT_POINTS_PLANE] = x[0, FEATURE_PLANES_START + FEATURES_PER_PLAYER * mover]
+        global_targets = torch.zeros(1, NEXT_POINTS_FLAG + 5)
+        global_targets[0, NEXT_POINTS_FLAG] = 1
         ok_next = lands(apply_symmetry_policy_targets(targets, symmetry, x, g_row, value, global_targets)[0, 1],
                         images, total)
         if not lands(apply_symmetry_policy(targets[:, 1:], symmetry, x, g_row)[0, 0], images, total):
-            old_failures += 1  # the mapping before 2026-10-14: channel 1 with the row's mover's nodes
+            old_failures += 1  # the mapping before 2026-10-14: channel 1 with the row's mover's points
         checked += 1
         per_symmetry.setdefault(symmetry, [0, 0])[0] += 1
         if not (ok_inputs and ok_policy and ok_next):
@@ -89,7 +89,7 @@ def main():
                       f"policy {'ok' if ok_policy else 'differs'}, next-move policy {'ok' if ok_next else 'differs'}")
     for s in sorted(per_symmetry):
         print(f"symmetry {s}: {per_symmetry[s][0]} positions, {per_symmetry[s][1]} failures")
-    print(f"{checked} checked, {failures} failures; channel 1 with the row's mover's nodes (the old mapping) would "
+    print(f"{checked} checked, {failures} failures; channel 1 with the row's mover's points (the old mapping) would "
           f"fail {old_failures}")
     return 0 if failures == 0 and checked > 0 else 1
 
