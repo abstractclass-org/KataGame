@@ -1220,6 +1220,7 @@ void Search::computeRootValues() {
   );
 
   //Figure out how to set recentScoreCenter
+  //KataGame fork: a centre that the caller fixed (fixedScoreCenter, the analysis engine's root views), else the root's
   if(!std::isnan(fixedScoreCenter))
     recentScoreCenter = fixedScoreCenter;
   else {

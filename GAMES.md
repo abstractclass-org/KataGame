@@ -344,6 +344,14 @@ For an engine protocol (design 04 of the engine repository), two additions that 
 - **`Search::endManualSearch`** ends a search that KataGo's manual interface runs (`beginSearch`,
   `runSinglePlayout`), as `runWholeSearch` ends its own. An engine module runs a search in slices with it.
 
+### The search of the root's views
+
+For a game whose network sees a part of a larger board (the views of "Optional members"), the analysis engine adds
+`rootViews`, off by default (`analyzeRootViews` in `analysis.cpp`, its fields in `docs/Analysis_Engine.md`). It
+searches the root in each view of a cover (a pass), then the child positions of the best candidates (a check).
+`Search::fixedScoreCenter` gives these searches one centre of the score utility in place of each root's centre
+(`computeRootValues`). Outside them it is `NAN`, and each search takes its root's centre, as in KataGo.
+
 ## The rules part
 
 `struct GameRules`. The Python binding needs this part, and the encoding part's symmetries when the game has that

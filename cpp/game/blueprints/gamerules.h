@@ -493,6 +493,7 @@ struct View {
     x = q + VIEW_RADIUS;
     y = r + VIEW_RADIUS;
   }
+  bool operator==(const View& other) const { return wx == other.wx && wy == other.wy && o == other.o; }
 };
 // The mover's view of the position in orientation o: the position's own by default.
 inline View view_of(const Position& p, int o) {
@@ -995,7 +996,6 @@ inline bool place_at_site(Position& p, int k, int q, int r) {
   }
   if(!touches)
     return false;
-  end_view(p);  // a site's move names no view's point
   if(off) {
     Box box = cells_box(p);
     for(int i = 0; i < b.n; i++)
@@ -1006,6 +1006,7 @@ inline bool place_at_site(Position& p, int k, int q, int r) {
     x = q - p.offsetQ + RULES_RADIUS;
     y = r - p.offsetR + RULES_RADIUS;
   }
+  end_view(p);  // a site's move names no view's point
   push_history(p);
   place(p, k, x, y);
   return true;
@@ -1086,7 +1087,7 @@ struct Placement {
   int k, x, y;
 };
 
-// The mover's legal placements on the whole rules board (fits: every cell on the board and empty, one of them next to
+// The mover's legal placements on the whole rules board (fits: every cell on the board and empty, one of them touching
 // a cell of the mover), by blueprint. None while a pick waits for its drop. The site's grid has no edge, so the site
 // also has the placements that stick out of the rules board (place_at_site), but no view's action names one.
 inline void legal_placements(const Position& p, std::vector<Placement>& out) {
@@ -1097,30 +1098,25 @@ inline void legal_placements(const Position& p, std::vector<Placement>& out) {
   const Box& used = p.cell.box();
   if(!used.any)
     return;
-  // The mover's frontier: the empty points next to its cells, within one point of the box that holds the cells.
+  // The mover's frontier: the empty points touching its cells, within one point of the box that holds the cells.
   std::vector<int32_t> frontier;
   for(int y = std::max(0, used.y0 - 1); y <= std::min(RULES_LEN - 1, used.y1 + 1); y++)
     for(int x = std::max(0, used.x0 - 1); x <= std::min(RULES_LEN - 1, used.x1 + 1); x++)
       if(!p.cell[y * RULES_LEN + x] && next_to_own(p, x, y, mover))
         frontier.push_back(y * RULES_LEN + x);
   // A legal placement has a cell on the frontier: each anchor that puts one there, once a blueprint.
-  static thread_local std::vector<uint8_t> tried(RULES_AREA);
-  std::vector<int32_t> touched;
+  std::vector<uint8_t> tried(RULES_AREA);  // the last blueprint (k + 1) that tried each anchor
   for(int k = 0; k < HAND; k++) {
     const Blueprint& b = p.hand[mover][k];
     for(const int32_t f : frontier)
       for(int i = 0; i < b.n; i++) {
         const int ax = f % RULES_LEN - b.q[i], ay = f / RULES_LEN - b.r[i];
-        if(!on_rules(ax, ay) || tried[ay * RULES_LEN + ax])
+        if(!on_rules(ax, ay) || tried[ay * RULES_LEN + ax] == k + 1)
           continue;
-        tried[ay * RULES_LEN + ax] = 1;
-        touched.push_back(ay * RULES_LEN + ax);
+        tried[ay * RULES_LEN + ax] = uint8_t(k + 1);
         if(fits(p, mover, b, ax, ay))
           out.push_back({k, ax, ay});
       }
-    for(const int32_t t : touched)
-      tried[t] = 0;
-    touched.clear();
   }
 }
 
@@ -1355,24 +1351,24 @@ struct GameRules {
       return;
     }
     const int x = action_x(action), y = action_y(action), channel = action_channel(action);
-    // The shifts of the mover's blueprints in the view's frame: in orientation 0 none, as a ViewHand holds them
-    // before view_hand (its blueprints are not read here).
+    // The view that reads the action, and the shifts of the mover's blueprints in its frame: in orientation 0 none, as
+    // a ViewHand holds them before view_hand (its blueprints are not read here). Then a view that a caller set ends.
+    const View view = view_of(p);
     ViewHand hand;
-    if(p.orientation != 0)
+    if(view.o != 0)
       view_hand(p, mover, hand);
+    end_view(p);
     if(channel < HAND_CHANNEL) {
       // The placement's (0, 0) cell on the rules board: the anchor less its blueprint's shift.
       const int k = channel - PLACE;
       int rx, ry;
-      view_of(p).rules_point(x - hand.mq[k], y - hand.mr[k], rx, ry);
-      end_view(p);
+      view.rules_point(x - hand.mq[k], y - hand.mr[k], rx, ry);
       place(p, k, rx, ry);
       return;
     }
     const int k = channel - HAND_CHANNEL;
     int q, r;  // the cell in blueprint k's site frame
     hand.site_cell(k, x, y, q, r);
-    end_view(p);
     if(p.picked < 0) {  // the pick: the position keeps its orientation for the drop (orient)
       take(p, k, q, r);
       return;
@@ -1746,15 +1742,7 @@ struct GameRules {
   // (the view's point (x, y) is the middle plus R^o (x - VIEW_RADIUS, y - VIEW_RADIUS)). "" is the rule's view: the
   // mover's window and the rule's orientation.
   // The view that a caller set (set_view), or "".
-  static std::string view_text(const Position& p) {
-    if(!p.viewSet)
-      return "";
-    View view;
-    view.wx = p.viewX;
-    view.wy = p.viewY;
-    view.o = p.orientation;
-    return view_text_of(p, view);
-  }
+  static std::string view_text(const Position& p) { return p.viewSet ? view_text_of(p, view_of(p)) : ""; }
   // Sets the view of p until its next action (play ends it), in place of the rule's: the legal actions, the strings of
   // the actions, the inputs, the symmetries' images and the hash are then that view's. "" or the rule's view itself
   // gives back the rule's view, with nothing set. The middle must be a point of the rules board.
@@ -1796,20 +1784,15 @@ struct GameRules {
     std::vector<Placement> placements;
     legal_placements(p, placements);
     const View rule = rule_view(p);
-    bool all = true;
-    for(const Placement& placement : placements)
-      if(!view_holds(p, rule, placement)) {
-        all = false;
-        break;
-      }
-    if(all) {
+    if(std::all_of(placements.begin(), placements.end(),
+                   [&](const Placement& placement) { return view_holds(p, rule, placement); })) {
       views.push_back("");
       return;
     }
     std::vector<View> cover;
     greedy_cover(p, placements, rule, cover);
     for(const View& view : cover)
-      views.push_back(view.wx == rule.wx && view.wy == rule.wy && view.o == rule.o ? "" : view_text_of(p, view));
+      views.push_back(view == rule ? "" : view_text_of(p, view));
   }
 };
 
