@@ -102,9 +102,10 @@ inline Box sym_box(const Box& b, int symmetry) {
   return image;
 }
 
-// The rules board's columns x0 to x1 - 1 and rows y0 to y1 - 1 (on the board) that hold every rules point of a view
-// and of the points within `reach` of it: the box of the turned corners of the view and its margin.
-inline void view_box(const View& view, int reach, int& x0, int& x1, int& y0, int& y1) {
+// The rules board's columns x0 to x1 - 1 and rows y0 to y1 - 1 (on the board) that hold every rules point of the
+// position's view and of the points within `reach` of it: the box of the turned corners of the view and its margin.
+inline void view_box(const Position& p, int reach, int& x0, int& x1, int& y0, int& y1) {
+  const View view = view_of(p);
   const int l = VIEW_RADIUS + reach;
   int q0 = 0, q1 = 0, r0 = 0, r1 = 0;
   for(int corner = 0; corner < 4; corner++) {
@@ -119,10 +120,6 @@ inline void view_box(const View& view, int reach, int& x0, int& x1, int& y0, int
   x1 = std::min(RULES_LEN, view.wx + q1 + 1);
   y0 = std::max(0, view.wy + r0);
   y1 = std::min(RULES_LEN, view.wy + r1 + 1);
-}
-// The same for the position's view.
-inline void view_box(const Position& p, int reach, int& x0, int& x1, int& y0, int& y1) {
-  view_box(view_of(p), reach, x0, x1, y0, y1);
 }
 
 struct GameEncoding {
@@ -179,12 +176,18 @@ struct GameEncoding {
 
   template<class Set>
   static void spatial_inputs(const Position& p, const GameInterface::InputOptions& options, Set&& set) {
-    const Position& image = options.symmetry == 0 ? p : near_image(p, options.symmetry, options.extended);
+    const Position& image = options.symmetry == 0 ? p : near_image(p, options.symmetry);
     write_inputs(image, options.history, set);
     if(options.extended) {
-      write_threats(image, set);
+      // The threats and the minimap read cells far from the view, which the image near the view does not hold. They
+      // move as pixels (the trainer maps them so), so they come from p, at the image's points.
+      auto pixel = [&](int x, int y, int plane) {
+        GameInterface::symPoint(x, y, options.symmetry, VIEW, VIEW);
+        set(x, y, plane);
+      };
+      write_threats(p, pixel);
       write_legal_hand(image, set);
-      write_minimap(p, options.symmetry, set);  // the whole board's cells: from p, then at the image's pixels
+      write_minimap(p, pixel);
     }
   }
 
@@ -373,11 +376,8 @@ struct GameEncoding {
       }
     }
     for(int j = 0; j < PADDED; j++) {
-      // The points next to a stamped point, by DIRS (view_rows, next_to): stamped[j + 1] is the padded row j.
-      const ViewRow& above = stamped[j];
-      const ViewRow& row = stamped[j + 1];
-      const ViewRow& below = stamped[j + 2];
-      const ViewRow hit = ((row >> 1) | (row << 1) | (above >> 1) | above | (below << 1) | below) & takeable[j];
+      // The points next to a stamped point: stamped[j + 1] is the padded row j.
+      const ViewRow hit = next_to_rows(stamped, j + 1) & takeable[j];
       for_each_bit(hit, [&](int i) {
         int rx, ry, x, y;
         theirs.rules_point(i - 1, j - 1, rx, ry);
@@ -389,33 +389,14 @@ struct GameEncoding {
   }
 
   // The legal hand actions (LEGAL_HAND + k): the hand's points of the mover's blueprint k (in the view's frame,
-  // ViewHand) where a pick is legal now, or a drop after a pick, as legal_actions gives them.
+  // ViewHand) where a pick is legal now, or a drop after a pick, as legal_actions gives them (for_each_hand_action).
   template<class Set>
   static void write_legal_hand(const Position& p, Set& set) {
     if(GameRules::terminal(p))
       return;
-    const int mover = GameRules::next_player(p);
     ViewHand view;
-    view_hand(p, mover, view);
-    const Blueprint* hand = p.hand[mover];
-    if(p.picked >= 0) {
-      any_drop_point(hand, [&](int j, int q, int r) {
-        if(drop_fits(hand, p.picked, p.pickQ, p.pickR, p.pickConnected, j, q, r)) {
-          int x, y;
-          view.hand_point(j, q, r, x, y);
-          set(x, y, LEGAL_HAND + j);
-        }
-        return false;
-      });
-      return;
-    }
-    for(int k = 0; k < HAND; k++)
-      for(int i = 0; i < hand[k].n; i++)
-        if(can_pick(p, k, hand[k].q[i], hand[k].r[i])) {
-          int x, y;
-          view.hand_point(k, hand[k].q[i], hand[k].r[i], x, y);
-          set(x, y, LEGAL_HAND + k);
-        }
+    view_hand(p, GameRules::next_player(p), view);
+    for_each_hand_action(p, view, [&](int k, int x, int y) { set(x, y, LEGAL_HAND + k); });
   }
 
   // The minimap's bin (0 to VIEW - 1) of a point u of the minimap's frame, from its middle: the bins beyond its reach
@@ -431,11 +412,10 @@ struct GameEncoding {
   // the rules board's 5 x 5 points (the board recenters after each placement), 51 x 51 bins in the middle. A bin of
   // planes MINIMAP + 3 * side + type holds a cell of that player (side 0 the mover) and type. MY_WINDOW and
   // THEIR_WINDOW: the bins that each player's view meets (player_view), a square of the turned frame. The planes of
-  // the image at a symmetry are the planes' image, a pixel map (the bins of the rules board map to bins, and the box's
-  // middle rounds toward zero, as the recentering does). So this reads p, not the image, which holds the cells near the
-  // views only (near_image).
+  // the position's image at a symmetry are the planes' image, a pixel map (spatial_inputs): the bins of the rules board
+  // map to bins, and the box's middle rounds toward zero, as the recentering does.
   template<class Set>
-  static void write_minimap(const Position& p, int symmetry, Set& set) {
+  static void write_minimap(const Position& p, Set& set) {
     const int mover = GameRules::next_player(p);
     const View view = view_of(p);
     const int turnBack = back(view.o);
@@ -488,13 +468,10 @@ struct GameEncoding {
         for(int bx = minimap_bin(u - du - VIEW_RADIUS); bx <= minimap_bin(u - du + VIEW_RADIUS); bx++)
           mark(bx, by, side == 0 ? MY_WINDOW : THEIR_WINDOW);
     }
-    for(int i : marked) {
-      int x = i % VIEW, y = i / VIEW;
-      GameInterface::symPoint(x, y, symmetry, VIEW, VIEW);
+    for(int i : marked)
       for(int plane = MINIMAP; plane <= THEIR_WINDOW; plane++)
         if(marks[i] >> (plane - MINIMAP) & 1)
-          set(x, y, plane);
-    }
+          set(i % VIEW, i / VIEW, plane);
   }
 
   // A score on a log scale, log10(1 + |points| / 10) / 2 with the score's sign: 100 points give 0.52, 1,000 give 1.00
@@ -698,23 +675,15 @@ struct GameEncoding {
     return s;
   }
 
-  // The image as the inputs read it: the records, and the cells within INPUT_REACH of the view only, and of the
-  // opponent's view too with the extended inputs (write_threats). The counts of cells and stars stay the whole board's.
-  static const Position& near_image(const Position& p, int symmetry, bool extended = false) {
+  // The image as the inputs read it: the records, and the cells within INPUT_REACH of the view only. The counts of
+  // cells and stars stay the whole board's.
+  static const Position& near_image(const Position& p, int symmetry) {
     static thread_local std::vector<Position> buffer(1);
     Position& s = buffer[0];
     s.cell.clear();
     sym_records(p, symmetry, s);
     int x0, x1, y0, y1;
     view_box(p, INPUT_REACH, x0, x1, y0, y1);
-    if(extended) {
-      int a0, a1, b0, b1;
-      view_box(player_view(p, 1 - GameRules::next_player(p)), INPUT_REACH, a0, a1, b0, b1);
-      x0 = std::min(x0, a0);
-      x1 = std::max(x1, a1);
-      y0 = std::min(y0, b0);
-      y1 = std::max(y1, b1);
-    }
     sym_cells(p, symmetry, x0, x1, y0, y1, s);
     return s;
   }

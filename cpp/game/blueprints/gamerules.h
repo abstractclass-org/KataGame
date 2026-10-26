@@ -620,6 +620,11 @@ inline void for_each_bit(const ViewRow& r, F&& f) {
 struct ViewRows {
   ViewRow empty[VIEW], frontier[2][VIEW], open[2][VIEW];
 };
+// Of rows padded as view_rows pads them (row y + 1, bit x + 1), bit x + 1 of the padded row j: a point of the rows
+// next to the point (x, j - 1), by DIRS: (x + 1, y), (x + 1, y - 1), (x, y - 1), (x - 1, y), (x - 1, y + 1), (x, y + 1).
+inline ViewRow next_to_rows(const ViewRow* rows, int j) {
+  return (rows[j] >> 1) | (rows[j] << 1) | (rows[j - 1] >> 1) | rows[j - 1] | (rows[j + 1] << 1) | rows[j + 1];
+}
 inline void view_rows(const Position& p, const View& view, ViewRows& out) {
   // Rows -1 to VIEW of the view and its points -1 to VIEW, padded: row y + 1, bit x + 1. Off the rules board: nothing.
   constexpr int PADDED = VIEW + 2;
@@ -653,17 +658,12 @@ inline void view_rows(const Position& p, const View& view, ViewRows& out) {
         if(on_rules(rx, ry))
           add(j, b, p.cell[ry * RULES_LEN + rx]);
       }
-  // Bit x + 1 of the padded row j: a point of rows of set (padded) next to the point (x, j - 1), by DIRS: (x + 1, y),
-  // (x + 1, y - 1), (x, y - 1), (x - 1, y), (x - 1, y + 1), (x, y + 1).
-  auto next_to = [](const ViewRow* set, int j) {
-    return (set[j] >> 1) | (set[j] << 1) | (set[j - 1] >> 1) | set[j - 1] | (set[j + 1] << 1) | set[j + 1];
-  };
   for(int y = 0; y < VIEW; y++) {
     const int j = y + 1;
     out.empty[y] = (empty[j] >> 1) & VIEW_ROW_MASK;
-    const ViewRow nextToEmpty = next_to(empty, j);
+    const ViewRow nextToEmpty = next_to_rows(empty, j);
     for(int player = 0; player < 2; player++) {
-      out.frontier[player][y] = out.empty[y] & (next_to(own[player], j) >> 1);
+      out.frontier[player][y] = out.empty[y] & (next_to_rows(own[player], j) >> 1);
       out.open[player][y] = ((notWall[player][j] & nextToEmpty) >> 1) & VIEW_ROW_MASK;
     }
   }
@@ -755,22 +755,6 @@ inline bool can_drop(const Position& p, int j, int q, int r) {
   return drop_fits(hand, p.picked, p.pickQ, p.pickR, p.pickConnected, j, q, r);
 }
 
-// The drops after the pick, in ascending order of action, at the hand's points of the view's frame (view: the mover's
-// blueprints in it).
-inline void drops(const Position& p, const ViewHand& view, std::vector<int>& out) {
-  const Blueprint* hand = p.hand[turn_of(p.ply)];
-  any_drop_point(hand, [&](int j, int q, int r) {
-    if(drop_fits(hand, p.picked, p.pickQ, p.pickR, p.pickConnected, j, q, r)) {
-      int x, y;
-      view.hand_point(j, q, r, x, y);
-      out.push_back(action_at(x, y, HAND_CHANNEL + j));
-    }
-    return false;
-  });
-  std::sort(out.begin(), out.end());
-  out.erase(std::unique(out.begin(), out.end()), out.end());
-}
-
 // Takes the cell (q, r) out of the mover's blueprint k: the pick.
 inline void take(Position& p, int k, int q, int r) {
   Blueprint& b = p.hand[turn_of(p.ply)][k];
@@ -796,6 +780,31 @@ inline bool can_pick(const Position& p, int k, int q, int r) {
   return any_drop_point(hand, [&](int j, int dq, int dr) {
     return drop_fits(hand, k, q, r, restConnected, j, dq, dr);
   });
+}
+
+// Calls f(k, x, y) for each legal edit of the mover, at its hand's point (x, y) of blueprint k in the view's frame
+// (view: the mover's blueprints in it): the drops after the pick (a point can come more than once), else the picks.
+template<class F>
+inline void for_each_hand_action(const Position& p, const ViewHand& view, F&& f) {
+  const Blueprint* hand = p.hand[turn_of(p.ply)];
+  if(p.picked >= 0) {
+    any_drop_point(hand, [&](int j, int q, int r) {
+      if(drop_fits(hand, p.picked, p.pickQ, p.pickR, p.pickConnected, j, q, r)) {
+        int x, y;
+        view.hand_point(j, q, r, x, y);
+        f(j, x, y);
+      }
+      return false;
+    });
+    return;
+  }
+  for(int k = 0; k < HAND; k++)
+    for(int i = 0; i < hand[k].n; i++)
+      if(can_pick(p, k, hand[k].q[i], hand[k].r[i])) {
+        int x, y;
+        view.hand_point(k, hand[k].q[i], hand[k].r[i], x, y);
+        f(k, x, y);
+      }
 }
 
 // Moves every point of the rules board by (-dx, -dy) in the position's own records: the history and the recent
@@ -1297,26 +1306,17 @@ struct GameRules {
     const int mover = turn_of(p.ply);
     ViewHand hand;
     view_hand(p, mover, hand);
-    if(p.picked >= 0) {
-      drops(p, hand, out);
-      return;
+    if(p.picked < 0) {
+      ViewRows rows;
+      view_rows(p, view_of(p), rows);
+      for(int k = 0; k < HAND; k++)
+        for_each_fit(hand.b[k], rows.empty, rows.frontier[mover],
+                     [&](int x, int y) { out.push_back(action_at(x, y, PLACE + k)); });
     }
-    ViewRows rows;
-    view_rows(p, view_of(p), rows);
-    for(int k = 0; k < HAND; k++)
-      for_each_fit(hand.b[k], rows.empty, rows.frontier[mover],
-                   [&](int x, int y) { out.push_back(action_at(x, y, PLACE + k)); });
-    // The picks.
-    for(int k = 0; k < HAND; k++) {
-      const Blueprint& b = p.hand[mover][k];
-      for(int i = 0; i < b.n; i++)
-        if(can_pick(p, k, b.q[i], b.r[i])) {
-          int x, y;
-          hand.hand_point(k, b.q[i], b.r[i], x, y);
-          out.push_back(action_at(x, y, HAND_CHANNEL + k));
-        }
-    }
+    // The picks, or the drops after the pick.
+    for_each_hand_action(p, hand, [&](int k, int x, int y) { out.push_back(action_at(x, y, HAND_CHANNEL + k)); });
     std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
   }
   static bool is_legal(const Position& p, int action) {
     if(action < 0 || action >= PASS_ACTION || terminal(p))

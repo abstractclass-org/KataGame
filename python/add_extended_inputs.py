@@ -29,9 +29,6 @@ from enclosure_add_regret_heads import group_names
 from katago.train import games, modelconfigs
 from katago.train.model_pytorch import Model
 
-# The weights that read the inputs: conv_spatial (out, in, y, x) and linear_global (out, in), both on dimension 1.
-KEYS = ("conv_spatial.weight", "linear_global.weight")
-
 
 def widen(t, old_n, new_n):
     """t with new_n - old_n zeros after its old_n entries on dimension 1."""
@@ -51,10 +48,12 @@ def convert(ckpt):
         raise ValueError(f"the game {game.NAME} has no extended inputs")
     new_config = copy.deepcopy(config)
     new_config["inputs_version"] = 10
+    # The weights that read the inputs, on dimension 1: conv_spatial (out, in, y, x) and linear_global (out, in).
     sizes = {
-        KEYS[0]: (modelconfigs.get_num_bin_input_features(config), modelconfigs.get_num_bin_input_features(new_config)),
-        KEYS[1]: (modelconfigs.get_num_global_input_features(config),
-                  modelconfigs.get_num_global_input_features(new_config)),
+        "conv_spatial.weight": (modelconfigs.get_num_bin_input_features(config),
+                                modelconfigs.get_num_bin_input_features(new_config)),
+        "linear_global.weight": (modelconfigs.get_num_global_input_features(config),
+                                 modelconfigs.get_num_global_input_features(new_config)),
     }
 
     touched = []

@@ -590,17 +590,15 @@ void NNEvaluator::fillRowBufs(
   //the float row cleared by its last entries (2026-10-05): the packed row is 9.7 KB, cleared whole. V9 rows are V8's
   //with two more global inputs (2026-10-13), and V10 rows V9's with the game's extended inputs (2026-10-26).
   buf.rowSpatialPacked = gameInputs;
-  if(inputsVersion == 10) {
-    testAssert(rowSpatialLen == NNInputs::NUM_SPATIAL_ELTS_V10);
-    if(buf.rowSpatialBits.size() < NNInputs::NUM_SPATIAL_WORDS_V10)
-      buf.rowSpatialBits.resize(NNInputs::NUM_SPATIAL_WORDS_V10);
-    NNInputs::fillRowV10Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
-  }
-  else if(gameInputs) {
-    testAssert(rowSpatialLen == NNInputs::NUM_SPATIAL_ELTS_V8);
-    if(buf.rowSpatialBits.size() < NNInputs::NUM_SPATIAL_WORDS_V8)
-      buf.rowSpatialBits.resize(NNInputs::NUM_SPATIAL_WORDS_V8);
-    if(inputsVersion == 9)
+  if(gameInputs) {
+    const bool extended = inputsVersion == 10;
+    testAssert(rowSpatialLen == (extended ? NNInputs::NUM_SPATIAL_ELTS_V10 : NNInputs::NUM_SPATIAL_ELTS_V8));
+    const size_t words = extended ? NNInputs::NUM_SPATIAL_WORDS_V10 : NNInputs::NUM_SPATIAL_WORDS_V8;
+    if(buf.rowSpatialBits.size() < words)
+      buf.rowSpatialBits.resize(words);
+    if(extended)
+      NNInputs::fillRowV10Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
+    else if(inputsVersion == 9)
       NNInputs::fillRowV9Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
     else
       NNInputs::fillRowV8Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);

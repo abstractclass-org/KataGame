@@ -2928,6 +2928,11 @@ void NNInputs::fillRowV7(
 //INPUTSVERSION 8 (Enclosure fork)
 //===========================================================================================
 
+//The spatial planes of the inputs versions 8 to 10: V9 has V8's, V10 the game's extended planes too.
+static int gameSpatialFeatures(int inputsVersion) {
+  return inputsVersion >= 10 ? NNInputs::NUM_FEATURES_SPATIAL_V10 : NNInputs::NUM_FEATURES_SPATIAL_V8;
+}
+
 //KataGame fork: the game's inputs (GameEncoding::spatial_inputs and global_inputs) after the front's on-board plane.
 //See NUM_FEATURES_SPATIAL_V8.
 //Fills rowGlobal and calls setEntry(i) for each spatial entry i that is 1 (the spatial row must start all 0); shared
@@ -2952,7 +2957,6 @@ static void fillRowV8Entries(
   assert(nextPlayer == board.nextPla());
   (void)nextPlayer;
   const int numPos = nnXLen * nnYLen;
-  using NNInputs::NUM_FEATURES_SPATIAL_V8;
   using NNInputs::NUM_FEATURES_GLOBAL_V8;
   const bool playoutInputs = inputsVersion >= 9;
   const bool extended = inputsVersion >= 10;
@@ -2964,7 +2968,7 @@ static void fillRowV8Entries(
   int posStride;
   if(useNHWC) {
     featureStride = 1;
-    posStride = extended ? NNInputs::NUM_FEATURES_SPATIAL_V10 : NUM_FEATURES_SPATIAL_V8;
+    posStride = gameSpatialFeatures(inputsVersion);
   }
   else {
     featureStride = numPos;
@@ -3017,7 +3021,6 @@ static void fillRowV8Floats(
   int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries,
   int inputsVersion
 ) {
-  const int numSpatial = inputsVersion >= 10 ? NNInputs::NUM_FEATURES_SPATIAL_V10 : NNInputs::NUM_FEATURES_SPATIAL_V8;
   //The spatial planes are sparse 0/1: with setEntries, clear only the entries the last fill set (nninputs.h).
   if(setEntries != NULL) {
     for(int i : *setEntries)
@@ -3025,7 +3028,7 @@ static void fillRowV8Floats(
     setEntries->clear();
   }
   else
-    std::fill(rowBin, rowBin + numSpatial * nnXLen * nnYLen, 0.0f);
+    std::fill(rowBin, rowBin + gameSpatialFeatures(inputsVersion) * nnXLen * nnYLen, 0.0f);
   //Each entry set is recorded for the next fill's clearing.
   fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, 0, inputsVersion, [&](int i) {
     rowBin[i] = 1.0f;
