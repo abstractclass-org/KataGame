@@ -28,6 +28,9 @@
 //   crop. The actions, the inputs and the targets are in the view's own frame, the blueprints of the hand too. A rule
 //   gives each position its orientation, or each game (the setting viewOrientation). The default is 0, the port's view
 //   from before the orientations. So a game's actions replay only under the rule that played them.
+// - A caller can set the view of one position (set_view): another middle and orientation, until the next action. The
+//   views of a cover (view_cover) hold every legal placement between them, for a search with one pass a view (the
+//   analysis engine's rootViews).
 
 #include <algorithm>
 #include <array>
@@ -148,10 +151,11 @@ constexpr uint64_t KEY_SCORE = 55000;    // + the player, and the score
 constexpr uint64_t KEY_BOX = 60000;      // + player * RECENT + i, and the recent placement's box
 constexpr uint64_t KEY_OFFSET = 60100;   // the offset
 constexpr uint64_t KEY_ORIENTATION = 60101;  // the view's orientation, when it is not 0
+constexpr uint64_t KEY_VIEW = 60102;     // the middle of a view that a caller set (set_view)
 constexpr uint64_t KEY_HISTORY = 70000;  // gameencoding.h's input_hash: + h * 2 * RULES_AREA + a point
 static_assert(KEY_HAND + 6 * 4096 <= KEY_PLY && KEY_PLY + 121 <= KEY_PICK && KEY_PICK + 3 * 4096 <= KEY_SCORE &&
               KEY_SCORE + 2 <= KEY_BOX && KEY_BOX + 4 <= KEY_OFFSET && KEY_OFFSET < KEY_ORIENTATION &&
-              KEY_ORIENTATION < KEY_HISTORY,
+              KEY_ORIENTATION < KEY_VIEW && KEY_VIEW < KEY_HISTORY,
               "the hash's ranges of keys do not meet");
 
 // A blueprint: its cells (q, r) and their types, in the site's frame (normalize), except the picked blueprint's rest.
@@ -405,6 +409,13 @@ struct Position {
   // The view's orientation, 0 to 5 (the view's orientations, above): the rule's after each change (orient). A
   // symmetry's image can have any of them (gameencoding.h).
   int8_t orientation = 0;
+  // A view that a caller set for this position alone (set_view): its middle (viewX, viewY), a point of the rules
+  // board, in place of the mover's window's middle, and its orientation in `orientation`. ruleOrientation keeps the
+  // rule's orientation, which the position takes back when its next action ends the view (end_view). Self-play sets
+  // none.
+  bool viewSet = false;
+  int8_t ruleOrientation = 0;
+  int16_t viewX = 0, viewY = 0;
   // The hash of the cells, by their site coordinates, kept as cells come and go (so a recentering keeps it).
   Hash128 cellHash;
   // The last HISTORY actions, the newest first. Not part of the game's state: hash() leaves it out, and the one-line
@@ -442,14 +453,30 @@ inline void window_middle(const Position& p, int player, int& wx, int& wy) {
   wx = RULES_RADIUS + (box.any ? half_off_middle(box.x0, box.x1) : 0);
   wy = RULES_RADIUS + (box.any ? half_off_middle(box.y0, box.y1) : 0);
 }
-// The mover's window: the rules board's point of the view's point (0, 0) in orientation 0.
+// The view's middle: the rules point of the view that a caller set (set_view), else the mover's window's middle.
+inline void view_middle(const Position& p, int& wx, int& wy) {
+  if(p.viewSet) {
+    wx = p.viewX;
+    wy = p.viewY;
+  }
+  else
+    window_middle(p, turn_of(p.ply), wx, wy);
+}
+// The rules board's point of the view's point (0, 0) in orientation 0.
 inline void view_origin(const Position& p, int& ox, int& oy) {
-  window_middle(p, turn_of(p.ply), ox, oy);
+  view_middle(p, ox, oy);
   ox -= VIEW_RADIUS;
   oy -= VIEW_RADIUS;
 }
+// Ends a view that a caller set: the position takes back the mover's window and the rule's orientation.
+inline void end_view(Position& p) {
+  if(p.viewSet) {
+    p.viewSet = false;
+    p.orientation = p.ruleOrientation;
+  }
+}
 
-// The mover's view: the rules point (wx, wy) of its middle (the mover's window's middle) and its orientation o.
+// The mover's view: the rules point (wx, wy) of its middle (view_middle) and its orientation o.
 struct View {
   int wx = 0, wy = 0, o = 0;
   // The rules point (rx, ry) of the view's point (x, y), on the board or not.
@@ -470,7 +497,7 @@ struct View {
 // The mover's view of the position in orientation o: the position's own by default.
 inline View view_of(const Position& p, int o) {
   View view;
-  window_middle(p, turn_of(p.ply), view.wx, view.wy);
+  view_middle(p, view.wx, view.wy);
   view.o = o;
   return view;
 }
@@ -968,6 +995,7 @@ inline bool place_at_site(Position& p, int k, int q, int r) {
   }
   if(!touches)
     return false;
+  end_view(p);  // a site's move names no view's point
   if(off) {
     Box box = cells_box(p);
     for(int i = 0; i < b.n; i++)
@@ -1053,6 +1081,181 @@ inline std::vector<std::string> split(const std::string& text, char separator) {
   return out;
 }
 
+// A placement of the mover: blueprint k with its (0, 0) cell on the rules point (x, y).
+struct Placement {
+  int k, x, y;
+};
+
+// The mover's legal placements on the whole rules board (fits: every cell on the board and empty, one of them next to
+// a cell of the mover), by blueprint. None while a pick waits for its drop. The site's grid has no edge, so the site
+// also has the placements that stick out of the rules board (place_at_site), but no view's action names one.
+inline void legal_placements(const Position& p, std::vector<Placement>& out) {
+  out.clear();
+  if(p.ply >= PLIES || p.picked >= 0)
+    return;
+  const int mover = turn_of(p.ply);
+  const Box& used = p.cell.box();
+  if(!used.any)
+    return;
+  // The mover's frontier: the empty points next to its cells, within one point of the box that holds the cells.
+  std::vector<int32_t> frontier;
+  for(int y = std::max(0, used.y0 - 1); y <= std::min(RULES_LEN - 1, used.y1 + 1); y++)
+    for(int x = std::max(0, used.x0 - 1); x <= std::min(RULES_LEN - 1, used.x1 + 1); x++)
+      if(!p.cell[y * RULES_LEN + x] && next_to_own(p, x, y, mover))
+        frontier.push_back(y * RULES_LEN + x);
+  // A legal placement has a cell on the frontier: each anchor that puts one there, once a blueprint.
+  static thread_local std::vector<uint8_t> tried(RULES_AREA);
+  std::vector<int32_t> touched;
+  for(int k = 0; k < HAND; k++) {
+    const Blueprint& b = p.hand[mover][k];
+    for(const int32_t f : frontier)
+      for(int i = 0; i < b.n; i++) {
+        const int ax = f % RULES_LEN - b.q[i], ay = f / RULES_LEN - b.r[i];
+        if(!on_rules(ax, ay) || tried[ay * RULES_LEN + ax])
+          continue;
+        tried[ay * RULES_LEN + ax] = 1;
+        touched.push_back(ay * RULES_LEN + ax);
+        if(fits(p, mover, b, ax, ay))
+          out.push_back({k, ax, ay});
+      }
+    for(const int32_t t : touched)
+      tried[t] = 0;
+    touched.clear();
+  }
+}
+
+// Whether the view holds every cell of the mover's placement.
+inline bool view_holds(const Position& p, const View& view, const Placement& placement) {
+  const Blueprint& b = p.hand[turn_of(p.ply)][placement.k];
+  for(int i = 0; i < b.n; i++) {
+    int x, y;
+    view.view_point(placement.x + b.q[i], placement.y + b.r[i], x, y);
+    if(!on_view(x, y))
+      return false;
+  }
+  return true;
+}
+
+// A greedy cover of the mover's placements by views of orientations 0 to 2 (the rule of
+// games/blueprints/tools/view_cover.mjs, a view anywhere): each step adds the view that holds the most placements
+// that no view holds yet, until every placement is in a view. In the frame of orientation o (the rules board turned by
+// R^back(o)), a view holds the points within VIEW_RADIUS of its middle on both axes. So the middles of the views that
+// hold a placement are a box (its reach), and a grid of differences counts the placements that each middle holds. The
+// best middle of a step lies in the box of the uncovered placements' middles: a middle moved into that box keeps each
+// placement that it holds. Of equal counts, a step takes the view nearest to `near`'s middle (the hex grid's
+// distance, which the turns keep), then the view of `near`'s orientation, then the lowest orientation.
+inline void greedy_cover(const Position& p, const std::vector<Placement>& placements, const View& near,
+                         std::vector<View>& views) {
+  views.clear();
+  struct Reach {
+    int x0, x1, y0, y1;
+  };
+  const Blueprint* hand = p.hand[turn_of(p.ply)];
+  const int n = int(placements.size());
+  std::vector<Reach> reach[VIEW_ORIENTATIONS];
+  for(int o = 0; o < VIEW_ORIENTATIONS; o++) {
+    Reach cells[HAND];  // the box of each blueprint's cells in the frame
+    for(int k = 0; k < HAND; k++) {
+      cells[k] = {RULES_LEN, -RULES_LEN, RULES_LEN, -RULES_LEN};
+      for(int i = 0; i < hand[k].n; i++) {
+        int q = hand[k].q[i], r = hand[k].r[i];
+        turn(q, r, back(o));
+        cells[k] = {std::min(cells[k].x0, q), std::max(cells[k].x1, q), std::min(cells[k].y0, r),
+                    std::max(cells[k].y1, r)};
+      }
+    }
+    reach[o].resize(n);
+    for(int i = 0; i < n; i++) {
+      const Reach& c = cells[placements[i].k];
+      int x = placements[i].x, y = placements[i].y;
+      turn(x, y, back(o));
+      reach[o][i] = {x + c.x1 - VIEW_RADIUS, x + c.x0 + VIEW_RADIUS, y + c.y1 - VIEW_RADIUS, y + c.y0 + VIEW_RADIUS};
+    }
+  }
+  auto hex_distance = [](int dq, int dr) { return (std::abs(dq) + std::abs(dr) + std::abs(dq + dr)) / 2; };
+  std::vector<int> uncovered(n);
+  for(int i = 0; i < n; i++)
+    uncovered[i] = i;
+  std::vector<int> grid;
+  while(!uncovered.empty()) {
+    int bestCount = 0, bestDistance = 0, bestO = 0, bestX = 0, bestY = 0;
+    for(int o = 0; o < VIEW_ORIENTATIONS; o++) {
+      const std::vector<Reach>& r = reach[o];
+      int x0 = INT32_MAX, x1 = INT32_MIN, y0 = INT32_MAX, y1 = INT32_MIN;  // the box of the uncovered middles
+      for(const int i : uncovered) {
+        const int mx = (r[i].x0 + r[i].x1) / 2, my = (r[i].y0 + r[i].y1) / 2;
+        x0 = std::min(x0, mx);
+        x1 = std::max(x1, mx);
+        y0 = std::min(y0, my);
+        y1 = std::max(y1, my);
+      }
+      const int w = x1 - x0 + 2, h = y1 - y0 + 2;
+      grid.assign(size_t(w) * h, 0);
+      for(const int i : uncovered) {
+        const int a = std::max(r[i].x0, x0) - x0, b = std::min(r[i].x1, x1) - x0 + 1;
+        const int c = std::max(r[i].y0, y0) - y0, d = std::min(r[i].y1, y1) - y0 + 1;
+        if(a >= b || c >= d)
+          continue;
+        grid[c * w + a]++;
+        grid[c * w + b]--;
+        grid[d * w + a]--;
+        grid[d * w + b]++;
+      }
+      for(int y = 0; y < h; y++)
+        for(int x = 1; x < w; x++)
+          grid[y * w + x] += grid[y * w + x - 1];
+      for(int y = 1; y < h; y++)
+        for(int x = 0; x < w; x++)
+          grid[y * w + x] += grid[(y - 1) * w + x];
+      int nx = near.wx, ny = near.wy;
+      turn(nx, ny, back(o));
+      for(int y = 0; y + 1 < h; y++)
+        for(int x = 0; x + 1 < w; x++) {
+          const int count = grid[y * w + x];
+          if(count < bestCount || count == 0)
+            continue;
+          const int distance = hex_distance(x0 + x - nx, y0 + y - ny);
+          if(count > bestCount || distance < bestDistance ||
+             (distance == bestDistance && o == near.o && bestO != near.o)) {
+            bestCount = count;
+            bestDistance = distance;
+            bestO = o;
+            bestX = x0 + x;
+            bestY = y0 + y;
+          }
+        }
+    }
+    // A placement's own middle holds it (a blueprint is narrower than a view), so each step holds one or more.
+    const std::vector<Reach>& r = reach[bestO];
+    uncovered.erase(std::remove_if(uncovered.begin(), uncovered.end(),
+                                   [&](int i) {
+                                     return r[i].x0 <= bestX && bestX <= r[i].x1 && r[i].y0 <= bestY &&
+                                            bestY <= r[i].y1;
+                                   }),
+                    uncovered.end());
+    View view;
+    view.wx = bestX;
+    view.wy = bestY;
+    turn(view.wx, view.wy, bestO);
+    view.o = bestO;
+    views.push_back(view);
+  }
+}
+
+// The rule's view of the mover: the mover's window and the rule's orientation, whatever view a caller set.
+inline View rule_view(const Position& p) {
+  View view;
+  window_middle(p, turn_of(p.ply), view.wx, view.wy);
+  view.o = p.viewSet ? p.ruleOrientation : p.orientation;
+  return view;
+}
+
+// A view's text: "q,r,o", the site's coordinates of its middle and its orientation.
+inline std::string view_text_of(const Position& p, const View& view) {
+  return cell_text(view.wx - RULES_RADIUS + p.offsetQ, view.wy - RULES_RADIUS + p.offsetR) + "," +
+         std::to_string(view.o);
+}
+
 struct GameRules {
   static constexpr const char* NAME = "blueprints";
   using Position = blueprints::Position;
@@ -1134,10 +1337,13 @@ struct GameRules {
     view_of(p).rules_point(x - hand.mq[k], y - hand.mr[k], rx, ry);
     return fits(p, mover, p.hand[mover][k], rx, ry);
   }
+  // The action is read in the position's view. A view that a caller set (set_view) then ends, before the move, so the
+  // next position has the view of the rule, as after the same move in any other view.
   static void play(Position& p, int action) {
     const int mover = turn_of(p.ply);
     push_history(p);  // only a placement leaves points
     if(action == PASS_ACTION) {
+      end_view(p);
       // A timeout's pass ends the move. A pick without its drop goes back.
       if(p.picked >= 0) {
         Blueprint& b = p.hand[mover][p.picked];
@@ -1159,12 +1365,14 @@ struct GameRules {
       const int k = channel - PLACE;
       int rx, ry;
       view_of(p).rules_point(x - hand.mq[k], y - hand.mr[k], rx, ry);
+      end_view(p);
       place(p, k, rx, ry);
       return;
     }
     const int k = channel - HAND_CHANNEL;
     int q, r;  // the cell in blueprint k's site frame
     hand.site_cell(k, x, y, q, r);
+    end_view(p);
     if(p.picked < 0) {  // the pick: the position keeps its orientation for the drop (orient)
       take(p, k, q, r);
       return;
@@ -1190,7 +1398,8 @@ struct GameRules {
   // blueprint's cells, the pick and the view's orientation (no key for orientation 0): a hash of the whole position
   // (each kind with its own keys, KEY_HAND and the others). The boxes, the offset and the orientation set the view, so
   // the legal moves: the window's middle rounds toward the rules board's middle, so with the same boxes two offsets
-  // can give two windows (half_off_middle).
+  // can give two windows (half_off_middle). A view that a caller set adds its middle's key, by its site coordinates:
+  // the position's actions and inputs are then that view's.
   static Hash128 hash(const Position& p) {
     auto cell_number = [](int q, int r) { return uint64_t((q + 32) * 64 + r + 32); };
     Hash128 h = board_hash(p);
@@ -1204,6 +1413,8 @@ struct GameRules {
       h ^= key(KEY_PICK + uint64_t(p.picked) * 4096 + cell_number(p.pickQ, p.pickR), uint64_t(p.pickType));
     if(p.orientation != 0)
       h ^= key(KEY_ORIENTATION, uint64_t(p.orientation));
+    if(p.viewSet)
+      h ^= key(KEY_VIEW, site_key(p.viewX - RULES_RADIUS + p.offsetQ, p.viewY - RULES_RADIUS + p.offsetR));
     return h;
   }
 
@@ -1282,7 +1493,8 @@ struct GameRules {
   // blueprint I), the site's coordinates of the rules board's middle ("q,r"), and each player's last placements'
   // boxes ("q0,q1,r0,r1" from the rules board's middle, the newest first, joined by ;, the players joined by |). "-"
   // is empty. A tenth field, the view's orientation, follows when it is not 0: the rule of one orientation a game
-  // cannot give it back from the other fields.
+  // cannot give it back from the other fields. A view that a caller set is not part of the text: the text gives the
+  // rule's view (view_text gives the set view).
   static std::string position_text(const Position& p) {
     std::string s = std::to_string(p.ply) + " " + std::to_string(p.scores[0]) + " " + std::to_string(p.scores[1]) + " ";
     std::string board;
@@ -1327,8 +1539,9 @@ struct GameRules {
                    std::to_string(b.y1 - RULES_RADIUS);
       s += boxes.empty() ? "-" : boxes;
     }
-    if(p.orientation != 0)
-      s += " " + std::to_string(p.orientation);
+    const int orientation = p.viewSet ? p.ruleOrientation : p.orientation;
+    if(orientation != 0)
+      s += " " + std::to_string(orientation);
     return s;
   }
   // Checks the fields, the board's points, each blueprint's frame and connection, and the cells of each player's hand.
@@ -1528,10 +1741,81 @@ struct GameRules {
     if(view_rule == VIEW_GAME)
       p.orientation = int8_t(random() % VIEW_ORIENTATIONS);
   }
+
+  // The views (GameInterface): a view is "q,r,o", the site's coordinates of its middle and its orientation, 0 to 5
+  // (the view's point (x, y) is the middle plus R^o (x - VIEW_RADIUS, y - VIEW_RADIUS)). "" is the rule's view: the
+  // mover's window and the rule's orientation.
+  // The view that a caller set (set_view), or "".
+  static std::string view_text(const Position& p) {
+    if(!p.viewSet)
+      return "";
+    View view;
+    view.wx = p.viewX;
+    view.wy = p.viewY;
+    view.o = p.orientation;
+    return view_text_of(p, view);
+  }
+  // Sets the view of p until its next action (play ends it), in place of the rule's: the legal actions, the strings of
+  // the actions, the inputs, the symmetries' images and the hash are then that view's. "" or the rule's view itself
+  // gives back the rule's view, with nothing set. The middle must be a point of the rules board.
+  static bool set_view(Position& p, const std::string& text, std::string& why) {
+    if(text.empty()) {
+      end_view(p);
+      return true;
+    }
+    const std::vector<std::string> fields = split(text, ',');
+    int q, r, o;
+    if(fields.size() != 3 || !parse_int(fields[0], q, 5) || !parse_int(fields[1], r, 5) || !parse_int(fields[2], o, 1) ||
+       o < 0 || o >= ORIENTATIONS) {
+      why = "a view is \"q,r,o\": the site's coordinates of its middle and its orientation, 0 to " +
+            std::to_string(ORIENTATIONS - 1) + ", not \"" + text + "\"";
+      return false;
+    }
+    const int x = q - p.offsetQ + RULES_RADIUS, y = r - p.offsetR + RULES_RADIUS;
+    if(!on_rules(x, y)) {
+      why = "the view's middle " + cell_text(q, r) + " is off the rules board";
+      return false;
+    }
+    end_view(p);
+    const View rule = rule_view(p);
+    if(x == rule.wx && y == rule.wy && o == rule.o)
+      return true;
+    p.viewSet = true;
+    p.ruleOrientation = p.orientation;
+    p.viewX = int16_t(x);
+    p.viewY = int16_t(y);
+    p.orientation = int8_t(o);
+    return true;
+  }
+  // A cover of the legal moves: views that hold every legal placement on the rules board (legal_placements) between
+  // them. "" alone when the rule's view holds them all, else the views of a greedy cover (greedy_cover), "" for one
+  // that is the rule's view. The picks and the drops are at the hand's points, which every view has. A view that a
+  // caller set does not change the cover.
+  static void view_cover(const Position& p, std::vector<std::string>& views) {
+    views.clear();
+    std::vector<Placement> placements;
+    legal_placements(p, placements);
+    const View rule = rule_view(p);
+    bool all = true;
+    for(const Placement& placement : placements)
+      if(!view_holds(p, rule, placement)) {
+        all = false;
+        break;
+      }
+    if(all) {
+      views.push_back("");
+      return;
+    }
+    std::vector<View> cover;
+    greedy_cover(p, placements, rule, cover);
+    for(const View& view : cover)
+      views.push_back(view.wx == rule.wx && view.wy == rule.wy && view.o == rule.o ? "" : view_text_of(p, view));
+  }
 };
 
 static_assert(GameInterface::checkRules<GameRules>(), "Blueprints' rules part");
 static_assert(GameInterface::rules::HasDrawStart<GameRules>::value && GameInterface::rules::HasSettings<GameRules>::value,
               "self-play reaches Blueprints' draw at the start and its settings");
+static_assert(GameInterface::hasViews<GameRules>(), "the analysis engine reaches Blueprints' views");
 
 }  // namespace blueprints

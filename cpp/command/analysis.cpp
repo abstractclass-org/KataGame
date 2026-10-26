@@ -14,6 +14,9 @@
 
 #include "../external/nlohmann_json/json.hpp"
 
+#include <limits>
+#include <map>
+
 using namespace std;
 using json = nlohmann::json;
 
@@ -45,6 +48,9 @@ struct AnalyzeRequest {
   vector<int> avoidMoveUntilByLocBlack;
   vector<int> avoidMoveUntilByLocWhite;
 
+  //KataGame fork: search the views of a cover of the root (analyzeRootViews).
+  bool rootViews;
+
   //Root focus moves, their relative weights, and the probability that each root playout is redirected into one of them.
   //The set_focus action may change these while the request is open, under openRequestsMutex.
   vector<Loc> focusMoves;
@@ -64,6 +70,299 @@ struct AnalyzeRequest {
 
 //Used when focusMoves is specified without focusProb.
 static constexpr double DEFAULT_FOCUS_PROB = 0.5;
+
+//KataGame fork (abscls-il4e.3): the root views, for a game whose network sees a part of a larger board (Blueprints: a
+//view of 67 x 67 points of its rules board). The game gives views that hold every legal move of the root between them
+//(GameInterface::viewCover). With one view, the search is the one of that view: the request's own search when the
+//rules' view holds every move. With more, each view gets a search of the root in that view (a pass) with a share of the
+//visits. Each pass's best moves are the candidates, and a move that two passes find is one candidate (the same child
+//position). The candidates with the best child values from the root mover's side then get a search of their child
+//position each (a check), with the rest of the visits, and the move is the check with the best value. The passes and
+//the checks take the first pass's score centre, so that their utilities have one scale. Their visits are not compared.
+struct RootViewSettings {
+  double passShare = 0.5;  //rootViewsPassShare: the passes' share of the visits, the playouts and the time
+  int candidates = 2;      //rootViewsCandidates: each pass's best moves that become candidates
+  int finalists = 3;       //rootViewsFinalists: the candidates that get a check
+};
+
+//The search limits times share: each limit that is set, at least 1 visit or playout.
+static SearchParams scaledBudget(SearchParams params, double share) {
+  const int64_t unlimited = ((int64_t)1) << 50;
+  if(params.maxVisits < unlimited)
+    params.maxVisits = std::max<int64_t>(1, (int64_t)std::llround(params.maxVisits * share));
+  if(params.maxPlayouts < unlimited)
+    params.maxPlayouts = std::max<int64_t>(1, (int64_t)std::llround(params.maxPlayouts * share));
+  if(params.maxTime < 1.0e20)
+    params.maxTime *= share;
+  return params;
+}
+
+//The values of a moveInfo or a rootInfo of getAnalysisJson from White's side, from Black's side instead.
+static void valuesForBlack(json& info) {
+  for(const char* key : {"winrate", "lcb", "rawWinrate", "humanWinrate"})
+    if(info.contains(key))
+      info[key] = 1.0 - info[key].get<double>();
+  for(const char* key : {"utility", "utilityLcb", "scoreMean", "scoreSelfplay", "scoreLead", "rawLead", "rawScoreSelfplay",
+                         "humanScoreMean"})
+    if(info.contains(key))
+      info[key] = -info[key].get<double>();
+  if(info.contains("ownership"))
+    for(json& v : info["ownership"])
+      v = -v.get<double>();
+}
+
+//The root views' analysis of a request (above): writes the response in ret, or returns false when a search was
+//stopped (a terminated request) or had no result. onSearchBegun is the request's own, for its first search.
+static bool analyzeRootViews(
+  AsyncBot* bot, const AnalyzeRequest* request, const RootViewSettings& settings, bool preventEncore,
+  const std::function<void()>& onSearchBegun, const std::function<bool()>& terminated, json& ret
+) {
+  const Board& rootBoard = request->board;
+  const Player rootPla = request->nextPla;
+  const bool forBlack =
+    request->perspective == P_BLACK || (request->perspective != P_WHITE && rootPla == P_BLACK);
+  vector<string> views;
+  GameInterface::viewCover<GameRules>(rootBoard.pos, views);
+  const int numViews = (int)views.size();
+  auto inView = [&rootBoard](const string& view) {
+    Board board = rootBoard;
+    if(!view.empty()) {
+      GameRules::Position p = board.pos;
+      string why;
+      bool suc = GameInterface::setView<GameRules>(p, view, why);
+      testAssert(suc);
+      board.setPosition(p);
+    }
+    return board;
+  };
+
+  //Each search: the first takes the request's onSearchBegun, and a later one stops at once when the request ends.
+  Search* search = bot->getSearchStopAndWait();
+  struct CenterReset {
+    Search* search;
+    ~CenterReset() { search->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN(); }
+  } centerReset{search};
+  int numSearches = 0;
+  int64_t totalVisits = 0;
+  auto runSearch = [&](const Board& board, const BoardHistory& hist, Player pla, const SearchParams& params,
+                       Player perspective, json& out) {
+    if(numSearches > 0 && terminated())
+      return false;
+    bot->setPosition(pla, board, hist);
+    bot->setAlwaysIncludeOwnerMap(request->includeOwnership || request->includeOwnershipStdev ||
+                                  request->includeMovesOwnership || request->includeMovesOwnershipStdev);
+    bot->setParams(params);
+    std::function<void()> stopIfEnded = [&]() {
+      if(terminated())
+        bot->stopWithoutWait();
+    };
+    bot->genMoveSynchronous(pla, TimeControls(), 1.0, numSearches == 0 ? onSearchBegun : stopIfEnded);
+    numSearches++;
+    if(numViews > 1 && terminated())
+      return false;
+    out = json();
+    if(!bot->getSearch()->getAnalysisJson(
+         perspective, request->analysisPVLen, preventEncore, request->includePolicy, request->includeOwnership,
+         request->includeOwnershipStdev, request->includeMovesOwnership, request->includeMovesOwnershipStdev,
+         request->includePVVisits, request->includeNoResultValue, out))
+      return false;
+    totalVisits += out["rootInfo"]["visits"].get<int64_t>();
+    return true;
+  };
+
+  //The text of each root move in the request's own view, by the move's child position, so that a move that the
+  //request's view names keeps its text there. A move that it cannot name keeps its text in its pass's view, and the
+  //moveInfo gives that view ("view").
+  std::map<Hash128, Loc> ownMoves;
+  auto childHash = [](const Board& board, Loc loc) {
+    GameRules::Position p = board.pos;
+    GameRules::play(p, Board::actionOfMoveLoc(loc));
+    return GameRules::hash(p);
+  };
+  if(numViews > 1 || !views[0].empty()) {
+    vector<int> actions;
+    GameRules::legal_actions(rootBoard.pos, actions);
+    for(int action : actions)
+      ownMoves[childHash(rootBoard, Board::moveLocOfAction(action))] = Board::moveLocOfAction(action);
+  }
+  auto name = [&](json& info, const Board& board, Loc loc, const string& view) {
+    auto own = ownMoves.find(childHash(board, loc));
+    if(own == ownMoves.end()) {
+      info["view"] = view;
+      return;
+    }
+    const string text = Location::toString(own->second, rootBoard);
+    info["move"] = text;
+    if(info.contains("pv") && !info["pv"].empty())
+      info["pv"][0] = text;
+  };
+
+  if(numViews == 1) {
+    const Board board = inView(views[0]);
+    if(!runSearch(board, request->hist, rootPla, request->params, request->perspective, ret))
+      return false;
+    if(!views[0].empty()) {
+      for(json& info : ret["moveInfos"]) {
+        Loc loc;
+        if(Location::tryOfString(info["move"].get<string>(), board, loc))
+          name(info, board, loc, views[0]);
+      }
+      ret["view"] = views[0];  //the frame of the ownership and the policy
+    }
+    ret["rootInfo"]["views"] = views;
+    ret["rootInfo"]["searches"] = numSearches;
+    return true;
+  }
+
+  //The passes, and their candidates.
+  struct Candidate {
+    int pass;
+    Loc loc;
+    json info;  //the moveInfo of the pass where it has the most visits, from White's side
+    double value;  //its utility from the root mover's side, the mean of its passes' weighted by their visits
+    int64_t visits;  //its visits in the passes
+    json check;  //the rootInfo of its check, from White's side, or null
+  };
+  const double moverSign = rootPla == P_WHITE ? 1.0 : -1.0;
+  vector<Candidate> candidates;
+  std::map<Hash128, size_t> byChild;
+  vector<Board> boards;
+  json passes = json::array();
+  const SearchParams passParams = scaledBudget(request->params, settings.passShare / numViews);
+  for(int i = 0; i < numViews; i++) {
+    boards.push_back(inView(views[i]));
+    json out;
+    if(!runSearch(boards[i], request->hist, rootPla, passParams, P_WHITE, out))
+      return false;
+    if(i == 0)
+      search->fixedScoreCenter = search->recentScoreCenter;
+    for(const json& info : out["moveInfos"]) {
+      Loc loc;
+      if(info.contains("isSymmetryOf") || info["order"].get<int>() >= settings.candidates ||
+         !Location::tryOfString(info["move"].get<string>(), boards[i], loc))
+        continue;
+      const Hash128 child = childHash(boards[i], loc);
+      const double value = moverSign * info["utility"].get<double>();
+      const int64_t visits = info["visits"].get<int64_t>();
+      auto found = byChild.find(child);
+      if(found == byChild.end()) {
+        byChild[child] = candidates.size();
+        candidates.push_back(Candidate{i, loc, info, value, visits, json()});
+        continue;
+      }
+      Candidate& c = candidates[found->second];
+      c.value = (c.value * c.visits + value * visits) / std::max<int64_t>(1, c.visits + visits);
+      if(visits > c.info["visits"].get<int64_t>()) {
+        c.pass = i;
+        c.loc = loc;
+        c.info = info;
+      }
+      c.visits += visits;
+    }
+    out["view"] = views[i];
+    passes.push_back(out);
+  }
+  if(candidates.empty())
+    return false;
+
+  //The checks of the finalists: a search of each one's child position.
+  vector<size_t> order(candidates.size());
+  for(size_t i = 0; i < order.size(); i++)
+    order[i] = i;
+  std::stable_sort(order.begin(), order.end(),
+                   [&](size_t a, size_t b) { return candidates[a].value > candidates[b].value; });
+  const size_t numFinalists = std::min<size_t>(std::max(1, settings.finalists), order.size());
+  const SearchParams checkParams = scaledBudget(request->params, (1.0 - settings.passShare) / numFinalists);
+  json checks = json::array();
+  for(size_t f = 0; f < numFinalists; f++) {
+    //The move in the request's own view when that view names it. Else in its pass's view, and then the child's
+    //history starts at the child: a move in a view of its own cannot replay from the history's start (the search's
+    //graph hash replays it). The game's position keeps what its inputs read of the earlier moves.
+    Candidate& c = candidates[order[f]];
+    auto own = ownMoves.find(childHash(boards[c.pass], c.loc));
+    Board board = own != ownMoves.end() ? rootBoard : boards[c.pass];
+    BoardHistory hist = request->hist;
+    hist.makeBoardMoveAssumeLegal(board, own != ownMoves.end() ? own->second : c.loc, rootPla, NULL);
+    if(hist.isGameFinished)
+      continue;  //the pass's value is the result's
+    if(own == ownMoves.end())
+      hist.clear(board, hist.presumedNextMovePla, hist.rules, hist.encorePhase);
+    json out;
+    if(!runSearch(board, hist, hist.presumedNextMovePla, checkParams, P_WHITE, out))
+      return false;
+    c.check = out["rootInfo"];
+    c.value = moverSign * c.check["utility"].get<double>();
+    if(!out["moveInfos"].empty()) {
+      json pv = json::array();
+      pv.push_back(c.info["move"]);
+      for(const json& move : out["moveInfos"][0]["pv"])
+        pv.push_back(move);
+      c.info["pv"] = pv;
+    }
+  }
+  std::stable_sort(order.begin(), order.begin() + numFinalists,
+                   [&](size_t a, size_t b) { return candidates[a].value > candidates[b].value; });
+
+  //The response: the finalists by their checks' values, then the other candidates by their passes' values.
+  json moveInfos = json::array();
+  for(size_t i = 0; i < order.size(); i++) {
+    const Candidate& c = candidates[order[i]];
+    json info = c.info;
+    info["visits"] = c.visits;
+    info["order"] = (int)i;
+    if(!c.check.is_null()) {
+      for(const char* key : {"winrate", "scoreSelfplay", "scoreLead", "scoreStdev", "utility"})
+        info[key] = c.check[key];
+      info["scoreMean"] = c.check["scoreLead"];
+      info["checkVisits"] = c.check["visits"];
+    }
+    name(info, boards[c.pass], c.loc, views[c.pass]);
+    json check;
+    if(!c.check.is_null()) {
+      check["move"] = info["move"];
+      if(info.contains("view"))
+        check["view"] = info["view"];
+      check["rootInfo"] = c.check;
+      if(forBlack)
+        valuesForBlack(check["rootInfo"]);
+      checks.push_back(check);
+    }
+    if(forBlack)
+      valuesForBlack(info);
+    moveInfos.push_back(info);
+  }
+  for(json& pass : passes) {
+    if(forBlack) {
+      valuesForBlack(pass["rootInfo"]);
+      for(json& info : pass["moveInfos"])
+        valuesForBlack(info);
+      if(pass.contains("ownership"))
+        for(json& v : pass["ownership"])
+          v = -v.get<double>();
+    }
+  }
+  const json& best = moveInfos[0];
+  json rootInfo;
+  rootInfo["visits"] = totalVisits;
+  for(const char* key : {"winrate", "scoreSelfplay", "scoreLead", "scoreStdev", "utility"})
+    rootInfo[key] = best[key];
+  Hash128 thisHash = rootBoard.getSitHashWithSimpleKo(rootPla), symHash = thisHash;
+  for(int symmetry : SymmetryHelpers::ALLOWED) {
+    const Hash128 hash = SymmetryHelpers::getSymBoard(rootBoard, symmetry).getSitHashWithSimpleKo(rootPla);
+    if(hash < symHash)
+      symHash = hash;
+  }
+  rootInfo["thisHash"] = Global::uint64ToHexString(thisHash.hash1) + Global::uint64ToHexString(thisHash.hash0);
+  rootInfo["symHash"] = Global::uint64ToHexString(symHash.hash1) + Global::uint64ToHexString(symHash.hash0);
+  rootInfo["currentPlayer"] = PlayerIO::playerToStringShort(rootPla);
+  rootInfo["views"] = views;
+  rootInfo["searches"] = numSearches;
+  ret["moveInfos"] = moveInfos;
+  ret["rootInfo"] = rootInfo;
+  ret["passes"] = passes;
+  ret["checks"] = checks;
+  return true;
+}
 
 
 int MainCmds::analysis(const vector<string>& args) {
@@ -161,6 +460,18 @@ int MainCmds::analysis(const vector<string>& args) {
   const bool assumeMultipleStartingBlackMovesAreHandicap =
     cfg.contains("assumeMultipleStartingBlackMovesAreHandicap") ? cfg.getBool("assumeMultipleStartingBlackMovesAreHandicap") : true;
   const bool preventEncore = cfg.contains("preventCleanupPhase") ? cfg.getBool("preventCleanupPhase") : true;
+  //KataGame fork: the root views (analyzeRootViews). rootViews is every query's default, which its field rootViews
+  //overrides.
+  const bool defaultRootViews = cfg.contains("rootViews") ? cfg.getBool("rootViews") : false;
+  RootViewSettings rootViewSettings;
+  if(cfg.contains("rootViewsPassShare"))
+    rootViewSettings.passShare = cfg.getDouble("rootViewsPassShare", 0.01, 1.0);
+  if(cfg.contains("rootViewsCandidates"))
+    rootViewSettings.candidates = cfg.getInt("rootViewsCandidates", 1, 100);
+  if(cfg.contains("rootViewsFinalists"))
+    rootViewSettings.finalists = cfg.getInt("rootViewsFinalists", 1, 100);
+  if(defaultRootViews && !GameInterface::hasViews<GameRules>())
+    logger.write(string("Note: rootViews: the game ") + GameRules::NAME + " has one view, so each query has one search");
 
   NNEvaluator* nnEval = NULL;
   NNEvaluator* humanEval = NULL;
@@ -259,7 +570,9 @@ int MainCmds::analysis(const vector<string>& args) {
     "focusMoves",
     "focusWeights",
     "focusProb",
-    "targetId"
+    "targetId",
+    "rootViews",
+    "rootView"
   };
   if(GameInterface::queryPositionField<GameRules>() != nullptr &&
      !expectedKeys.insert(GameInterface::queryPositionField<GameRules>()).second)
@@ -362,7 +675,8 @@ int MainCmds::analysis(const vector<string>& args) {
   }
 
   auto analysisLoop = [
-    &logger,&toAnalyzeQueue,&reportAnalysis,&reportNoAnalysis,&logSearchInfo,&logSearchTreeOptions,&nnEval,&openRequestsMutex,&openRequests
+    &logger,&toAnalyzeQueue,&reportAnalysis,&reportNoAnalysis,&logSearchInfo,&logSearchTreeOptions,&nnEval,&openRequestsMutex,&openRequests,
+    &rootViewSettings,&preventEncore,&pushToWrite
   ](AsyncBot* bot, int threadIdx) {
     while(true) {
       std::pair<std::pair<int64_t,int64_t>,AnalyzeRequest*> analysisItem;
@@ -402,40 +716,59 @@ int MainCmds::analysis(const vector<string>& args) {
           }
         };
 
-        if(request->reportDuringSearch) {
-          std::function<void(const Search* search)> callback = [&request,&reportAnalysis](const Search* search) {
-            const bool isDuringSearch = true;
-            reportAnalysis(request,search,isDuringSearch);
+        if(request->rootViews) {
+          //KataGame fork: the root views (analyzeRootViews), each request's searches one after the other.
+          std::function<bool()> terminated = [&request]() noexcept {
+            return request->status.load(std::memory_order_acquire) == AnalyzeRequest::STATUS_TERMINATED;
           };
-          bot->genMoveSynchronousAnalyze(
-            pla, TimeControls(), searchFactor,
-            request->reportDuringSearchEvery, request->firstReportDuringSearchAfter,
-            callback, onSearchBegun
-          );
+          json ret;
+          if(analyzeRootViews(bot, request, rootViewSettings, preventEncore, onSearchBegun, terminated, ret)) {
+            ret["id"] = request->id;
+            ret["turnNumber"] = request->turnNumber;
+            ret["isDuringSearch"] = false;
+            pushToWrite(new string(ret.dump()));
+          }
+          else if(terminated())
+            reportNoAnalysis(request);
+          else
+            logger.write("Note: root views' search quitting with no result - normal when shutting down, a bug otherwise");
         }
         else {
-          bot->genMoveSynchronous(pla, TimeControls(), searchFactor, onSearchBegun);
-        }
+          if(request->reportDuringSearch) {
+            std::function<void(const Search* search)> callback = [&request,&reportAnalysis](const Search* search) {
+              const bool isDuringSearch = true;
+              reportAnalysis(request,search,isDuringSearch);
+            };
+            bot->genMoveSynchronousAnalyze(
+              pla, TimeControls(), searchFactor,
+              request->reportDuringSearchEvery, request->firstReportDuringSearchAfter,
+              callback, onSearchBegun
+            );
+          }
+          else {
+            bot->genMoveSynchronous(pla, TimeControls(), searchFactor, onSearchBegun);
+          }
 
-        if(logSearchInfo) {
-          ostringstream sout;
-          PlayUtils::printGenmoveLog(sout,bot->getSearch(),nnEval,Board::NULL_LOC,NAN,request->perspective,false,logSearchTreeOptions);
-          logger.write(sout.str());
-        }
+          if(logSearchInfo) {
+            ostringstream sout;
+            PlayUtils::printGenmoveLog(sout,bot->getSearch(),nnEval,Board::NULL_LOC,NAN,request->perspective,false,logSearchTreeOptions);
+            logger.write(sout.str());
+          }
 
-        {
-          const bool isDuringSearch = false;
-          const Search* search = bot->getSearch();
-          bool analysisWritten = reportAnalysis(request,search,isDuringSearch);
-          //If the search didn't have any root or root neural net output, it must have been interrupted and we must be quitting imminently
-          if(!analysisWritten) {
-            //If the reason we stopped was because we noticed a terminate, then we will write out a dummy response even if we didn't have
-            //enough info to generate a real one, to fulfill a promise in the API docs that we always write something.
-            if(request->status.load(std::memory_order_acquire) == AnalyzeRequest::STATUS_TERMINATED)
-              reportNoAnalysis(request);
-            //Otherwise, this case is only possible if we're just shutting down
-            else
-              logger.write("Note: Search quitting due to no visits - this is normal and possible when shutting down but a bug under any other situation.");
+          {
+            const bool isDuringSearch = false;
+            const Search* search = bot->getSearch();
+            bool analysisWritten = reportAnalysis(request,search,isDuringSearch);
+            //If the search didn't have any root or root neural net output, it must have been interrupted and we must be quitting imminently
+            if(!analysisWritten) {
+              //If the reason we stopped was because we noticed a terminate, then we will write out a dummy response even if we didn't have
+              //enough info to generate a real one, to fulfill a promise in the API docs that we always write something.
+              if(request->status.load(std::memory_order_acquire) == AnalyzeRequest::STATUS_TERMINATED)
+                reportNoAnalysis(request);
+              //Otherwise, this case is only possible if we're just shutting down
+              else
+                logger.write("Note: Search quitting due to no visits - this is normal and possible when shutting down but a bug under any other situation.");
+            }
           }
         }
       }
@@ -782,6 +1115,7 @@ int MainCmds::analysis(const vector<string>& args) {
       rbase.focusMoves.clear();
       rbase.focusWeights.clear();
       rbase.focusProb = DEFAULT_FOCUS_PROB;
+      rbase.rootViews = defaultRootViews;
 
       auto parseInteger = [&rbase,&reportErrorForId](const json& dict, const char* field, int64_t& buf, int64_t min, int64_t max, const char* errorMessage) {
         try {
@@ -915,15 +1249,22 @@ int MainCmds::analysis(const vector<string>& args) {
         return true;
       };
 
-      auto parseBoardMoves = [boardXSize,boardYSize,&rbase,&reportErrorForId](const json& dict, const char* field, vector<Move>& buf, bool allowPass) {
+      //KataGame fork: with views (not null), an entry may have a third element, the game's view in which the move is
+      //named (GameInterface::setView: a move of the root views' search that the position's own view cannot name).
+      auto parseBoardMoves = [boardXSize,boardYSize,&rbase,&reportErrorForId](const json& dict, const char* field, vector<Move>& buf, bool allowPass, vector<string>* views = nullptr) {
         buf.clear();
+        if(views != nullptr)
+          views->clear();
+        const char* form = views != nullptr ?
+          "Must be an array of pairs of the form: [\"b\" or \"w\", GTP board vertex], or of triples with the move's view third" :
+          "Must be an array of pairs of the form: [\"b\" or \"w\", GTP board vertex]";
         if(!dict[field].is_array()) {
-          reportErrorForId(rbase.id, field, "Must be an array of pairs of the form: [\"b\" or \"w\", GTP board vertex]");
+          reportErrorForId(rbase.id, field, form);
           return false;
         }
         for(auto& elt : dict[field]) {
-          if(!elt.is_array() || elt.size() != 2) {
-            reportErrorForId(rbase.id, field, "Must be an array of pairs of the form: [\"b\" or \"w\", GTP board vertex]");
+          if(!elt.is_array() || (elt.size() != 2 && (views == nullptr || elt.size() != 3))) {
+            reportErrorForId(rbase.id, field, form);
             return false;
           }
 
@@ -932,10 +1273,12 @@ int MainCmds::analysis(const vector<string>& args) {
           try {
             s0 = elt[0].get<string>();
             s1 = elt[1].get<string>();
+            if(views != nullptr)
+              views->push_back(elt.size() == 3 ? elt[2].get<string>() : string());
           }
           catch(nlohmann::detail::exception& e) {
             (void)e;
-            reportErrorForId(rbase.id, field, "Must be an array of pairs of the form: [\"b\" or \"w\", GTP board vertex]");
+            reportErrorForId(rbase.id, field, form);
             return false;
           }
 
@@ -1000,8 +1343,9 @@ int MainCmds::analysis(const vector<string>& args) {
       }
 
       vector<Move> moveHistory;
+      vector<string> moveViews;
       if(input.find("moves") != input.end()) {
-        if(!parseBoardMoves(input, "moves", moveHistory, true))
+        if(!parseBoardMoves(input, "moves", moveHistory, true, &moveViews))
           continue;
       }
       else {
@@ -1348,6 +1692,39 @@ int MainCmds::analysis(const vector<string>& args) {
           continue;
       }
 
+      //KataGame fork: the root views. rootViews searches the views of a cover of each analyzed position
+      //(analyzeRootViews), rootView searches the position in one view of the game's (GameInterface::setView). The
+      //moves of allowMoves, avoidMoves and focusMoves name the actions of the position's own view, and a root views'
+      //search reports once, at its end.
+      if(input.find("rootViews") != input.end()) {
+        bool suc = parseBoolean(input, "rootViews", rbase.rootViews, "Must be a boolean");
+        if(!suc)
+          continue;
+      }
+      string rootView;
+      if(input.find("rootView") != input.end()) {
+        if(!input["rootView"].is_string()) {
+          reportErrorForId(rbase.id, "rootView", "Must be a string: one of the game's views");
+          continue;
+        }
+        rootView = input["rootView"].get<string>();
+        if(rbase.rootViews && !rootView.empty()) {
+          reportErrorForId(rbase.id, "rootView", "Give either rootView or rootViews");
+          continue;
+        }
+      }
+      if(rbase.rootViews) {
+        const char* conflict =
+          rbase.reportDuringSearch ? "reportDuringSearchEvery" :
+          input.find("allowMoves") != input.end() ? "allowMoves" :
+          input.find("avoidMoves") != input.end() ? "avoidMoves" :
+          !rbase.focusMoves.empty() ? "focusMoves" : nullptr;
+        if(conflict != nullptr) {
+          reportErrorForId(rbase.id, conflict, string("Does not combine with rootViews"));
+          continue;
+        }
+      }
+
       Board board(boardXSize,boardYSize);
       for(int i = 0; i<placements.size(); i++) {
         board.setStone(placements[i].loc,placements[i].pla);
@@ -1434,8 +1811,19 @@ int MainCmds::analysis(const vector<string>& args) {
           newRequest->focusMoves = rbase.focusMoves;
           newRequest->focusWeights = rbase.focusWeights;
           newRequest->focusProb = rbase.focusProb;
+          newRequest->rootViews = rbase.rootViews;
           newRequest->status.store(AnalyzeRequest::STATUS_IN_QUEUE,std::memory_order_release);
           newRequests.push_back(newRequest);
+          if(!rootView.empty()) {
+            GameRules::Position p = board.pos;
+            string why;
+            if(!GameInterface::setView<GameRules>(p, rootView, why)) {
+              reportErrorForId(rbase.id, "rootView", why);
+              foundIllegalMove = true;
+              break;
+            }
+            newRequest->board.setPosition(p);
+          }
         }
         if(turnNumber >= moveHistory.size())
           break;
@@ -1447,6 +1835,17 @@ int MainCmds::analysis(const vector<string>& args) {
           hist.clear(board,movePla,rules,hist.encorePhase);
           hist.setAssumeMultipleStartingBlackMovesAreHandicap(assumeMultipleStartingBlackMovesAreHandicap);
         }
+        if(!moveViews[turnNumber].empty()) {
+          //The move's view, which the move ends.
+          GameRules::Position p = board.pos;
+          string why;
+          if(!GameInterface::setView<GameRules>(p, moveViews[turnNumber], why)) {
+            reportErrorForId(rbase.id, "moves", "Move " + Global::intToString(turnNumber) + "'s view: " + why);
+            foundIllegalMove = true;
+            break;
+          }
+          board.setPosition(p);
+        }
 
         bool suc = hist.makeBoardMoveTolerant(board,moveLoc,movePla,preventEncore);
         if(!suc) {
@@ -1455,6 +1854,12 @@ int MainCmds::analysis(const vector<string>& args) {
           break;
         }
         nextPla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
+        //A move in a view of its own cannot replay from the history's start (the search's graph hash replays it), so
+        //the history starts again after it. The game's position keeps what its inputs read of the earlier moves.
+        if(!moveViews[turnNumber].empty() && !hist.isGameFinished) {
+          hist.clear(board,nextPla,rules,hist.encorePhase);
+          hist.setAssumeMultipleStartingBlackMovesAreHandicap(assumeMultipleStartingBlackMovesAreHandicap);
+        }
       }
 
       if(foundIllegalMove) {

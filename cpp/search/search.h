@@ -143,6 +143,9 @@ struct Search {
   Color* rootSafeArea;
   //Used to center for dynamic scorevalue
   double recentScoreCenter;
+  //KataGame fork: the centre that the next searches take in place of their root's (computeRootValues), or NAN for the
+  //root's. The analysis engine's root views give their searches one centre, so that their utilities have one scale.
+  double fixedScoreCenter;
 
   //If the opponent is mirroring, then the color of that opponent, for countering mirroring
   Player mirroringPla;

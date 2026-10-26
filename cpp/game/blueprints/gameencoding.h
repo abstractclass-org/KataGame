@@ -362,13 +362,20 @@ struct GameEncoding {
   // The image of everything but the cells on the board: the scores, the counts, the ply and the pick as they are, each
   // blueprint's cells at their images in the site's frame (the rest of a picked blueprint and the picked cell keep the
   // frame of the whole blueprint's image, as the rest keeps the whole blueprint's frame until the drop), the history's
-  // points, the recent placements' boxes, the offset and the view's orientation (sym_orientation).
+  // points, the recent placements' boxes, the offset and the view's orientation (sym_orientation), and a view that a
+  // caller set: its middle's pixel and the rule's orientation's image.
   static void sym_records(const Position& p, int symmetry, Position& s) {
     std::copy(p.scores, p.scores + 2, s.scores);
     std::copy(p.stars, p.stars + 2, s.stars);
     std::copy(p.cells, p.cells + 2, s.cells);
     s.ply = p.ply;
     s.orientation = int8_t(sym_orientation(p.orientation, symmetry));
+    int vx = p.viewX, vy = p.viewY;
+    sym_rules(vx, vy, symmetry);
+    s.viewSet = p.viewSet;
+    s.viewX = int16_t(vx);
+    s.viewY = int16_t(vy);
+    s.ruleOrientation = int8_t(sym_orientation(p.ruleOrientation, symmetry));
     s.picked = p.picked;
     s.pickType = p.pickType;
     s.pickConnected = p.pickConnected;

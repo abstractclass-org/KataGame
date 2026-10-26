@@ -6,6 +6,7 @@
 #include "../search/search.h"
 
 #include <algorithm>
+#include <limits>
 #include <numeric>
 
 #include "../core/fancymath.h"
@@ -83,6 +84,7 @@ Search::Search(const SearchParams& params, NNEvaluator* nnEval, NNEvaluator* hum
    rootPruneOnlySymmetries(),
    rootSafeArea(NULL),
    recentScoreCenter(0.0),
+   fixedScoreCenter(std::numeric_limits<double>::quiet_NaN()),
    mirroringPla(C_EMPTY),
    mirrorAdvantage(0.0),
    mirrorCenterSymmetryError(1e10),
@@ -1218,7 +1220,9 @@ void Search::computeRootValues() {
   );
 
   //Figure out how to set recentScoreCenter
-  {
+  if(!std::isnan(fixedScoreCenter))
+    recentScoreCenter = fixedScoreCenter;
+  else {
     bool foundExpectedScoreFromTree = false;
     double expectedScore = 0.0;
     if(rootNode != NULL) {

@@ -115,6 +115,18 @@
  *                           draws, its one-line position too: a replay or an analysis from that text gives them back.
  *                           Self-play's SGF records do not hold them. Blueprints' view orientation under
  *                           viewOrientation = randomGame. Default: none (drawStart).
+ *   view_text(p), set_view(p, text, why), view_cover(p, views)
+ *                           std::string, bool, void: the views of a game whose network sees a part of a larger board,
+ *                           each a text of the game's own ("" for the view that the rules give the position).
+ *                           view_text gives the view that a caller set on p, or "". set_view sets p's view until p's
+ *                           next action (play ends it, and every later position has the rules' view): the legal
+ *                           actions, what each action means, the inputs, the symmetries' images and the hash are then
+ *                           that view's. "" gives the rules' view back. It returns false with the reason for a text
+ *                           that names no view. view_cover gives views (std::vector<std::string>) that hold every
+ *                           legal move of p between them, each move as an action of p with one of the views set: {""}
+ *                           when the rules' view holds them all. The analysis engine's rootViews searches each view
+ *                           of the cover. A game gives all three or none. Blueprints' views. Default: one view, ""
+ *                           (viewText, setView, viewCover).
  *
  * The network encoding part (struct E):
  *   Rules                   the game's rules part (its GameRules).
@@ -358,6 +370,12 @@ namespace rules {
                        G::set_setting(std::declval<const std::string&>(), std::declval<const std::string&>(),
                                       std::declval<std::string&>()))
   GAMEINTERFACE_DETECT(HasDrawStart, void, G::draw_start(std::declval<P<G>&>(), std::declval<uint64_t (&)()>()))
+  GAMEINTERFACE_DETECT(HasViewText, std::string, G::view_text(std::declval<const P<G>&>()))
+  GAMEINTERFACE_DETECT(HasSetView, bool,
+                       G::set_view(std::declval<P<G>&>(), std::declval<const std::string&>(),
+                                   std::declval<std::string&>()))
+  GAMEINTERFACE_DETECT(HasViewCover, void,
+                       G::view_cover(std::declval<const P<G>&>(), std::declval<std::vector<std::string>&>()))
 }
 
 template<class R> constexpr bool checkRules() {
@@ -427,6 +445,10 @@ template<class R> constexpr bool checkRules() {
                 "game interface, rules part: the game gives SETTINGS (the settings' names, const char*) and "
                 "set_setting(const std::string& name, const std::string& value, std::string& why) -> bool together, "
                 "or neither");
+  static_assert(HasViewText<R>::value == HasSetView<R>::value && HasViewCover<R>::value == HasSetView<R>::value,
+                "game interface, rules part: the game gives view_text(const Position&) -> std::string, "
+                "set_view(Position&, const std::string&, std::string& why) -> bool and view_cover(const Position&, "
+                "std::vector<std::string>&) together, or none");
   return true;
 }
 
@@ -596,6 +618,42 @@ template<class R, class Random> void drawStart(typename R::Position& p, Random&&
   else {
     (void)p;
     (void)random;
+  }
+}
+
+//Whether the game has views of its own (view_text, set_view, view_cover).
+template<class R> constexpr bool hasViews() { return rules::HasSetView<R>::value; }
+
+//The view that a caller set on p: the game's, else "" (the rules' view, the only one).
+template<class R> std::string viewText(const typename R::Position& p) {
+  if constexpr(rules::HasViewText<R>::value)
+    return R::view_text(p);
+  else {
+    (void)p;
+    return "";
+  }
+}
+
+//Sets p's view until its next action, or returns false with the reason: the game's, else "" alone (no change).
+template<class R> bool setView(typename R::Position& p, const std::string& text, std::string& why) {
+  if constexpr(rules::HasSetView<R>::value)
+    return R::set_view(p, text, why);
+  else {
+    (void)p;
+    if(text.empty())
+      return true;
+    why = std::string("the game ") + R::NAME + " has one view, \"\", not \"" + text + "\"";
+    return false;
+  }
+}
+
+//Views that hold every legal move of p between them: the game's, else the rules' view, {""}.
+template<class R> void viewCover(const typename R::Position& p, std::vector<std::string>& views) {
+  if constexpr(rules::HasViewCover<R>::value)
+    R::view_cover(p, views);
+  else {
+    (void)p;
+    views.assign(1, "");
   }
 }
 
