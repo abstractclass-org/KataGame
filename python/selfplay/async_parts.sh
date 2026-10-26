@@ -76,7 +76,10 @@ part_limits() {  # PART: "MEM CPUWEIGHT NICE" from the defaults, LIMITS_GROUP an
 #   (OMP_NUM_THREADS, MKL_NUM_THREADS) take one thread: their pool waits for all its threads at each operation, and the
 #   parts share the run's CPUs. On 2 CPUs beside 2 busy threads, Connect-4's trainer trained 106 samples a second with
 #   2 threads and 261 with 1 (665 and 482 alone, 2026-10-19). With the machine's CPUs, nothing is set.
-# - The shuffle every SHUFFLE_EVERY seconds (600), not upstream's 20 (async_start.sh).
+# - The shuffle every SHUFFLE_EVERY seconds (600), not upstream's 20 (async_start.sh). The trainer reads each shuffled
+#   file once (-no-repeat-files), so one shuffle gives it at most the window's rows: while the window holds few epochs,
+#   a long SHUFFLE_EVERY limits the training, not MAX_TRAIN_PER_DATA. At 600 s, Blueprints' bpj3 trained one epoch of
+#   16,000 samples after each shuffle in its first hour, while its bucket allowed 56,000 (2026-10-27).
 # - SHUFFLE_EXTRA_ARGS: more shuffle.py flags, for both shuffles (training and validation). -exclude-qvalues leaves out
 #   the rows' Q-value targets: only a network that predicts Q values reads them (model version 16, or 17 with
 #   predict_q_values), and they are 161,610 of a Blueprints row's 365,356 bytes.
