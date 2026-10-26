@@ -95,6 +95,13 @@ that game's binary compiles them. A command of the game's own registers itself w
 | `tests/testenclosuresearch.cpp` | The search under two-edge turns, `katago runenclosuretests` (a `GameCommand`). |
 | `tests/enclosure/` | The standalone tests of Enclosure's members through the front (`tests/enclosure/build.sh`). |
 
+Blueprints' own files:
+
+| File | What it is |
+|---|---|
+| `command/blueprintsprotocol.cpp`, `.h` | Blueprints' engine protocol (the engine repository's `games/blueprints/README.md`, "The browser build"): Enclosure's requests in strategyjam.org's moves, with a placement outside the view played through `place_at_site`, the cells and the hands in the site's form, each move's footprint, captured cells and points, an edit's values, and the ownership with its view's place. The WebAssembly module builds it too. |
+| `command/blueprintsengine.cpp` | The protocol's native command, `katago blueprints-engine` (a `GameCommand`). |
+
 **The check** (`cpp/tests/checkgamelayer.py`, Python's standard library only) fails when a file outside the game layer:
 
 - names a game's namespace (`enclosure::`, `namespace enclosure`, `using namespace enclosure`, an alias such as

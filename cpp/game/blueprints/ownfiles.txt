@@ -1,0 +1,9 @@
+# Blueprints' own code outside the game layer (GAMES.md, "The game layer"). It is Blueprints', and it uses the front
+# (Board, the search, the network), so it cannot be in game/blueprints/, which reaches no code of the front. Only
+# Blueprints' binary compiles it, and only these files may name Blueprints (tests/checkgamelayer.py).
+#
+# One path a line, relative to katagame/cpp. A folder ends with /. CMakeLists.txt compiles each .cpp file of this list
+# (not the folders) into katago.
+command/blueprintsprotocol.cpp  # its engine protocol (the engine repository's games/blueprints/README.md), also in WebAssembly
+command/blueprintsprotocol.h
+command/blueprintsengine.cpp    # the protocol's native command, katago blueprints-engine
