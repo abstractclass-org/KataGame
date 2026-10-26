@@ -783,7 +783,9 @@ code and the work that remains for a third game.
       minutes).
    5. **The dashboard:** the live dashboard shows the runs of `$ENGINES_RUNS` with the main tree's settings and
       gauntlets. For a run from a worktree or in another folder, `bash pipeline/scripts/dashboard.sh RUN` serves the
-      run's own dashboard on a free port.
+      run's own dashboard on a free port. The Arena tab replays a league's games when the game has the module
+      `games/<game>/replay.py` (`replay(game)` and `start()`, from the game's rules binding: Enclosure's and
+      Blueprints') and a board in `core/dashboard.html`. A league of another game lists its games with no replay.
    6. **The stop:** stop the watchdog first. Stop the gauntlet's process group, then run `bash pipeline/scripts/stop.sh
       RUN`. Connect-4's README shows how to find the PIDs. Stop a run's own dashboard with `systemctl --user stop
       RUN-dashboard`. The last export can come after the gauntlet's last round. If that occurs, start the gauntlet again
