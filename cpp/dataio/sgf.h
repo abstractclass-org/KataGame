@@ -124,8 +124,9 @@ struct Sgf {
     //Enclosure fork (owner, 2026-10-04): start exactly here, with no policy-initialized moves added at the start
     //(RGSC's restarts from its buffer). Not part of the JSON form.
     bool exactStart = false;
-    //KataGame fork (2026-10-27): start with the context below, as it was, with no draw of a komi or of asymmetric
-    //playouts and no komi compensation (RGSC's restarts from a state, program/rgsc.h). Not part of the JSON form.
+    //KataGame fork (2026-10-27): start with the context below, as it was, in place of self-play's draws of a komi and
+    //of asymmetric playouts, and with no komi compensation (RGSC's restarts from a state, program/rgsc.h). Not part of
+    //the JSON form.
     bool frozenContext = false;
     float komi = 0.0f;
     Player playoutDoublingAdvantagePla = C_EMPTY;

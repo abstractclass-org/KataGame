@@ -11,6 +11,8 @@
 //   its drop), legal actions, the same text again, and the same network inputs (V10, with history, at each allowed
 //   symmetry), so the same state key;
 // - every position of a game has its own state key.
+// The played positions of 3 more games (self-play's candidates after a game): their keys (playedKeys) and entries
+// (playedEntry) are their states', and an entry's start (startOf) is its state with its turn number and its context.
 // The keys: an action played twice in a row by the same player cancels in the moves' unordered key (keyOf) and not
 // in the state key; two actions in either order give the same moves' key and two state keys; two edits in either
 // order (when the search finds a pair that commutes) give one state and one key; the komi and the asymmetric playouts
@@ -23,8 +25,10 @@
 // key), and the entries that the draws reach restore with their texts as they were. With --write FILE: a buffer of a
 // state of each random game (in every second game one with a pick waiting for its drop), with its komi and asymmetric
 // playouts and the regret 1, for a self-play that restarts from them (rgscStartProb 1).
-// On a build of a game without a state's text (Enclosure), the test checks the defaults: no text, and a load that
-// rejects a state's line. With --buffer FILE (a copy of a run's buffer), every line of the file loads.
+// On a build of a game without a state's text (Enclosure), the test checks the defaults: no text, a load that rejects
+// a state's line, and in 3 random games the played positions' keys and entries (the moves' key, keyOf, and the moves)
+// and their starts (the empty board and the moves). With --buffer FILE (a copy of a run's buffer), every line of the
+// file loads.
 
 #include <cstdio>
 #include <cstdlib>
@@ -87,6 +91,64 @@ static void randomGame(Rand& rand, vector<Board>& boards, vector<Move>& moves) {
 
 static string withoutLast(const string& s) { return s.substr(0, s.size() - 1); }
 
+static bool sameMoves(const vector<Move>& a, const vector<Move>& b) {
+  if(a.size() != b.size())
+    return false;
+  for(size_t i = 0; i < a.size(); i++)
+    if(a[i].loc != b[i].loc || a[i].pla != b[i].pla)
+      return false;
+  return true;
+}
+
+//The played positions of a random game (Rgsc::playedKeys, playedEntry) against its boards, and the starts of their
+//entries (Rgsc::startOf): in a game that keeps states each state's key, entry and start with the context; in a game
+//that keeps moves the moves' key (keyOf), the moves, and their start from the empty board.
+static void checkPlayed(const vector<Board>& boards, const vector<Move>& moves, const Rgsc::Context& context) {
+  Board board = boards[0];
+  BoardHistory hist(board, board.nextPla(), Rules(), 0);
+  for(const Move& m : moves)
+    hist.makeBoardMoveAssumeLegal(board, m.loc, m.pla, NULL);
+  const size_t start = moves.size() / 4, count = moves.size() - start;
+  const vector<uint64_t> keys = Rgsc::playedKeys(hist, start, count, context);
+  for(size_t k = 0; k < count; k++)
+    check(keys[k] == (Rgsc::keepsStates() ? Rgsc::stateKey(boards[start + k], context) : Rgsc::keyOf(moves, start + k)),
+          "the key of the played position after " + to_string(start + k) + " moves");
+  for(size_t length : {start, moves.size() / 2, moves.size() - 1}) {
+    const string where = "the played position after " + to_string(length) + " moves";
+    const Rgsc::Entry e = Rgsc::playedEntry(hist, length, context);
+    const vector<Move> prefix(moves.begin(), moves.begin() + length);
+    if(Rgsc::keepsStates()) {
+      const Rgsc::Entry want = Rgsc::stateEntry(boards[length], context, (int64_t)length);
+      check(e.key == want.key && e.state == want.state && e.context == want.context &&
+              e.turnNumber == want.turnNumber && e.moves.empty(),
+            where + ": its state's entry");
+    }
+    else
+      check(e.key == Rgsc::keyOf(moves, length) && sameMoves(e.moves, prefix) && e.state.empty(),
+            where + ": its moves' entry");
+    Sgf::PositionSample s;
+    string why;
+    check(Rgsc::startOf(e, boards[0].x_size, boards[0].y_size, s, why), where + ": a start: " + why);
+    check(s.exactStart && s.hintLoc == Board::NULL_LOC && s.weight == 1.0 && s.trainingWeight == 1.0,
+          where + ": an exact start");
+    if(Rgsc::keepsStates()) {
+      check(s.board.pos_hash == boards[length].pos_hash && s.nextPla == boards[length].nextPla() && s.moves.empty() &&
+              s.initialTurnNumber == (int64_t)length,
+            where + ": the start is the state, with its turn number");
+      check(s.frozenContext && s.komi == context.komi && s.playoutDoublingAdvantagePla == context.advantagePla &&
+              s.playoutDoublingAdvantage == context.advantage,
+            where + ": the start keeps the context");
+      Rgsc::Entry bad = e;
+      bad.key ^= 1;
+      check(!Rgsc::startOf(bad, boards[0].x_size, boards[0].y_size, s, why), where + ": a wrong key gives no start");
+    }
+    else
+      check(s.board.pos_hash == Board(boards[0].x_size, boards[0].y_size).pos_hash && s.nextPla == P_BLACK &&
+              sameMoves(s.moves, prefix) && s.initialTurnNumber == 0 && !s.frozenContext,
+            where + ": the start is the empty board and the moves");
+  }
+}
+
 //The defaults, on a game without a state's text. With a buffer's file (a copy of a run's), its lines of moves load.
 static int checkDefaults(const string& dir, const string& bufferFile) {
   Board board;
@@ -104,6 +166,13 @@ static int checkDefaults(const string& dir, const string& bufferFile) {
   buffer.load();
   check(buffer.size() == 1, "a game that keeps moves loads its lines of moves");
   check(buffer.summary().find("rejected at the load 1,") != string::npos, "and rejects a line of a state");
+  Rand rand("testrgscstates defaults");
+  vector<Board> boards;
+  vector<Move> moves;
+  for(int g = 0; g < 3; g++) {
+    randomGame(rand, boards, moves);
+    checkPlayed(boards, moves, Rgsc::Context());
+  }
   if(!bufferFile.empty()) {
     Rgsc::Settings run;
     run.bufferFile = bufferFile;
@@ -148,13 +217,6 @@ int main(int argc, char** argv) {
     return checkDefaults(dir, bufferFile);
 
   Rand rand("testrgscstates");
-  const vector<int> symmetries = [] {
-    vector<int> s;
-    for(int i = 0; i < 8; i++)
-      if(GameInterface::hasSymmetry(GameEncoding::SYMMETRIES, i))
-        s.push_back(i);
-    return s;
-  }();
 
   // Every position of random games: the state's text gives the state back.
   int64_t positions = 0, pending = 0, withAdvantage = 0;
@@ -203,7 +265,7 @@ int main(int argc, char** argv) {
             where + ": the same player, moves played, pending move and end");
       check(r.legalActions() == b.legalActions(), where + ": the same legal actions");
       check(GameInterface::stateText<GameRules>(r.pos) == text, where + ": the same text again");
-      for(int s : symmetries) {
+      for(int s : SymmetryHelpers::ALLOWED) {
         inputsOf(b, context, s, bits, global);
         inputsOf(r, context, s, bits2, global2);
         check(bits == bits2 && global == global2, where + ": the same inputs at symmetry " + to_string(s));
@@ -219,6 +281,13 @@ int main(int argc, char** argv) {
   check(pending > 0, "some positions have a pick waiting for its drop");
   printf("round trips: %lld positions of %d games (%lld with a move pending, %lld games with an advantage)\n",
          (long long)positions, numGames, (long long)pending, (long long)withAdvantage);
+  {
+    Rand played("testrgscstates played");
+    for(int g = 0; g < 3; g++) {
+      randomGame(played, boards, moves);
+      checkPlayed(boards, moves, Rgsc::Context::of(7.0f * g - 3.5f, P_WHITE, g == 1 ? 1.25 : 0.0));
+    }
+  }
   if(!writeFile.empty()) {
     Rgsc::Settings settings;
     settings.bufferFile = writeFile;

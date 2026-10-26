@@ -51,10 +51,15 @@ Rgsc::Settings Rgsc::Settings::forSwingBuffer() const {
   return s;
 }
 
+//One move's part of keyOf.
+static uint64_t moveKey(const Move& m) {
+  return Hash::murmurMix(((uint64_t)(uint32_t)m.loc << 8) ^ (uint64_t)m.pla ^ 0x5be8a1c3d2f7e649ULL);
+}
+
 uint64_t Rgsc::keyOf(const vector<Move>& moves, size_t count) {
   uint64_t key = 0;
   for(size_t i = 0; i < count; i++)
-    key ^= Hash::murmurMix(((uint64_t)(uint32_t)moves[i].loc << 8) ^ (uint64_t)moves[i].pla ^ 0x5be8a1c3d2f7e649ULL);
+    key ^= moveKey(moves[i]);
   return key;
 }
 
@@ -109,8 +114,8 @@ bool Rgsc::restoreState(const Entry& entry, Board& board, string& why) {
   return true;
 }
 
-Board Rgsc::playedBoard(const BoardHistory& hist, size_t length) {
-  testAssert(length <= hist.moveHistory.size());
+//The board of a game after `length` of hist's moves from its first position (hist.initialBoard), replayed.
+static Board playedBoard(const BoardHistory& hist, size_t length) {
   Board board = hist.initialBoard;
   for(size_t i = 0; i < length; i++)
     board.playMoveAssumeLegal(hist.moveHistory[i].loc, hist.moveHistory[i].pla);
@@ -120,6 +125,14 @@ Board Rgsc::playedBoard(const BoardHistory& hist, size_t length) {
 vector<uint64_t> Rgsc::playedKeys(const BoardHistory& hist, size_t start, size_t count, const Context& context) {
   testAssert(start + count <= hist.moveHistory.size());
   vector<uint64_t> keys(count);
+  if(!keepsStates()) {
+    uint64_t key = keyOf(hist.moveHistory, start);
+    for(size_t k = 0; k < count; k++) {
+      keys[k] = key;
+      key ^= moveKey(hist.moveHistory[start + k]);
+    }
+    return keys;
+  }
   Board board = playedBoard(hist, start);
   for(size_t k = 0; k < count; k++) {
     keys[k] = stateKey(board, context);
@@ -127,6 +140,40 @@ vector<uint64_t> Rgsc::playedKeys(const BoardHistory& hist, size_t start, size_t
       board.playMoveAssumeLegal(hist.moveHistory[start + k].loc, hist.moveHistory[start + k].pla);
   }
   return keys;
+}
+
+Rgsc::Entry Rgsc::playedEntry(const BoardHistory& hist, size_t length, const Context& context) {
+  testAssert(length <= hist.moveHistory.size());
+  if(keepsStates())
+    return stateEntry(playedBoard(hist, length), context, hist.initialTurnNumber + (int64_t)length);
+  Entry e;
+  e.key = keyOf(hist.moveHistory, length);
+  e.moves.assign(hist.moveHistory.begin(), hist.moveHistory.begin() + length);
+  return e;
+}
+
+bool Rgsc::startOf(const Entry& entry, int xSize, int ySize, Sgf::PositionSample& start, string& why) {
+  start.hintLoc = Board::NULL_LOC;
+  start.weight = 1.0;
+  start.trainingWeight = 1.0;
+  start.exactStart = true;
+  if(!keepsStates()) {
+    start.board = Board(xSize, ySize);
+    start.nextPla = P_BLACK;
+    start.moves = entry.moves;
+    start.initialTurnNumber = 0;
+    return true;
+  }
+  if(!restoreState(entry, start.board, why))
+    return false;
+  start.nextPla = start.board.nextPla();
+  start.moves.clear();
+  start.initialTurnNumber = entry.turnNumber;
+  start.frozenContext = true;
+  start.komi = entry.context.komi;
+  start.playoutDoublingAdvantagePla = entry.context.advantagePla;
+  start.playoutDoublingAdvantage = entry.context.advantage;
+  return true;
 }
 
 //------------------------------------------------------------------------------------------------------------
@@ -141,6 +188,7 @@ void Rgsc::Buffer::load() {
   if(!in)
     return;
   string line, word;
+  Board restored;  //each state's, for its check
   entries.clear();
   keys.clear();
   while(getline(in, line)) {
@@ -186,14 +234,13 @@ void Rgsc::Buffer::load() {
       row >> version >> game >> key >> e.regret >> e.sampleCount >> e.origin >> e.turnNumber >> komi >> advantagePla >>
         advantage;
       getline(row, text);
-      Board board;
       string why;
       bool ok = keepsStates() && !row.fail() && version == STATE_RECORD_VERSION && game == GameRules::NAME &&
                 text.size() > 1 && text[0] == ' ' && Global::tryHexStringToUInt64(key, e.key);
       if(ok) {
         e.state = text.substr(1);
         e.context = Context::of(komi, (Player)advantagePla, advantage);
-        ok = restoreState(e, board, why);
+        ok = restoreState(e, restored, why);
       }
       if(!ok) {
         rejectedAtLoad++;
@@ -314,10 +361,12 @@ void Rgsc::Buffer::offer(Entry e) {
   if(keys.count(e.key) > 0) {
     //KataGame fork (2026-10-27): the whole state's check. The same key with another state or context is a
     //collision of the hash.
-    if(!e.state.empty())
-      for(const Entry& known : entries)
-        if(known.key == e.key && !(known.state == e.state && known.context == e.context))
-          keyCollisions++;
+    if(!e.state.empty()) {
+      const auto known =
+        std::find_if(entries.begin(), entries.end(), [&e](const Entry& k) { return k.key == e.key; });
+      if(known != entries.end() && !(known->state == e.state && known->context == e.context))
+        keyCollisions++;
+    }
     return;
   }
   const uint64_t key = e.key;
@@ -370,9 +419,10 @@ int64_t Rgsc::Buffer::countFinishedGame() {
 void Rgsc::Buffer::addRegrets(const vector<float>& regrets, const vector<bool>& continuesMove) {
   lock_guard<std::mutex> lock(mutex);
   const size_t n = regrets.size();
+  //Without the kinds, every action is a move.
+  const bool known = continuesMove.size() == n;
   for(size_t k = 0; k < n; k++) {
-    //0 a move of one action, 1 a move's first action, 2 a later action. Without the kinds, every action is a move.
-    const bool known = continuesMove.size() == n;
+    //0 a move of one action, 1 a move's first action, 2 a later action.
     const int kind = known && continuesMove[k] ? 2 : known && k + 1 < n && continuesMove[k + 1] ? 1 : 0;
     regretCount[kind]++;
     regretSum[kind] += regrets[k];
@@ -428,8 +478,7 @@ string Rgsc::Buffer::summary() const {
 
 Rgsc::TreeTracker::TreeTracker(const Buffer* b, Source s)
   : buffer(b), source(s), mutex(), bestRanking(-numeric_limits<float>::infinity()), hasCandidate(false),
-    candidateRegretValue(0.0f), candidateKey(0), candidateMoves(), candidateBoard(), candidateContext(),
-    candidateTurnNumber(0)
+    candidateRegretValue(0.0f), candidateEntry(), candidateBoard()
 {}
 
 void Rgsc::TreeTracker::offer(const NNOutput& nnOutput, const Board& board, const BoardHistory& hist,
@@ -450,23 +499,21 @@ void Rgsc::TreeTracker::offer(const NNOutput& nnOutput, const Board& board, cons
     return;
   hasCandidate = true;
   candidateRegretValue = swing ? nnOutput.swingValue : nnOutput.regretValue;
-  candidateKey = key;
+  candidateEntry.key = key;
   if(keepsStates()) {
     candidateBoard = board;
-    candidateContext = context;
-    candidateTurnNumber = hist.getCurrentTurnNumber();
+    candidateEntry.context = context;
+    candidateEntry.turnNumber = hist.getCurrentTurnNumber();
   }
   else
-    candidateMoves = hist.moveHistory;
+    candidateEntry.moves = hist.moveHistory;
   bestRanking.store(ranking, std::memory_order_release);
 }
 
 Rgsc::Entry Rgsc::TreeTracker::candidate() const {
+  Entry e = candidateEntry;
   if(keepsStates())
-    return stateEntry(candidateBoard, candidateContext, candidateTurnNumber);
-  Entry e;
-  e.key = candidateKey;
-  e.moves = candidateMoves;
+    e.state = GameInterface::stateText<GameRules>(candidateBoard.pos);
   return e;
 }
 

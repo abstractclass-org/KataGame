@@ -134,7 +134,8 @@
  *                           hash, input_hash, legal actions and inputs. It returns false with the reason for a text
  *                           that names no state. A view that a caller set is not part of the text. RGSC's buffer keeps
  *                           a game's states in it, for exact restarts (program/rgsc.h). A game gives both or neither.
- *                           Blueprints' state. Default: none, and RGSC keeps the moves from the start (hasStateText).
+ *                           Blueprints' state. Default: none, and RGSC keeps the moves from the start (hasStateText,
+ *                           stateText, parseState).
  *
  * The network encoding part (struct E):
  *   Rules                   the game's rules part (its GameRules).

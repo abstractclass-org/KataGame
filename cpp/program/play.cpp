@@ -570,25 +570,16 @@ void GameInitializer::createGameSharedUnsynchronized(
       pla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
     }
 
-    //KataGame fork (2026-10-27): a start with its context frozen (RGSC's restart from a state) keeps its komi.
-    if(startPos.frozenContext) {
-      extraBlackAndKomi = ExtraBlackAndKomi();
-      extraBlackAndKomi.komiMean = startPos.komi;
-      extraBlackAndKomi.komiStdev = 0.0f;
-      hist.setKomi(startPos.komi);
-    }
-    else {
-      //No handicap when starting from a sampled position.
-      double thisHandicapProb = 0.0;
-      extraBlackAndKomi = PlayUtils::chooseExtraBlackAndKomi(
-        komiMean, komiStdev, komiAllowIntegerProb,
-        thisHandicapProb, numExtraBlackFixed,
-        komiBigStdevProb, komiBigStdev,
-        komiBiggerStdevProb, komiBiggerStdev,
-        board, rand  //KataGame fork: the board, for its komi area (Board::komiArea)
-      );
-      PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
-    }
+    //No handicap when starting from a sampled position.
+    double thisHandicapProb = 0.0;
+    extraBlackAndKomi = PlayUtils::chooseExtraBlackAndKomi(
+      komiMean, komiStdev, komiAllowIntegerProb,
+      thisHandicapProb, numExtraBlackFixed,
+      komiBigStdevProb, komiBigStdev,
+      komiBiggerStdevProb, komiBiggerStdev,
+      board, rand  //KataGame fork: the board, for its komi area (Board::komiArea)
+    );
+    PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
 
     otherGameProps.isSgfPos = hintLoc == Board::NULL_LOC;
     otherGameProps.isHintPos = hintLoc != Board::NULL_LOC;
@@ -601,13 +592,6 @@ void GameInitializer::createGameSharedUnsynchronized(
     otherGameProps.trainingWeight = startPos.trainingWeight;
     makeGameFairProb = sgfCompensateKomiProb;
     extraBlackAndKomi.interpZero = sgfKomiInterpZeroProb > 0 ? rand.nextBool(sgfKomiInterpZeroProb) : false;
-    //KataGame fork (2026-10-27): a frozen context keeps its asymmetric playouts too, and no komi compensation follows.
-    if(startPos.frozenContext) {
-      extraBlackAndKomi.interpZero = false;
-      otherGameProps.playoutDoublingAdvantagePla = startPos.playoutDoublingAdvantagePla;
-      otherGameProps.playoutDoublingAdvantage = startPos.playoutDoublingAdvantage;
-      return;
-    }
   }
   else {
     int xSize = allowedBSizes[bSizeIdx].first;
@@ -669,6 +653,17 @@ void GameInitializer::createGameSharedUnsynchronized(
     if(makeGameFairProb > 0.0)
       extraBlackAndKomi.makeGameFair = rand.nextBool(makeGameFairProb);
     extraBlackAndKomi.makeGameFairForEmptyBoard = false;
+  }
+
+  //KataGame fork (2026-10-27): a start with its context frozen (RGSC's restart from a state) keeps its komi and its
+  //asymmetric playouts, in place of the draws above, and no komi compensation follows.
+  if(posSample != NULL && posSample->frozenContext) {
+    extraBlackAndKomi = ExtraBlackAndKomi();
+    extraBlackAndKomi.komiMean = posSample->komi;
+    extraBlackAndKomi.komiStdev = 0.0f;
+    hist.setKomi(posSample->komi);
+    otherGameProps.playoutDoublingAdvantagePla = posSample->playoutDoublingAdvantagePla;
+    otherGameProps.playoutDoublingAdvantage = posSample->playoutDoublingAdvantage;
   }
 }
 

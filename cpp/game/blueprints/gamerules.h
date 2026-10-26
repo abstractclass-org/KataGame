@@ -807,21 +807,23 @@ inline void for_each_hand_action(const Position& p, const ViewHand& view, F&& f)
       }
 }
 
+// Moves n points of the rules board by (-dx, -dy), in their order: a point that leaves the board goes.
+inline void shift_points(int32_t* points, int8_t& n, int dx, int dy) {
+  int kept = 0;
+  for(int i = 0; i < n; i++) {
+    const int x = points[i] % RULES_LEN - dx, y = points[i] / RULES_LEN - dy;
+    if(on_rules(x, y))
+      points[kept++] = y * RULES_LEN + x;
+  }
+  n = int8_t(kept);
+}
+
 // Moves every point of the rules board by (-dx, -dy) in the position's own records: the history and the recent
 // placements' boxes. A history's point that leaves the board goes: the cells it took can lie beyond the box.
 inline void shift_records(Position& p, int dx, int dy) {
-  auto shift = [&](int32_t* points, int8_t& n) {
-    int kept = 0;
-    for(int i = 0; i < n; i++) {
-      const int x = points[i] % RULES_LEN - dx, y = points[i] / RULES_LEN - dy;
-      if(on_rules(x, y))
-        points[kept++] = y * RULES_LEN + x;
-    }
-    n = int8_t(kept);
-  };
   for(Footprint& f : p.history) {
-    shift(f.stamped, f.nStamped);
-    shift(f.taken, f.nTaken);
+    shift_points(f.stamped, f.nStamped, dx, dy);
+    shift_points(f.taken, f.nTaken, dx, dy);
   }
   for(auto& boxes : p.recent)
     for(Box& b : boxes)
@@ -1133,28 +1135,22 @@ inline std::string points_text(const int32_t* points, int n) {
   return s;
 }
 
-// Reads points_text into out (at most `most` points, each once, on the rules board), each point moved by (-dx, -dy)
-// as recentering moves a footprint's points (shift_records): a point that leaves the board goes. False for any other
-// text.
-inline bool parse_points(const std::string& text, int most, int dx, int dy, int32_t* out, int8_t& n) {
+// Reads points_text into out: at most `most` points, each once, on the rules board. False for any other text.
+inline bool parse_points(const std::string& text, int most, int32_t* out, int8_t& n) {
   n = 0;
   if(text == "-")
     return true;
   const std::vector<std::string> cells = split(text, ';');
   if(int(cells.size()) > most)
     return false;
-  std::vector<int32_t> seen;
   for(const std::string& c : cells) {
     int q, r;
     if(!parse_cell(c, q, r) || !on_rules(q + RULES_RADIUS, r + RULES_RADIUS))
       return false;
     const int32_t point = (r + RULES_RADIUS) * RULES_LEN + q + RULES_RADIUS;
-    if(std::find(seen.begin(), seen.end(), point) != seen.end())
+    if(std::find(out, out + n, point) != out + n)
       return false;
-    seen.push_back(point);
-    const int x = q + RULES_RADIUS - dx, y = r + RULES_RADIUS - dy;
-    if(on_rules(x, y))
-      out[n++] = y * RULES_LEN + x;
+    out[n++] = point;
   }
   return true;
 }
@@ -1821,12 +1817,14 @@ struct GameRules {
     for(int h = 0; h < HISTORY; h++) {
       const std::vector<std::string> parts = split(footprints[h], '|');
       Footprint& f = s.history[h];
-      if(parts.size() != 2 || !parse_points(parts[0], MAX_CELLS, dx, dy, f.stamped, f.nStamped) ||
-         !parse_points(parts[1], MAX_TAKEN, dx, dy, f.taken, f.nTaken)) {
+      if(parts.size() != 2 || !parse_points(parts[0], MAX_CELLS, f.stamped, f.nStamped) ||
+         !parse_points(parts[1], MAX_TAKEN, f.taken, f.nTaken)) {
         why = "a footprint is the stamped points, |, then the taken points, each q,r on the rules board once, joined "
               "by ;, \"-\" for none: \"" + footprints[h] + "\"";
         return false;
       }
+      shift_points(f.stamped, f.nStamped, dx, dy);
+      shift_points(f.taken, f.nTaken, dx, dy);
     }
     p = s;
     return true;

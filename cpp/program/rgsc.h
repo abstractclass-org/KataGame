@@ -41,6 +41,7 @@
 
 #include "../core/config_parser.h"
 #include "../core/rand.h"
+#include "../dataio/sgf.h"
 #include "../game/boardhistory.h"
 
 struct NNOutput;
@@ -116,11 +117,17 @@ namespace Rgsc {
   //Sets board to an entry's state (a game that keeps states). False, with the reason, when the text gives no state or
   //the state's key is not the entry's.
   bool restoreState(const Entry& entry, Board& board, std::string& why);
-  //The board of a game after `length` of hist's moves from its first position (hist.initialBoard), replayed.
-  Board playedBoard(const BoardHistory& hist, size_t length);
-  //The keys of a game's played positions (a game that keeps states): keys[k] of the position after start + k of
-  //hist's moves, for k from 0 to count - 1, each with the context.
+  //The keys of a game's played positions: keys[k] of the position after start + k of hist's moves, for k from 0 to
+  //count - 1. The moves' key (keyOf), or in a game that keeps states the state's key with the context.
   std::vector<uint64_t> playedKeys(const BoardHistory& hist, size_t start, size_t count, const Context& context);
+  //The entry of the position after `length` of hist's moves, with its key: the moves, or in a game that keeps states
+  //the state (replayed from hist's first position), the context and the turn number. Its regret and origin are the
+  //caller's.
+  Entry playedEntry(const BoardHistory& hist, size_t length, const Context& context);
+  //Sets start to a game's exact start from an entry: its moves from an empty board of xSize x ySize, or in a game that
+  //keeps states the state itself, with its turn number and its context frozen (Sgf::PositionSample::frozenContext).
+  //False, with the reason, when the state does not come back with its key (restoreState).
+  bool startOf(const Entry& entry, int xSize, int ySize, Sgf::PositionSample& start, std::string& why);
 
   class Buffer {
    public:
@@ -199,7 +206,6 @@ namespace Rgsc {
     bool found() const { return hasCandidate; }
     float ranking() const { return bestRanking.load(std::memory_order_acquire); }
     float regretValue() const { return candidateRegretValue; }
-    uint64_t key() const { return candidateKey; }
     //The candidate as an entry, its moves or its state: its regret and origin are the caller's.
     Entry candidate() const;
 
@@ -210,12 +216,10 @@ namespace Rgsc {
     std::atomic<float> bestRanking;
     bool hasCandidate;
     float candidateRegretValue;
-    uint64_t candidateKey;
-    std::vector<Move> candidateMoves;
-    //A game that keeps states: the candidate's board, context and turn number.
+    //The candidate's key, and its moves, or in a game that keeps states its context and turn number with its board,
+    //whose text candidate() writes.
+    Entry candidateEntry;
     Board candidateBoard;
-    Context candidateContext;
-    int64_t candidateTurnNumber;
   };
 
   //Eq. 2 for each turn: selectedWhiteWinLoss[t] is the search value (white's win minus loss) of the move played at

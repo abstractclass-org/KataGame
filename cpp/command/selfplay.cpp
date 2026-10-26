@@ -47,13 +47,11 @@ static void rgscOfferCandidate(
   const vector<float>& regretByTurn, const FinishedGameData& gameData
 ) {
   const BoardHistory& hist = gameData.endHist;
-  const vector<Move>& allMoves = hist.moveHistory;
   const size_t start = gameData.startHist.moveHistory.size();
-  testAssert(allMoves.size() >= start + regretByTurn.size());
+  testAssert(hist.moveHistory.size() >= start + regretByTurn.size());
   const Rgsc::Context context = Rgsc::Context::of(
     hist.rules.komi, gameData.playoutDoublingAdvantagePla, gameData.playoutDoublingAdvantage);
-  const vector<uint64_t> stateKeys =
-    Rgsc::keepsStates() ? Rgsc::playedKeys(hist, start, regretByTurn.size(), context) : vector<uint64_t>();
+  const vector<uint64_t> keys = Rgsc::playedKeys(hist, start, regretByTurn.size(), context);
   bool found = tracker->found();
   float best = tracker->ranking();
   double regret = found ? std::max(buffer.floorRegret(), (double)tracker->regretValue()) : 0.0;
@@ -63,8 +61,7 @@ static void rgscOfferCandidate(
     const float ranking = rankingByTurn[k];
     if(length == 0 || !(ranking > best))
       continue;
-    const uint64_t positionKey = Rgsc::keepsStates() ? stateKeys[k] : Rgsc::keyOf(allMoves, length);
-    if(buffer.contains(positionKey))
+    if(buffer.contains(keys[k]))
       continue;
     found = true;
     best = ranking;
@@ -73,15 +70,7 @@ static void rgscOfferCandidate(
   }
   if(!found)
     return;
-  Rgsc::Entry entry;
-  if(played == 0)
-    entry = tracker->candidate();
-  else if(Rgsc::keepsStates())
-    entry = Rgsc::stateEntry(Rgsc::playedBoard(hist, played), context, hist.initialTurnNumber + (int64_t)played);
-  else {
-    entry.key = Rgsc::keyOf(allMoves, played);
-    entry.moves.assign(allMoves.begin(), allMoves.begin() + played);
-  }
+  Rgsc::Entry entry = played == 0 ? tracker->candidate() : Rgsc::playedEntry(hist, played, context);
   entry.regret = regret;
   entry.origin = played == 0 ? Rgsc::ORIGIN_TREE : Rgsc::ORIGIN_PLAYED;
   buffer.offer(std::move(entry));
@@ -262,8 +251,8 @@ int MainCmds::selfplay(const vector<string>& args) {
 
   Setup::initializeSession(cfg);
 
-  //The buffers load after the game's settings (initializeSession): a game that keeps states restores them under its
-  //settings (KataGame fork, 2026-10-27).
+  //KataGame fork (2026-10-27): the buffers load after the game's settings (initializeSession), as a game that keeps
+  //states restores them under its settings.
   Rgsc::Buffer* rgscBuffer = NULL;
   if(rgscSettings.enabled) {
     rgscBuffer = new Rgsc::Buffer(rgscSettings);
@@ -491,33 +480,20 @@ int MainCmds::selfplay(const vector<string>& args) {
             rgscSwingBuffer->sample(thisLoopSeedRand, rgscEntry)
           )
             rgscSource = Rgsc::SOURCE_SWING;
-          //KataGame fork (2026-10-27): a game that keeps states starts from the state itself, with its turn number and
-          //its context frozen. A state that does not come back with its key leaves the buffer, and the game starts
-          //from the normal start.
-          Board restored;
-          if(Rgsc::keepsStates() && rgscSource != Rgsc::SOURCE_NONE) {
-            string why;
-            if(!Rgsc::restoreState(rgscEntry, restored, why)) {
-              (rgscSource == Rgsc::SOURCE_SWING ? rgscSwingBuffer : rgscBuffer)->reject(rgscEntry.key);
-              logger.write("RGSC: an entry rejected at its restart: " + why);
-              rgscSource = Rgsc::SOURCE_NONE;
-            }
+          //KataGame fork (2026-10-27): the entry's start (Rgsc::startOf): its moves, or in a game that keeps states the
+          //state itself, with its turn number and its context frozen. A state that does not come back with its key
+          //leaves the buffer, and the game starts from the normal start.
+          string why;
+          if(
+            rgscSource != Rgsc::SOURCE_NONE &&
+            !Rgsc::startOf(rgscEntry, maxBoardXSizeUsed, maxBoardYSizeUsed, rgscStart, why)
+          ) {
+            (rgscSource == Rgsc::SOURCE_SWING ? rgscSwingBuffer : rgscBuffer)->reject(rgscEntry.key);
+            logger.write("RGSC: an entry rejected at its restart: " + why);
+            rgscSource = Rgsc::SOURCE_NONE;
           }
-          if(rgscSource != Rgsc::SOURCE_NONE) {
+          if(rgscSource != Rgsc::SOURCE_NONE)
             rgscRestarted = true;
-            rgscStart.board = Rgsc::keepsStates() ? restored : Board(maxBoardXSizeUsed, maxBoardYSizeUsed);
-            rgscStart.nextPla = Rgsc::keepsStates() ? restored.nextPla() : P_BLACK;
-            rgscStart.moves = rgscEntry.moves;
-            rgscStart.initialTurnNumber = Rgsc::keepsStates() ? rgscEntry.turnNumber : 0;
-            rgscStart.hintLoc = Board::NULL_LOC;
-            rgscStart.weight = 1.0;
-            rgscStart.trainingWeight = 1.0;
-            rgscStart.exactStart = true;
-            rgscStart.frozenContext = Rgsc::keepsStates();
-            rgscStart.komi = rgscEntry.context.komi;
-            rgscStart.playoutDoublingAdvantagePla = rgscEntry.context.advantagePla;
-            rgscStart.playoutDoublingAdvantage = rgscEntry.context.advantage;
-          }
           else {
             rgscTracker = std::make_unique<Rgsc::TreeTracker>(rgscBuffer);
             if(rgscSwingBuffer != NULL)

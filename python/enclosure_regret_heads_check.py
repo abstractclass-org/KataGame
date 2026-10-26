@@ -17,17 +17,16 @@ import sys
 import numpy as np
 import torch
 
+from enclosure_add_regret_heads import prefix_of
 from katago.train import modelconfigs
 from katago.train.metrics_pytorch import Metrics
 from katago.train.model_pytorch import Model
-
-ANCHOR = "value_head.conv1.weight"
 
 
 def model_of(config, sd):
     """A Model of the config's game, with the state dict sd (after a wrapper's prefix), in eval mode."""
     model = Model(config, modelconfigs.get_game(config).MAX_BOARD_LEN)
-    prefix = [k for k in sd if k.endswith(ANCHOR)][0][:-len(ANCHOR)]
+    prefix = prefix_of(sd)
     model.load_state_dict({k[len(prefix):]: v for k, v in sd.items() if k.startswith(prefix)}, strict=True)
     model.eval()
     return model
@@ -42,14 +41,15 @@ def load(path):
 def inputs(rows_paths, n, config):
     pos_len = modelconfigs.get_game(config).MAX_BOARD_LEN
     if rows_paths:
-        spatial, glob = [], []
+        spatial, glob, got = [], [], 0
         for path in rows_paths:
             d = np.load(path)
-            packed = d["binaryInputNCHWPacked"][:n - sum(len(s) for s in spatial)]
+            packed = d["binaryInputNCHWPacked"][:n - got]
             c = packed.shape[1]
             spatial.append(np.unpackbits(packed, axis=2)[:, :, :pos_len * pos_len].reshape(-1, c, pos_len, pos_len))
             glob.append(d["globalInputNC"][:len(packed)])
-            if sum(len(s) for s in spatial) >= n:
+            got += len(packed)
+            if got >= n:
                 break
         return (torch.tensor(np.concatenate(spatial), dtype=torch.float32),
                 torch.tensor(np.concatenate(glob), dtype=torch.float32))
