@@ -444,15 +444,18 @@ inline void set_cell(Position& p, int index, int8_t v) {
   p.cell.set(index, v);
 }
 
-// The window's middle, a point of the rules board: the middle of the box of the player's last placements, rounded
-// toward zero from the board's middle (half_off_middle), or the board's middle when the player has placed nothing.
-inline void window_middle(const Position& p, int player, int& wx, int& wy) {
+// The window's middle of a player's last placements (recent, the newest first), a point of the rules board: the middle
+// of their box, rounded toward zero from the board's middle (half_off_middle), or the board's middle when the player
+// has placed nothing.
+inline void window_middle(const Box (&recent)[RECENT], int& wx, int& wy) {
   Box box;
-  for(const Box& b : p.recent[player])
+  for(const Box& b : recent)
     box.add(b);
   wx = RULES_RADIUS + (box.any ? half_off_middle(box.x0, box.x1) : 0);
   wy = RULES_RADIUS + (box.any ? half_off_middle(box.y0, box.y1) : 0);
 }
+// The player's window's middle.
+inline void window_middle(const Position& p, int player, int& wx, int& wy) { window_middle(p.recent[player], wx, wy); }
 // The view's middle: the rules point of the view that a caller set (set_view), else the mover's window's middle.
 inline void view_middle(const Position& p, int& wx, int& wy) {
   if(p.viewSet) {
@@ -503,6 +506,14 @@ inline View view_of(const Position& p, int o) {
   return view;
 }
 inline View view_of(const Position& p) { return view_of(p, p.orientation); }
+// The view of a player's window in the position's orientation: the mover's view, or the view where the other player
+// places when it moves on the board as it is (its window does not change until it places).
+inline View player_view(const Position& p, int player) {
+  View view;
+  window_middle(p, player, view.wx, view.wy);
+  view.o = p.orientation;
+  return view;
+}
 
 // A player's three blueprints as the view of orientation o draws them (view_blueprint), with each one's shift (mq,
 // mr): the view's hand point (q + HAND_X, r + HAND_Y) of blueprint k is the cell R^o (q + mq[k], r + mr[k]) of k's site
@@ -658,26 +669,31 @@ inline void view_rows(const Position& p, const View& view, ViewRows& out) {
   }
 }
 
+// Row y of the points of the view where the engine may place the player's non-empty blueprint b (fits_in_view), from
+// the view's rows (view_rows): bit x when every cell of b with its (0, 0) cell on (x, y) is on an empty point of the
+// view, and one is on the player's frontier.
+inline ViewRow fit_row(const Blueprint& b, const ViewRow* empty, const ViewRow* frontier, int y) {
+  ViewRow fit = VIEW_ROW_MASK, touch;
+  for(int i = 0; i < b.n && fit; i++) {
+    const int cy = y + b.r[i];
+    if(cy < 0 || cy >= VIEW)
+      fit = ViewRow();
+    else {
+      fit &= shift_row(empty[cy], b.q[i]);
+      touch |= shift_row(frontier[cy], b.q[i]);
+    }
+  }
+  return fit & touch;
+}
+
 // Calls f(x, y) once for each point (x, y) of the view where the engine may place the player's blueprint b
-// (fits_in_view), from the view's rows (view_rows): every cell of b on an empty point of the view, and one on the
-// player's frontier. Row by row, then by x.
+// (fit_row). Row by row, then by x.
 template<class F>
 inline void for_each_fit(const Blueprint& b, const ViewRow* empty, const ViewRow* frontier, F&& f) {
   if(b.n == 0)
     return;
-  for(int y = 0; y < VIEW; y++) {
-    ViewRow fit = VIEW_ROW_MASK, touch;
-    for(int i = 0; i < b.n && fit; i++) {
-      const int cy = y + b.r[i];
-      if(cy < 0 || cy >= VIEW)
-        fit = ViewRow();
-      else {
-        fit &= shift_row(empty[cy], b.q[i]);
-        touch |= shift_row(frontier[cy], b.q[i]);
-      }
-    }
-    for_each_bit(fit & touch, [&](int x) { f(x, y); });
-  }
+  for(int y = 0; y < VIEW; y++)
+    for_each_bit(fit_row(b, empty, frontier, y), [&](int x) { f(x, y); });
 }
 
 // The points of the rules board whose cells blueprint b of the player takes with its (0, 0) cell on (x, y): the

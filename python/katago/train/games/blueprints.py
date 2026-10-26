@@ -26,6 +26,13 @@ is a policy of the next position's view. When that view has another orientation 
 policy lies in a turned frame that the row does not give, so it has the weight 0 too. With one orientation a game, no
 row has a next view of another orientation.
 
+The extended inputs of the inputs version 10 (the C++ gameencoding.h, for bpj3): the mover's cells that the opponent's
+placements in its own view take, and the minimap with each player's view on it, move as pixels (the minimap's bins of
+the rules board map to bins). The legal hand actions move as the hand's points of the mover's blueprints. The window
+boxes are global inputs: each box's two corners move as offsets by the symmetry's linear part, and the turn by 180
+degrees and the second reflection (3 and 7) swap the corners (apply_symmetry_extended_global_inputs). The rows of the
+older versions have none of these.
+
 The value targets are points of the row's view, so they move as pixels: the final board (C0), the cells captured
 before the game's end (C1), the stars 4 and 16 moves later (C2-3), where the points are earned (C4), and the cells
 that go in the rest of the mover's turn (C5, the opponent's cells) and in the opponent's next turn (C6, the mover's
@@ -80,6 +87,14 @@ NEXT_MOVER_TARGET, TARGETS_VERSION_TARGET, NEXT_MOVER_SLOT = 76, 77, 1
 # The orientations of the row's view and of the next position's view (0 to 5, both 0 in the rows from before the
 # orientations): the global targets G78 and G79.
 ORIENTATION_TARGET, NEXT_ORIENTATION_TARGET = 78, 79
+# The extended inputs (the inputs version 10): the planes after the game's 89, and the global inputs after V9's.
+NUM_EXTENDED_SPATIAL_INPUTS = 12
+NUM_EXTENDED_GLOBAL_INPUTS = 20
+MINE_THREATENED = 89               # the mover's cells that the opponent's placements in its own view take
+LEGAL_HAND = 90                    # + k: the hand's points of blueprint k where a pick or a drop is legal now
+MINIMAP = 93                       # + 3 * side + type (side 0 the mover's): the minimap's bins that hold such a cell
+MY_WINDOW, THEIR_WINDOW = 99, 100  # the minimap's bins that each player's view meets
+BOX_FIELDS = 5                     # a window box: 1 when there, then its corners' x0, x1, y0, y1 / 67
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
 
 
@@ -155,7 +170,7 @@ def _remap_planes(out, inputs, first, count, image, symmetry, shifts):
 
 
 def apply_symmetry_inputs(binary_inputs, symmetry):
-    """The input planes (N, C, y, x)."""
+    """The input planes (N, C, y, x), with the extended planes in the rows of the inputs version 10."""
     if symmetry == 0:
         return binary_inputs
     out = apply_symmetry_points(binary_inputs, symmetry).clone()
@@ -166,7 +181,24 @@ def apply_symmetry_inputs(binary_inputs, symmetry):
     _remap_planes(out, binary_inputs, PICKED, HAND, _hand_image, symmetry, mine)
     _remap_planes(out, binary_inputs, MY_PLACES, PLACE_PLANES, _anchor_image, symmetry, mine)
     _remap_planes(out, binary_inputs, THEIR_PLACES, PLACE_PLANES, _anchor_image, symmetry, theirs)
+    if binary_inputs.shape[1] > 1 + NUM_SPATIAL_INPUTS:
+        _remap_planes(out, binary_inputs, LEGAL_HAND, HAND, _hand_image, symmetry, mine)
     return out
+
+
+def apply_symmetry_extended_global_inputs(extended, symmetry):
+    """The window boxes (N, NUM_EXTENDED_GLOBAL_INPUTS) at the symmetry: each box's corners (x0, y0) and (x1, y1) move
+    by the linear part (C++ sym_offset), and the symmetries that flip both axes (3 and 7) swap the corners, as the
+    image's box has the images of the other corners first (C++ box_inputs)."""
+    if symmetry == 0:
+        return extended
+    boxes = extended.reshape(extended.shape[0], -1, BOX_FIELDS)
+    x0, y0 = _linear(boxes[:, :, 1], boxes[:, :, 3], symmetry)
+    x1, y1 = _linear(boxes[:, :, 2], boxes[:, :, 4], symmetry)
+    if symmetry & 3 == 3:
+        x0, y0, x1, y1 = x1, y1, x0, y0
+    out = torch.stack((boxes[:, :, 0], x0, x1, y0, y1), dim=2)
+    return out.reshape(extended.shape)
 
 
 def _map_policy(policy, symmetry, mine, theirs, same):

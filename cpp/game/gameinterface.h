@@ -209,6 +209,17 @@
  *                           every slot of TARGETS that is not one of the FRONT_TARGETS, and can hold those too: a game
  *                           whose pieces() do not give such a target computes it, and the front then leaves that slot
  *                           to the game. Default: TARGETS without the FRONT_TARGETS (ownTargets).
+ *   NUM_EXTENDED_SPATIAL_INPUTS, NUM_EXTENDED_GLOBAL_INPUTS
+ *                           int, int: the game's extended inputs, which the inputs version 10 adds to version 9's
+ *                           (NNInputs V10, model version 19), so that a new run can read more inputs while the
+ *                           networks and the rows of version 9 stay as they are. With options.extended,
+ *                           spatial_inputs also sets the planes NUM_SPATIAL_INPUTS to NUM_SPATIAL_INPUTS +
+ *                           NUM_EXTENDED_SPATIAL_INPUTS - 1, and global_inputs writes NUM_GLOBAL_INPUTS +
+ *                           NUM_EXTENDED_GLOBAL_INPUTS floats, its own first. The front puts the extended planes after
+ *                           the game's planes, and the extended global inputs after V9's (KataGo's 2 playout inputs).
+ *                           Blueprints' window boxes, the opponent's threats in its own window, the legal hand actions
+ *                           and the minimap. Default: 0 and 0, V10 is V9 (extendedSpatialInputs,
+ *                           extendedGlobalInputs).
  */
 
 #include <algorithm>
@@ -228,6 +239,7 @@ struct InputOptions {
   int symmetry = 0;     //An allowed symmetry: the inputs are those of the position's image.
   bool history = true;  //False: leave out what the position keeps of earlier turns (KataGo's maxHistory <= 0).
   double komi = 0.0;    //The rules' komi, for a game whose inputs encode it.
+  bool extended = false;  //True: the game's extended inputs too (NUM_EXTENDED_SPATIAL_INPUTS), the inputs version 10.
 };
 
 //The optional training targets: the slots of KataGo's spatial targets (its training rows' valueTargetsNCHW) and the
@@ -695,6 +707,23 @@ namespace encoding {
   GAMEINTERFACE_DETECT(HasKomiBracketLimit, double, G::KOMI_BRACKET_LIMIT)
   GAMEINTERFACE_DETECT(HasKomiLeadStep, double, G::KOMI_LEAD_STEP)
   GAMEINTERFACE_DETECT(HasOwnTargets, unsigned, std::integral_constant<unsigned, G::OWN_TARGETS>::value)
+  GAMEINTERFACE_DETECT(HasExtendedSpatialInputs, int,
+                       std::integral_constant<int, G::NUM_EXTENDED_SPATIAL_INPUTS>::value)
+  GAMEINTERFACE_DETECT(HasExtendedGlobalInputs, int, std::integral_constant<int, G::NUM_EXTENDED_GLOBAL_INPUTS>::value)
+}
+
+//The game's extended inputs (NUM_EXTENDED_SPATIAL_INPUTS, NUM_EXTENDED_GLOBAL_INPUTS): the game's, else none.
+template<class E> constexpr int extendedSpatialInputs() {
+  if constexpr(encoding::HasExtendedSpatialInputs<E>::value)
+    return E::NUM_EXTENDED_SPATIAL_INPUTS;
+  else
+    return 0;
+}
+template<class E> constexpr int extendedGlobalInputs() {
+  if constexpr(encoding::HasExtendedGlobalInputs<E>::value)
+    return E::NUM_EXTENDED_GLOBAL_INPUTS;
+  else
+    return 0;
 }
 
 //The slots of TARGETS that the game computes itself (training_targets): the game's, else all but the FRONT_TARGETS.
@@ -781,6 +810,11 @@ template<class E> constexpr bool checkEncoding() {
   if constexpr(HasKomiLeadStep<E>::value)
     static_assert(E::KOMI_LEAD_STEP >= 0.0 && E::KOMI_LEAD_STEP * 2 == (double)(long long)(E::KOMI_LEAD_STEP * 2),
                   "game interface, encoding part: KOMI_LEAD_STEP is 0, or whole or half points");
+  static_assert(HasExtendedSpatialInputs<E>::value == HasExtendedGlobalInputs<E>::value,
+                "game interface, encoding part: the game gives both NUM_EXTENDED_SPATIAL_INPUTS and "
+                "NUM_EXTENDED_GLOBAL_INPUTS, or neither");
+  static_assert(extendedSpatialInputs<E>() >= 0 && extendedGlobalInputs<E>() >= 0,
+                "game interface, encoding part: the extended inputs are 0 or more");
   return true;
 }
 

@@ -334,10 +334,14 @@ def main(args):
         )
 
     # Enclosure fork (2026-10-13): a model with the V9 inputs (the playout doubling advantage: 7 global inputs) is
-    # version 17's format as version 18, which C++ maps to NNInputs V9. A binary from before refuses it.
+    # version 17's format as version 18, which C++ maps to NNInputs V9. A binary from before refuses it. KataGame fork
+    # (2026-10-26): with the V10 inputs (V9's and the game's extended inputs), version 19, NNInputs V10.
     if modelconfigs.get_inputs_version(model_config) == 9:
         assert version == 17, version
         version = 18
+    elif modelconfigs.get_inputs_version(model_config) == 10:
+        assert version == 17, version
+        version = 19
 
     # Enclosure fork: the model's game, in the header's model option H (below): 0 for Enclosure, as in every file from
     # before, so that every binary loads its networks; another game's name for another game.

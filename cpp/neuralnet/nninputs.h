@@ -145,6 +145,11 @@ namespace NNInputs {
   //version 18.
   const int NUM_FEATURES_SPATIAL_V9 = NUM_FEATURES_SPATIAL_V8;
   const int NUM_FEATURES_GLOBAL_V9 = NUM_FEATURES_GLOBAL_V8 + 2;
+  //KataGame fork (2026-10-26): V10, V9 with the game's extended inputs (GameInterface: NUM_EXTENDED_SPATIAL_INPUTS and
+  //NUM_EXTENDED_GLOBAL_INPUTS): its extended planes after its planes, and its extended global inputs after V9's. So a
+  //new run reads more inputs, and the rows and the networks of V9 stay as they are. Model version 19.
+  const int NUM_FEATURES_SPATIAL_V10 = NUM_FEATURES_SPATIAL_V9 + GameInterface::extendedSpatialInputs<GameEncoding>();
+  const int NUM_FEATURES_GLOBAL_V10 = NUM_FEATURES_GLOBAL_V9 + GameInterface::extendedGlobalInputs<GameEncoding>();
 
   Hash128 getHash(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
@@ -201,6 +206,20 @@ namespace NNInputs {
     std::vector<int>* setEntries = NULL
   );
   void fillRowV9Packed(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
+    int symmetry = 0
+  );
+  //V10: the rows of NUM_FEATURES_SPATIAL_V10 planes (NUM_SPATIAL_WORDS_V10 words packed), with rowGlobal holding
+  //NUM_FEATURES_GLOBAL_V10 values.
+  const int NUM_SPATIAL_ELTS_V10 = NUM_FEATURES_SPATIAL_V10 * NNPos::MAX_BOARD_AREA;
+  const int NUM_SPATIAL_WORDS_V10 = (NUM_SPATIAL_ELTS_V10 + 31) / 32;
+  void fillRowV10(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal,
+    std::vector<int>* setEntries = NULL
+  );
+  void fillRowV10Packed(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
     int symmetry = 0

@@ -2933,32 +2933,38 @@ void NNInputs::fillRowV7(
 //Fills rowGlobal and calls setEntry(i) for each spatial entry i that is 1 (the spatial row must start all 0); shared
 //by fillRowV8 (floats) and fillRowV8Packed (bits), so the two rows cannot differ. symmetry (owner, 2026-10-06): the
 //row of board's image under that allowed symmetry, which the game writes from board (InputOptions::symmetry); the
-//on-board plane of a square board does not change. playoutInputs (V9, 2026-10-13): rowGlobal also holds the two
-//playout doubling advantage inputs (NUM_FEATURES_GLOBAL_V9).
+//on-board plane of a square board does not change. inputsVersion 9 (2026-10-13): rowGlobal also holds the two
+//playout doubling advantage inputs (NUM_FEATURES_GLOBAL_V9). 10 (2026-10-26): the game's extended inputs too, its
+//planes after the game's planes and its global inputs after V9's (NUM_FEATURES_SPATIAL_V10).
 template<typename SetEntry>
 static void fillRowV8Entries(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams,
-  int nnXLen, int nnYLen, bool useNHWC, float* rowGlobal, int symmetry, bool playoutInputs, SetEntry setEntry
+  int nnXLen, int nnYLen, bool useNHWC, float* rowGlobal, int symmetry, int inputsVersion, SetEntry setEntry
 ) {
   //The network's board is the game's largest board (NNPos).
   assert(nnXLen == NNPos::MAX_BOARD_LEN && nnYLen == NNPos::MAX_BOARD_LEN);
   assert(board.x_size <= nnXLen && board.y_size <= nnYLen);
   assert(SymmetryHelpers::isAllowed(symmetry));
   assert(!SymmetryHelpers::isTranspose(symmetry) || board.x_size == board.y_size);
+  assert(inputsVersion >= 8 && inputsVersion <= 10);
   //The inputs are the position's, which gives the player to move.
   assert(nextPlayer == board.nextPla());
   (void)nextPlayer;
   const int numPos = nnXLen * nnYLen;
   using NNInputs::NUM_FEATURES_SPATIAL_V8;
   using NNInputs::NUM_FEATURES_GLOBAL_V8;
-  std::fill(rowGlobal, rowGlobal + (playoutInputs ? NNInputs::NUM_FEATURES_GLOBAL_V9 : NUM_FEATURES_GLOBAL_V8), 0.0f);
+  const bool playoutInputs = inputsVersion >= 9;
+  const bool extended = inputsVersion >= 10;
+  const int numGlobal =
+    extended ? NNInputs::NUM_FEATURES_GLOBAL_V10 : playoutInputs ? NNInputs::NUM_FEATURES_GLOBAL_V9 : NUM_FEATURES_GLOBAL_V8;
+  std::fill(rowGlobal, rowGlobal + numGlobal, 0.0f);
 
   int featureStride;
   int posStride;
   if(useNHWC) {
     featureStride = 1;
-    posStride = NUM_FEATURES_SPATIAL_V8;
+    posStride = extended ? NNInputs::NUM_FEATURES_SPATIAL_V10 : NUM_FEATURES_SPATIAL_V8;
   }
   else {
     featureStride = numPos;
@@ -2980,10 +2986,21 @@ static void fillRowV8Entries(
   //maxHistory <= 0 asks for no history (KataGo's ZOBRIST_ZERO_HISTORY case): the game leaves out its history planes.
   options.history = nnInputParams.maxHistory > 0;
   options.komi = hist.rules.komi;
+  options.extended = extended;
   GameEncoding::spatial_inputs(board.pos, options, [&](int x, int y, int plane) {
     setOne(NNPos::xyToPos(x, y, nnXLen), NNInputs::V8_GAME_PLANES_START + plane);
   });
-  GameEncoding::global_inputs(board.pos, options, rowGlobal);
+  if(!extended)
+    GameEncoding::global_inputs(board.pos, options, rowGlobal);
+  else {
+    //The game writes its global inputs, then its extended ones, which V10 puts after V9's.
+    constexpr int numExtended = GameInterface::extendedGlobalInputs<GameEncoding>();
+    float game[NUM_FEATURES_GLOBAL_V8 + numExtended];
+    GameEncoding::global_inputs(board.pos, options, game);
+    std::copy(game, game + NUM_FEATURES_GLOBAL_V8, rowGlobal);
+    std::copy(game + NUM_FEATURES_GLOBAL_V8, game + NUM_FEATURES_GLOBAL_V8 + numExtended,
+              rowGlobal + NNInputs::NUM_FEATURES_GLOBAL_V9);
+  }
   //V9 (2026-10-13): KataGo's playout doubling advantage, as V7's inputs 15 and 16. The first is 1 whenever the
   //advantage is nonzero, because "there's actually a discontinuity in how training behavior works when this is
   //nonzero, no matter how slightly" (KataGo's comment). The search and the training rows give the advantage from the
@@ -2998,9 +3015,9 @@ static void fillRowV8Floats(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams,
   int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries,
-  bool playoutInputs
+  int inputsVersion
 ) {
-  using NNInputs::NUM_FEATURES_SPATIAL_V8;
+  const int numSpatial = inputsVersion >= 10 ? NNInputs::NUM_FEATURES_SPATIAL_V10 : NNInputs::NUM_FEATURES_SPATIAL_V8;
   //The spatial planes are sparse 0/1: with setEntries, clear only the entries the last fill set (nninputs.h).
   if(setEntries != NULL) {
     for(int i : *setEntries)
@@ -3008,9 +3025,9 @@ static void fillRowV8Floats(
     setEntries->clear();
   }
   else
-    std::fill(rowBin, rowBin + NUM_FEATURES_SPATIAL_V8 * nnXLen * nnYLen, 0.0f);
+    std::fill(rowBin, rowBin + numSpatial * nnXLen * nnYLen, 0.0f);
   //Each entry set is recorded for the next fill's clearing.
-  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, 0, playoutInputs, [&](int i) {
+  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, 0, inputsVersion, [&](int i) {
     rowBin[i] = 1.0f;
     if(setEntries != NULL)
       setEntries->push_back(i);
@@ -3020,10 +3037,10 @@ static void fillRowV8Floats(
 static void fillRowV8Bits(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams,
-  int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry, bool playoutInputs
+  int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry, int inputsVersion
 ) {
-  std::fill(rowBits, rowBits + NNInputs::NUM_SPATIAL_WORDS_V8, 0u);
-  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, symmetry, playoutInputs, [&](int i) {
+  std::fill(rowBits, rowBits + (inputsVersion >= 10 ? NNInputs::NUM_SPATIAL_WORDS_V10 : NNInputs::NUM_SPATIAL_WORDS_V8), 0u);
+  fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, symmetry, inputsVersion, [&](int i) {
     rowBits[i >> 5] |= 1u << (i & 31);
   });
 }
@@ -3033,7 +3050,7 @@ void NNInputs::fillRowV8(
   const MiscNNInputParams& nnInputParams,
   int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries
 ) {
-  fillRowV8Floats(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBin, rowGlobal, setEntries, false);
+  fillRowV8Floats(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBin, rowGlobal, setEntries, 8);
 }
 
 void NNInputs::fillRowV8Packed(
@@ -3041,7 +3058,7 @@ void NNInputs::fillRowV8Packed(
   const MiscNNInputParams& nnInputParams,
   int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry
 ) {
-  fillRowV8Bits(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBits, rowGlobal, symmetry, false);
+  fillRowV8Bits(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBits, rowGlobal, symmetry, 8);
 }
 
 void NNInputs::fillRowV9(
@@ -3049,7 +3066,7 @@ void NNInputs::fillRowV9(
   const MiscNNInputParams& nnInputParams,
   int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries
 ) {
-  fillRowV8Floats(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBin, rowGlobal, setEntries, true);
+  fillRowV8Floats(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBin, rowGlobal, setEntries, 9);
 }
 
 void NNInputs::fillRowV9Packed(
@@ -3057,7 +3074,23 @@ void NNInputs::fillRowV9Packed(
   const MiscNNInputParams& nnInputParams,
   int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry
 ) {
-  fillRowV8Bits(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBits, rowGlobal, symmetry, true);
+  fillRowV8Bits(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBits, rowGlobal, symmetry, 9);
+}
+
+void NNInputs::fillRowV10(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries
+) {
+  fillRowV8Floats(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBin, rowGlobal, setEntries, 10);
+}
+
+void NNInputs::fillRowV10Packed(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry
+) {
+  fillRowV8Bits(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBits, rowGlobal, symmetry, 10);
 }
 
 void NNInputs::unpackSpatialBits(const uint32_t* rowBits, float* out, int n) {

@@ -186,6 +186,8 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
 - **Global, 7 in V9** (`NUM_FEATURES_GLOBAL_V9`, model version 18, 2026-10-13): V8's 5, then KataGo's playout
   doubling advantage as its V7 inputs 15 and 16: 1 when the advantage is nonzero, and half the advantage, from the
   player to move's side (games/enclosure/docs/design/03-network-inputs.md).
+- **V10** (model version 19, 2026-10-26) adds a game's extended inputs to V9's (GAMES.md,
+  `NUM_EXTENDED_SPATIAL_INPUTS`). Enclosure has none, so its V10 is its V9.
 - **Absolute colours,** as in the Enclosure network: plane k is Blue's for k = 0. The player to move is a global
   input. (KataGo's Go inputs are relative to the mover. The choice was "our feature planes, as KataGo uses its Go
   features".)

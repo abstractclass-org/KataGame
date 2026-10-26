@@ -35,6 +35,8 @@ from katago.train.model_pytorch import Model
 def make(args):
     torch.manual_seed(args.seed)
     config = modelconfigs.with_game(modelconfigs.config_of_name[args.config], args.game)
+    if args.inputs_version is not None:
+        config = dict(config, inputs_version=args.inputs_version)
     model = Model(config, modelconfigs.get_game(config).MAX_BOARD_LEN)
     model.initialize()
     with torch.no_grad():
@@ -117,6 +119,9 @@ def main():
     m.add_argument("-config", default="b6c96")
     m.add_argument("-seed", type=int, default=0)
     m.add_argument("-game", default=None, help="the test network's game (katago/train/games, default enclosure)")
+    m.add_argument("-inputs-version", dest="inputs_version", type=int, choices=modelconfigs.INPUTS_VERSIONS,
+                   default=None, help="the test network's inputs (modelconfigs.get_inputs_version; default the "
+                   "model kind's, 8): 10 gives the game's extended inputs weights of their own")
     c = sub.add_parser("compare")
     c.add_argument("checkpoint")
     c.add_argument("dump", help="testnnoutputs' output, with OUTPUTS search,ownership")

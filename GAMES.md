@@ -433,7 +433,10 @@ A game with no site version (Connect-4) uses the notation of design 04 of the en
 `struct GameEncoding`. The search, self-play and the trainer need it. The Python binding uses only its symmetries
 (`SYMMETRIES`, `sym_position`, `SymActionMap`), when the game has this part, for the conformance suite. Input versions
 8 and 9 (model versions 17 and 18) are the game's inputs: the front's on-board plane, then the game's planes, and the
-game's global inputs (V9 adds KataGo's 2 playout inputs after them).
+game's global inputs (V9 adds KataGo's 2 playout inputs after them). Input version 10 (model version 19) adds the
+game's extended inputs to V9's (`NUM_EXTENDED_SPATIAL_INPUTS`, below): its extended planes after its planes, and its
+extended global inputs after V9's. So a new run can read more inputs, while the networks and the rows of V9 stay as
+they are. Self-play writes its rows in V9 unless its config sets `inputsVersion = 10`.
 
 | Member | Meaning | Enclosure |
 |---|---|---|
@@ -471,6 +474,7 @@ KataGo's code (`testgameareas` and `testkomi` pin them), and the front computes 
 | `KOMI_BRACKET_STEP`, `KOMI_BRACKET_LIMIT` | The bracket of KataGo's even-komi search (`PlayUtils::evenKomiOffset`, for `adjustKomiToEven` and `computeLead`), in points. Around its guess, the search tries the offsets step, 2 × step and so on up to the limit, until White's win-loss value changes sign, then bisects on the half-point grid. Whole or half points. When the value keeps its sign up to the limit, a game that gives its bracket has no even komi: the search stops after the bracket's offsets, the lead's search gives the position no lead target, and the compensation of an uneven game keeps the game's komi. | KataGo's 1 and 32: the offsets 1, 2, 4, 8, 16 and 32, and KataGo's rule, which bisects to the bracket's end and takes it as the even komi (`komiBracketStep`, `komiBracketLimit`, `komiBracketEndIsEven`) | 12 (`SCORE_SCALE`) and 3,000: the offsets 12, 24, 48 and so on to 1,536, then 3,000, the reach of self-play's widest komi. KataGo's 32 points are less than 3 of Go's points at this score scale. Beyond 3,000 points from the guess, no even komi. |
 | `KOMI_LEAD_STEP` | The step of `computeLead`'s smoothing over a coarse score, in points. When the even komi is not a multiple of 2 × step, the lead reads the win-loss value at the 4 komis step apart around it, averages each pair 2 × step apart, and interpolates. KataGo's half point is for Go's area scoring, where the margins of a full board have one parity, so the result changes every 2 points of komi. 0, or whole or half points. 0: no smoothing, the lead is the search's even komi (KataGo's rule for territory scoring). | KataGo's half point times `SCORE_SCALE` (`komiLeadStep`): Enclosure's 6 points, Connect-4's half point | 0: Blueprints' margins are whole points of both parities (426 even and 311 odd in the site's 737 finished games), so each half point of komi can change the result. |
 | `OWN_TARGETS` | The slots of `TARGETS` that the game computes itself (`training_targets`). It holds every slot of `TARGETS` that is not one of the `FRONT_TARGETS`, and it can hold those too: the front then leaves that slot to the game. The check requires both. | `TARGETS` without the `FRONT_TARGETS` (`ownTargets`) | All of its `TARGETS`, C2-3 too: the front's future positions read each later position's own view at the row's points, and Blueprints' view moves with the mover's window. |
+| `NUM_EXTENDED_SPATIAL_INPUTS`, `NUM_EXTENDED_GLOBAL_INPUTS` | The game's extended inputs, which input version 10 adds to version 9's. With `options.extended`, `spatial_inputs` also sets the planes `NUM_SPATIAL_INPUTS` to `NUM_SPATIAL_INPUTS + NUM_EXTENDED_SPATIAL_INPUTS - 1`, and `global_inputs` writes its extended global inputs after its own. The front puts the extended planes after the game's planes, and the extended global inputs after KataGo's 2 playout inputs. A game gives both or neither. | 0 and 0: V10 is V9 (`extendedSpatialInputs`, `extendedGlobalInputs`) | 12 and 20: the opponent's threats in its own view, the legal hand actions, the minimap of the whole board, and the window boxes (the engine repository's `games/blueprints/README.md`, "The network"). |
 
 `InputOptions` holds what the front gives the input members:
 
@@ -479,6 +483,7 @@ KataGo's code (`testgameareas` and `testkomi` pin them), and the front computes 
 | `symmetry` | An allowed symmetry. The inputs are those of the image. |
 | `history` | False: leave out what the position keeps of earlier turns (KataGo's `maxHistory <= 0`). |
 | `komi` | The rules' komi, for a game whose inputs encode it. |
+| `extended` | True: the game's extended inputs too (input version 10). |
 
 **The training targets** are the slots of KataGo's spatial targets (`valueTargetsNCHW`) and the two that the fork
 added. `TARGETS` declares the slots that the game writes. The front computes C2-3 and C7 from `pieces`
@@ -531,9 +536,12 @@ row's player to move.
 The trainer reads a game's facts from the game's module, `python/katago/train/games/<game>.py`, which mirrors the
 encoding part. `python/katago/train/games/__init__.py` lists the members, and `games.get(name)` refuses a module that
 lacks one. A model config names its game (`"game"`, Enclosure's without it), and `modelconfigs.get_game(config)` gives
-its module. The config's `"inputs_version"` (8 without it, or 9) gives the game's global inputs, and V9 adds KataGo's
-two playout inputs. `train.py -inputs-version 9` gives a new model V9's inputs (Connect-4's run). A checkpoint keeps
-its version.
+its module. The config's `"inputs_version"` (8 without it, 9 or 10) gives the game's global inputs, V9 adds KataGo's
+two playout inputs, and V10 the game's extended inputs. `train.py -inputs-version 9` gives a new model V9's inputs
+(Connect-4's run). A checkpoint keeps its version. `python/add_extended_inputs.py CHECKPOINT OUT` gives a checkpoint of
+V9 the extended inputs as zero input channels of the first convolution and zero columns of `linear_global`, in the
+model, the SWA model and the optimizer's state, so that its network computes what it did until training moves them
+(Blueprints' bpj3 from bpj2).
 
 | Member | Meaning | Enclosure (`games/enclosure.py`) | Connect-4 (`games/connect4.py`) |
 |---|---|---|---|
@@ -543,6 +551,8 @@ its version.
 | `mask_targets` (optional) | The rows' global targets, with weight 0 for each target that the augmentation cannot map in a row. The trainer applies it to every batch, at every symmetry and without the symmetries (`games.mask_targets`: none without the member). Blueprints gives it: the second policy target (C28) after a drop with a move of the same player to come. | None | None |
 | `LOSS_COEFFICIENTS` (optional) | The coefficient of each loss that it names, of `games.LOSS_COEFFICIENTS`: `ownership` (C0), `seki` (C1) and `income` (C5-6). `games.get` refuses another name. Blueprints gives 0.25, 0.5 and 0.5. | None: `games.LOSS_COEFFICIENTS`, 1.5, 1 and 1.5 (KataGo's ownership, Enclosure's edges that get cut and its income) | None |
 | `income_mask(binary_inputs)` (optional) | The points where the loss of C5-6 reads its target, from the batch's input planes at its symmetry: the loss averages each channel over its points, then over the channels that have points. Blueprints gives the cells of each player that can go (not walls). | None: the board's points, both channels together | None |
+| `NUM_EXTENDED_SPATIAL_INPUTS`, `NUM_EXTENDED_GLOBAL_INPUTS` (optional) | As in C++. `apply_symmetry_inputs` maps the extended planes too, in the rows that have them (V10). | None: 0, 0 (`games.extended_spatial_inputs`, `games.extended_global_inputs`) | None |
+| `apply_symmetry_extended_global_inputs(extended, symmetry)` (optional) | The extended global inputs of V10's rows at the symmetry, for a game whose extended global inputs name points. The trainer applies it to every batch at its symmetry (`games.apply_symmetry_global_inputs`). Blueprints gives it: its window boxes' corners. | None: as they are | None |
 
 The model's heads are the same in every game. The rows give each slot that the game does not write the weight 0, but
 not C0 (above). So the trainer leaves out C0 for a game without `TARGET_OWNERSHIP`.

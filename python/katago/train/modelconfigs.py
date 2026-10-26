@@ -63,8 +63,11 @@ def with_game(config: ModelConfig, game_name: Union[str,None]) -> ModelConfig:
 
 # Enclosure fork: every version reads the game's inputs (the C++ NNInputs V8): KataGo's on-board plane, then the game's
 # planes; the game's global inputs. The config's "inputs_version" 9 (2026-10-13; absent: 8) adds KataGo's playout
-# doubling advantage as 2 more global inputs (C++ NNInputs V9, exported as model version 18).
+# doubling advantage as 2 more global inputs (C++ NNInputs V9, exported as model version 18). 10 (2026-10-26) adds the
+# game's extended inputs to V9's: its extended planes after its planes, and its extended global inputs after V9's (C++
+# NNInputs V10, exported as model version 19; games.extended_spatial_inputs).
 PLAYOUT_GLOBAL_INPUTS = 2
+INPUTS_VERSIONS = (8, 9, 10)
 
 def get_inputs_version(config: ModelConfig):
     return config.get("inputs_version", 8)
@@ -72,16 +75,21 @@ def get_inputs_version(config: ModelConfig):
 def get_num_bin_input_features(config: ModelConfig):
     version = get_version(config)
     if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16 or version == 17:
-        return 1 + get_game(config).NUM_SPATIAL_INPUTS
+        assert get_inputs_version(config) in INPUTS_VERSIONS
+        game = get_game(config)
+        extended = games.extended_spatial_inputs(game) if get_inputs_version(config) >= 10 else 0
+        return 1 + game.NUM_SPATIAL_INPUTS + extended
     else:
         assert(False)
 
 def get_num_global_input_features(config: ModelConfig):
     version = get_version(config)
     if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16 or version == 17:
-        assert get_inputs_version(config) in (8, 9)
-        playout_inputs = PLAYOUT_GLOBAL_INPUTS if get_inputs_version(config) == 9 else 0
-        return get_game(config).NUM_GLOBAL_INPUTS + playout_inputs
+        assert get_inputs_version(config) in INPUTS_VERSIONS
+        game = get_game(config)
+        playout_inputs = PLAYOUT_GLOBAL_INPUTS if get_inputs_version(config) >= 9 else 0
+        extended = games.extended_global_inputs(game) if get_inputs_version(config) >= 10 else 0
+        return game.NUM_GLOBAL_INPUTS + playout_inputs + extended
     else:
         assert(False)
 

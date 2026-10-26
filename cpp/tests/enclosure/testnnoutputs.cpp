@@ -43,6 +43,7 @@
 
 #include "../../core/config_parser.h"
 #include "../../core/logger.h"
+#include "../../neuralnet/modelversion.h"
 #include "../../neuralnet/nneval.h"
 
 using namespace std;
@@ -144,8 +145,10 @@ int main(int argc, char** argv) {
 
     out << "position " << label << " " << (int)pla << " " << (nhwc ? "nhwc" : "nchw") << "\n";
     vector<pair<int, float>> nonzero;
-    const float* rowSpatial = buf.spatialRowFloats(NNInputs::NUM_SPATIAL_ELTS_V8);
-    for(int i = 0; i < NNInputs::NUM_SPATIAL_ELTS_V8; i++)
+    //The row of the model's inputs version: V10's holds the game's extended planes too.
+    const int spatialElts = NNModelVersion::getNumSpatialFeatures(nnEval->getModelVersion()) * NNPos::MAX_BOARD_AREA;
+    const float* rowSpatial = buf.spatialRowFloats(spatialElts);
+    for(int i = 0; i < spatialElts; i++)
       if(rowSpatial[i] != 0.0f)
         nonzero.push_back({i, rowSpatial[i]});
     out << "spatial " << nonzero.size();

@@ -45,6 +45,14 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         the points where the loss of C5-6 reads the target (N, 2, y, x), from the batch's input planes
                         at its symmetry: the loss averages each channel over its points, then over the channels that
                         have points. Default: none, and the loss averages over the board's points and both channels.
+  NUM_EXTENDED_SPATIAL_INPUTS, NUM_EXTENDED_GLOBAL_INPUTS
+                        the game's extended inputs (C++ GameInterface), which the inputs version 10 adds: its extended
+                        planes after its planes, and its extended global inputs after the inputs version 9's (KataGo's 2
+                        playout inputs). apply_symmetry_inputs maps the extended planes too, in the rows that have them.
+                        Default: 0 and 0 (extended_spatial_inputs, extended_global_inputs).
+  apply_symmetry_extended_global_inputs(extended, symmetry)
+                        the extended global inputs (N, NUM_EXTENDED_GLOBAL_INPUTS) at the symmetry, for a game whose
+                        extended global inputs name points (apply_symmetry_global_inputs). Default: as they are.
 """
 
 import importlib
@@ -82,16 +90,31 @@ ROW_PLAYOUT_INPUTS = 2           # the global inputs that the inputs version 9 a
 GO_ROW_BYTES = 7675
 
 
+def extended_spatial_inputs(game):
+    """The game's extended planes, which the inputs version 10 adds (0 for a game without them)."""
+    return getattr(game, "NUM_EXTENDED_SPATIAL_INPUTS", 0)
+
+
+def extended_global_inputs(game):
+    """The game's extended global inputs, which the inputs version 10 adds after version 9's (0 for a game without)."""
+    return getattr(game, "NUM_EXTENDED_GLOBAL_INPUTS", 0)
+
+
 def row_bytes(game, inputs_version=9):
     """The bytes of one training row of the game, uncompressed: the row writer's arrays (ROW_ above) on the game's
     largest board, without the metadata inputs, which the shuffle leaves out. Self-play writes rows of the inputs
-    version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads."""
+    version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads, and of version 10 with
+    its config's inputsVersion = 10."""
     points = game.MAX_BOARD_LEN ** 2
     moves = points * game.POLICY_CHANNELS + 1  # the policy: every point's channels, then pass
-    global_inputs = game.NUM_GLOBAL_INPUTS + (ROW_PLAYOUT_INPUTS if inputs_version == 9 else 0)
+    global_inputs = game.NUM_GLOBAL_INPUTS + (ROW_PLAYOUT_INPUTS if inputs_version >= 9 else 0)
+    planes = 1 + game.NUM_SPATIAL_INPUTS
+    if inputs_version >= 10:
+        global_inputs += extended_global_inputs(game)
+        planes += extended_spatial_inputs(game)
     return (
         # binaryInputNCHWPacked: KataGo's on-board plane, then the game's planes, a bit a point
-        (1 + game.NUM_SPATIAL_INPUTS) * ((points + 7) // 8)
+        planes * ((points + 7) // 8)
         + 4 * global_inputs                                # globalInputNC
         + 2 * ROW_POLICY_TARGETS * moves
         + 4 * ROW_GLOBAL_TARGETS
@@ -140,6 +163,21 @@ def mask_targets(game, binary_inputs, global_inputs, value_targets, global_targe
     if mask is None:
         return global_targets
     return mask(binary_inputs, global_inputs, value_targets, global_targets)
+
+
+def apply_symmetry_global_inputs(game, global_inputs, symmetry):
+    """The rows' global inputs (N, C) at the symmetry: in the rows of the inputs version 10, the game's extended global
+    inputs (the last ones) through its apply_symmetry_extended_global_inputs. The other global inputs name no point, so
+    they stay, as do the rows of the older versions and of a game without the member."""
+    mapping = getattr(game, "apply_symmetry_extended_global_inputs", None)
+    extended = extended_global_inputs(game)
+    if mapping is None or symmetry == 0 or extended == 0:
+        return global_inputs
+    if global_inputs.shape[1] != game.NUM_GLOBAL_INPUTS + ROW_PLAYOUT_INPUTS + extended:
+        return global_inputs
+    out = global_inputs.clone()
+    out[:, -extended:] = mapping(global_inputs[:, -extended:], symmetry)
+    return out
 
 
 def loss_coefficients(game):

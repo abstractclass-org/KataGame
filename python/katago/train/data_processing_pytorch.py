@@ -195,6 +195,8 @@ def read_npz_training_data(
                     if include_qvalues:
                         batch_qValueTargetsNCMove = game.apply_symmetry_policy(batch_qValueTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC)
                     batch_binaryInputNCHW = game.apply_symmetry_inputs(batch_binaryInputNCHW, symm)
+                    # KataGame fork (2026-10-26): the extended global inputs of the inputs version 10 can name points.
+                    batch_globalInputNC = games.apply_symmetry_global_inputs(game, batch_globalInputNC, symm)
                     batch_valueTargetsNCHW = games.apply_symmetry_points(batch_valueTargetsNCHW, symm)
 
                 batch_binaryInputNCHW = batch_binaryInputNCHW.contiguous()
