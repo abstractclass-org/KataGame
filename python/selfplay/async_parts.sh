@@ -77,16 +77,21 @@ part_limits() {  # PART: "MEM CPUWEIGHT NICE" from the defaults, LIMITS_GROUP an
 #   parts share the run's CPUs. On 2 CPUs beside 2 busy threads, Connect-4's trainer trained 106 samples a second with
 #   2 threads and 261 with 1 (665 and 482 alone, 2026-10-19). With the machine's CPUs, nothing is set.
 # - The shuffle every SHUFFLE_EVERY seconds (600), not upstream's 20 (async_start.sh).
+# - SHUFFLE_EXTRA_ARGS: more shuffle.py flags, for both shuffles (training and validation). -exclude-qvalues leaves out
+#   the rows' Q-value targets: only a network that predicts Q values reads them (model version 16, or 17 with
+#   predict_q_values), and they are 161,610 of a Blueprints row's 365,356 bytes.
 # - PILOT=1, for a short run, such as a new game's first run of 30 minutes, so that it trains on its networks' own rows.
 #   Until the first export, self-play plays as many games as the run has CPUs (pilot_selfplay.sh): it plays a random
 #   network, which needs no evaluation, so each game is a runnable thread. A network's rows go to a file every 1,000
 #   rows or fewer (maxRowsPerTrainFile, upstream's 10,000 for Go's rows; self-play writes a file only when it has that
 #   many rows, at a network switch, and at its stop). The shuffle runs every 60 s, and a trainer that waits for data
 #   looks again after 30 s (WAIT_FOR_DATA_SECONDS, train.py's -wait-for-data-seconds: 300 by default). A long run keeps
-#   its settings.
+#   its settings. A run that goes on past its first hours restarts with PILOT=0: each shuffle reads the whole window
+#   again, and with Blueprints' window of 163,631 rows the pilot's shuffle ran about 5 minutes in every 6 on 4 of the
+#   run's 8 CPUs, beside self-play (bpj2, 2026-10-27).
 RUN_LEVERS="PILOT CPUS NUM_THREADS_FOR_SHUFFLING NUM_TRAIN_SAMPLES_PER_EPOCH MAX_TRAIN_PER_DATA
 NUM_TRAIN_SAMPLES_PER_SWA BATCHSIZE SHUFFLE_MINROWS MAX_TRAIN_SAMPLES_PER_CYCLE TAPER_WINDOW_SCALE SHUFFLE_KEEPROWS
-ROWS_PER_SHUFFLE_FILE SHUFFLE_WORKER_GROUP_ROWS VALIDATE TRAIN_EXTRA_ARGS SHUFFLE_EVERY EXPORT_EVERY
+ROWS_PER_SHUFFLE_FILE SHUFFLE_WORKER_GROUP_ROWS SHUFFLE_EXTRA_ARGS VALIDATE TRAIN_EXTRA_ARGS SHUFFLE_EVERY EXPORT_EVERY
 WAIT_FOR_DATA_SECONDS OMP_NUM_THREADS MKL_NUM_THREADS SELFPLAY_CONFIG ANALYSIS_CONFIG SELFPLAY_IN_FORCE POS_LEN
 ROW_BYTES"
 ASYNC_KATAGO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"  # KataGame
@@ -116,6 +121,7 @@ run_defaults() {  # needs GAME
     : "${NUM_TRAIN_SAMPLES_PER_EPOCH:=100000}" "${MAX_TRAIN_PER_DATA:=8}" "${NUM_TRAIN_SAMPLES_PER_SWA:=80000}"
     : "${BATCHSIZE:=128}" "${SHUFFLE_MINROWS:=100000}" "${MAX_TRAIN_SAMPLES_PER_CYCLE:=500000}"
     : "${TAPER_WINDOW_SCALE:=50000}" "${SHUFFLE_KEEPROWS:=600000}" "${VALIDATE:=0}" "${TRAIN_EXTRA_ARGS:=}"
+    : "${SHUFFLE_EXTRA_ARGS:=}"
     : "${EXPORT_EVERY:=10}"  # upstream's
     # Self-play's -override-config: the defaults of its config keys, then the run's own (SELFPLAY_OVERRIDES), which win.
     SELFPLAY_IN_FORCE=""

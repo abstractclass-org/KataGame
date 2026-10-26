@@ -134,7 +134,7 @@ fi
 part shuffle bash -c "while true; do env $SHUFFLE_ENV ./shuffle.sh '$BASEDIR' '$SCRATCHDIR' $NUM_THREADS_FOR_SHUFFLING \
     -min-rows $SHUFFLE_MINROWS -keep-target-rows $SHUFFLE_KEEPROWS -taper-window-scale $TAPER_WINDOW_SCALE \
     -approx-rows-per-out-file ${ROWS_PER_SHUFFLE_FILE:-} -worker-group-size ${SHUFFLE_WORKER_GROUP_ROWS:-} \
-    | tee -a '$BASEDIR'/logs/outshuffle.txt; sleep $SHUFFLE_EVERY; done"
+    $SHUFFLE_EXTRA_ARGS | tee -a '$BASEDIR'/logs/outshuffle.txt; sleep $SHUFFLE_EVERY; done"
 
 part export bash -c "while true; do ./export_model_for_selfplay.sh '$NAMEPREFIX' '$BASEDIR' 0 \
     >> '$BASEDIR'/logs/outexport.txt 2>&1; sleep $EXPORT_EVERY; done"
