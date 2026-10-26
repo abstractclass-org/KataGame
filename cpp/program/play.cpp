@@ -570,16 +570,25 @@ void GameInitializer::createGameSharedUnsynchronized(
       pla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
     }
 
-    //No handicap when starting from a sampled position.
-    double thisHandicapProb = 0.0;
-    extraBlackAndKomi = PlayUtils::chooseExtraBlackAndKomi(
-      komiMean, komiStdev, komiAllowIntegerProb,
-      thisHandicapProb, numExtraBlackFixed,
-      komiBigStdevProb, komiBigStdev,
-      komiBiggerStdevProb, komiBiggerStdev,
-      board, rand  //KataGame fork: the board, for its komi area (Board::komiArea)
-    );
-    PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
+    //KataGame fork (2026-10-27): a start with its context frozen (RGSC's restart from a state) keeps its komi.
+    if(startPos.frozenContext) {
+      extraBlackAndKomi = ExtraBlackAndKomi();
+      extraBlackAndKomi.komiMean = startPos.komi;
+      extraBlackAndKomi.komiStdev = 0.0f;
+      hist.setKomi(startPos.komi);
+    }
+    else {
+      //No handicap when starting from a sampled position.
+      double thisHandicapProb = 0.0;
+      extraBlackAndKomi = PlayUtils::chooseExtraBlackAndKomi(
+        komiMean, komiStdev, komiAllowIntegerProb,
+        thisHandicapProb, numExtraBlackFixed,
+        komiBigStdevProb, komiBigStdev,
+        komiBiggerStdevProb, komiBiggerStdev,
+        board, rand  //KataGame fork: the board, for its komi area (Board::komiArea)
+      );
+      PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
+    }
 
     otherGameProps.isSgfPos = hintLoc == Board::NULL_LOC;
     otherGameProps.isHintPos = hintLoc != Board::NULL_LOC;
@@ -592,6 +601,13 @@ void GameInitializer::createGameSharedUnsynchronized(
     otherGameProps.trainingWeight = startPos.trainingWeight;
     makeGameFairProb = sgfCompensateKomiProb;
     extraBlackAndKomi.interpZero = sgfKomiInterpZeroProb > 0 ? rand.nextBool(sgfKomiInterpZeroProb) : false;
+    //KataGame fork (2026-10-27): a frozen context keeps its asymmetric playouts too, and no komi compensation follows.
+    if(startPos.frozenContext) {
+      extraBlackAndKomi.interpZero = false;
+      otherGameProps.playoutDoublingAdvantagePla = startPos.playoutDoublingAdvantagePla;
+      otherGameProps.playoutDoublingAdvantage = startPos.playoutDoublingAdvantage;
+      return;
+    }
   }
   else {
     int xSize = allowedBSizes[bSizeIdx].first;
@@ -1910,6 +1926,9 @@ FinishedGameData* Play::runGame(
 
       //Enclosure fork (owner, 2026-10-04): RGSC's per-turn records (program/rgsc.h), for every move, full or cheap.
       gameData->selectedWhiteWinLossByTurn.push_back(selectedChildWhiteWinLoss(toMoveBot, loc));
+      //KataGame fork (2026-10-27): whether the action continues the move of the action before it, for RGSC's regret
+      //by kind of action.
+      gameData->continuesMoveByTurn.push_back(GameInterface::continuesMove<GameRules>(board.pos));
       {
         const NNOutput* rootOutput = toMoveBot->rootNode != NULL ? toMoveBot->rootNode->getNNOutput() : NULL;
         gameData->regretRankingByTurn.push_back(

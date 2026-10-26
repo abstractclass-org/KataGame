@@ -139,6 +139,9 @@ struct FinishedGameData {
   std::vector<float> selectedWhiteWinLossByTurn;
   std::vector<float> regretRankingByTurn;
   std::vector<float> regretByTurn;
+  //KataGame fork (2026-10-27): per turn, whether its action continues the move of the action before it
+  //(GameInterface::continuesMove: Blueprints' drop), for RGSC's regret by kind of action (Rgsc::Buffer::addRegrets).
+  std::vector<bool> continuesMoveByTurn;
   //Enclosure fork (2026-10-11): RGSC's second source, value swing. Per turn, the network's swing ranking of the
   //position (NaN without the swing heads); and, set after the game, each turn's swing regret target (C72, flag C73).
   //rgscSource: the buffer the game restarted from (Rgsc::Source; C74 of every row of the game).

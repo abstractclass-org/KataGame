@@ -4,8 +4,9 @@
     python enclosure_rgsc_check.py BUFFER_FILE [BUFFER_FILE ...] [TDATA_NPZ ...]
 
 Each buffer (program/rgsc.cpp's file; the vanilla buffer, and the swing buffer since 2026-10-11): the finished-game
-count, the states, their regrets, how often games restarted from them, their depth in moves, and their origins (a
-search tree's state or a played position; unknown in files saved before 2026-10-11). The rows: the share of rows
+count, the states, their regrets, how often games restarted from them, their depth in moves (a game that keeps states,
+2026-10-27: the turn number, in actions), and their origins (a search tree's state or a played position; unknown in
+files saved before 2026-10-11). The rows: the share of rows
 carrying a regret target (C71) and its spread (C70), which lies in [0, 4] (a squared difference of values in
 [-1, 1]); the same for the swing target (C72, flag C73: scaled and capped at 4), which RGSC writes on the same rows;
 and the games' restart sources (C74: 0 none, 1 the vanilla buffer, 2 the swing buffer).
@@ -36,6 +37,13 @@ def check_buffer(path):
             depths.append(int(w[3]))
             rest = w[4 + 2 * int(w[3]):]  # the origin, an optional last token
             origins.append(int(rest[0]) if rest else 0)
+        elif w[0] == "state":
+            # A state of a game that keeps states (2026-10-27, Blueprints): "state VERSION GAME KEY REGRET SAMPLES
+            # ORIGIN TURN KOMI ADVANTAGEPLA ADVANTAGE" and the state's text. Its depth is its turn number.
+            regrets.append(float(w[4]))
+            samples.append(int(w[5]))
+            origins.append(int(w[6]))
+            depths.append(int(w[7]))
     if not regrets:  # as expected while the self-play model has no heads for this buffer (nothing is offered)
         print(f"buffer {path}: {games} games finished, empty")
         return True
@@ -61,8 +69,13 @@ def check_rows(files):
         else:
             print(f"rows: {len(g)}, none with a {name} target; C{col} = 0 everywhere: {zero_elsewhere}")
         ok = ok and zero_elsewhere
-    same_rows = bool(((g[:, 71] > 0) == (g[:, 73] > 0)).all())
-    print(f"the swing target is on exactly the rows with a regret target: {same_rows}")
+    # A run without swing targets (rgscSwingScale 0, 2026-10-27: Blueprints) has none on any row.
+    if not (g[:, 73] > 0).any():
+        same_rows = True
+        print("no swing targets (rgscSwingScale 0)")
+    else:
+        same_rows = bool(((g[:, 71] > 0) == (g[:, 73] > 0)).all())
+        print(f"the swing target is on exactly the rows with a regret target: {same_rows}")
     # Games by restart source: a game's rows share its hash (C41-46) and its source (C74).
     hashes, first = np.unique(g[:, 41:47], axis=0, return_index=True)
     sources = g[first, 74].astype(int)

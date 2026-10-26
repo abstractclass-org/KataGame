@@ -1,13 +1,15 @@
 #!/usr/bin/python3
-"""Enclosure fork: check enclosure_add_regret_heads.py on a copy of a checkpoint.
+"""Enclosure fork: check enclosure_add_regret_heads.py on a copy of a checkpoint, of any game.
 
-    python enclosure_regret_heads_check.py ORIGINAL CONVERTED [ROWS.npz]
+    python enclosure_regret_heads_check.py ORIGINAL CONVERTED [ROWS.npz ...]
 
 Loads both as train.py does (strict model load, the optimizer from its saved state), then checks that:
-every existing output is unchanged (the heads read the detached trunk); the optimizer's momentum carried over by
-parameter name; the regret losses run on rows with made-up regret targets and send gradients only into the two
-new heads. With ROWS (a shuffled .npz of training rows) the forward uses real inputs, else random ones. The pair
-added is the one CONVERTED has and ORIGINAL lacks: the regret heads, or (--swing, 2026-10-11) the swing heads.
+every existing output is unchanged (the heads read the detached trunk), in the model and, when the checkpoints have
+one, the SWA model (2026-10-27); the optimizer's momentum carried over by parameter name; the regret losses run on
+rows with made-up regret targets and send gradients only into the two new heads. With ROWS (.npz files of training
+rows, up to 128 rows from them) the forward uses real inputs, else random ones. The models are built on the board of
+the config's game (2026-10-27: Blueprints' 67 x 67 view). The pair added is the one CONVERTED has and ORIGINAL lacks:
+the regret heads, or (--swing, 2026-10-11) the swing heads.
 """
 
 import sys
@@ -19,35 +21,50 @@ from katago.train import modelconfigs
 from katago.train.metrics_pytorch import Metrics
 from katago.train.model_pytorch import Model
 
+ANCHOR = "value_head.conv1.weight"
+
+
+def model_of(config, sd):
+    """A Model of the config's game, with the state dict sd (after a wrapper's prefix), in eval mode."""
+    model = Model(config, modelconfigs.get_game(config).MAX_BOARD_LEN)
+    prefix = [k for k in sd if k.endswith(ANCHOR)][0][:-len(ANCHOR)]
+    model.load_state_dict({k[len(prefix):]: v for k, v in sd.items() if k.startswith(prefix)}, strict=True)
+    model.eval()
+    return model
+
 
 def load(path):
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
-    model = Model(ckpt["config"], 19)
-    sd = ckpt["model"]
-    prefix = [k for k in sd if k.endswith("value_head.conv1.weight")][0][:-len("value_head.conv1.weight")]
-    model.load_state_dict({k[len(prefix):]: v for k, v in sd.items()}, strict=True)
-    model.eval()
-    return ckpt, model
+    swa = model_of(ckpt["config"], ckpt["swa_model"]) if "swa_model" in ckpt else None
+    return ckpt, model_of(ckpt["config"], ckpt["model"]), swa
 
 
-def inputs(rows_path, n, config):
-    if rows_path:
-        d = np.load(rows_path)
-        packed = d["binaryInputNCHWPacked"][:n]
-        c = packed.shape[1]
-        bits = np.unpackbits(packed, axis=2)[:, :, :19 * 19].reshape(-1, c, 19, 19)
-        return torch.tensor(bits, dtype=torch.float32), torch.tensor(d["globalInputNC"][:n], dtype=torch.float32), d
+def inputs(rows_paths, n, config):
+    pos_len = modelconfigs.get_game(config).MAX_BOARD_LEN
+    if rows_paths:
+        spatial, glob = [], []
+        for path in rows_paths:
+            d = np.load(path)
+            packed = d["binaryInputNCHWPacked"][:n - sum(len(s) for s in spatial)]
+            c = packed.shape[1]
+            spatial.append(np.unpackbits(packed, axis=2)[:, :, :pos_len * pos_len].reshape(-1, c, pos_len, pos_len))
+            glob.append(d["globalInputNC"][:len(packed)])
+            if sum(len(s) for s in spatial) >= n:
+                break
+        return (torch.tensor(np.concatenate(spatial), dtype=torch.float32),
+                torch.tensor(np.concatenate(glob), dtype=torch.float32))
     torch.manual_seed(0)
-    spatial = (torch.rand(n, modelconfigs.get_num_bin_input_features(config), 19, 19) < 0.2).float()
+    spatial = (torch.rand(n, modelconfigs.get_num_bin_input_features(config), pos_len, pos_len) < 0.2).float()
     spatial[:, 0] = 1.0  # on-board mask
-    return spatial, torch.randn(n, modelconfigs.get_num_global_input_features(config)), None
+    return spatial, torch.randn(n, modelconfigs.get_num_global_input_features(config))
 
 
 def main():
     orig_path, conv_path = sys.argv[1], sys.argv[2]
-    rows = sys.argv[3] if len(sys.argv) > 3 else None
-    orig_ckpt, orig = load(orig_path)
-    conv_ckpt, conv = load(conv_path)
+    rows = sys.argv[3:]
+    orig_ckpt, orig, orig_swa = load(orig_path)
+    conv_ckpt, conv, conv_swa = load(conv_path)
+    assert (orig_swa is None) == (conv_swa is None), "one checkpoint has an SWA model, the other not"
     swing = bool(conv_ckpt["config"].get("swing_heads")) and not orig_ckpt["config"].get("swing_heads")
     if not swing:
         assert conv_ckpt["config"].get("regret_heads") and not orig_ckpt["config"].get("regret_heads")
@@ -57,17 +74,21 @@ def main():
     target, flag = (72, 73) if swing else (70, 71)
     heads = ["swing_ranking", "swing_value"] if swing else ["regret_ranking", "regret_value"]
 
-    spatial, glob, d = inputs(rows, 64, orig_ckpt["config"])
-    with torch.no_grad():
-        a = orig(spatial, glob)[0]
-        b = conv(spatial, glob)[0]
-    for i, (x, y) in enumerate(zip(a, b)):
-        same = torch.equal(x, y)
-        print(f"output {i}: {'identical' if same else 'DIFFERS'} {tuple(x.shape)}")
-        assert same or i == len(a) - 1
-    assert torch.equal(a[-1][:, keep], b[-1][:, keep]), "the other pair's outputs changed"
-    assert torch.count_nonzero(a[-1][:, cols]) == 0 and torch.count_nonzero(b[-1][:, cols]) > 0
-    print(f"{heads[1].split('_')[0]} outputs (raw):", b[-1][:4, cols].tolist())
+    spatial, glob = inputs(rows, 128 if rows else 64, orig_ckpt["config"])
+    print(f"inputs: {len(spatial)} rows ({'self-play rows' if rows else 'random'})")
+    for name, before, after in (("model", orig, conv), ("SWA model", orig_swa, conv_swa)):
+        if before is None:
+            continue
+        with torch.no_grad():
+            a = before(spatial, glob)[0]
+            b = after(spatial, glob)[0]
+        for i, (x, y) in enumerate(zip(a, b)):
+            same = torch.equal(x, y)
+            print(f"{name} output {i}: {'identical' if same else 'DIFFERS'} {tuple(x.shape)}")
+            assert same or i == len(a) - 1
+        assert torch.equal(a[-1][:, keep], b[-1][:, keep]), "the other pair's outputs changed"
+        assert torch.count_nonzero(a[-1][:, cols]) == 0 and torch.count_nonzero(b[-1][:, cols]) > 0
+        print(f"{name}: {heads[1].split('_')[0]} outputs (raw):", b[-1][:4, cols].tolist())
 
     # Optimizer: momentum by parameter name.
     names = {id(p): n for n, p in conv.named_parameters()}
@@ -91,9 +112,11 @@ def main():
     sgd.load_state_dict(conv_ckpt["optimizer"])
     print("optimizer: loads into this code's parameter groups")
 
-    # Losses with made-up regret targets: gradients only into the new heads.
+    # Losses with made-up regret targets: gradients only into the new heads. One group of the ranking loss, 32 rows,
+    # so that the backward pass on a large board stays small.
     conv.train()
     metrics = Metrics(1, conv)
+    spatial, glob = spatial[:32], glob[:32]
     batch_size = spatial.shape[0]
     global_targets = torch.zeros(batch_size, 80)
     global_targets[:, target] = torch.rand(batch_size) * 2.0

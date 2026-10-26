@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Enclosure fork: add RGSC's regret value and regret ranking heads to a training checkpoint.
+"""Enclosure fork: add RGSC's regret value and regret ranking heads to a training checkpoint, of any game.
 
     python enclosure_add_regret_heads.py CHECKPOINT [--swing]
 
@@ -9,7 +9,8 @@ swing_heads; the checkpoint must have the regret heads already), and keeps the o
 RGSC (owner, 2026-10-04; games/enclosure/docs/decisions/rgsc.md) adds two heads to the value head (model_pytorch.RegretHead), present when
 the config has regret_heads. For a checkpoint trained before, this sets the flag and adds both heads with KataGo's
 initialization (Model.initialize), in the model and the SWA model. The heads read the detached trunk, so the rest
-of the network computes exactly what it did.
+of the network computes exactly what it did. The model is built on the board of the config's game (2026-10-27:
+Blueprints' bpj3, inputs version 10, with its 67 x 67 view; the engine repository's games/blueprints/README.md, "RGSC").
 
 The optimizer state is rebuilt by parameter name: train.py builds its parameter groups from add_reg_dict, which
 now lists the new parameters too, so the saved state no longer matches by position (it would be dropped whole,
@@ -24,6 +25,7 @@ import sys
 
 import torch
 
+from katago.train import modelconfigs
 from katago.train.model_pytorch import Model
 
 ANCHOR = "value_head.conv1.weight"  # a key every checkpoint has, to find the state dicts' prefixes
@@ -63,8 +65,9 @@ def main():
         sys.exit(f"{path}: add the regret heads first")
     new_config = copy.deepcopy(config)
     new_config[key] = True
-    old_model = Model(config, 19)
-    new_model = Model(new_config, 19)
+    pos_len = modelconfigs.get_game(config).MAX_BOARD_LEN
+    old_model = Model(config, pos_len)
+    new_model = Model(new_config, pos_len)
     new_model.initialize()
     fresh = new_model.state_dict()
     added = [k for k in fresh if k not in old_model.state_dict()]

@@ -23,6 +23,15 @@
 //own two heads (the swing value and the swing ranking), its own tracker and its own buffer with the same rules,
 //except that its warm-up drops no game: its restarts begin when its buffer is full. Each game draws at most one
 //restart: from the vanilla buffer with rgscStartProb, else from the swing buffer with rgscSwingStartProb.
+//
+//KataGame fork (2026-10-27, abscls-luzl.7): exact states, a choice of the game. A game that gives its whole state as
+//a text (GameInterface::stateText: Blueprints) keeps states in the buffer, not moves: each entry holds the state's
+//text, the context of its network evaluation (the komi and KataGo's asymmetric playouts) and its turn number. Its key
+//is a hash of the state (the position's hash with the player to move, what the inputs read beyond it) and of the
+//context, and the buffer checks the whole state when two keys are equal. A restart starts from the state itself with
+//that context: no new komi and no asymmetric playouts are drawn. An entry whose state does not come back with its key
+//is rejected. A game without a state's text (Enclosure) keeps the moves from the empty board and their unordered key
+//(keyOf), as before. The engine repository's games/blueprints/README.md, "RGSC".
 
 #include <atomic>
 #include <mutex>
@@ -37,6 +46,11 @@
 struct NNOutput;
 
 namespace Rgsc {
+
+  //Whether the buffer keeps states (the game gives its state's text) or moves.
+  constexpr bool keepsStates() { return GameInterface::hasStateText<GameRules>(); }
+  //The version of a state's line in the buffer's file.
+  constexpr int STATE_RECORD_VERSION = 1;
 
   //The buffer a game restarted from (C74 of its rows).
   enum Source { SOURCE_NONE = 0, SOURCE_VANILLA = 1, SOURCE_SWING = 2 };
@@ -54,7 +68,8 @@ namespace Rgsc {
     int64_t warmupGames = 1000;
     //A buffer that draws only when it holds bufferSize states (the swing buffer).
     bool sampleOnlyWhenFull = false;
-    //The swing source (2026-10-11). Its targets are written whenever RGSC is on; its buffer exists only when
+    //The swing source (2026-10-11). Its targets are written whenever RGSC is on and swingScale > 0 (0: no swing
+    //targets, as in Blueprints, which does not take Enclosure's scale); its buffer exists only when
     //swingStartProb > 0.
     double swingStartProb = 0.0;
     std::string swingBufferFile;
@@ -70,20 +85,51 @@ namespace Rgsc {
   //(the authors' key; in Enclosure a position is the edges each player has placed).
   uint64_t keyOf(const std::vector<Move>& moves, size_t count);
 
+  //The context of a state's network evaluation, which a restart keeps (a game that keeps states): the rules' komi, and
+  //KataGo's asymmetric playouts, the player with the advantage (C_EMPTY for none) and its doublings.
+  struct Context {
+    float komi = 0.0f;
+    Player advantagePla = C_EMPTY;
+    double advantage = 0.0;
+    //The context, with no player when there is no advantage, and 0 for -0.
+    static Context of(float komi, Player advantagePla, double advantage);
+    bool operator==(const Context& other) const;
+  };
+  //A state's key: the position's hash with the player to move (Board::pos_hash), what the inputs read beyond it
+  //(GameEncoding::input_hash: the history planes), and the context.
+  uint64_t stateKey(const Board& board, const Context& context);
+
   struct Entry {
     uint64_t key = 0;
     double regret = 0.0;
     int64_t sampleCount = 0;
     int origin = ORIGIN_UNKNOWN;
-    std::vector<Move> moves;  //from the empty board
+    std::vector<Move> moves;  //from the empty board, in a game that keeps moves
+    //In a game that keeps states: the state's text (GameInterface::stateText), its context, and its turn number in
+    //its game (the actions since the start, which the search's schedules read, such as the move's temperature).
+    std::string state;
+    Context context;
+    int64_t turnNumber = 0;
   };
+  //The entry of a state (a game that keeps states), with its key. Its regret and origin are the caller's.
+  Entry stateEntry(const Board& board, const Context& context, int64_t turnNumber);
+  //Sets board to an entry's state (a game that keeps states). False, with the reason, when the text gives no state or
+  //the state's key is not the entry's.
+  bool restoreState(const Entry& entry, Board& board, std::string& why);
+  //The board of a game after `length` of hist's moves from its first position (hist.initialBoard), replayed.
+  Board playedBoard(const BoardHistory& hist, size_t length);
+  //The keys of a game's played positions (a game that keeps states): keys[k] of the position after start + k of
+  //hist's moves, for k from 0 to count - 1, each with the context.
+  std::vector<uint64_t> playedKeys(const BoardHistory& hist, size_t start, size_t count, const Context& context);
 
   class Buffer {
    public:
     //name: how the log names it ("RGSC", "RGSC swing").
     Buffer(const Settings& settings, const std::string& name = "RGSC");
 
-    //Loads the buffer and the finished-game count from the settings' file, if it exists.
+    //Loads the buffer and the finished-game count from the settings' file, if it exists. In a game that keeps states,
+    //each state is restored (restoreState), after the game's settings are set: an entry that does not restore with
+    //its key is rejected, and so is an entry of the other kind (moves in a game that keeps states, or the reverse).
     void load();
     //Saves them (a temporary file, then a rename).
     void save() const;
@@ -95,16 +141,26 @@ namespace Rgsc {
     bool contains(uint64_t key) const;
     //The lowest regret in a full buffer, else 0: the floor for a tree candidate's estimated regret.
     double floorRegret() const;
-    //A game's candidate: enters if there is room or its regret beats the lowest, which it replaces.
+    //A game's candidate: enters if there is room or its regret beats the lowest, which it replaces. A state already
+    //in the buffer is skipped. With states, a key in the buffer whose state or context is another is a collision of
+    //the hash: the candidate is skipped too (one state a key) and counted.
+    void offer(Entry candidate);
     void offer(uint64_t key, double regret, const std::vector<Move>& moves, int origin = ORIGIN_UNKNOWN);
+    //Removes the entry with this key, whose state did not come back for a restart (restoreState), and counts it.
+    void reject(uint64_t key);
     //After a game started from the state with this key: the EMA update. False if the state left the buffer.
     bool updateAfterRestart(uint64_t key, double regret);
     //Counts a finished game; returns how many had finished before it (for the warm-up).
     int64_t countFinishedGame();
+    //Adds a game's regret targets to this run's regret by kind of action (summary): a turn whose action continues the
+    //move of the action before it (continuesMove[k], GameInterface::continuesMove: Blueprints' drop), a turn whose
+    //action the next turn's continues (a pick), and a move of one action (a placement).
+    void addRegrets(const std::vector<float>& regrets, const std::vector<bool>& continuesMove);
     size_t size() const;
     //A one-line summary for the log: states and their regrets and origins, and this run's counts (restarts drawn,
     //written after their state left the buffer, and dropped; candidates offered and taken; sample attempts while
-    //the buffer was empty, or not yet full).
+    //the buffer was empty, or not yet full; entries rejected at the load and at a restart, and collisions of keys),
+    //and this run's regret targets by kind of action (addRegrets).
     std::string summary() const;
     void countDroppedRestart();
     void countRestartStateGone();
@@ -125,6 +181,12 @@ namespace Rgsc {
     int64_t candidatesOffered = 0;
     int64_t candidatesTaken = 0;
     int64_t drawsWhileEmpty = 0;
+    int64_t rejectedAtLoad = 0;
+    int64_t rejectedAtRestart = 0;
+    int64_t keyCollisions = 0;
+    //Regret targets by kind of action: a move of one action, a move's first action, a later action.
+    int64_t regretCount[3] = {0, 0, 0};
+    double regretSum[3] = {0.0, 0.0, 0.0};
   };
 
   //Fed every network evaluation of one game's searches (Search::rgscTracker, rgscSwingTracker): keeps the state
@@ -132,12 +194,14 @@ namespace Rgsc {
   class TreeTracker {
    public:
     TreeTracker(const Buffer* buffer, Source source = SOURCE_VANILLA);
-    void offer(const NNOutput& nnOutput, const BoardHistory& hist);
+    //context: the evaluation's, which a game that keeps states keys and keeps with the state.
+    void offer(const NNOutput& nnOutput, const Board& board, const BoardHistory& hist, const Context& context);
     bool found() const { return hasCandidate; }
     float ranking() const { return bestRanking.load(std::memory_order_acquire); }
     float regretValue() const { return candidateRegretValue; }
     uint64_t key() const { return candidateKey; }
-    const std::vector<Move>& moves() const { return candidateMoves; }
+    //The candidate as an entry, its moves or its state: its regret and origin are the caller's.
+    Entry candidate() const;
 
    private:
     const Buffer* buffer;
@@ -148,6 +212,10 @@ namespace Rgsc {
     float candidateRegretValue;
     uint64_t candidateKey;
     std::vector<Move> candidateMoves;
+    //A game that keeps states: the candidate's board, context and turn number.
+    Board candidateBoard;
+    Context candidateContext;
+    int64_t candidateTurnNumber;
   };
 
   //Eq. 2 for each turn: selectedWhiteWinLoss[t] is the search value (white's win minus loss) of the move played at

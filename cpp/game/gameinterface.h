@@ -127,6 +127,14 @@
  *                           when the rules' view holds them all. The analysis engine's rootViews searches each view
  *                           of the cover. A game gives all three or none. Blueprints' views. Default: one view, ""
  *                           (viewText, setView, viewCover).
+ *   state_text(p), parse_state(text, p, why)
+ *                           std::string, bool: the whole state that the network reads, as one line: the one-line
+ *                           position and what it leaves out that the inputs read (input_hash: the earlier turns of the
+ *                           history planes). Equal states give equal texts. parse_state gives the state back: the same
+ *                           hash, input_hash, legal actions and inputs. It returns false with the reason for a text
+ *                           that names no state. A view that a caller set is not part of the text. RGSC's buffer keeps
+ *                           a game's states in it, for exact restarts (program/rgsc.h). A game gives both or neither.
+ *                           Blueprints' state. Default: none, and RGSC keeps the moves from the start (hasStateText).
  *
  * The network encoding part (struct E):
  *   Rules                   the game's rules part (its GameRules).
@@ -388,6 +396,10 @@ namespace rules {
                                    std::declval<std::string&>()))
   GAMEINTERFACE_DETECT(HasViewCover, void,
                        G::view_cover(std::declval<const P<G>&>(), std::declval<std::vector<std::string>&>()))
+  GAMEINTERFACE_DETECT(HasStateText, std::string, G::state_text(std::declval<const P<G>&>()))
+  GAMEINTERFACE_DETECT(HasParseState, bool,
+                       G::parse_state(std::declval<const std::string&>(), std::declval<P<G>&>(),
+                                      std::declval<std::string&>()))
 }
 
 template<class R> constexpr bool checkRules() {
@@ -461,6 +473,9 @@ template<class R> constexpr bool checkRules() {
                 "game interface, rules part: the game gives view_text(const Position&) -> std::string, "
                 "set_view(Position&, const std::string&, std::string& why) -> bool and view_cover(const Position&, "
                 "std::vector<std::string>&) together, or none");
+  static_assert(HasStateText<R>::value == HasParseState<R>::value,
+                "game interface, rules part: the game gives state_text(const Position&) -> std::string and "
+                "parse_state(const std::string&, Position&, std::string& why) -> bool together, or neither");
   return true;
 }
 
@@ -666,6 +681,31 @@ template<class R> void viewCover(const typename R::Position& p, std::vector<std:
   else {
     (void)p;
     views.assign(1, "");
+  }
+}
+
+//Whether the game gives its whole state as a text (state_text, parse_state).
+template<class R> constexpr bool hasStateText() { return rules::HasStateText<R>::value; }
+
+//The whole state as a text: the game's, else "" (a game without it has none).
+template<class R> std::string stateText(const typename R::Position& p) {
+  if constexpr(rules::HasStateText<R>::value)
+    return R::state_text(p);
+  else {
+    (void)p;
+    return "";
+  }
+}
+
+//Sets p from a state's text, or returns false with the reason: the game's, else always false.
+template<class R> bool parseState(const std::string& text, typename R::Position& p, std::string& why) {
+  if constexpr(rules::HasParseState<R>::value)
+    return R::parse_state(text, p, why);
+  else {
+    (void)text;
+    (void)p;
+    why = std::string("the game ") + R::NAME + " gives no state's text";
+    return false;
   }
 }
 

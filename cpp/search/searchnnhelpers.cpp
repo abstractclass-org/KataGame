@@ -129,10 +129,16 @@ bool Search::initNodeNNOutput(
   }
 
   //Enclosure fork (owner, 2026-10-04): RGSC's tree candidates, from the network's own output (before any noise).
-  if(rgscTracker != nullptr)
-    rgscTracker->offer(**result, thread.history);
-  if(rgscSwingTracker != nullptr)
-    rgscSwingTracker->offer(**result, thread.history);
+  //KataGame fork (2026-10-27): with the evaluation's context, which a game that keeps states keeps with the state.
+  if(rgscTracker != nullptr || rgscSwingTracker != nullptr) {
+    const double advantage = searchParams.playoutDoublingAdvantage;
+    const Rgsc::Context context = Rgsc::Context::of(
+      thread.history.rules.komi, advantage != 0 ? getPlayoutDoublingAdvantagePla() : C_EMPTY, advantage);
+    if(rgscTracker != nullptr)
+      rgscTracker->offer(**result, thread.board, thread.history, context);
+    if(rgscSwingTracker != nullptr)
+      rgscSwingTracker->offer(**result, thread.board, thread.history, context);
+  }
 
   if(antiMirrorDifficult) {
     // Copy

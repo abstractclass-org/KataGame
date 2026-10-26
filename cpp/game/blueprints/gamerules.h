@@ -1107,6 +1107,58 @@ inline std::vector<std::string> split(const std::string& text, char separator) {
   return out;
 }
 
+// The blueprint with its cells sorted, the least r then the least q first. An edit can leave a blueprint's cells in
+// another order, which no rule and no input reads: the sorted cells are one text for each blueprint (state_text).
+inline Blueprint sorted_cells(const Blueprint& b) {
+  int order[MAX_CELLS];
+  for(int i = 0; i < b.n; i++)
+    order[i] = i;
+  std::sort(order, order + b.n, [&b](int i, int j) { return b.r[i] != b.r[j] ? b.r[i] < b.r[j] : b.q[i] < b.q[j]; });
+  Blueprint s;
+  for(int i = 0; i < b.n; i++)
+    s.add(b.q[order[i]], b.r[order[i]], b.t[order[i]]);
+  return s;
+}
+
+// Points of the rules board (y * RULES_LEN + x), such as a footprint's, as "q,r" from the board's middle joined by ;,
+// sorted (the least r, then the least q, first), or "-" for none.
+inline std::string points_text(const int32_t* points, int n) {
+  if(n == 0)
+    return "-";
+  std::vector<int32_t> sorted(points, points + n);
+  std::sort(sorted.begin(), sorted.end());
+  std::string s;
+  for(const int32_t point : sorted)
+    s += (s.empty() ? "" : ";") + cell_text(point % RULES_LEN - RULES_RADIUS, point / RULES_LEN - RULES_RADIUS);
+  return s;
+}
+
+// Reads points_text into out (at most `most` points, each once, on the rules board), each point moved by (-dx, -dy)
+// as recentering moves a footprint's points (shift_records): a point that leaves the board goes. False for any other
+// text.
+inline bool parse_points(const std::string& text, int most, int dx, int dy, int32_t* out, int8_t& n) {
+  n = 0;
+  if(text == "-")
+    return true;
+  const std::vector<std::string> cells = split(text, ';');
+  if(int(cells.size()) > most)
+    return false;
+  std::vector<int32_t> seen;
+  for(const std::string& c : cells) {
+    int q, r;
+    if(!parse_cell(c, q, r) || !on_rules(q + RULES_RADIUS, r + RULES_RADIUS))
+      return false;
+    const int32_t point = (r + RULES_RADIUS) * RULES_LEN + q + RULES_RADIUS;
+    if(std::find(seen.begin(), seen.end(), point) != seen.end())
+      return false;
+    seen.push_back(point);
+    const int x = q + RULES_RADIUS - dx, y = r + RULES_RADIUS - dy;
+    if(on_rules(x, y))
+      out[n++] = y * RULES_LEN + x;
+  }
+  return true;
+}
+
 // A placement of the mover: blueprint k with its (0, 0) cell on the rules point (x, y).
 struct Placement {
   int k, x, y;
@@ -1507,7 +1559,10 @@ struct GameRules {
   // is empty. A tenth field, the view's orientation, follows when it is not 0: the rule of one orientation a game
   // cannot give it back from the other fields. A view that a caller set is not part of the text: the text gives the
   // rule's view (view_text gives the set view).
-  static std::string position_text(const Position& p) {
+  static std::string position_text(const Position& p) { return position_line(p, false); }
+  // The one-line position, with each blueprint's cells in their order in the position, or sorted (sortCells: the
+  // least r, then the least q, first), so that equal positions give equal texts (state_text).
+  static std::string position_line(const Position& p, bool sortCells) {
     std::string s = std::to_string(p.ply) + " " + std::to_string(p.scores[0]) + " " + std::to_string(p.scores[1]) + " ";
     std::string board;
     for(int y = 0; y < RULES_LEN; y++)
@@ -1527,7 +1582,7 @@ struct GameRules {
       for(int k = 0; k < HAND; k++) {
         if(k > 0)
           s += '|';
-        const Blueprint& b = p.hand[player][k];
+        const Blueprint b = sortCells ? sorted_cells(p.hand[player][k]) : p.hand[player][k];
         if(b.n == 0)
           s += '-';
         for(int i = 0; i < b.n; i++)
@@ -1700,10 +1755,11 @@ struct GameRules {
       for(size_t i = 0; i < boxes.size(); i++) {
         const std::vector<std::string> v = split(boxes[i], ',');
         int c[4];
+        // A box can lie beyond the rules board: the board recenters after each placement and moves the boxes with
+        // the cells (shift_records), so the box of a placement whose cells were taken can leave it.
         if(v.size() != 4 || !parse_int(v[0], c[0]) || !parse_int(v[1], c[1]) || !parse_int(v[2], c[2]) ||
-           !parse_int(v[3], c[3]) || c[0] > c[1] || c[2] > c[3] ||
-           !on_rules(c[0] + RULES_RADIUS, c[2] + RULES_RADIUS) || !on_rules(c[1] + RULES_RADIUS, c[3] + RULES_RADIUS)) {
-          why = "a recent placement's box is q0,q1,r0,r1 on the rules board: \"" + boxes[i] + "\"";
+           !parse_int(v[3], c[3]) || c[0] > c[1] || c[2] > c[3]) {
+          why = "a recent placement's box is q0,q1,r0,r1, integers with q0 <= q1 and r0 <= r1: \"" + boxes[i] + "\"";
           return false;
         }
         Box& b = q.recent[player][i];
@@ -1723,6 +1779,56 @@ struct GameRules {
       return false;
     }
     p = q;
+    return true;
+  }
+
+  // The whole state that the network reads (GameInterface): the one-line position with each blueprint's cells sorted
+  // (position_line), then a last field, the footprints of the last HISTORY actions, which the history planes show and
+  // the one-line position leaves out (input_hash). The footprints, the newest first, are joined by /: each is the
+  // points that the action stamped, |, then the points whose cells it took (points_text: "q,r" from the rules board's
+  // middle, sorted, "-" for none). So equal states give equal texts: the order of a blueprint's cells and of a
+  // footprint's points is not part of the state, as no rule and no input reads it. A view that a caller set is not
+  // part of the text. RGSC's buffer keeps self-play's states in it (program/rgsc.h).
+  static std::string state_text(const Position& p) {
+    std::string s = position_line(p, true) + " ";
+    for(int h = 0; h < HISTORY; h++) {
+      const Footprint& f = p.history[h];
+      s += (h > 0 ? "/" : "") + points_text(f.stamped, f.nStamped) + "|" + points_text(f.taken, f.nTaken);
+    }
+    return s;
+  }
+  // Sets p from a state's text (state_text): the one-line position (parse_position), then the footprints. When
+  // parse_position moves the board to its middle (recenter), the footprints' points move with it, as in play().
+  static bool parse_state(const std::string& text, Position& p, std::string& why) {
+    const size_t last = text.rfind(' ');
+    if(last == std::string::npos) {
+      why = "a state is the one-line position, then the footprints of the last " + std::to_string(HISTORY) + " actions";
+      return false;
+    }
+    const std::string position = text.substr(0, last);
+    static thread_local Position s;
+    if(!parse_position(position, s, why))
+      return false;
+    // How far parse_position moved the board: the offset's change from the text's (its eighth field).
+    int oq, orr;
+    parse_cell(split(position, ' ')[7], oq, orr);
+    const int dx = s.offsetQ - oq, dy = s.offsetR - orr;
+    const std::vector<std::string> footprints = split(text.substr(last + 1), '/');
+    if(footprints.size() != HISTORY) {
+      why = "the footprints are " + std::to_string(HISTORY) + " actions' points, joined by /";
+      return false;
+    }
+    for(int h = 0; h < HISTORY; h++) {
+      const std::vector<std::string> parts = split(footprints[h], '|');
+      Footprint& f = s.history[h];
+      if(parts.size() != 2 || !parse_points(parts[0], MAX_CELLS, dx, dy, f.stamped, f.nStamped) ||
+         !parse_points(parts[1], MAX_TAKEN, dx, dy, f.taken, f.nTaken)) {
+        why = "a footprint is the stamped points, |, then the taken points, each q,r on the rules board once, joined "
+              "by ;, \"-\" for none: \"" + footprints[h] + "\"";
+        return false;
+      }
+    }
+    p = s;
     return true;
   }
 
@@ -1816,5 +1922,6 @@ static_assert(GameInterface::checkRules<GameRules>(), "Blueprints' rules part");
 static_assert(GameInterface::rules::HasDrawStart<GameRules>::value && GameInterface::rules::HasSettings<GameRules>::value,
               "self-play reaches Blueprints' draw at the start and its settings");
 static_assert(GameInterface::hasViews<GameRules>(), "the analysis engine reaches Blueprints' views");
+static_assert(GameInterface::hasStateText<GameRules>(), "RGSC's buffer keeps Blueprints' states");
 
 }  // namespace blueprints
