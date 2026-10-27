@@ -563,9 +563,14 @@ lacks one. A model config names its game (`"game"`, Enclosure's without it), and
 its module. The config's `"inputs_version"` (8 without it, 9, 10 or 11) gives the game's global inputs, V9 adds
 KataGo's two playout inputs, V10 the game's extended inputs, and V11 its turn inputs. `train.py -inputs-version 9`
 gives a new model V9's inputs (Connect-4's run). A checkpoint keeps its version. `python/add_extended_inputs.py
-CHECKPOINT OUT` gives a checkpoint of V9 the extended inputs as zero input channels of the first convolution and zero
-columns of `linear_global`, in the model, the SWA model and the optimizer's state, so that its network computes what
-it did until training moves them (Blueprints' bpj3 from bpj2).
+CHECKPOINT OUT -inputs-version 10` gives a checkpoint of V9 the extended inputs as zero input channels of the first
+convolution and zero columns of `linear_global`, in the model, the SWA model and the optimizer's state, so that its
+network computes what it did until training moves them (Blueprints' bpj3 from bpj2). `-inputs-version 11` gives a
+checkpoint of V10 the turn inputs as zero columns of `linear_global` in the same way (bpj4 from bpj3). The planes keep
+their count, and training absorbs the new meaning of the history planes (turns, not actions). For a new `SCORE_SCALE`,
+`-score-factor F` multiplies by F the outputs that a plain multiplier puts in points (the score mean, the lead and the
+TD scores): F is the old scale over the new one, so these outputs keep their values in points. Training moves the
+score's standard deviation and the score belief.
 
 | Member | Meaning | Enclosure (`games/enclosure.py`) | Connect-4 (`games/connect4.py`) |
 |---|---|---|---|

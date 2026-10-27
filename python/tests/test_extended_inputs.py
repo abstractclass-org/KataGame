@@ -2,7 +2,8 @@
 trainer's map of the extended global inputs, the export as model version 19, and add_extended_inputs.py, which gives a
 checkpoint of version 9 the extended inputs as zero weights, so that its network computes what it did. The inputs
 version 11: the game's turn inputs after version 10's global inputs, the trainer's maps and history dropout of its
-rows, and the export as model version 20."""
+rows, the export as model version 20, and add_extended_inputs.py's conversion of a checkpoint of version 10, with its
+score factor for a new score scale."""
 import os
 import sys
 
@@ -77,16 +78,21 @@ def flat(outputs):
     return [t for o in outputs for t in flat(o)]
 
 
-def checkpoint(inputs_version=9):
+def sgd(model):
+    """An SGD optimizer with momentum over the model's parameters, in train.get_param_groups' order."""
+    params = dict(model.named_parameters())
+    return torch.optim.SGD([{"params": [params[n] for n in names]} for _, names in group_names(model)],
+                           lr=0.01, momentum=0.9)
+
+
+def checkpoint(inputs_version=9, kind=KIND):
     """A checkpoint of a random Blueprints model of the inputs version 9 (or another), as train.py saves one: the
     model, its SWA model and an SGD optimizer with momentum after one step, in train.get_param_groups' order."""
     torch.manual_seed(0)
-    cfg = config("blueprints", inputs_version, KIND)
+    cfg = config("blueprints", inputs_version, kind)
     model = Model(cfg, blueprints.MAX_BOARD_LEN)
     model.initialize()
-    params = dict(model.named_parameters())
-    optimizer = torch.optim.SGD([{"params": [params[n] for n in names]} for _, names in group_names(model)],
-                                lr=0.01, momentum=0.9)
+    optimizer = sgd(model)
     binary, global_ = inputs(cfg, 2)
     sum(t.float().pow(2).mean() for t in flat(model(binary, global_))).backward()
     optimizer.step()
@@ -102,45 +108,48 @@ def inputs(cfg, n):
     return binary, torch.randn(n, modelconfigs.get_num_global_input_features(cfg))
 
 
-def test_the_converted_network_computes_what_it_did_whatever_the_new_inputs():
-    ckpt = checkpoint()
-    old = Model(ckpt["config"], blueprints.MAX_BOARD_LEN)
-    old.load_state_dict(ckpt["model"])
-    old_swa = AveragedModel(Model(ckpt["config"], blueprints.MAX_BOARD_LEN))
-    old_swa.load_state_dict(ckpt["swa_model"])
-    touched = add_extended_inputs.convert(ckpt)
-    assert len(touched) == 6, touched  # 2 weights in the model, the SWA model and the optimizer
-    assert modelconfigs.get_inputs_version(ckpt["config"]) == 10
-    new = Model(ckpt["config"], blueprints.MAX_BOARD_LEN)
-    new.load_state_dict(ckpt["model"])
-    new_swa = AveragedModel(Model(ckpt["config"], blueprints.MAX_BOARD_LEN))
-    new_swa.load_state_dict(ckpt["swa_model"])
-    binary, global_ = inputs(ckpt["config"], 3)
-    # The rows of version 9 are the first planes and the first global inputs of version 10's.
-    old_binary, old_global = binary[:, :90], global_[:, :24]
-    old.eval(), new.eval(), old_swa.eval(), new_swa.eval()
+def networks(ckpt):
+    """The checkpoint's network and its SWA network, in eval mode."""
+    model = Model(ckpt["config"], blueprints.MAX_BOARD_LEN)
+    model.load_state_dict(ckpt["model"])
+    swa = AveragedModel(Model(ckpt["config"], blueprints.MAX_BOARD_LEN))
+    swa.load_state_dict(ckpt["swa_model"])
+    return model.eval(), swa.eval()
+
+
+def assert_same_outputs(olds, news, cfg, planes, global_inputs, outputs=lambda net, out: flat(out)):
+    """The networks news, on rows of cfg's inputs, give what olds give on the rows' first planes and first
+    global_inputs, whatever the inputs after these hold. outputs(net, out): what is compared (default: every output)."""
+    binary, global_ = inputs(cfg, 3)
     with torch.no_grad():
-        for a, b in ((old, new), (old_swa, new_swa)):
-            expected = flat(a(old_binary, old_global))
+        for a, b in zip(olds, news):
+            expected = outputs(a, a(binary[:, :planes], global_[:, :global_inputs]))
             for fill in (0.0, 1.0, None):  # the new inputs at 0, at 1, and random
                 x, g = binary.clone(), global_.clone()
                 if fill is not None:
-                    x[:, 90:], g[:, 24:] = fill, fill
-                got = flat(b(x, g))
+                    x[:, planes:], g[:, global_inputs:] = fill, fill
+                got = outputs(b, b(x, g))
                 assert len(got) == len(expected)
                 for e, o in zip(expected, got):
                     torch.testing.assert_close(o, e, rtol=1e-5, atol=1e-5)
 
 
-def test_the_optimizer_state_gets_zero_columns_and_loads():
+def test_the_converted_network_computes_what_it_did_whatever_the_new_inputs():
     ckpt = checkpoint()
+    olds = networks(ckpt)
+    touched = add_extended_inputs.convert(ckpt, 10)
+    assert len(touched) == 6, touched  # 2 weights in the model, the SWA model and the optimizer
+    assert modelconfigs.get_inputs_version(ckpt["config"]) == 10
+    # The rows of version 9 are the first planes and the first global inputs of version 10's.
+    assert_same_outputs(olds, networks(ckpt), ckpt["config"], 90, 24)
+
+
+@pytest.mark.parametrize("version, target, weights", [(9, 10, 2), (10, 11, 1)])
+def test_the_optimizer_state_gets_zero_columns_and_loads(version, target, weights):
+    ckpt = checkpoint(version)
     before = {i: {k: v.clone() for k, v in s.items()} for i, s in ckpt["optimizer"]["state"].items()}
-    add_extended_inputs.convert(ckpt)
-    new = Model(ckpt["config"], blueprints.MAX_BOARD_LEN)
-    params = dict(new.named_parameters())
-    optimizer = torch.optim.SGD([{"params": [params[n] for n in names]} for _, names in group_names(new)],
-                                lr=0.01, momentum=0.9)
-    optimizer.load_state_dict(ckpt["optimizer"])
+    add_extended_inputs.convert(ckpt, target)
+    sgd(Model(ckpt["config"], blueprints.MAX_BOARD_LEN)).load_state_dict(ckpt["optimizer"])
     widened = 0
     for i, state in ckpt["optimizer"]["state"].items():
         for k, v in state.items():
@@ -151,28 +160,35 @@ def test_the_optimizer_state_gets_zero_columns_and_loads():
                 assert not v.narrow(1, old.shape[1], v.shape[1] - old.shape[1]).any()
             else:
                 assert torch.equal(v, old)
-    assert widened == 2
+    assert widened == weights
 
 
-def test_a_checkpoint_of_a_network_alone_converts():
-    ckpt = checkpoint()
+@pytest.mark.parametrize("version, target, weights", [(9, 10, 2), (10, 11, 1)])
+def test_a_checkpoint_of_a_network_alone_converts(version, target, weights):
+    ckpt = checkpoint(version)
     alone = {"config": ckpt["config"], "model": ckpt["model"]}
-    assert len(add_extended_inputs.convert(alone)) == 2
+    assert len(add_extended_inputs.convert(alone, target)) == weights
     Model(alone["config"], blueprints.MAX_BOARD_LEN).load_state_dict(alone["model"])
 
 
 def test_the_converter_refuses_other_inputs():
     ckpt = checkpoint()
-    add_extended_inputs.convert(ckpt)
+    with pytest.raises(ValueError, match="version 9, not 10"):
+        add_extended_inputs.convert(ckpt, 11)
+    add_extended_inputs.convert(ckpt, 10)
     with pytest.raises(ValueError, match="version 10, not 9"):
-        add_extended_inputs.convert(ckpt)
-    with pytest.raises(ValueError, match="no extended inputs"):
-        add_extended_inputs.convert({"config": config("enclosure", 9)})
+        add_extended_inputs.convert(ckpt, 10)
+    with pytest.raises(ValueError, match="this gives 10 or 11"):
+        add_extended_inputs.convert(ckpt, 12)
+    with pytest.raises(ValueError, match="no inputs new in version 10"):
+        add_extended_inputs.convert({"config": config("enclosure", 9)}, 10)
+    with pytest.raises(ValueError, match="no inputs new in version 11"):
+        add_extended_inputs.convert({"config": config("enclosure", 10)}, 11)
 
 
 def test_the_export_writes_model_version_19(tmp_path):
     ckpt = checkpoint()
-    add_extended_inputs.convert(ckpt)
+    add_extended_inputs.convert(ckpt, 10)
     torch.save(ckpt, tmp_path / "checkpoint.ckpt")
     args = dict(export.args, export_dir=str(tmp_path / "out"), model_name="t", filename_prefix="model",
                 checkpoint=str(tmp_path / "checkpoint.ckpt"), export_random_initialized_model=None, game=None)
@@ -270,3 +286,90 @@ def test_the_export_writes_model_version_20(tmp_path):
     header = (tmp_path / "out" / "model.bin").read_bytes().split(b"\n", 4)
     assert header[1] == b"20"
     assert (int(header[2]), int(header[3])) == (90 + 12, V10_GLOBALS + TURNS)
+
+
+def test_a_checkpoint_of_version_10_converts_to_11_and_computes_what_it_did_whatever_the_turn_inputs():
+    ckpt = checkpoint(10)
+    olds = networks(ckpt)
+    touched = add_extended_inputs.convert(ckpt, 11)
+    assert len(touched) == 3, touched  # linear_global in the model, the SWA model and the optimizer
+    assert modelconfigs.get_inputs_version(ckpt["config"]) == 11
+    # The planes keep their count, and the turn inputs come after version 10's global inputs.
+    assert_same_outputs(olds, networks(ckpt), ckpt["config"], 90 + 12, V10_GLOBALS)
+
+
+# The score factor: Blueprints' SCORE_SCALE from 12 to 20 multiplies the multipliers of its outputs in points by
+# 20 / 12.
+FACTOR = 12.0 / 20.0
+
+
+def points(net, outputs):
+    """The network's outputs as the trainer reads them (Model.postprocess_output), the scores in points."""
+    model = net.module if isinstance(net, AveragedModel) else net
+    return flat(model.postprocess_output(outputs))
+
+
+@pytest.mark.parametrize("kind, heads", [(KIND, 1), (KIND + "-ih", 2)])  # -ih: with an intermediate head
+def test_the_score_factor_keeps_the_outputs_in_points_under_the_new_multipliers(kind, heads):
+    ckpt = checkpoint(10, kind)
+    olds = networks(ckpt)
+    add_extended_inputs.convert(ckpt, 11)
+    touched = add_extended_inputs.scale_scores(ckpt, FACTOR)
+    # The weight and the bias of 2 layers of each value head, in the model, the SWA model and the optimizer.
+    assert len(touched) == 3 * 4 * heads, touched
+    news = networks(ckpt)
+    # The trainer of the new score scale: the multipliers of the score mean, the lead and the TD scores over FACTOR.
+    for net in news:
+        model = net.module if isinstance(net, AveragedModel) else net
+        for name in ("scoremean_multiplier", "lead_multiplier", "td_score_multiplier"):
+            setattr(model, name, getattr(model, name) / FACTOR)
+    assert_same_outputs(olds, news, ckpt["config"], 90 + 12, V10_GLOBALS, points)
+
+
+def test_the_score_factor_scales_the_momentum_of_its_rows_and_it_loads():
+    ckpt = checkpoint(10)
+    before = {i: {k: v.clone() for k, v in s.items()} for i, s in ckpt["optimizer"]["state"].items()}
+    add_extended_inputs.scale_scores(ckpt, FACTOR)
+    model = Model(ckpt["config"], blueprints.MAX_BOARD_LEN)
+    sgd(model).load_state_dict(ckpt["optimizer"])
+    names = [n for _, group in group_names(model) for n in group]  # by the optimizer's indices
+    scaled = 0
+    for i, state in ckpt["optimizer"]["state"].items():
+        assert list(state) == ["momentum_buffer"]
+        expected = before[i]["momentum_buffer"].clone()
+        rows = add_extended_inputs.SCORE_ROWS.get(names[i].split(".")[-2])
+        if rows is not None:
+            expected[rows] *= FACTOR
+            scaled += 1
+        assert torch.equal(state["momentum_buffer"], expected), names[i]
+    assert scaled == 4  # the weight and the bias of the value head's 2 layers
+
+
+def test_the_score_factor_refuses_other_optimizers_factors_and_move_scores():
+    ckpt = checkpoint(10)
+    names = [n for _, group in group_names(Model(ckpt["config"], blueprints.MAX_BOARD_LEN)) for n in group]
+    state = ckpt["optimizer"]["state"][names.index("value_head.linear_miscvaluehead.bias")]
+    state["exp_avg"] = state.pop("momentum_buffer")  # as Adam's first moment
+    weights = {k: v.clone() for k, v in ckpt["model"].items()}
+    with pytest.raises(ValueError, match="exp_avg"):
+        add_extended_inputs.scale_scores(ckpt, FACTOR)
+    assert all(torch.equal(ckpt["model"][k], v) for k, v in weights.items())  # refused before any change
+    alone = {"config": ckpt["config"], "model": ckpt["model"]}
+    for factor in (0.0, -FACTOR, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="not a positive number"):
+            add_extended_inputs.scale_scores(alone, factor)
+    with pytest.raises(ValueError, match="policy output 7"):
+        add_extended_inputs.scale_scores({"config": dict(ckpt["config"], version=16)}, FACTOR)
+
+
+def test_the_command_line_writes_a_new_checkpoint(tmp_path, monkeypatch, capsys):
+    torch.save(checkpoint(10), tmp_path / "in.ckpt")
+    out = tmp_path / "out.ckpt"
+    monkeypatch.setattr(sys, "argv", ["add_extended_inputs.py", str(tmp_path / "in.ckpt"), str(out),
+                                      "-inputs-version", "11", "-score-factor", "0.6"])
+    add_extended_inputs.main()
+    assert modelconfigs.get_inputs_version(torch.load(out, weights_only=False)["config"]) == 11
+    assert modelconfigs.get_inputs_version(torch.load(tmp_path / "in.ckpt", weights_only=False)["config"]) == 10
+    assert "rows [0, 2] x 0.6" in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="exists"):
+        add_extended_inputs.main()
