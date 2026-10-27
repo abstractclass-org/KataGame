@@ -10,7 +10,8 @@
 //   takes times the player's stars on the board), and each player's cells that some placement of the other player
 //   takes. Then each player's blueprints, drawn at the hand's points (gamerules.h, HAND_X and HAND_Y), where the
 //   policy's picks and drops are, and the picked cell, a plane for each blueprint. Then the history: the points that
-//   each of the last 4 actions stamped and took.
+//   each of the last 4 actions stamped and took, or under the inputs version 11 the points that the moves of each of
+//   the last 4 turns stamped and took: the turn in progress, then the 3 whole turns before it.
 // - The global inputs: the mover's seat, its moves left in the turn, the game's progress, the stars on the board, the
 //   effective scores (with the komi), the pick, each player's cells and stars outside the view, and the mover's
 //   effective margin.
@@ -18,6 +19,9 @@
 //   opponent's placements in its own view take, the hand's points where a pick or a drop is legal now, and the
 //   minimap (each player's cells by type over the whole board, in bins of 5 x 5 points, and the bins of each player's
 //   view). Then each player's last 2 placements' boxes, the window's rule, as global inputs.
+// - The turn inputs, which the inputs version 11 adds after those (GameInterface): for each move of each of the last 4
+//   turns, 1 when it was an edit. A move of a turn that stamped nothing and was not an edit was a pass, or is still to
+//   come.
 // - The komi K is points added to the second player's final margin (KataGo's White), for the whole game. The rules'
 //   scores stay the earned ones, and the front's history adds K to the result (BoardHistory::endAndScoreGameNow). The
 //   inputs read K as a starting score of the side that it favours, the effective scores S0 + max(-K, 0) and S1 +
@@ -142,7 +146,8 @@ struct GameEncoding {
   // + k: the picked cell of blueprint k. A plane for each blueprint, so that the planes alone give the blueprint's
   // frame (the trainer's augmentation reads no global input).
   static constexpr int PICKED = 78;
-  static constexpr int HISTORY_PLANE = 81, NUM_HISTORY_PLANES = 2 * HISTORY;  // action h: + 2h stamped, + 2h + 1 taken
+  // Action h, or turn h under the inputs version 11 (0 the turn in progress): + 2h stamped, + 2h + 1 taken.
+  static constexpr int HISTORY_PLANE = 81, NUM_HISTORY_PLANES = 2 * HISTORY;
   static constexpr int NUM_SPATIAL_INPUTS = HISTORY_PLANE + NUM_HISTORY_PLANES;  // 89
   static_assert(THEIR_PLACES == MY_PLACES + PLACE_PLANES && MINE_TAKEN == THEIR_PLACES + PLACE_PLANES &&
                 MY_HAND == THEIRS_TAKEN + 1 && PICKED == THEIR_HAND + 3 * HAND && HISTORY_PLANE == PICKED + HAND,
@@ -166,6 +171,10 @@ struct GameEncoding {
   // opponent: 1 when the box is there, then its corners' x0, x1, y0 and y1 / VIEW (box_inputs).
   static constexpr int BOX_INPUT = NUM_GLOBAL_INPUTS, BOX_FIELDS = 5;
   static constexpr int NUM_EXTENDED_GLOBAL_INPUTS = 2 * RECENT * BOX_FIELDS;  // 20
+  // The turn inputs (GameInterface: the inputs version 11, with the history planes of the turns), after the extended
+  // global inputs: + TURN_MOVES * h + m, 1 when move m of turn h (Position::turns) was an edit.
+  static constexpr int TURN_INPUT = BOX_INPUT + NUM_EXTENDED_GLOBAL_INPUTS;
+  static constexpr int NUM_TURN_GLOBAL_INPUTS = HISTORY * TURN_MOVES;  // 8
   // The minimap's bins: 5 x 5 points, 67 x 67 of them around the minimap's middle (|u|, |v| <= MINIMAP_REACH). The
   // rules board's 255 x 255 points are 51 x 51 of them, in the middle.
   static constexpr int MINIMAP_BIN = 5;
@@ -177,7 +186,7 @@ struct GameEncoding {
   template<class Set>
   static void spatial_inputs(const Position& p, const GameInterface::InputOptions& options, Set&& set) {
     const Position& image = options.symmetry == 0 ? p : near_image(p, options.symmetry);
-    write_inputs(image, options.history, set);
+    write_inputs(image, options, set);
     if(options.extended) {
       // The threats and the minimap read cells far from the view, which the image near the view does not hold. They
       // move as pixels (the trainer maps them so), so they come from p, at the image's points.
@@ -191,8 +200,10 @@ struct GameEncoding {
     }
   }
 
+  // The inputs but the extended ones. The history planes show p's last actions, or with options.turnHistory its last
+  // turns, or nothing without options.history.
   template<class Set>
-  static void write_inputs(const Position& p, bool history, Set& set) {
+  static void write_inputs(const Position& p, const GameInterface::InputOptions& options, Set& set) {
     const int mover = GameRules::next_player(p), opponent = 1 - mover;
     const View view = view_of(p);
     auto cell_at = [&](int x, int y) {
@@ -308,9 +319,10 @@ struct GameEncoding {
     }
     if(p.picked >= 0)
       set(hands[mover].pickQ + HAND_X, hands[mover].pickR + HAND_Y, PICKED + p.picked);
-    if(history)
+    // The actions' footprints or the turns, the newest first.
+    auto write_history = [&](const auto* history) {
       for(int h = 0; h < HISTORY; h++) {
-        const Footprint& f = p.history[h];
+        const auto& f = history[h];
         auto mark = [&](int32_t point, int plane) {
           int x, y;
           view.view_point(point % RULES_LEN, point / RULES_LEN, x, y);
@@ -322,6 +334,11 @@ struct GameEncoding {
         for(int i = 0; i < f.nTaken; i++)
           mark(f.taken[i], HISTORY_PLANE + 2 * h + 1);
       }
+    };
+    if(options.history && options.turnHistory)
+      write_history(p.turns);
+    else if(options.history)
+      write_history(p.history);
   }
 
   // The opponent's threats where it places (MINE_THREATENED): the mover's cells that some placement of the opponent in
@@ -487,13 +504,20 @@ struct GameEncoding {
   // The same at every symmetry, but the window boxes: no other input names a point. The scores are the effective ones,
   // and the margin's input gives the mover's effective margin linearly, where the squash flattens large margins. The
   // cells and stars outside the view count what the planes do not show. With options.extended, the window boxes
-  // follow (box_inputs).
+  // follow (box_inputs). With options.turnHistory, then the turn inputs: the edit flags of each turn's moves
+  // (TURN_INPUT), with the history only (options.history), as the history planes.
   static void global_inputs(const Position& p, const GameInterface::InputOptions& options, float* out) {
     const int mover = GameRules::next_player(p), opponent = 1 - mover;
     for(int i = 0; i < NUM_GLOBAL_INPUTS; i++)
       out[i] = 0.0f;
     if(options.extended)
       box_inputs(p, options.symmetry, out + BOX_INPUT);
+    if(options.turnHistory) {
+      float* edits = out + (options.extended ? TURN_INPUT : NUM_GLOBAL_INPUTS);
+      for(int h = 0; h < HISTORY; h++)
+        for(int m = 0; m < TURN_MOVES; m++)
+          edits[TURN_MOVES * h + m] = options.history && p.turns[h].edit[m] ? 1.0f : 0.0f;
+    }
     const double mine = effective_score(p, mover, options.komi), theirs = effective_score(p, opponent, options.komi);
     out[0] = mover == 0 ? 1.0f : 0.0f;
     out[1] = GameRules::turn_moves_left(p) >= 2 ? 1.0f : 0.0f;
@@ -570,7 +594,8 @@ struct GameEncoding {
         f[4] = float(r1) / VIEW;
       }
   }
-  // What the inputs read beyond hash(): the history's points.
+  // What the inputs read beyond hash(): the points of the history of the actions and of the turns, and the turns' edit
+  // flags. Both histories, so that the network's cache and RGSC's states are exact under each inputs version.
   static Hash128 input_hash(const Position& p) {
     Hash128 h;
     for(int t = 0; t < HISTORY; t++) {
@@ -579,6 +604,16 @@ struct GameEncoding {
         h ^= key(KEY_HISTORY + uint64_t(t) * 2 * RULES_AREA + uint64_t(f.stamped[i]), 0);
       for(int i = 0; i < f.nTaken; i++)
         h ^= key(KEY_HISTORY + uint64_t(t) * 2 * RULES_AREA + RULES_AREA + uint64_t(f.taken[i]), 0);
+    }
+    for(int t = 0; t < HISTORY; t++) {
+      const TurnRecord& record = p.turns[t];
+      for(int i = 0; i < record.nStamped; i++)
+        h ^= key(KEY_TURNS + uint64_t(t) * 2 * RULES_AREA + uint64_t(record.stamped[i]), 0);
+      for(int i = 0; i < record.nTaken; i++)
+        h ^= key(KEY_TURNS + uint64_t(t) * 2 * RULES_AREA + RULES_AREA + uint64_t(record.taken[i]), 0);
+      for(int m = 0; m < TURN_MOVES; m++)
+        if(record.edit[m])
+          h ^= key(KEY_TURN_EDIT + uint64_t(t * TURN_MOVES + m), 0);
     }
     return h;
   }
@@ -595,9 +630,9 @@ struct GameEncoding {
 
   // The image of everything but the cells on the board: the scores, the counts, the ply and the pick as they are, each
   // blueprint's cells at their images in the site's frame (the rest of a picked blueprint and the picked cell keep the
-  // frame of the whole blueprint's image, as the rest keeps the whole blueprint's frame until the drop), the history's
-  // points, the recent placements' boxes, the offset and the view's orientation (sym_orientation), and a view that a
-  // caller set: its middle's pixel and the rule's orientation's image.
+  // frame of the whole blueprint's image, as the rest keeps the whole blueprint's frame until the drop), the points of
+  // the actions' and the turns' history, the recent placements' boxes, the offset and the view's orientation
+  // (sym_orientation), and a view that a caller set: its middle's pixel and the rule's orientation's image.
   static void sym_records(const Position& p, int symmetry, Position& s) {
     std::copy(p.scores, p.scores + 2, s.scores);
     std::copy(p.stars, p.stars + 2, s.stars);
@@ -623,13 +658,17 @@ struct GameEncoding {
       }
     s.pickQ = int8_t(pickQ);
     s.pickR = int8_t(pickR);
+    auto sym_points = [symmetry](int32_t* points, int n) {
+      for(int i = 0; i < n; i++)
+        points[i] = sym_rules_index(points[i], symmetry);
+    };
     for(int h = 0; h < HISTORY; h++) {
       s.history[h] = p.history[h];
-      Footprint& f = s.history[h];
-      for(int i = 0; i < f.nStamped; i++)
-        f.stamped[i] = sym_rules_index(f.stamped[i], symmetry);
-      for(int i = 0; i < f.nTaken; i++)
-        f.taken[i] = sym_rules_index(f.taken[i], symmetry);
+      sym_points(s.history[h].stamped, s.history[h].nStamped);
+      sym_points(s.history[h].taken, s.history[h].nTaken);
+      s.turns[h] = p.turns[h];
+      sym_points(s.turns[h].stamped, s.turns[h].nStamped);
+      sym_points(s.turns[h].taken, s.turns[h].nTaken);
     }
     for(int player = 0; player < 2; player++)
       for(int i = 0; i < RECENT; i++)

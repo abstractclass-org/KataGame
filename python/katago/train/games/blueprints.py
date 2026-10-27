@@ -53,7 +53,7 @@ MAX_BOARD_LEN = 67       # the view: |q|, |r| <= 33 from the mover's window, whi
 POLICY_CHANNELS = 6      # place blueprint 1-3, then a cell of blueprint 1-3 (a pick, or a drop after a pick)
 NUM_SPATIAL_INPUTS = 89  # 90 with the on-board plane
 NUM_GLOBAL_INPUTS = 22   # the last, 21: the mover's effective margin (with the komi) / 1000
-HISTORY_PLANE = 81       # the points that each of the last 4 actions stamped and took, newest first
+HISTORY_PLANE = 81       # the points that each of the last 4 actions (turns in V11) stamped and took, newest first
 NUM_HISTORY_PLANES = 8
 SYMMETRIES = (1 << 0) | (1 << 3) | (1 << 4) | (1 << 7)
 # C0: the final board (+1 the mover's cells, -1 the opponent's). C1: the cells captured before the game's end. C2-3: the
@@ -95,6 +95,10 @@ LEGAL_HAND = 90                    # + k: the hand's points of blueprint k where
 MINIMAP = 93                       # + 3 * side + type (side 0 the mover's): the minimap's bins that hold such a cell
 MY_WINDOW, THEIR_WINDOW = 99, 100  # the minimap's bins that each player's view meets
 BOX_FIELDS = 5                     # a window box: 1 when there, then its corners' x0, x1, y0, y1 / 67
+# The turn inputs (the inputs version 11): after the extended global inputs, for each of the last 4 turns (the newest
+# first, the turn in progress) and each of its 2 moves in their order, 1 when the move was an edit. The history planes
+# then show the last turns in place of the last actions: turn h's in the planes of action h.
+NUM_TURN_GLOBAL_INPUTS = 8
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
 
 

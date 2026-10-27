@@ -65,9 +65,11 @@ def with_game(config: ModelConfig, game_name: Union[str,None]) -> ModelConfig:
 # planes; the game's global inputs. The config's "inputs_version" 9 (2026-10-13; absent: 8) adds KataGo's playout
 # doubling advantage as 2 more global inputs (C++ NNInputs V9, exported as model version 18). 10 (2026-10-26) adds the
 # game's extended inputs to V9's: its extended planes after its planes, and its extended global inputs after V9's (C++
-# NNInputs V10, exported as model version 19; games.extended_spatial_inputs).
+# NNInputs V10, exported as model version 19; games.extended_spatial_inputs). 11 (2026-10-27) adds the game's turn
+# inputs after V10's global inputs, and its history planes show its last turns in place of its last actions (C++
+# NNInputs V11, exported as model version 20; games.turn_global_inputs).
 PLAYOUT_GLOBAL_INPUTS = 2
-INPUTS_VERSIONS = (8, 9, 10)
+INPUTS_VERSIONS = (8, 9, 10, 11)
 
 def get_inputs_version(config: ModelConfig):
     return config.get("inputs_version", 8)
@@ -89,7 +91,8 @@ def get_num_global_input_features(config: ModelConfig):
         game = get_game(config)
         playout_inputs = PLAYOUT_GLOBAL_INPUTS if get_inputs_version(config) >= 9 else 0
         extended = games.extended_global_inputs(game) if get_inputs_version(config) >= 10 else 0
-        return game.NUM_GLOBAL_INPUTS + playout_inputs + extended
+        turns = games.turn_global_inputs(game) if get_inputs_version(config) >= 11 else 0
+        return game.NUM_GLOBAL_INPUTS + playout_inputs + extended + turns
     else:
         assert(False)
 

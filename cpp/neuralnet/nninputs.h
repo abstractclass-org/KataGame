@@ -150,6 +150,12 @@ namespace NNInputs {
   //new run reads more inputs, and the rows and the networks of V9 stay as they are. Model version 19.
   const int NUM_FEATURES_SPATIAL_V10 = NUM_FEATURES_SPATIAL_V9 + GameInterface::extendedSpatialInputs<GameEncoding>();
   const int NUM_FEATURES_GLOBAL_V10 = NUM_FEATURES_GLOBAL_V9 + GameInterface::extendedGlobalInputs<GameEncoding>();
+  //KataGame fork (2026-10-27): V11, V10 with the history of the game's turns in place of its actions
+  //(InputOptions::turnHistory) and its turn inputs (GameInterface: NUM_TURN_GLOBAL_INPUTS) after V10's global inputs.
+  //Blueprints' history planes then show its last turns, the turn in progress first, with the edit flags of their
+  //moves. A game without turn inputs has V11 equal to its V10. Model version 20.
+  const int NUM_FEATURES_SPATIAL_V11 = NUM_FEATURES_SPATIAL_V10;
+  const int NUM_FEATURES_GLOBAL_V11 = NUM_FEATURES_GLOBAL_V10 + GameInterface::turnGlobalInputs<GameEncoding>();
 
   Hash128 getHash(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
@@ -220,6 +226,18 @@ namespace NNInputs {
     std::vector<int>* setEntries = NULL
   );
   void fillRowV10Packed(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
+    int symmetry = 0
+  );
+  //V11: the rows of V10's planes (NUM_SPATIAL_WORDS_V10 words packed), with rowGlobal holding NUM_FEATURES_GLOBAL_V11
+  //values.
+  void fillRowV11(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal,
+    std::vector<int>* setEntries = NULL
+  );
+  void fillRowV11Packed(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
     int symmetry = 0

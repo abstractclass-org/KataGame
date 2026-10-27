@@ -152,7 +152,9 @@ constexpr uint64_t KEY_BOX = 60000;      // + player * RECENT + i, and the recen
 constexpr uint64_t KEY_OFFSET = 60100;   // the offset
 constexpr uint64_t KEY_ORIENTATION = 60101;  // the view's orientation, when it is not 0
 constexpr uint64_t KEY_VIEW = 60102;     // the middle of a view that a caller set (set_view)
-constexpr uint64_t KEY_HISTORY = 70000;  // gameencoding.h's input_hash: + h * 2 * RULES_AREA + a point
+constexpr uint64_t KEY_HISTORY = 70000;  // gameencoding.h's input_hash: + h * 2 * RULES_AREA + a point of action h
+constexpr uint64_t KEY_TURNS = 600000;   // input_hash: + h * 2 * RULES_AREA + a point of turn h
+constexpr uint64_t KEY_TURN_EDIT = 1200000;  // input_hash: + h * TURN_MOVES + m, when move m of turn h was an edit
 static_assert(KEY_HAND + 6 * 4096 <= KEY_PLY && KEY_PLY + 121 <= KEY_PICK && KEY_PICK + 3 * 4096 <= KEY_SCORE &&
               KEY_SCORE + 2 <= KEY_BOX && KEY_BOX + 4 <= KEY_OFFSET && KEY_OFFSET < KEY_ORIENTATION &&
               KEY_ORIENTATION < KEY_VIEW && KEY_VIEW < KEY_HISTORY,
@@ -320,6 +322,19 @@ struct Footprint {
   int32_t stamped[MAX_CELLS] = {}, taken[MAX_TAKEN] = {};  // points of the rules board, y * RULES_LEN + x
 };
 
+// The last turns that the network sees under the inputs version 11 (the history planes, gameencoding.h): for each,
+// the points that its placements stamped and whose cells they took, and for each of its moves, in their order, whether
+// it was an edit (a pick and its drop). A turn has at most TURN_MOVES moves (turn_of: 1, then 2 each).
+constexpr int TURN_MOVES = 2;
+static_assert(KEY_HISTORY + HISTORY * 2 * RULES_AREA <= KEY_TURNS &&
+                KEY_TURNS + HISTORY * 2 * RULES_AREA <= KEY_TURN_EDIT,
+              "the hash's ranges of keys do not meet");
+struct TurnRecord {
+  int8_t nStamped = 0, nTaken = 0;
+  bool edit[TURN_MOVES] = {};
+  int32_t stamped[TURN_MOVES * MAX_CELLS] = {}, taken[TURN_MOVES * MAX_TAKEN] = {};  // as a Footprint's
+};
+
 // A box on the rules board: the least and the most x and y of some points (any: whether it holds a point), such as the
 // cells that a placement stamped.
 struct Box {
@@ -419,8 +434,13 @@ struct Position {
   // The hash of the cells, by their site coordinates, kept as cells come and go (so a recentering keeps it).
   Hash128 cellHash;
   // The last HISTORY actions, the newest first. Not part of the game's state: hash() leaves it out, and the one-line
-  // position does not hold it.
+  // position does not hold it. The history planes of the inputs versions 9 and 10 show it.
   Footprint history[HISTORY];
+  // The last HISTORY turns, the newest first: turns[0] is the turn in progress (the mover's moves so far, none at the
+  // turn's start), and turns[1] to turns[HISTORY - 1] the whole turns before it, so their players alternate. A move
+  // joins its turn when it ends: a placement, an edit (its pick, then its drop) or a pass. The history planes of the
+  // inputs version 11 show them, with the moves' edit flags. Not part of the game's state either.
+  TurnRecord turns[HISTORY];
 };
 
 // The player to move at a ply: the first plays ply 0, then each player two (the site's te).
@@ -818,12 +838,17 @@ inline void shift_points(int32_t* points, int8_t& n, int dx, int dy) {
   n = int8_t(kept);
 }
 
-// Moves every point of the rules board by (-dx, -dy) in the position's own records: the history and the recent
-// placements' boxes. A history's point that leaves the board goes: the cells it took can lie beyond the box.
+// Moves every point of the rules board by (-dx, -dy) in the position's own records: the history of the actions and of
+// the turns, and the recent placements' boxes. A history's point that leaves the board goes: the cells it took can lie
+// beyond the box.
 inline void shift_records(Position& p, int dx, int dy) {
   for(Footprint& f : p.history) {
     shift_points(f.stamped, f.nStamped, dx, dy);
     shift_points(f.taken, f.nTaken, dx, dy);
+  }
+  for(TurnRecord& t : p.turns) {
+    shift_points(t.stamped, t.nStamped, dx, dy);
+    shift_points(t.taken, t.nTaken, dx, dy);
   }
   for(auto& boxes : p.recent)
     for(Box& b : boxes)
@@ -985,9 +1010,25 @@ inline void orient(Position& p) {
   p.orientation = int8_t(best);
 }
 
-// Ends a move: the ply, then the next position's orientation (orient).
-inline void end_move(Position& p) {
+// Ends a move, after its last action: the move joins the turn in progress (Position::turns), with the footprint of that
+// action (history[0]: a placement's, none for a drop or a pass) and its edit flag, then the ply. The move that ends a
+// turn moves the turns back one place, so that the next turn starts with none. Then the next position's orientation
+// (orient).
+inline void end_move(Position& p, bool edit) {
+  TurnRecord& t = p.turns[0];
+  const Footprint& f = p.history[0];
+  std::copy(f.stamped, f.stamped + f.nStamped, t.stamped + t.nStamped);
+  t.nStamped = int8_t(t.nStamped + f.nStamped);
+  std::copy(f.taken, f.taken + f.nTaken, t.taken + t.nTaken);
+  t.nTaken = int8_t(t.nTaken + f.nTaken);
+  t.edit[p.ply == 0 ? 0 : (p.ply - 1) % 2] = edit;  // the move's place in its turn (turn_of)
+  const bool turnEnds = left_of(p.ply) == 1;
   p.ply++;
+  if(turnEnds) {
+    for(int h = HISTORY - 1; h > 0; h--)
+      p.turns[h] = p.turns[h - 1];
+    p.turns[0] = TurnRecord();
+  }
   orient(p);
 }
 
@@ -997,7 +1038,7 @@ inline void place(Position& p, int k, int x, int y) {
   const int mover = turn_of(p.ply);
   stamp(p, mover, p.hand[mover][k], x, y, p.history[0]);
   recenter(p);
-  end_move(p);
+  end_move(p, false);
 }
 
 // Places the mover's blueprint k with its (0, 0) cell on the site's point (q, r), anywhere on the rules board: a move
@@ -1411,7 +1452,7 @@ struct GameRules {
         b.normalize();
         p.picked = -1;
       }
-      end_move(p);
+      end_move(p, false);
       return;
     }
     const int x = action_x(action), y = action_y(action), channel = action_channel(action);
@@ -1442,7 +1483,7 @@ struct GameRules {
     p.hand[mover][k].normalize();
     p.hand[mover][p.picked].normalize();
     p.picked = -1;
-    end_move(p);
+    end_move(p, true);
   }
   static bool replay_tolerates(const Position&, int action) { return action == PASS_ACTION; }
   // A pick waits for its drop: the drop continues the edit, the pick's move.
@@ -1779,26 +1820,36 @@ struct GameRules {
   }
 
   // The whole state that the network reads (GameInterface): the one-line position with each blueprint's cells sorted
-  // (position_line), then a last field, the footprints of the last HISTORY actions, which the history planes show and
-  // the one-line position leaves out (input_hash). The footprints, the newest first, are joined by /: each is the
-  // points that the action stamped, |, then the points whose cells it took (points_text: "q,r" from the rules board's
-  // middle, sorted, "-" for none). So equal states give equal texts: the order of a blueprint's cells and of a
-  // footprint's points is not part of the state, as no rule and no input reads it. A view that a caller set is not
-  // part of the text. RGSC's buffer keeps self-play's states in it (program/rgsc.h).
+  // (position_line), then a last field, the footprints of the last HISTORY actions and then of the last HISTORY turns,
+  // which the history planes show and the one-line position leaves out (input_hash). The footprints, each ring's newest
+  // first, are joined by /: each is the points that the action or the turn stamped, |, then the points whose cells it
+  // took (points_text: "q,r" from the rules board's middle, sorted, "-" for none), and a turn's then |, then its
+  // moves' edit flags, e for an edit and - for another move or none ("e-"). So equal states give equal texts: the
+  // order of a blueprint's cells and of a footprint's points is not part of the state, as no rule and no input reads
+  // it. A view that a caller set is not part of the text. RGSC's buffer keeps self-play's states in it
+  // (program/rgsc.h).
   static std::string state_text(const Position& p) {
     std::string s = position_line(p, true) + " ";
     for(int h = 0; h < HISTORY; h++) {
       const Footprint& f = p.history[h];
       s += (h > 0 ? "/" : "") + points_text(f.stamped, f.nStamped) + "|" + points_text(f.taken, f.nTaken);
     }
+    for(const TurnRecord& t : p.turns) {
+      s += "/" + points_text(t.stamped, t.nStamped) + "|" + points_text(t.taken, t.nTaken) + "|";
+      for(int m = 0; m < TURN_MOVES; m++)
+        s += t.edit[m] ? 'e' : '-';
+    }
     return s;
   }
   // Sets p from a state's text (state_text): the one-line position (parse_position), then the footprints. When
-  // parse_position moves the board to its middle (recenter), the footprints' points move with it, as in play().
+  // parse_position moves the board to its middle (recenter), the footprints' points move with it, as in play(). A text
+  // with the footprints of the actions alone (before the inputs version 11, such as bpj3's RGSC buffer) gives no
+  // turns: the inputs versions 9 and 10 do not read them.
   static bool parse_state(const std::string& text, Position& p, std::string& why) {
     const size_t last = text.rfind(' ');
     if(last == std::string::npos) {
-      why = "a state is the one-line position, then the footprints of the last " + std::to_string(HISTORY) + " actions";
+      why = "a state is the one-line position, then the footprints of the last " + std::to_string(HISTORY) +
+            " actions and turns";
       return false;
     }
     const std::string position = text.substr(0, last);
@@ -1810,8 +1861,9 @@ struct GameRules {
     parse_cell(split(position, ' ')[7], oq, orr);
     const int dx = s.offsetQ - oq, dy = s.offsetR - orr;
     const std::vector<std::string> footprints = split(text.substr(last + 1), '/');
-    if(footprints.size() != HISTORY) {
-      why = "the footprints are " + std::to_string(HISTORY) + " actions' points, joined by /";
+    if(footprints.size() != HISTORY && footprints.size() != 2 * HISTORY) {
+      why = "the footprints are " + std::to_string(HISTORY) + " actions' points, then " + std::to_string(HISTORY) +
+            " turns' points, joined by /";
       return false;
     }
     for(int h = 0; h < HISTORY; h++) {
@@ -1825,6 +1877,23 @@ struct GameRules {
       }
       shift_points(f.stamped, f.nStamped, dx, dy);
       shift_points(f.taken, f.nTaken, dx, dy);
+    }
+    for(int h = HISTORY; h < int(footprints.size()); h++) {
+      const std::vector<std::string> parts = split(footprints[h], '|');
+      TurnRecord& t = s.turns[h - HISTORY];
+      bool flags = parts.size() == 3 && parts[2].size() == TURN_MOVES;
+      for(int m = 0; flags && m < TURN_MOVES; m++) {
+        flags = parts[2][m] == 'e' || parts[2][m] == '-';
+        t.edit[m] = parts[2][m] == 'e';
+      }
+      if(!flags || !parse_points(parts[0], TURN_MOVES * MAX_CELLS, t.stamped, t.nStamped) ||
+         !parse_points(parts[1], TURN_MOVES * MAX_TAKEN, t.taken, t.nTaken)) {
+        why = "a turn is the stamped points, |, the taken points, each q,r on the rules board once, joined by ;, \"-\" "
+              "for none, |, then its moves' edit flags, e or -: \"" + footprints[h] + "\"";
+        return false;
+      }
+      shift_points(t.stamped, t.nStamped, dx, dy);
+      shift_points(t.taken, t.nTaken, dx, dy);
     }
     p = s;
     return true;

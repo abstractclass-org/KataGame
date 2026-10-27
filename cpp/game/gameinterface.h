@@ -229,6 +229,15 @@
  *                           Blueprints' window boxes, the opponent's threats in its own window, the legal hand actions
  *                           and the minimap. Default: 0 and 0, V10 is V9 (extendedSpatialInputs,
  *                           extendedGlobalInputs).
+ *   NUM_TURN_GLOBAL_INPUTS  int: the game's turn inputs, which the inputs version 11 adds to version 10's (NNInputs
+ *                           V11, model version 20), for a game whose history counts actions, not turns. With
+ *                           options.turnHistory, the history planes show the game's last turns in place of its last
+ *                           actions, and global_inputs writes NUM_TURN_GLOBAL_INPUTS more floats after its extended
+ *                           ones: what the planes do not show of those turns. The front puts them after V10's global
+ *                           inputs. Without options.history the game leaves them 0, as its history planes. Blueprints'
+ *                           history: the turn in progress and the 3 turns before it, an edit's pick and drop in one
+ *                           move, and its turn inputs, the edit flags of each turn's moves. Default: 0, and a game
+ *                           that does not read options.turnHistory has V11 equal to its V10 (turnGlobalInputs).
  */
 
 #include <algorithm>
@@ -249,6 +258,9 @@ struct InputOptions {
   bool history = true;  //False: leave out what the position keeps of earlier turns (KataGo's maxHistory <= 0).
   double komi = 0.0;    //The rules' komi, for a game whose inputs encode it.
   bool extended = false;  //True: the game's extended inputs too (NUM_EXTENDED_SPATIAL_INPUTS), the inputs version 10.
+  //True: the history of the game's last turns, not of its last actions, and the game's turn inputs
+  //(NUM_TURN_GLOBAL_INPUTS): the inputs version 11.
+  bool turnHistory = false;
 };
 
 //The optional training targets: the slots of KataGo's spatial targets (its training rows' valueTargetsNCHW) and the
@@ -751,6 +763,7 @@ namespace encoding {
   GAMEINTERFACE_DETECT(HasExtendedSpatialInputs, int,
                        std::integral_constant<int, G::NUM_EXTENDED_SPATIAL_INPUTS>::value)
   GAMEINTERFACE_DETECT(HasExtendedGlobalInputs, int, std::integral_constant<int, G::NUM_EXTENDED_GLOBAL_INPUTS>::value)
+  GAMEINTERFACE_DETECT(HasTurnGlobalInputs, int, std::integral_constant<int, G::NUM_TURN_GLOBAL_INPUTS>::value)
 }
 
 //The game's extended inputs (NUM_EXTENDED_SPATIAL_INPUTS, NUM_EXTENDED_GLOBAL_INPUTS): the game's, else none.
@@ -763,6 +776,13 @@ template<class E> constexpr int extendedSpatialInputs() {
 template<class E> constexpr int extendedGlobalInputs() {
   if constexpr(encoding::HasExtendedGlobalInputs<E>::value)
     return E::NUM_EXTENDED_GLOBAL_INPUTS;
+  else
+    return 0;
+}
+//The game's turn inputs (NUM_TURN_GLOBAL_INPUTS): the game's, else none.
+template<class E> constexpr int turnGlobalInputs() {
+  if constexpr(encoding::HasTurnGlobalInputs<E>::value)
+    return E::NUM_TURN_GLOBAL_INPUTS;
   else
     return 0;
 }
@@ -856,6 +876,7 @@ template<class E> constexpr bool checkEncoding() {
                 "NUM_EXTENDED_GLOBAL_INPUTS, or neither");
   static_assert(extendedSpatialInputs<E>() >= 0 && extendedGlobalInputs<E>() >= 0,
                 "game interface, encoding part: the extended inputs are 0 or more");
+  static_assert(turnGlobalInputs<E>() >= 0, "game interface, encoding part: the turn inputs are 0 or more");
   return true;
 }
 

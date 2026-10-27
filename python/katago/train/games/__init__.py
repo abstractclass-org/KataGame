@@ -53,6 +53,13 @@ A module may also give these optional members (mask_targets and loss_coefficient
   apply_symmetry_extended_global_inputs(extended, symmetry)
                         the extended global inputs (N, NUM_EXTENDED_GLOBAL_INPUTS) at the symmetry, for a game whose
                         extended global inputs name points (apply_symmetry_global_inputs). Default: as they are.
+  NUM_TURN_GLOBAL_INPUTS
+                        the game's turn inputs (C++ GameInterface), which the inputs version 11 adds after version 10's
+                        global inputs, the newest turn's first. The history planes then show the last turns in place
+                        of the last actions. The turn inputs name no point. The history dropout clears turn input i
+                        with the history plane i * NUM_HISTORY_PLANES // NUM_TURN_GLOBAL_INPUTS, so the inputs of a
+                        turn with its turn's planes when the two counts are a turn's multiples
+                        (data_processing_pytorch.apply_history_dropout). Default: 0 (turn_global_inputs).
 """
 
 import importlib
@@ -100,11 +107,16 @@ def extended_global_inputs(game):
     return getattr(game, "NUM_EXTENDED_GLOBAL_INPUTS", 0)
 
 
+def turn_global_inputs(game):
+    """The game's turn inputs, which the inputs version 11 adds after version 10's (0 for a game without them)."""
+    return getattr(game, "NUM_TURN_GLOBAL_INPUTS", 0)
+
+
 def row_bytes(game, inputs_version=9):
     """The bytes of one training row of the game, uncompressed: the row writer's arrays (ROW_ above) on the game's
     largest board, without the metadata inputs, which the shuffle leaves out. Self-play writes rows of the inputs
-    version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads, and of version 10 with
-    its config's inputsVersion = 10."""
+    version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads, and of version 10 or 11
+    with its config's inputsVersion."""
     points = game.MAX_BOARD_LEN ** 2
     moves = points * game.POLICY_CHANNELS + 1  # the policy: every point's channels, then pass
     global_inputs = game.NUM_GLOBAL_INPUTS + (ROW_PLAYOUT_INPUTS if inputs_version >= 9 else 0)
@@ -112,6 +124,8 @@ def row_bytes(game, inputs_version=9):
     if inputs_version >= 10:
         global_inputs += extended_global_inputs(game)
         planes += extended_spatial_inputs(game)
+    if inputs_version >= 11:
+        global_inputs += turn_global_inputs(game)
     return (
         # binaryInputNCHWPacked: KataGo's on-board plane, then the game's planes, a bit a point
         planes * ((points + 7) // 8)
@@ -166,17 +180,18 @@ def mask_targets(game, binary_inputs, global_inputs, value_targets, global_targe
 
 
 def apply_symmetry_global_inputs(game, global_inputs, symmetry):
-    """The rows' global inputs (N, C) at the symmetry: in the rows of the inputs version 10, the game's extended global
-    inputs (the last ones) through its apply_symmetry_extended_global_inputs. The other global inputs name no point, so
-    they stay, as do the rows of the older versions and of a game without the member."""
+    """The rows' global inputs (N, C) at the symmetry: in the rows of the inputs versions 10 and 11, the game's extended
+    global inputs (after version 9's) through its apply_symmetry_extended_global_inputs. The other global inputs name no
+    point, so they stay, as do the rows of the older versions and of a game without the member."""
     mapping = getattr(game, "apply_symmetry_extended_global_inputs", None)
     extended = extended_global_inputs(game)
     if mapping is None or symmetry == 0 or extended == 0:
         return global_inputs
-    if global_inputs.shape[1] != game.NUM_GLOBAL_INPUTS + ROW_PLAYOUT_INPUTS + extended:
+    start = game.NUM_GLOBAL_INPUTS + ROW_PLAYOUT_INPUTS
+    if global_inputs.shape[1] not in (start + extended, start + extended + turn_global_inputs(game)):
         return global_inputs
     out = global_inputs.clone()
-    out[:, -extended:] = mapping(global_inputs[:, -extended:], symmetry)
+    out[:, start:start + extended] = mapping(global_inputs[:, start:start + extended], symmetry)
     return out
 
 

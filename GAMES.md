@@ -444,7 +444,9 @@ A game with no site version (Connect-4) uses the notation of design 04 of the en
 game's global inputs (V9 adds KataGo's 2 playout inputs after them). Input version 10 (model version 19) adds the
 game's extended inputs to V9's (`NUM_EXTENDED_SPATIAL_INPUTS`, below): its extended planes after its planes, and its
 extended global inputs after V9's. So a new run can read more inputs, while the networks and the rows of V9 stay as
-they are. Self-play writes its rows in V9 unless its config sets `inputsVersion = 10`.
+they are. Input version 11 (model version 20) is V10's with the game's history of turns (`NUM_TURN_GLOBAL_INPUTS`,
+below): the history planes show the last turns in place of the last actions, and the game's turn inputs follow V10's
+global inputs. Self-play writes its rows in V9 unless its config sets `inputsVersion` (10 or 11).
 
 | Member | Meaning | Enclosure |
 |---|---|---|
@@ -483,6 +485,7 @@ KataGo's code (`testgameareas` and `testkomi` pin them), and the front computes 
 | `KOMI_LEAD_STEP` | The step of `computeLead`'s smoothing over a coarse score, in points. When the even komi is not a multiple of 2 × step, the lead reads the win-loss value at the 4 komis step apart around it, averages each pair 2 × step apart, and interpolates. KataGo's half point is for Go's area scoring, where the margins of a full board have one parity, so the result changes every 2 points of komi. 0, or whole or half points. 0: no smoothing, the lead is the search's even komi (KataGo's rule for territory scoring). | KataGo's half point times `SCORE_SCALE` (`komiLeadStep`): Enclosure's 6 points, Connect-4's half point | 0: Blueprints' margins are whole points of both parities (426 even and 311 odd in the site's 737 finished games), so each half point of komi can change the result. |
 | `OWN_TARGETS` | The slots of `TARGETS` that the game computes itself (`training_targets`). It holds every slot of `TARGETS` that is not one of the `FRONT_TARGETS`, and it can hold those too: the front then leaves that slot to the game. The check requires both. | `TARGETS` without the `FRONT_TARGETS` (`ownTargets`) | All of its `TARGETS`, C2-3 too: the front's future positions read each later position's own view at the row's points, and Blueprints' view moves with the mover's window. |
 | `NUM_EXTENDED_SPATIAL_INPUTS`, `NUM_EXTENDED_GLOBAL_INPUTS` | The game's extended inputs, which input version 10 adds to version 9's. With `options.extended`, `spatial_inputs` also sets the planes `NUM_SPATIAL_INPUTS` to `NUM_SPATIAL_INPUTS + NUM_EXTENDED_SPATIAL_INPUTS - 1`, and `global_inputs` writes its extended global inputs after its own. The front puts the extended planes after the game's planes, and the extended global inputs after KataGo's 2 playout inputs. A game gives both or neither. | 0 and 0: V10 is V9 (`extendedSpatialInputs`, `extendedGlobalInputs`) | 12 and 20: the opponent's threats in its own view, the legal hand actions, the minimap of the whole board, and the window boxes (the engine repository's `games/blueprints/README.md`, "The network"). |
+| `NUM_TURN_GLOBAL_INPUTS` | The game's turn inputs, which input version 11 adds to version 10's, for a game whose history planes count actions, not turns. With `options.turnHistory`, the history planes show the game's last turns in place of its last actions, and `global_inputs` writes the turn inputs after its extended global inputs: what the planes do not show of those turns. The front puts them after V10's global inputs. Without `options.history` they are 0, as the history planes. | 0: V11 is V10 (`turnGlobalInputs`); its history planes already count turns | 8: for each of the 4 turns of the history planes (the turn in progress, then the 3 whole turns before it) and each of its 2 moves, 1 when the move was an edit, a pick and its drop (the engine repository's `games/blueprints/README.md`, "The network"). |
 
 `InputOptions` holds what the front gives the input members:
 
@@ -492,6 +495,7 @@ KataGo's code (`testgameareas` and `testkomi` pin them), and the front computes 
 | `history` | False: leave out what the position keeps of earlier turns (KataGo's `maxHistory <= 0`). |
 | `komi` | The rules' komi, for a game whose inputs encode it. |
 | `extended` | True: the game's extended inputs too (input version 10). |
+| `turnHistory` | True: the history of the game's last turns in place of its last actions, and the game's turn inputs (input version 11). |
 
 **The training targets** are the slots of KataGo's spatial targets (`valueTargetsNCHW`) and the two that the fork
 added. `TARGETS` declares the slots that the game writes. The front computes C2-3 and C7 from `pieces`
@@ -544,12 +548,12 @@ row's player to move.
 The trainer reads a game's facts from the game's module, `python/katago/train/games/<game>.py`, which mirrors the
 encoding part. `python/katago/train/games/__init__.py` lists the members, and `games.get(name)` refuses a module that
 lacks one. A model config names its game (`"game"`, Enclosure's without it), and `modelconfigs.get_game(config)` gives
-its module. The config's `"inputs_version"` (8 without it, 9 or 10) gives the game's global inputs, V9 adds KataGo's
-two playout inputs, and V10 the game's extended inputs. `train.py -inputs-version 9` gives a new model V9's inputs
-(Connect-4's run). A checkpoint keeps its version. `python/add_extended_inputs.py CHECKPOINT OUT` gives a checkpoint of
-V9 the extended inputs as zero input channels of the first convolution and zero columns of `linear_global`, in the
-model, the SWA model and the optimizer's state, so that its network computes what it did until training moves them
-(Blueprints' bpj3 from bpj2).
+its module. The config's `"inputs_version"` (8 without it, 9, 10 or 11) gives the game's global inputs, V9 adds
+KataGo's two playout inputs, V10 the game's extended inputs, and V11 its turn inputs. `train.py -inputs-version 9`
+gives a new model V9's inputs (Connect-4's run). A checkpoint keeps its version. `python/add_extended_inputs.py
+CHECKPOINT OUT` gives a checkpoint of V9 the extended inputs as zero input channels of the first convolution and zero
+columns of `linear_global`, in the model, the SWA model and the optimizer's state, so that its network computes what
+it did until training moves them (Blueprints' bpj3 from bpj2).
 
 | Member | Meaning | Enclosure (`games/enclosure.py`) | Connect-4 (`games/connect4.py`) |
 |---|---|---|---|
@@ -561,6 +565,7 @@ model, the SWA model and the optimizer's state, so that its network computes wha
 | `income_mask(binary_inputs)` (optional) | The points where the loss of C5-6 reads its target, from the batch's input planes at its symmetry: the loss averages each channel over its points, then over the channels that have points. Blueprints gives the cells of each player that can go (not walls). | None: the board's points, both channels together | None |
 | `NUM_EXTENDED_SPATIAL_INPUTS`, `NUM_EXTENDED_GLOBAL_INPUTS` (optional) | As in C++. `apply_symmetry_inputs` maps the extended planes too, in the rows that have them (V10). | None: 0, 0 (`games.extended_spatial_inputs`, `games.extended_global_inputs`) | None |
 | `apply_symmetry_extended_global_inputs(extended, symmetry)` (optional) | The extended global inputs of V10's rows at the symmetry, for a game whose extended global inputs name points. The trainer applies it to every batch at its symmetry (`games.apply_symmetry_global_inputs`). Blueprints gives it: its window boxes' corners. | None: as they are | None |
+| `NUM_TURN_GLOBAL_INPUTS` (optional) | As in C++. The turn inputs name no point. The history dropout clears turn input i with the history plane i × `NUM_HISTORY_PLANES` // `NUM_TURN_GLOBAL_INPUTS`, from the same draws: Blueprints' 2 inputs of each turn with the turn's 2 planes, as KataGo's pass inputs go with their moves. | None: 0 (`games.turn_global_inputs`) | None |
 
 The model's heads are the same in every game. The rows give each slot that the game does not write the weight 0, but
 not C0 (above). So the trainer leaves out C0 for a game without `TARGET_OWNERSHIP`.

@@ -571,11 +571,12 @@ void NNEvaluator::fillRowBufs(
   int symmetry
 ) const {
   const int rowSpatialLen = NNModelVersion::getNumSpatialFeatures(modelVersion) * nnXLen * nnYLen;
-  //Enclosure fork (owner, 2026-10-06): symmetry, the image's row written from board, for V8 to V10 only. KataGame
-  //fork: V8 to V10 are the game's inputs (NNInputs::NUM_FEATURES_SPATIAL_V8, V10 with its extended inputs).
-  const bool gameInputs = inputsVersion == 8 || inputsVersion == 9 || inputsVersion == 10;
+  //Enclosure fork (owner, 2026-10-06): symmetry, the image's row written from board, for V8 to V11 only. KataGame
+  //fork: V8 to V11 are the game's inputs (NNInputs::NUM_FEATURES_SPATIAL_V8, V10 with its extended inputs, V11 with
+  //its turns too).
+  const bool gameInputs = inputsVersion >= 8 && inputsVersion <= 11;
   testAssert(symmetry == 0 || gameInputs);
-  //V8 to V10 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
+  //V8 to V11 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
   if(!gameInputs && buf.rowSpatialBuf.size() < rowSpatialLen)
     buf.rowSpatialBuf.resize(rowSpatialLen);
   const int rowGlobalLen = NNModelVersion::getNumGlobalFeatures(modelVersion);
@@ -585,18 +586,21 @@ void NNEvaluator::fillRowBufs(
   if(buf.rowMetaBuf.size() < rowMetaLen)
     buf.rowMetaBuf.resize(rowMetaLen);
 
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 10, "");
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 11, "");
   //Enclosure fork (owner, 2026-10-06): V8 rows packed, one bit per entry (NNResultBuf::rowSpatialBits). This replaces
   //the float row cleared by its last entries (2026-10-05): the packed row is 9.7 KB, cleared whole. V9 rows are V8's
-  //with two more global inputs (2026-10-13), and V10 rows V9's with the game's extended inputs (2026-10-26).
+  //with two more global inputs (2026-10-13), V10 rows V9's with the game's extended inputs (2026-10-26), and V11 rows
+  //V10's planes with the game's turns (2026-10-27).
   buf.rowSpatialPacked = gameInputs;
   if(gameInputs) {
-    const bool extended = inputsVersion == 10;
+    const bool extended = inputsVersion >= 10;
     testAssert(rowSpatialLen == (extended ? NNInputs::NUM_SPATIAL_ELTS_V10 : NNInputs::NUM_SPATIAL_ELTS_V8));
     const size_t words = extended ? NNInputs::NUM_SPATIAL_WORDS_V10 : NNInputs::NUM_SPATIAL_WORDS_V8;
     if(buf.rowSpatialBits.size() < words)
       buf.rowSpatialBits.resize(words);
-    if(extended)
+    if(inputsVersion == 11)
+      NNInputs::fillRowV11Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
+    else if(extended)
       NNInputs::fillRowV10Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
     else if(inputsVersion == 9)
       NNInputs::fillRowV9Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);

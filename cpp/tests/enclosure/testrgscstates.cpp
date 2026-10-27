@@ -8,8 +8,8 @@
 // and, in a third of them, asymmetric playouts. At every position:
 // - the state's text gives the state back (parseState): the same position's hash with the player to move, the same
 //   input_hash (the history planes), the same player, moves played, pending move (continuesMove: a pick waiting for
-//   its drop), legal actions, the same text again, and the same network inputs (V10, with history, at each allowed
-//   symmetry), so the same state key;
+//   its drop), legal actions, the same text again, and the same network inputs (V10 and V11, with history, at each
+//   allowed symmetry), so the same state key;
 // - every position of a game has its own state key.
 // The played positions of 3 more games (self-play's candidates after a game): their keys (playedKeys) and entries
 // (playedEntry) are their states', and an entry's start (startOf) is its state with its turn number and its context.
@@ -22,9 +22,10 @@
 // the states back with their contexts and turn numbers; a load rejects a line of another version, of another game, a
 // state whose key does not match, a garbled state and a line of moves, and keeps the good lines.
 // With --buffer FILE (a self-play's buffer, rgscBufferFile): every entry of the file restores (the load checks its
-// key), and the entries that the draws reach restore with their texts as they were. With --write FILE: a buffer of a
-// state of each random game (in every second game one with a pick waiting for its drop), with its komi and asymmetric
-// playouts and the regret 1, for a self-play that restarts from them (rgscStartProb 1).
+// key), and the entries that the draws reach restore with their texts as they were, or with texts that extend them
+// (a buffer of an older text: Blueprints' from before the inputs version 11 lacks the turns). With --write FILE: a
+// buffer of a state of each random game (in every second game one with a pick waiting for its drop), with its komi
+// and asymmetric playouts and the regret 1, for a self-play that restarts from them (rgscStartProb 1).
 // On a build of a game without a state's text (Enclosure), the test checks the defaults: no text, a load that rejects
 // a state's line, and in 3 random games the played positions' keys and entries (the moves' key, keyOf, and the moves)
 // and their starts (the empty board and the moves). With --buffer FILE (a copy of a run's buffer), every line of the
@@ -52,9 +53,9 @@ static void check(bool ok, const string& what) {
   }
 }
 
-//The network's inputs of a position (V10, with history), packed, at a symmetry.
+//The network's inputs of a position (V10, or V11 with its turns, with history), packed, at a symmetry.
 static void inputsOf(const Board& board, const Rgsc::Context& context, int symmetry, vector<uint32_t>& bits,
-                     vector<float>& global) {
+                     vector<float>& global, int inputsVersion = 10) {
   Rules rules;
   rules.komi = context.komi;
   BoardHistory hist(board, board.nextPla(), rules, 0);
@@ -63,9 +64,13 @@ static void inputsOf(const Board& board, const Rgsc::Context& context, int symme
     params.playoutDoublingAdvantage =
       board.nextPla() == context.advantagePla ? context.advantage : -context.advantage;
   bits.assign(NNInputs::NUM_SPATIAL_WORDS_V10, 0u);
-  global.assign(NNInputs::NUM_FEATURES_GLOBAL_V10, 0.0f);
-  NNInputs::fillRowV10Packed(board, hist, board.nextPla(), params, Board::MAX_LEN, Board::MAX_LEN, false, bits.data(),
-                             global.data(), symmetry);
+  global.assign(NNInputs::NUM_FEATURES_GLOBAL_V11, 0.0f);  //V10's global inputs fill its first ones
+  if(inputsVersion == 11)
+    NNInputs::fillRowV11Packed(board, hist, board.nextPla(), params, Board::MAX_LEN, Board::MAX_LEN, false, bits.data(),
+                               global.data(), symmetry);
+  else
+    NNInputs::fillRowV10Packed(board, hist, board.nextPla(), params, Board::MAX_LEN, Board::MAX_LEN, false, bits.data(),
+                               global.data(), symmetry);
 }
 
 //A random game of the legal actions from the game's start with its draws: the boards after each action, the first
@@ -265,11 +270,13 @@ int main(int argc, char** argv) {
             where + ": the same player, moves played, pending move and end");
       check(r.legalActions() == b.legalActions(), where + ": the same legal actions");
       check(GameInterface::stateText<GameRules>(r.pos) == text, where + ": the same text again");
-      for(int s : SymmetryHelpers::ALLOWED) {
-        inputsOf(b, context, s, bits, global);
-        inputsOf(r, context, s, bits2, global2);
-        check(bits == bits2 && global == global2, where + ": the same inputs at symmetry " + to_string(s));
-      }
+      for(int s : SymmetryHelpers::ALLOWED)
+        for(int version : {10, 11}) {
+          inputsOf(b, context, s, bits, global, version);
+          inputsOf(r, context, s, bits2, global2, version);
+          check(bits == bits2 && global == global2,
+                where + ": the same V" + to_string(version) + " inputs at symmetry " + to_string(s));
+        }
       const uint64_t key = Rgsc::stateKey(b, context);
       check(Rgsc::stateKey(r, context) == key, where + ": the same state key");
       check(keys.insert(key).second, where + ": a key of its own in its game");
@@ -550,7 +557,9 @@ int main(int argc, char** argv) {
         continue;
       Board r;
       string why;
-      check(Rgsc::restoreState(e, r, why) && GameInterface::stateText<GameRules>(r.pos) == e.state,
+      //The text of an older version restores as the state's text now, which extends it.
+      const bool ok = Rgsc::restoreState(e, r, why);
+      check(ok && GameInterface::stateText<GameRules>(r.pos).compare(0, e.state.size(), e.state) == 0,
             "an entry of the file restores with its text: " + why);
       pendingStates += GameInterface::continuesMove<GameRules>(r.pos);
       restored.insert(e.key);
