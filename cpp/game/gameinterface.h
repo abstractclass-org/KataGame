@@ -183,10 +183,11 @@
  *                           (the score distribution's bin width, the output multipliers, the Huber deltas).
  *   SCORE_UNIT              double: the search's score utility unit, in points, where KataGo uses the square root
  *                           of the board's area.
- *   GAME_LENGTH             double: a game's mean length in moves, for KataGo's game-phase constants (the earliest
- *                           resignation, early forks, the opening moves, the time controls). The moves are the
- *                           front's: the actions of the history, one search each. A game whose move can take more
- *                           than one action gives its mean count of actions.
+ *   GAME_LENGTH             double: a game's mean length in actions (the front's moves: the history's, one search
+ *                           each), for KataGo's game-phase constants (the earliest resignation, early forks, the
+ *                           opening moves, the move temperature's half-life). A game whose move can take more than
+ *                           one action gives its mean count of actions. The time controls (TimeControls::getTime)
+ *                           read it too, but they count the game's moves (GameRules::moves_played).
  *
  * Optional members of the encoding part, as those of the rules part (the helper below gives the default):
  *   LOOKAHEAD_AREA          double: the area that KataGo's look-ahead horizons read where KataGo reads the board's area

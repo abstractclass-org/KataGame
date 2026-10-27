@@ -63,8 +63,8 @@ TARGETS = TARGET_OWNERSHIP | TARGET_SEKI | TARGET_FUTURE_PIECES | TARGET_SCORING
 SCORE_SCALE = 20.0       # people's median |margin|, 409 points, / KataGo's score multiplier of 20 (gameencoding.h)
 GAME_LENGTH = 132.0      # the actions of a game: 120 of the site's moves, and one more for each edit (C++)
 # KataGo's spatial losses read the board's area as the area of play: nearly every one of Go's 361 points ends owned. The
-# view's 4,489 points hold the window, and about 360 of them hold a cell at the game's end (bpj3's rows: a mean of 363,
-# a median of 361). So the ownership (C0), the future positions (C2-3) and the scoring slot (C4) read 361 points, and
+# view's 4,489 hexes hold the window, and about 360 of them hold a cell at the game's end (bpj3's rows: a mean of 363,
+# a median of 361). So the ownership (C0), the future positions (C2-3) and the scoring slot (C4) read 361 hexes, and
 # every coefficient is KataGo's or Enclosure's (LOSS_COEFFICIENTS' defaults). C1 and C5-6 average over their own cells.
 LOSS_AREA = 361.0
 

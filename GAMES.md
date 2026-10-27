@@ -338,11 +338,12 @@ its tactics. A game can have Go's board and a shorter game, so the fork divides 
     policy temperature): KataGo's half-life × √A / 19.
 
   The trainer's variance-time constants scale by `TIME_SCALE` too (`model_pytorch.py`).
-- **The moves are the front's: actions.** The constants above count the history's moves, one search each, and the
-  variance-time target counts rows. So `GAME_LENGTH` counts actions. In Enclosure and Connect-4 an action is a move of
-  the game. In Blueprints an edit is two actions, a pick and its drop, so its `GAME_LENGTH` is the mean count of
-  actions of its self-play games, 132 (120 moves of the site and the edits). The count of a game changes with its
-  edits (120 to 146), as Go's length changes (292 to 366, below). Two places count the game's moves instead
+- **The front counts actions.** The constants above count the history's actions (KataGo's moves), one search each,
+  and the variance-time target counts rows. So `GAME_LENGTH` counts actions. In Enclosure and Connect-4 an action is
+  a move of the game. In Blueprints an edit is two actions, a pick and its drop, so its `GAME_LENGTH` is the mean
+  count of actions of its self-play games, 132 (120 moves of the site and the edits). The count of a game changes with
+  its edits: 120 actions in the shortest game, 146 in the longest. Go's length changes at least as much: 292 to 366
+  moves from the 10th to the 90th percentile (below). Two places count the game's moves instead
   (`moves_played`): GTP's time allocation, which Blueprints' play does not use, and the turn number of a history that
   starts from a position (the engine protocol, GTP), which then leaves out the edits before that position.
 - **`GO_GAME_LENGTH` = 328** is the measured mean length of KataGo's own 19 × 19 self-play games, without handicap or
@@ -478,7 +479,7 @@ global inputs. Self-play writes its rows in V9 unless its config sets `inputsVer
 | `training_targets(positions, n, row, mover, values)` | The game's own targets of a training row: the slots of its own targets (`OWN_TARGETS`, by default all of `TARGETS` but `FRONT_TARGETS`), from the game's positions `positions(j)`, `0 <= j < n`, with the row at `positions(row)`, from the view of `mover`. It writes the values before the row's storage (`TargetValues`), then its global targets, and returns the slots that hold a target in this row. A template on `positions`. A game without own targets can leave it out. | C0, C1, C4 and C5-6 (below), from the positions after the row |
 | `SCORE_SCALE` | The game's score spread against Go's. KataGo's constants in points scale by it ("The score scale"). | 12 (ENCLOSURE.md, "Score scale") |
 | `SCORE_UNIT` | The search's score utility unit, in points, where KataGo uses the square root of the board's area. | 140.5845 = √(18 · 18 · 61) |
-| `GAME_LENGTH` | A game's mean length in the front's moves (actions), for KataGo's game-phase constants ("The game's length"). | 120 |
+| `GAME_LENGTH` | A game's mean length in actions (the front's moves), for KataGo's game-phase constants ("The game's length"). | 120 |
 
 The encoding part's optional members work as the rules part's ("Optional members"): `gameinterface.h` has a detector
 and a helper for each. The front calls the helpers of the two areas through `Board`, and the row writer calls
@@ -573,7 +574,7 @@ it did until training moves them (Blueprints' bpj3 from bpj2).
 | `apply_symmetry_inputs`, `apply_symmetry_policy_targets`, `apply_symmetry_policy` | The augmentation of the input planes, the policy targets (both channels) and a policy of the mover's moves (the q-values), at an allowed symmetry. The value targets move as pixels in every game (`games.apply_symmetry_points`). | An edge moves as an edge, with each channel's player's nodes | Every plane and the policy move as pixels, as KataGo's do. The mirror flips x on the network's 7 × 7 board, which a row of the standard board fills in width. |
 | `mask_targets` (optional) | The rows' global targets, with weight 0 for each target that the augmentation cannot map in a row. The trainer applies it to every batch, at every symmetry and without the symmetries (`games.mask_targets`: none without the member). Blueprints gives it: the second policy target (C28) after a drop with a move of the same player to come. | None | None |
 | `LOSS_COEFFICIENTS` (optional) | The coefficient of each loss that it names, of `games.LOSS_COEFFICIENTS`: `ownership` (C0), `seki` (C1) and `income` (C5-6). `games.get` refuses another name. | None: `games.LOSS_COEFFICIENTS`, 1.5, 1 and 1.5 (KataGo's ownership, Enclosure's edges that get cut and its income) | None |
-| `LOSS_AREA` (optional) | The area, in points, that KataGo's spatial losses read where KataGo reads the board's area (`games.loss_area`, `Metrics.spatial_area`): the ownership loss and the scoring slot's loss sum over the row's points and divide by it, the future positions' loss by its square root, and the income loss without `income_mask` by twice it. KataGo's area is the row's on-board points, nearly all of which end owned in Go. Blueprints gives 361: its view's 4,489 points hold the window, and about 360 of them hold a cell at the game's end. | None: the row's on-board points | None |
+| `LOSS_AREA` (optional) | The area, in points, that KataGo's spatial losses read where KataGo reads the board's area (`games.loss_area`, `Metrics.spatial_area`): the ownership loss and the scoring slot's loss sum over the row's points and divide by it, the future positions' loss by its square root, and the income loss without `income_mask` by twice it. KataGo's area is the row's on-board points, nearly all of which end owned in Go. Blueprints gives 361: its view's 4,489 hexes hold the window, and about 360 of them hold a cell at the game's end. | None: the row's on-board points | None |
 | `income_mask(binary_inputs)` (optional) | The points where the loss of C5-6 reads its target, from the batch's input planes at its symmetry: the loss averages each channel over its points, then over the channels that have points. Blueprints gives the cells of each player that can go (not walls). | None: the board's points, both channels together | None |
 | `NUM_EXTENDED_SPATIAL_INPUTS`, `NUM_EXTENDED_GLOBAL_INPUTS` (optional) | As in C++. `apply_symmetry_inputs` maps the extended planes too, in the rows that have them (V10). | None: 0, 0 (`games.extended_spatial_inputs`, `games.extended_global_inputs`) | None |
 | `apply_symmetry_extended_global_inputs(extended, symmetry)` (optional) | The extended global inputs of V10's rows at the symmetry, for a game whose extended global inputs name points. The trainer applies it to every batch at its symmetry (`games.apply_symmetry_global_inputs`). Blueprints gives it: its window boxes' corners. | None: as they are | None |

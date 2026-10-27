@@ -164,6 +164,7 @@ class Metrics:
             return mask_sum_hw
         return torch.full_like(mask_sum_hw, self.loss_area)
 
+
     def loss_ownership_samplewise(self, pred_pretanh, target, weight, mask, mask_sum_hw, global_weight):
         # This uses a formulation where each batch element cares about its average loss.
         # In particular this means that ownership loss predictions on small boards "count more" per spot.
@@ -191,7 +192,8 @@ class Metrics:
         assert mask_sum_hw.shape == (n,)
 
         # KataGame fork: over the game's loss area (spatial_area).
-        loss = torch.sum(torch.square(pred_scoring.squeeze(1) - target) * mask, dim=(1,2)) / self.spatial_area(mask_sum_hw)
+        loss = torch.sum(torch.square(pred_scoring.squeeze(1) - target) * mask, dim=(1,2))
+        loss = loss / self.spatial_area(mask_sum_hw)
         # Simple huberlike transform to reduce crazy values
         loss = 4.0 * (torch.sqrt(loss * 0.5 + 1.0) - 1.0)
         return global_weight * weight * loss
@@ -253,8 +255,8 @@ class Metrics:
         # mover's, then the opponent's), as binary cross-entropy, averaged over the board's points and both planes,
         # weighted as KataGo's ownership (1.5; iviazovetskyi's weight too).
         # KataGame fork: with the game's income_mask (n, 2, y, x), averaged over each channel's points, then over the
-        # channels that have points (Blueprints' cells that can go), and with the game's coefficient. Without it, over the
-        # game's loss area (spatial_area).
+        # channels that have points (Blueprints' cells that can go), and with the game's coefficient. Without it, over
+        # the game's loss area (spatial_area).
         n = pred_logits.shape[0]
         assert pred_logits.shape == (n, 2, self.pos_len, self.pos_len)
         assert target.shape == (n, 2, self.pos_len, self.pos_len)

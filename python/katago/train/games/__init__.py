@@ -19,7 +19,8 @@ encoding part"), with the same names and meanings:
   TARGETS               the optional training targets that the game writes (the TARGET_ bits below).
   SCORE_SCALE           the game's score spread against Go's. KataGo's constants in points scale by it, and the
                         score distribution's bins are SCORE_SCALE points wide.
-  GAME_LENGTH           a game's mean length in moves, against Go's GO_GAME_LENGTH (model_pytorch).
+  GAME_LENGTH           a game's mean length in actions (the front's moves), against Go's GO_GAME_LENGTH
+                        (model_pytorch).
 
 and the augmentation, for each allowed symmetry (KataGo's numbers: bit 0 flips y, bit 1 flips x, bit 2 transposes):
 
