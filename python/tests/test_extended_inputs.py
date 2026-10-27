@@ -22,6 +22,11 @@ from katago.train.games import blueprints  # noqa: E402
 from katago.train.model_pytorch import Model  # noqa: E402
 
 KIND = "b1c6nbt"  # the smallest model kind: the checks below read the first layers only
+# The inputs version 11: Blueprints' 8 turn inputs after version 10's 44 global inputs.
+V10_GLOBALS, TURNS = 24 + 20, 8
+# Each conversion of add_extended_inputs.py: the checkpoint's inputs version, the version that it gives, and the
+# weights that it widens.
+CONVERSIONS = [(9, 10, 2), (10, 11, 1)]
 
 
 def config(game, inputs_version, kind="b6c96"):
@@ -134,17 +139,20 @@ def assert_same_outputs(olds, news, cfg, planes, global_inputs, outputs=lambda n
                     torch.testing.assert_close(o, e, rtol=1e-5, atol=1e-5)
 
 
-def test_the_converted_network_computes_what_it_did_whatever_the_new_inputs():
-    ckpt = checkpoint()
+@pytest.mark.parametrize("version, target, weights", CONVERSIONS)
+def test_the_converted_network_computes_what_it_did_whatever_the_new_inputs(version, target, weights):
+    ckpt = checkpoint(version)
     olds = networks(ckpt)
-    touched = add_extended_inputs.convert(ckpt, 10)
-    assert len(touched) == 6, touched  # 2 weights in the model, the SWA model and the optimizer
-    assert modelconfigs.get_inputs_version(ckpt["config"]) == 10
-    # The rows of version 9 are the first planes and the first global inputs of version 10's.
-    assert_same_outputs(olds, networks(ckpt), ckpt["config"], 90, 24)
+    touched = add_extended_inputs.convert(ckpt, target)
+    assert len(touched) == 3 * weights, touched  # each widened weight in the model, the SWA model and the optimizer
+    assert modelconfigs.get_inputs_version(ckpt["config"]) == target
+    # The rows of the old version are the first planes and the first global inputs of the new version's. Version 11
+    # keeps version 10's planes.
+    planes, global_inputs = {9: (90, 24), 10: (90 + 12, V10_GLOBALS)}[version]
+    assert_same_outputs(olds, networks(ckpt), ckpt["config"], planes, global_inputs)
 
 
-@pytest.mark.parametrize("version, target, weights", [(9, 10, 2), (10, 11, 1)])
+@pytest.mark.parametrize("version, target, weights", CONVERSIONS)
 def test_the_optimizer_state_gets_zero_columns_and_loads(version, target, weights):
     ckpt = checkpoint(version)
     before = {i: {k: v.clone() for k, v in s.items()} for i, s in ckpt["optimizer"]["state"].items()}
@@ -163,7 +171,7 @@ def test_the_optimizer_state_gets_zero_columns_and_loads(version, target, weight
     assert widened == weights
 
 
-@pytest.mark.parametrize("version, target, weights", [(9, 10, 2), (10, 11, 1)])
+@pytest.mark.parametrize("version, target, weights", CONVERSIONS)
 def test_a_checkpoint_of_a_network_alone_converts(version, target, weights):
     ckpt = checkpoint(version)
     alone = {"config": ckpt["config"], "model": ckpt["model"]}
@@ -180,10 +188,9 @@ def test_the_converter_refuses_other_inputs():
         add_extended_inputs.convert(ckpt, 10)
     with pytest.raises(ValueError, match="this gives 10 or 11"):
         add_extended_inputs.convert(ckpt, 12)
-    with pytest.raises(ValueError, match="no inputs new in version 10"):
-        add_extended_inputs.convert({"config": config("enclosure", 9)}, 10)
-    with pytest.raises(ValueError, match="no inputs new in version 11"):
-        add_extended_inputs.convert({"config": config("enclosure", 10)}, 11)
+    for version, target, _ in CONVERSIONS:  # a game without the target's new inputs
+        with pytest.raises(ValueError, match=f"no inputs new in version {target}"):
+            add_extended_inputs.convert({"config": config("enclosure", version)}, target)
 
 
 def test_the_export_writes_model_version_19(tmp_path):
@@ -196,10 +203,6 @@ def test_the_export_writes_model_version_19(tmp_path):
     header = (tmp_path / "out" / "model.bin").read_bytes().split(b"\n", 4)
     assert header[1] == b"19"
     assert (int(header[2]), int(header[3])) == (90 + 12, 24 + 20)  # the input channels, then the global ones
-
-
-# The inputs version 11: Blueprints' 8 turn inputs after version 10's 44 global inputs.
-V10_GLOBALS, TURNS = 24 + 20, 8
 
 
 def test_version_11_adds_the_games_turn_inputs_after_version_10s():
@@ -288,16 +291,6 @@ def test_the_export_writes_model_version_20(tmp_path):
     assert (int(header[2]), int(header[3])) == (90 + 12, V10_GLOBALS + TURNS)
 
 
-def test_a_checkpoint_of_version_10_converts_to_11_and_computes_what_it_did_whatever_the_turn_inputs():
-    ckpt = checkpoint(10)
-    olds = networks(ckpt)
-    touched = add_extended_inputs.convert(ckpt, 11)
-    assert len(touched) == 3, touched  # linear_global in the model, the SWA model and the optimizer
-    assert modelconfigs.get_inputs_version(ckpt["config"]) == 11
-    # The planes keep their count, and the turn inputs come after version 10's global inputs.
-    assert_same_outputs(olds, networks(ckpt), ckpt["config"], 90 + 12, V10_GLOBALS)
-
-
 # The score factor: Blueprints' SCORE_SCALE from 12 to 20 multiplies the multipliers of its outputs in points by
 # 20 / 12.
 FACTOR = 12.0 / 20.0
@@ -345,7 +338,7 @@ def test_the_score_factor_scales_the_momentum_of_its_rows_and_it_loads():
     assert scaled == 4  # the weight and the bias of the value head's 2 layers
 
 
-def test_the_score_factor_refuses_other_optimizers_factors_and_move_scores():
+def test_the_score_factor_refuses_other_optimizers_factors_and_move_margins():
     ckpt = checkpoint(10)
     names = [n for _, group in group_names(Model(ckpt["config"], blueprints.MAX_BOARD_LEN)) for n in group]
     state = ckpt["optimizer"]["state"][names.index("value_head.linear_miscvaluehead.bias")]
@@ -366,7 +359,14 @@ def test_the_command_line_writes_a_new_checkpoint(tmp_path, monkeypatch, capsys)
     torch.save(checkpoint(10), tmp_path / "in.ckpt")
     out = tmp_path / "out.ckpt"
     monkeypatch.setattr(sys, "argv", ["add_extended_inputs.py", str(tmp_path / "in.ckpt"), str(out),
-                                      "-inputs-version", "11", "-score-factor", "0.6"])
+                                      "-inputs-version", "11", "-old-score-scale", "12"])
+    # The code of the checkpoint's score scale: refused, and nothing written.
+    monkeypatch.setattr(blueprints, "SCORE_SCALE", 12.0)
+    with pytest.raises(SystemExit, match="SCORE_SCALE is 12.0 too"):
+        add_extended_inputs.main()
+    assert not out.exists()
+    # The code of Blueprints' new score scale, 20.
+    monkeypatch.setattr(blueprints, "SCORE_SCALE", 20.0)
     add_extended_inputs.main()
     assert modelconfigs.get_inputs_version(torch.load(out, weights_only=False)["config"]) == 11
     assert modelconfigs.get_inputs_version(torch.load(tmp_path / "in.ckpt", weights_only=False)["config"]) == 10

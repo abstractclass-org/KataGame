@@ -568,9 +568,9 @@ convolution and zero columns of `linear_global`, in the model, the SWA model and
 network computes what it did until training moves them (Blueprints' bpj3 from bpj2). `-inputs-version 11` gives a
 checkpoint of V10 the turn inputs as zero columns of `linear_global` in the same way (bpj4 from bpj3). The planes keep
 their count, and training absorbs the new meaning of the history planes (turns, not actions). For a new `SCORE_SCALE`,
-`-score-factor F` multiplies by F the outputs that a plain multiplier puts in points (the score mean, the lead and the
-TD scores): F is the old scale over the new one, so these outputs keep their values in points. Training moves the
-score's standard deviation and the score belief.
+`-old-score-scale S`, run with the new code, multiplies by S over the new `SCORE_SCALE` the outputs that a plain
+multiplier puts in points: the score mean, the lead and the TD scores. These outputs keep their values in points.
+Training moves the score's standard deviation and the score belief.
 
 | Member | Meaning | Enclosure (`games/enclosure.py`) | Connect-4 (`games/connect4.py`) |
 |---|---|---|---|
