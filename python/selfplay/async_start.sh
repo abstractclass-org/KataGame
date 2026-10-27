@@ -19,7 +19,8 @@
 #            NAMEPREFIX BASEDIR
 #   (the trainers, the parts' resources and the levers' defaults: async_parts.sh; other settings in the environment:
 #   SELFPLAY_OVERRIDES, BATCHSIZE, PILOT, ...). The engine repository's pipeline/scripts/start.sh sets them from a run's
-#   settings.
+#   settings. SELFPLAY_ENV: NAME=VALUE words that self-play's process gets in its environment (as SHUFFLE_ENV gives the
+#   shuffle's), such as ENCLOSURE_FUSED_CONV=1 (the CUDA backend's fused convolution); empty by default.
 # Stop: bash katagame/python/selfplay/async_stop.sh NAMEPREFIX [PART...]
 # The body is one { ... } block (as pipeline/scripts/*.sh): bash reads all of it before running any, so an edit while
 # a copy starts cannot corrupt what it runs (2026-10-06 19:50: a restart read the file mid-edit, hit a syntax error
@@ -123,11 +124,12 @@ part() {  # NAME COMMAND...: one part, detached, in its own scope with its limit
 
 SELFPLAY=(./bin/katago selfplay -output-dir "$BASEDIR"/selfplay -models-dir "$BASEDIR"/models
     -config "$DATED_ARCHIVE"/selfplay.cfg)
+SELFPLAY_ENV="${SELFPLAY_ENV:-}"
 if [[ "$PILOT" == 1 ]]; then
     # Until the first export, a game in flight for each of the run's CPUs (async_parts.sh, PILOT).
-    part selfplay ./pilot_selfplay.sh "$BASEDIR"/models "$(cpu_count "$CPUS")" "$SELFPLAY_IN_FORCE" "${SELFPLAY[@]}"
+    part selfplay env $SELFPLAY_ENV ./pilot_selfplay.sh "$BASEDIR"/models "$(cpu_count "$CPUS")" "$SELFPLAY_IN_FORCE"         "${SELFPLAY[@]}"
 else
-    part selfplay "${SELFPLAY[@]}" ${SELFPLAY_IN_FORCE:+-override-config "$SELFPLAY_IN_FORCE"}
+    part selfplay env $SELFPLAY_ENV "${SELFPLAY[@]}" ${SELFPLAY_IN_FORCE:+-override-config "$SELFPLAY_IN_FORCE"}
 fi
 
 # The shuffle's counts are unset when the shuffle does not start (game_defaults above).
