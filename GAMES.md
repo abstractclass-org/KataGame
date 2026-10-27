@@ -313,7 +313,8 @@ cdf 0.02 each, L2 3e-5. The search's score utility unit is a separate constant (
 would change Enclosure's search (design 07 of the engine repository, "Why"). Enclosure's s is 12
 ([ENCLOSURE.md](ENCLOSURE.md#score-scale-step-6), "Score scale"). Connect-4's s is 1, so its point multipliers and loss
 weights keep KataGo's values. Its score target cap uses its largest board: `7² + 60 = 109` points. Blueprints' s is 20:
-the median margin of people's games, 409 points, against KataGo's typical 20 (`game/blueprints/gameencoding.h`).
+the median margin of people's games, 409 points, over KataGo's score multiplier of 20
+(`game/blueprints/gameencoding.h`).
 
 ### The game's length
 

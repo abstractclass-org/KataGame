@@ -60,7 +60,7 @@ SYMMETRIES = (1 << 0) | (1 << 3) | (1 << 4) | (1 << 7)
 # stars 4 and 16 moves later. C4: where the points are earned. C5-6: the cells that go in the rest of the mover's turn
 # and in the opponent's next turn.
 TARGETS = TARGET_OWNERSHIP | TARGET_SEKI | TARGET_FUTURE_PIECES | TARGET_SCORING | TARGET_INCOME
-SCORE_SCALE = 20.0       # people's median |margin|, 409 points, / KataGo's score multiplier 20 (gameencoding.h)
+SCORE_SCALE = 20.0       # people's median |margin|, 409 points, / KataGo's score multiplier of 20 (gameencoding.h)
 GAME_LENGTH = 120.0      # the site's moves of a game
 # The ownership loss at 0.25, not KataGo's 1.5, beside the new targets, and the losses of C1 and of C5-6 at 0.5, not
 # Enclosure's 1 and 1.5. The score's targets keep their weight C27. C4 has KataGo's scoring loss as it is (0.25, the

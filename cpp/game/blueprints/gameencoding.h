@@ -154,7 +154,7 @@ struct GameEncoding {
                 "Blueprints' planes follow one another");
   static constexpr int NUM_GLOBAL_INPUTS = 22;
   static constexpr int MARGIN_INPUT = 21;  // the mover's effective margin / MARGIN_UNIT, not squashed
-  // Of the order of the site's margins (median 523 points, 90th percentile 2,101) and of self-play's komis (up to
+  // Of the order of people's margins (median 409 points, 90th percentile 2,060) and of self-play's komis (up to
   // 3,000 points in a new game), so that the margin's input is of the order of 1.
   static constexpr double MARGIN_UNIT = 1000.0;
 
@@ -974,11 +974,8 @@ struct GameEncoding {
     return slots;
   }
 
-  // The game's score spread against Go's (GAMES.md, "The score scale"). KataGo's score multiplier of 20 is "so that on
-  // typical data the neural net would only need to output values around unit scale" (KataGo's paper, A.5). People's
-  // games are the typical data: the 737 games of the site's rules version 3 that end (of 1,826 in strategyjam.org's
-  // archive) have a median |margin| of 409 points, 30 to 2,060 from the 10th to the 90th percentile. So s = 409 / 20,
-  // about 20. Self-play's margins are not the reference: they change as the network learns (bpj3's median, 124).
+  // The game's score spread against Go's (GAMES.md, "The score scale"): the median |margin| of people's games, 409
+  // points, over KataGo's score multiplier of 20 (the engine repository's games/blueprints/README.md, "The network").
   static constexpr double SCORE_SCALE = 20.0;
   // The search's score utility unit: KataGo's square root of Go's board area, 19 points, in this game's points. The
   // square root of the game's largest score (Enclosure's unit) does not apply: Blueprints' scores have no bound.
