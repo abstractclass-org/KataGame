@@ -981,9 +981,13 @@ struct GameEncoding {
   // square root of the game's largest score (Enclosure's unit) does not apply: Blueprints' scores have no bound.
   static constexpr double SCORE_UNIT = 19.0 * SCORE_SCALE;
   // A game is 120 of the site's moves (moves_played counts them; a pick and its drop are one).
-  static constexpr double GAME_LENGTH = PLIES;
+  // KataGo's game-phase constants count the front's moves, which are actions: the history's moves, the searches and
+  // the rows. An edit is two actions, a pick and its drop. So the game's mean length is in actions: 132, the mean of
+  // bpj3's self-play games from the empty board (1,642 games of 7 networks: 132.0 to 132.7 for each network, 120 to 146
+  // for each game). Go's own games vary as much (GAMES.md, "The game's length").
+  static constexpr double GAME_LENGTH = 132.0;
   // The view is 67 x 67 so that it holds the window, not because a decision reaches that far: KataGo's look-ahead
-  // horizons read Go's 361, about 64, 20 and 6 actions in a game of about 140. And the komi sampler reads 361, so that
+  // horizons read Go's 361, about 64, 20 and 6 actions in a game of about 132. And the komi sampler reads 361, so that
   // it draws a komi in the points that the config gives (GAMES.md, the encoding part's optional members).
   static constexpr double LOOKAHEAD_AREA = 19 * 19;
   static constexpr double KOMI_AREA = 19 * 19;

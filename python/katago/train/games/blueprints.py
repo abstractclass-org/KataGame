@@ -61,11 +61,12 @@ SYMMETRIES = (1 << 0) | (1 << 3) | (1 << 4) | (1 << 7)
 # and in the opponent's next turn.
 TARGETS = TARGET_OWNERSHIP | TARGET_SEKI | TARGET_FUTURE_PIECES | TARGET_SCORING | TARGET_INCOME
 SCORE_SCALE = 20.0       # people's median |margin|, 409 points, / KataGo's score multiplier of 20 (gameencoding.h)
-GAME_LENGTH = 120.0      # the site's moves of a game
-# The ownership loss at 0.25, not KataGo's 1.5, beside the new targets, and the losses of C1 and of C5-6 at 0.5, not
-# Enclosure's 1 and 1.5. The score's targets keep their weight C27. C4 has KataGo's scoring loss as it is (0.25, the
-# view's 4,489 points).
-LOSS_COEFFICIENTS = {"ownership": 0.25, "seki": 0.5, "income": 0.5}
+GAME_LENGTH = 132.0      # the actions of a game: 120 of the site's moves, and one more for each edit (C++)
+# KataGo's spatial losses read the board's area as the area of play: nearly every one of Go's 361 points ends owned. The
+# view's 4,489 points hold the window, and about 360 of them hold a cell at the game's end (bpj3's rows: a mean of 363,
+# a median of 361). So the ownership (C0), the future positions (C2-3) and the scoring slot (C4) read 361 points, and
+# every coefficient is KataGo's or Enclosure's (LOSS_COEFFICIENTS' defaults). C1 and C5-6 average over their own cells.
+LOSS_AREA = 361.0
 
 # The encoding's facts that the augmentation reads (gamerules.h, gameencoding.h). A plane's index in a batch is
 # 1 + its index here: KataGo's on-board plane comes first.

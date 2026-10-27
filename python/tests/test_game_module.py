@@ -272,53 +272,104 @@ def test_a_module_that_sets_an_unknown_loss_coefficient_is_refused(monkeypatch):
     with pytest.raises(ValueError, match="sets the coefficient of no loss named owner"):
         games.get("badcoefficients")
     assert games.loss_coefficients(enclosure) == {"ownership": 1.5, "seki": 1.0, "income": 1.5}
-    assert games.loss_coefficients(games.get("blueprints")) == {"ownership": 0.25, "seki": 0.5, "income": 0.5}
 
 
-def blueprints_metrics(monkeypatch=None, plain=False):
-    """Metrics of a random Blueprints b6c96, with the game's coefficients and income mask, or without them (plain)."""
-    game = games.get("blueprints")
-    if plain:
-        monkeypatch.delattr(game, "LOSS_COEFFICIENTS")
-        monkeypatch.delattr(game, "income_mask")
+def test_every_game_has_katagos_and_enclosures_coefficients_and_blueprints_reads_361_points():
+    # KataGo's ownership 1.5, Enclosure's 1 for the seki slot and 1.5 for the income slot (katago/train/games/__init__.py).
+    for name in ("enclosure", "connect4", "blueprints"):
+        assert games.loss_coefficients(games.get(name)) == {"ownership": 1.5, "seki": 1.0, "income": 1.5}
+    assert games.loss_area(games.get("enclosure")) is None and games.loss_area(games.get("connect4")) is None
+    assert games.loss_area(games.get("blueprints")) == 361.0
+
+
+def metrics_of(game_name):
+    """Metrics of a random b6c96 of the game."""
     torch.manual_seed(2)
-    model = Model(modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "blueprints"), 67)
+    model = Model(modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], game_name),
+                  games.get(game_name).MAX_BOARD_LEN)
     return Metrics(1, model)
 
 
-def test_blueprints_ownership_loss_is_0_25_against_katagos_1_5(monkeypatch):
+def spatial_rows(size, board):
+    """Two rows on a network's board of size x size whose on-board points are the board x board corner, with random
+    predictions and targets in [-1, 1]: (pred, target, weight, mask, mask_sum_hw, global_weight)."""
     torch.manual_seed(3)
-    pred, target = torch.randn(2, 1, 67, 67), torch.randint(-1, 2, (2, 67, 67)).float()
-    mask, weight, global_weight = torch.ones(2, 67, 67), torch.ones(2), torch.tensor([1.0, 0.5])
-    args = (pred, target, weight, mask, mask.sum(dim=(1, 2)), global_weight)
-    blueprints = blueprints_metrics().loss_ownership_samplewise(*args)
-    plain = blueprints_metrics(monkeypatch, plain=True).loss_ownership_samplewise(*args)
-    assert torch.allclose(blueprints, plain * 0.25 / 1.5)
+    pred, target = torch.randn(2, 1, size, size), torch.randint(-1, 2, (2, size, size)).float()
+    mask = torch.zeros(2, size, size)
+    mask[:, :board[1], :board[0]] = 1.0
+    return pred, target, torch.ones(2), mask, mask.sum(dim=(1, 2)), torch.tensor([1.0, 0.5])
+
+
+# KataGo's area of each game's spatial losses: the on-board points of the row (Connect-4: 7 x 6 of its 7 x 7), or the
+# game's LOSS_AREA (Blueprints: 361 of its view's 67 x 67).
+LOSS_AREAS = [("connect4", (7, 6), 42.0), ("blueprints", (67, 67), 361.0)]
+
+
+@pytest.mark.parametrize("game_name,board,area", LOSS_AREAS)
+def test_the_ownership_loss_sums_the_points_over_the_games_loss_area(game_name, board, area):
+    # KataGo's ownership loss: 1.5 times the cross-entropy of each on-board point, summed over the row, over the area.
+    pred, target, weight, mask, mask_sum_hw, global_weight = spatial_rows(games.get(game_name).MAX_BOARD_LEN, board)
+    loss = metrics_of(game_name).loss_ownership_samplewise(pred, target, weight, mask, mask_sum_hw, global_weight)
+    bce = torch.nn.functional.binary_cross_entropy_with_logits(2.0 * pred[:, 0], (1.0 + target) / 2.0, reduction="none")
+    assert torch.allclose(loss, 1.5 * global_weight * (bce * mask).sum(dim=(1, 2)) / area)
+
+
+@pytest.mark.parametrize("game_name,board,area", LOSS_AREAS)
+def test_the_future_positions_loss_sums_the_points_over_the_square_root_of_the_loss_area(game_name, board, area):
+    # KataGo's: 0.25 times the squared errors of each on-board point, the far horizon's times 0.25, summed over the row,
+    # over the square root of the area ("let's compromise and scale by sqrt(boardarea)").
+    pred, target, weight, mask, mask_sum_hw, global_weight = spatial_rows(games.get(game_name).MAX_BOARD_LEN, board)
+    pred, target = torch.cat((pred, -pred), dim=1), torch.stack((target, -target), dim=1)
+    loss = metrics_of(game_name).loss_futurepos_samplewise(pred, target, weight, mask, mask_sum_hw, global_weight)
+    squares = torch.square(torch.tanh(pred) - target) * mask.unsqueeze(1)
+    expected = 0.25 * global_weight * (squares[:, 0] + 0.25 * squares[:, 1]).sum(dim=(1, 2)) / area ** 0.5
+    assert torch.allclose(loss, expected)
+
+
+@pytest.mark.parametrize("game_name,board,area", LOSS_AREAS)
+def test_the_scoring_loss_is_katagos_transform_of_the_squared_errors_over_the_loss_area(game_name, board, area):
+    # KataGo's: the squared errors of each on-board point, summed over the row, over the area: x. Then its "huberlike
+    # transform", 4 (sqrt(x / 2 + 1) - 1). The coefficient 0.25 is in the total (metrics_pytorch, loss_sum).
+    pred, target, weight, mask, mask_sum_hw, global_weight = spatial_rows(games.get(game_name).MAX_BOARD_LEN, board)
+    loss = metrics_of(game_name).loss_scoring_samplewise(pred, target, weight, mask, mask_sum_hw, global_weight)
+    x = (torch.square(pred[:, 0] - target) * mask).sum(dim=(1, 2)) / area
+    assert torch.allclose(loss, global_weight * 4.0 * (torch.sqrt(x / 2.0 + 1.0) - 1.0))
+
+
+@pytest.mark.parametrize("game_name,board,area", LOSS_AREAS)
+def test_the_income_loss_without_a_mask_sums_both_channels_over_twice_the_loss_area(game_name, board, area):
+    # Enclosure's: the cross-entropy of each on-board point of both channels, summed over the row, over twice the area,
+    # at the coefficient 1.5. Blueprints passes its income_mask (test_blueprints_income_loss_averages_each_channel...).
+    pred, target, weight, mask, mask_sum_hw, global_weight = spatial_rows(games.get(game_name).MAX_BOARD_LEN, board)
+    logits, probs = torch.cat((pred, -pred), dim=1), torch.stack(((1.0 + target) / 2.0, (1.0 - target) / 2.0), dim=1)
+    loss = metrics_of(game_name).loss_income_samplewise(logits, probs, weight, mask, mask_sum_hw, global_weight)
+    bce = torch.nn.functional.binary_cross_entropy_with_logits(logits, probs, reduction="none") * mask.unsqueeze(1)
+    assert torch.allclose(loss, 1.5 * global_weight * bce.sum(dim=(1, 2, 3)) / (2.0 * area))
 
 
 def blueprints_losses(monkeypatch, coefficients, flagged):
     """Blueprints' losses(), with the loss coefficients `coefficients` and C68 and C34 at `flagged`."""
-    monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", coefficients)
+    monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", coefficients, raising=False)
     return losses("blueprints", flagged)
 
 
-def test_blueprints_c1_loss_is_0_5_and_the_rows_of_versions_0_and_1_train_as_before(monkeypatch):
-    # The rows of the targets' versions 0 and 1 have C68 = C34 = 0, so their losses are those of the coefficients
-    # before C1 trained (seki at its default, 1). The rows of version 2 have both: C1's loss is half the default's,
-    # and C4's loss is KataGo's scoring loss.
-    now, before = dict(games.get("blueprints").LOSS_COEFFICIENTS), {"ownership": 0.25, "income": 0.5}
-    old_rows = blueprints_losses(monkeypatch, now, 0.0)
-    assert old_rows == blueprints_losses(monkeypatch, before, 0.0)
+def test_blueprints_rows_of_the_targets_versions_0_and_1_train_no_c1_or_c4(monkeypatch):
+    # The rows of the targets' versions 0 and 1 have C68 = C34 = 0, so no loss reads their C1 (the next mover in version
+    # 0) or their C4, whatever C1's coefficient. The rows of version 2 have both, and C1's loss follows its coefficient.
+    old_rows, new_rows = losses("blueprints", 0.0), losses("blueprints", 1.0)
     assert old_rows["skloss_sum"] == old_rows["sloss_sum"] == 0.0
-    new_rows, new_rows_before = blueprints_losses(monkeypatch, now, 1.0), blueprints_losses(monkeypatch, before, 1.0)
     assert new_rows["skloss_sum"] > 0 and new_rows["sloss_sum"] > 0
-    assert new_rows["skloss_sum"] == pytest.approx(0.5 * new_rows_before["skloss_sum"], rel=1e-6)
-    assert all(new_rows[k] == new_rows_before[k] for k in new_rows if k not in ("skloss_sum", "loss_sum")), new_rows
+    old_rows_half = blueprints_losses(monkeypatch, {"seki": 0.5}, 0.0)
+    new_rows_half = blueprints_losses(monkeypatch, {"seki": 0.5}, 1.0)
+    assert old_rows == old_rows_half
+    assert new_rows_half["skloss_sum"] == pytest.approx(0.5 * new_rows["skloss_sum"], rel=1e-6)
+    assert all(new_rows[k] == new_rows_half[k] for k in new_rows if k not in ("skloss_sum", "loss_sum")), new_rows
 
 
 def test_blueprints_income_loss_averages_each_channel_over_its_cells():
     # Row 0: cells that can go in both channels. Row 1: in C6 only, so its loss is C6's mean alone. Row 2: none.
-    metrics = blueprints_metrics()
+    # Enclosure's coefficient, 1.5.
+    metrics = metrics_of("blueprints")
     torch.manual_seed(4)
     pred, target = torch.randn(3, 2, 67, 67), (torch.rand(3, 2, 67, 67) < 0.3).float()
     income_mask = torch.zeros(3, 2, 67, 67)
@@ -329,7 +380,7 @@ def test_blueprints_income_loss_averages_each_channel_over_its_cells():
     loss = metrics.loss_income_samplewise(pred, target, weight, mask, mask.sum(dim=(1, 2)), global_weight, income_mask)
     bce = torch.nn.functional.binary_cross_entropy_with_logits(pred, target, reduction="none")
     mean = lambda r, c: bce[r, c][income_mask[r, c] > 0].mean()  # noqa: E731
-    expected = torch.stack((0.5 * (mean(0, 0) + mean(0, 1)) / 2, 0.5 * 2.0 * mean(1, 1), torch.tensor(0.0)))
+    expected = torch.stack((1.5 * (mean(0, 0) + mean(0, 1)) / 2, 1.5 * 2.0 * mean(1, 1), torch.tensor(0.0)))
     assert torch.allclose(loss, expected)
     # The mask of a batch's rows: the cells of the input planes, the opponent's (C5) and the mover's (C6), not walls.
     game = games.get("blueprints")

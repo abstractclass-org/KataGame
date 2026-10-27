@@ -41,6 +41,11 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         not depend on the draw. Default: the global targets as they are.
   LOSS_COEFFICIENTS     a dict: the coefficient of each of the trainer's losses that it names, of LOSS_COEFFICIENTS
                         below. Default: those of LOSS_COEFFICIENTS below.
+  LOSS_AREA             the area, in points, that KataGo's spatial losses read where KataGo reads the board's area
+                        (metrics_pytorch): the ownership loss and the scoring slot's loss sum over the row's points and
+                        divide by it, the future positions' loss by its square root, and the income loss without an
+                        income_mask by twice it. For a game whose board is much larger than the points where its play
+                        is. Default: the row's on-board points, as KataGo's.
   income_mask(binary_inputs)
                         the points where the loss of C5-6 reads the target (N, 2, y, x), from the batch's input planes
                         at its symmetry: the loss averages each channel over its points, then over the channels that
@@ -206,6 +211,11 @@ def loss_coefficients(game):
     """The game's coefficient of each loss of LOSS_COEFFICIENTS: its LOSS_COEFFICIENTS, and the default for each loss
     that it does not name."""
     return {**LOSS_COEFFICIENTS, **getattr(game, "LOSS_COEFFICIENTS", {})}
+
+
+def loss_area(game):
+    """The game's LOSS_AREA, or None for a game whose spatial losses read the row's on-board points."""
+    return getattr(game, "LOSS_AREA", None)
 
 
 def apply_symmetry_points(tensor, symmetry):

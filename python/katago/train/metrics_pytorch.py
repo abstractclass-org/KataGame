@@ -40,6 +40,9 @@ class Metrics:
         # income loss reads its target (katago/train/games: LOSS_COEFFICIENTS, income_mask).
         self.loss_coefficients = games.loss_coefficients(game)
         self.income_mask = getattr(game, "income_mask", None)
+        # KataGame fork: the area that the spatial losses read where KataGo reads the board's area (katago/train/games:
+        # LOSS_AREA), None for the row's on-board points.
+        self.loss_area = games.loss_area(game)
         self.value_len = 3
         self.num_td_values = 3
         self.num_futurepos_values = 2
@@ -155,10 +158,17 @@ class Metrics:
         return 0.0004 / self.score_scale ** 2 * global_weight * weight * loss
 
 
+    def spatial_area(self, mask_sum_hw):
+        # KataGame fork: the area of the spatial losses, the row's on-board points (KataGo's) or the game's LOSS_AREA.
+        if self.loss_area is None:
+            return mask_sum_hw
+        return torch.full_like(mask_sum_hw, self.loss_area)
+
     def loss_ownership_samplewise(self, pred_pretanh, target, weight, mask, mask_sum_hw, global_weight):
         # This uses a formulation where each batch element cares about its average loss.
         # In particular this means that ownership loss predictions on small boards "count more" per spot.
         # Not unlike the way that policy and value loss are also equal-weighted by batch element.
+        # KataGame fork: over the game's loss area (spatial_area).
         n = pred_pretanh.shape[0]
         assert pred_pretanh.shape == (n, 1, self.pos_len, self.pos_len)
         assert target.shape == (n, self.pos_len, self.pos_len)
@@ -169,7 +179,7 @@ class Metrics:
         loss = torch.sum(
             torch.nn.functional.binary_cross_entropy_with_logits(pred_logits, target_probs, reduction="none") * mask.view(-1,self.pos_area),
             dim=1,
-        ) / mask_sum_hw
+        ) / self.spatial_area(mask_sum_hw)
         return self.loss_coefficients["ownership"] * global_weight * weight * loss  # KataGame fork: KataGo's 1.5
 
 
@@ -180,7 +190,8 @@ class Metrics:
         assert mask.shape == (n, self.pos_len, self.pos_len)
         assert mask_sum_hw.shape == (n,)
 
-        loss = torch.sum(torch.square(pred_scoring.squeeze(1) - target) * mask, dim=(1,2)) / mask_sum_hw
+        # KataGame fork: over the game's loss area (spatial_area).
+        loss = torch.sum(torch.square(pred_scoring.squeeze(1) - target) * mask, dim=(1,2)) / self.spatial_area(mask_sum_hw)
         # Simple huberlike transform to reduce crazy values
         loss = 4.0 * (torch.sqrt(loss * 0.5 + 1.0) - 1.0)
         return global_weight * weight * loss
@@ -195,6 +206,7 @@ class Metrics:
         # causing some scaling with board size. So, I dunno, let's compromise and scale by sqrt(boardarea).
         # Also, the further out targets should be weighted a little less due to them being higher entropy
         # due to simply being farther in the future, so multiply by [1,0.25].
+        # KataGame fork: the square root of the game's loss area (spatial_area).
         n = pred_pretanh.shape[0]
         assert pred_pretanh.shape == (n, self.num_futurepos_values, self.pos_len, self.pos_len)
         assert target.shape == (n, self.num_futurepos_values, self.pos_len, self.pos_len)
@@ -202,7 +214,7 @@ class Metrics:
         assert mask_sum_hw.shape == (n,)
         loss = torch.square(torch.tanh(pred_pretanh) - target) * mask.unsqueeze(1)
         loss = loss * constant_like([1.0,0.25], loss).view(1,2,1,1)
-        loss = torch.sum(loss, dim=(1, 2, 3)) / torch.sqrt(mask_sum_hw)
+        loss = torch.sum(loss, dim=(1, 2, 3)) / torch.sqrt(self.spatial_area(mask_sum_hw))
         return 0.25 * global_weight * weight * loss
 
 
@@ -241,7 +253,8 @@ class Metrics:
         # mover's, then the opponent's), as binary cross-entropy, averaged over the board's points and both planes,
         # weighted as KataGo's ownership (1.5; iviazovetskyi's weight too).
         # KataGame fork: with the game's income_mask (n, 2, y, x), averaged over each channel's points, then over the
-        # channels that have points (Blueprints' cells that can go), and with the game's coefficient.
+        # channels that have points (Blueprints' cells that can go), and with the game's coefficient. Without it, over the
+        # game's loss area (spatial_area).
         n = pred_logits.shape[0]
         assert pred_logits.shape == (n, 2, self.pos_len, self.pos_len)
         assert target.shape == (n, 2, self.pos_len, self.pos_len)
@@ -249,7 +262,7 @@ class Metrics:
         assert mask_sum_hw.shape == (n,)
         loss = torch.nn.functional.binary_cross_entropy_with_logits(pred_logits, target, reduction="none") * mask.unsqueeze(1)
         if income_mask is None:
-            loss = torch.sum(loss, dim=(1, 2, 3)) / (2.0 * mask_sum_hw)
+            loss = torch.sum(loss, dim=(1, 2, 3)) / (2.0 * self.spatial_area(mask_sum_hw))
         else:
             assert income_mask.shape == (n, 2, self.pos_len, self.pos_len)
             points = torch.sum(income_mask, dim=(2, 3))
