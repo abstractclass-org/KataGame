@@ -974,10 +974,15 @@ struct GameEncoding {
     return slots;
   }
 
-  // A capture late in a game scores tens of stars times tens of stars: margins of hundreds of points, against Go's
-  // tens. So KataGo's constants in points scale by 12, as Enclosure's, and the search's unit is 200 points.
-  static constexpr double SCORE_SCALE = 12.0;
-  static constexpr double SCORE_UNIT = 200.0;
+  // The game's score spread against Go's (GAMES.md, "The score scale"). KataGo's score multiplier of 20 is "so that on
+  // typical data the neural net would only need to output values around unit scale" (KataGo's paper, A.5). People's
+  // games are the typical data: the 737 games of the site's rules version 3 that end (of 1,826 in strategyjam.org's
+  // archive) have a median |margin| of 409 points, 30 to 2,060 from the 10th to the 90th percentile. So s = 409 / 20,
+  // about 20. Self-play's margins are not the reference: they change as the network learns (bpj3's median, 124).
+  static constexpr double SCORE_SCALE = 20.0;
+  // The search's score utility unit: KataGo's square root of Go's board area, 19 points, in this game's points. The
+  // square root of the game's largest score (Enclosure's unit) does not apply: Blueprints' scores have no bound.
+  static constexpr double SCORE_UNIT = 19.0 * SCORE_SCALE;
   // A game is 120 of the site's moves (moves_played counts them; a pick and its drop are one).
   static constexpr double GAME_LENGTH = PLIES;
   // The view is 67 x 67 so that it holds the window, not because a decision reaches that far: KataGo's look-ahead
@@ -985,9 +990,9 @@ struct GameEncoding {
   // it draws a komi in the points that the config gives (GAMES.md, the encoding part's optional members).
   static constexpr double LOOKAHEAD_AREA = 19 * 19;
   static constexpr double KOMI_AREA = 19 * 19;
-  // The even-komi search's bracket: offsets of 12, 24, 48 and so on around its guess, up to 3,000 points, the reach of
+  // The even-komi search's bracket: offsets of 20, 40, 80 and so on around its guess, up to 3,000 points, the reach of
   // the widest komi of a new game in self-play (3 standard deviations of 1,000 points). KataGo's offsets of 1 to 32
-  // points are less than 3 of Go's points at this SCORE_SCALE, and Blueprints' margins are hundreds of points. Beyond
+  // points are less than 2 of Go's points at this SCORE_SCALE, and Blueprints' margins are hundreds of points. Beyond
   // 3,000 points from the guess, the search finds no even komi (GameInterface::komiBracketEndIsEven).
   static constexpr double KOMI_BRACKET_STEP = SCORE_SCALE;
   static constexpr double KOMI_BRACKET_LIMIT = 3000.0;

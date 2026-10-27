@@ -75,7 +75,7 @@ static_assert(GameInterface::komiBracketStep<OwnBracket>() == 6.0 &&
 //The other games give none of these, so they keep KataGo's bracket and rule, and KataGo's lead step times SCORE_SCALE.
 static bool pinnedSearch(double& step, double& limit, bool& endIsEven, double& leadStep) {
   if(strcmp(GameRules::NAME, "blueprints") == 0) {
-    step = 12.0;
+    step = 20.0;
     limit = 3000.0;
     endIsEven = false;
     leadStep = 0.0;

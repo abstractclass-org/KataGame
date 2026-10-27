@@ -58,6 +58,20 @@ def test_connect4_gives_its_inputs_policy_and_scales():
     assert game.TARGETS == games.TARGET_OWNERSHIP
 
 
+def test_blueprints_score_scale_is_20_and_its_score_constants_follow_it():
+    # s = 20: the median |margin| of people's games, 409 points, against KataGo's typical score of 20 points (the
+    # output multiplier). KataGo's multipliers then scale by s (squared for the squared error), and the score
+    # distribution's bins are s points wide.
+    game = games.get("blueprints")
+    assert (game.MAX_BOARD_LEN, game.POLICY_CHANNELS, game.SCORE_SCALE) == (67, 6, 20.0)
+    model = Model(modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "blueprints"), game.MAX_BOARD_LEN)
+    multipliers = (model.td_score_multiplier, model.scoremean_multiplier, model.scorestdev_multiplier,
+                   model.lead_multiplier, model.shortterm_score_error_multiplier)
+    assert multipliers == (400.0, 400.0, 400.0, 400.0, 150.0 * 400.0)
+    centres = model.value_head.score_belief_offset_vector
+    assert float(centres[1] - centres[0]) == 20.0
+
+
 def test_connect4s_mirror_moves_each_point_to_its_column_mirror():
     # A row of the standard board, 7 x 6 on the network's 7 x 7: the policy at (x, y) moves to (6 - x, y), pass stays.
     game = games.get("connect4")
