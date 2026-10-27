@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""KataGame fork: give a training checkpoint the inputs version 10 or 11, and scale its outputs in points.
+"""KataGame fork: give a training checkpoint the inputs version 10, 11 or 12, and scale its outputs in points.
 
     python add_extended_inputs.py CHECKPOINT OUT -inputs-version VERSION [-old-score-scale S]
 
@@ -18,7 +18,14 @@ the model, the SWA model and the optimizer's state, so that the network computes
 moves them, whatever the new inputs hold. The optimizer keeps every state by position (no parameter is added): the new
 channels and columns start at 0 in each state tensor of the widened weights (SGD's momentum, Adam's moments). A
 checkpoint without an optimizer or an SWA model (a network alone) gets the rest. The checkpoint's inputs must be the
-version before VERSION: 9 for 10, 10 for 11.
+version before VERSION: 9 for 10, 10 for 11, 11 for 12.
+
+-inputs-version 12 gives a checkpoint of the inputs version 11 the version 12 (2026-10-27; C++ NNInputs V12, model
+version 21): version 11's inputs with the game's planes of closed areas after its planes (katago/train/games:
+NUM_AREA_SPATIAL_INPUTS), as zero input channels of conv_spatial in the same way. Version 12 adds no global input.
+A run of version 11 of Blueprints takes the areas closed by each player's walls this way, with no new run: the
+trainer reads the rows of version 11 in its window with those planes at 0
+(data_processing_pytorch.fit_binary_input_nchw).
 
 -old-score-scale S names the game's SCORE_SCALE that trained the checkpoint, and this code's SCORE_SCALE s replaces it.
 It multiplies by F = S / s the outputs that become points through a plain factor, KataGo's score multiplier of 20
@@ -49,7 +56,7 @@ from katago.train import modelconfigs
 from katago.train.model_pytorch import Model
 
 # Each inputs version that this gives, and the version that it needs.
-PREVIOUS = {10: 9, 11: 10}
+PREVIOUS = {10: 9, 11: 10, 12: 11}
 # The outputs that become points through a plain factor (Model.postprocess_output): rows of each value head's last
 # linear layers, the score mean and the lead, then the 3 TD scores.
 SCORE_ROWS = {"linear_miscvaluehead": [0, 2], "linear_moremiscvaluehead": [5, 6, 7]}
@@ -100,8 +107,8 @@ def optimizer_states(ckpt, names):
 
 
 def convert(ckpt, inputs_version):
-    """ckpt (a loaded checkpoint) with the inputs version inputs_version (10 or 11), in place. Returns what it widened,
-    one line each."""
+    """ckpt (a loaded checkpoint) with the inputs version inputs_version (10, 11 or 12), in place. Returns what it
+    widened, one line each."""
     if inputs_version not in PREVIOUS:
         raise ValueError(f"the inputs version {inputs_version}: this gives {' or '.join(map(str, PREVIOUS))}")
     config = ckpt["config"]
@@ -173,12 +180,14 @@ def scale_scores(ckpt, factor):
     return touched
 
 
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("checkpoint", help="the checkpoint to read")
     parser.add_argument("out", help="the new checkpoint, which must not exist")
     parser.add_argument("-inputs-version", type=int, choices=sorted(PREVIOUS), required=True,
-                        help="the inputs version to give: 10 to a checkpoint of 9, 11 to a checkpoint of 10")
+                        help="the inputs version to give: 10 to a checkpoint of 9, 11 to a checkpoint of 10, "
+                             "12 to a checkpoint of 11")
     parser.add_argument("-old-score-scale", type=float,
                         help="the game's SCORE_SCALE that trained the checkpoint: give its outputs in points this "
                              "code's SCORE_SCALE")

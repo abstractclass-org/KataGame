@@ -29,6 +29,7 @@
 //19 = version 17's format with the V10 inputs: V9 and the game's extended inputs (2026-10-26).
 //20 = version 17's format with the V11 inputs: V10 with the history of the game's turns and its turn inputs
 //(2026-10-27).
+//21 = version 17's format with the V12 inputs: V11 and the game's planes of closed areas (2026-10-27).
 
 static void fail(int modelVersion) {
   throw StringError("NNModelVersion: Model version not currently implemented or supported: " + Global::intToString(modelVersion));
@@ -36,8 +37,8 @@ static void fail(int modelVersion) {
 
 static_assert(NNModelVersion::oldestModelVersionImplemented == 8, "");
 static_assert(NNModelVersion::oldestInputsVersionImplemented == 8, "");
-static_assert(NNModelVersion::latestModelVersionImplemented == 20, "");
-static_assert(NNModelVersion::latestInputsVersionImplemented == 11, "");
+static_assert(NNModelVersion::latestModelVersionImplemented == 21, "");
+static_assert(NNModelVersion::latestInputsVersionImplemented == 12, "");
 
 int NNModelVersion::getInputsVersion(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 17)
@@ -48,6 +49,8 @@ int NNModelVersion::getInputsVersion(int modelVersion) {
     return 10;
   if(modelVersion == 20)
     return 11;
+  if(modelVersion == 21)
+    return 12;
 
   fail(modelVersion);
   return -1;
@@ -62,6 +65,8 @@ int NNModelVersion::getNumSpatialFeatures(int modelVersion) {
     return NNInputs::NUM_FEATURES_SPATIAL_V10;
   if(modelVersion == 20)
     return NNInputs::NUM_FEATURES_SPATIAL_V11;
+  if(modelVersion == 21)
+    return NNInputs::NUM_FEATURES_SPATIAL_V12;
 
   fail(modelVersion);
   return -1;
@@ -76,6 +81,8 @@ int NNModelVersion::getNumGlobalFeatures(int modelVersion) {
     return NNInputs::NUM_FEATURES_GLOBAL_V10;
   if(modelVersion == 20)
     return NNInputs::NUM_FEATURES_GLOBAL_V11;
+  if(modelVersion == 21)
+    return NNInputs::NUM_FEATURES_GLOBAL_V12;
 
   fail(modelVersion);
   return -1;

@@ -82,7 +82,7 @@ runnnsymmetriestest : Run neural net on a hardcoded rectangle board and dump sym
 runownershiptests : Run neural net search on some hardcoded positions and print avg ownership
 
 runoutputtests : Run a bunch of things and dump details to stdout
-runenclosurerowtests : Enclosure fork: OUT [SEED], training rows of one self-play game (no network needed)
+runenclosurerowtests : Enclosure fork: OUT [SEED [NPZ_DIR [INPUTS_VERSION]]], training rows of one self-play game (no network needed)
 runenclosurenntests : Enclosure fork: MODEL INPUTS OUT, a network's outputs for comparison with PyTorch
 runsearchtests : Run a bunch of things using a neural net and dump details to stdout
 runsearchtestsv3 : Run a bunch more things using a neural net and dump details to stdout

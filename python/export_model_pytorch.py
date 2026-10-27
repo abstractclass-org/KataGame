@@ -336,8 +336,9 @@ def main(args):
     # Enclosure fork (2026-10-13): a model with the V9 inputs (the playout doubling advantage: 7 global inputs) is
     # version 17's format as version 18, which C++ maps to NNInputs V9. A binary from before refuses it. KataGame fork
     # (2026-10-26): with the V10 inputs (V9's and the game's extended inputs), version 19, NNInputs V10. With the V11
-    # inputs (V10's with the game's turns, 2026-10-27), version 20, NNInputs V11.
-    inputs_model_version = {9: 18, 10: 19, 11: 20}.get(modelconfigs.get_inputs_version(model_config))
+    # inputs (V10's with the game's turns, 2026-10-27), version 20, NNInputs V11. With the V12 inputs (V11's with the
+    # game's planes of closed areas, 2026-10-27), version 21, NNInputs V12.
+    inputs_model_version = {9: 18, 10: 19, 11: 20, 12: 21}.get(modelconfigs.get_inputs_version(model_config))
     if inputs_model_version is not None:
         assert version == 17, version
         version = inputs_model_version

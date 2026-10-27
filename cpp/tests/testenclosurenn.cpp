@@ -93,13 +93,14 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
 
 // Enclosure fork: training rows from a self-play game (plan step 6).
 //
-//   katago runenclosurerowtests OUT_FILE [SEED [NPZ_DIR]]
+//   katago runenclosurerowtests OUT_FILE [SEED [NPZ_DIR [INPUTS_VERSION]]]
 //
-// With NPZ_DIR, the same rows are also written as KataGo's .npz training files there (needs libzip).
+// With NPZ_DIR, the same rows are also written as KataGo's .npz training files there (needs libzip). The rows hold the
+// inputs of INPUTS_VERSION, by default those of self-play's default (NNModelVersion::defaultModelVersion).
 // Plays one self-play game with the no-network evaluator (random policy and values, exact results at the end),
 // writes every row through TrainingDataWriter's text output, and appends the game's moves ("moves <n> <action>
 // ..."). The Enclosure repository's games/enclosure/tools/check_katago_rows.py replays the game in its engine and checks every row.
-void Tests::runEnclosureRowTests(const string& outFile, const string& seed, const string& npzDir) {
+void Tests::runEnclosureRowTests(const string& outFile, const string& seed, const string& npzDir, int inputsVersion) {
   NeuralNet::globalInitialize();
   Logger logger(nullptr, false, false, false);
   logger.addOStream(cerr);
@@ -107,7 +108,6 @@ void Tests::runEnclosureRowTests(const string& outFile, const string& seed, cons
   NNEvaluator* nnEval = startNNEval("/dev/null", logger, seed, nnLen, nnLen, 0, true, false, false, true, false);
 
   ofstream out(outFile);
-  const int inputsVersion = NNModelVersion::getInputsVersion(NNModelVersion::defaultModelVersion);
   const int maxRows = 256;
   const double firstFileMinRandProp = 1.0;
   const int debugOnlyWriteEvery = 1;

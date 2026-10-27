@@ -67,9 +67,10 @@ def with_game(config: ModelConfig, game_name: Union[str,None]) -> ModelConfig:
 # game's extended inputs to V9's: its extended planes after its planes, and its extended global inputs after V9's (C++
 # NNInputs V10, exported as model version 19; games.extended_spatial_inputs). 11 (2026-10-27) adds the game's turn
 # inputs after V10's global inputs, and its history planes show its last turns in place of its last actions (C++
-# NNInputs V11, exported as model version 20; games.turn_global_inputs).
+# NNInputs V11, exported as model version 20; games.turn_global_inputs). 12 (2026-10-27) adds the game's planes of
+# closed areas after V11's planes (C++ NNInputs V12, exported as model version 21; games.area_spatial_inputs).
 PLAYOUT_GLOBAL_INPUTS = 2
-INPUTS_VERSIONS = (8, 9, 10, 11)
+INPUTS_VERSIONS = (8, 9, 10, 11, 12)
 
 def get_inputs_version(config: ModelConfig):
     return config.get("inputs_version", 8)
@@ -80,7 +81,8 @@ def get_num_bin_input_features(config: ModelConfig):
         assert get_inputs_version(config) in INPUTS_VERSIONS
         game = get_game(config)
         extended = games.extended_spatial_inputs(game) if get_inputs_version(config) >= 10 else 0
-        return 1 + game.NUM_SPATIAL_INPUTS + extended
+        areas = games.area_spatial_inputs(game) if get_inputs_version(config) >= 12 else 0
+        return 1 + game.NUM_SPATIAL_INPUTS + extended + areas
     else:
         assert(False)
 

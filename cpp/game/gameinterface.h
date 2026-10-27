@@ -241,6 +241,14 @@
  *                           history: the turn in progress and the 3 turns before it, an edit's pick and drop in one
  *                           move, and its turn inputs, the edit flags of each turn's moves. Default: 0, and a game
  *                           that does not read options.turnHistory has V11 equal to its V10 (turnGlobalInputs).
+ *   NUM_AREA_SPATIAL_INPUTS int: the game's planes of closed areas, which the inputs version 12 adds to version 11's
+ *                           (NNInputs V12, model version 21): areas that the rules close to a player for the rest of
+ *                           the game, as KataGo gives Go's pass-alive areas as input planes. With options.areas,
+ *                           spatial_inputs also sets the planes after its extended ones, NUM_SPATIAL_INPUTS +
+ *                           NUM_EXTENDED_SPATIAL_INPUTS to that + NUM_AREA_SPATIAL_INPUTS - 1, and the front puts them
+ *                           after V11's planes. They move as pixels under the symmetries. Blueprints: the hexes of the
+ *                           areas closed by the mover's walls and by the opponent's walls. Default: 0, and V12 is V11
+ *                           (areaSpatialInputs).
  */
 
 #include <algorithm>
@@ -264,6 +272,7 @@ struct InputOptions {
   //True: the history of the game's last turns, not of its last actions, and the game's turn inputs
   //(NUM_TURN_GLOBAL_INPUTS): the inputs version 11.
   bool turnHistory = false;
+  bool areas = false;  //True: the game's planes of closed areas too (NUM_AREA_SPATIAL_INPUTS), the inputs version 12.
 };
 
 //The optional training targets: the slots of KataGo's spatial targets (its training rows' valueTargetsNCHW) and the
@@ -767,6 +776,7 @@ namespace encoding {
                        std::integral_constant<int, G::NUM_EXTENDED_SPATIAL_INPUTS>::value)
   GAMEINTERFACE_DETECT(HasExtendedGlobalInputs, int, std::integral_constant<int, G::NUM_EXTENDED_GLOBAL_INPUTS>::value)
   GAMEINTERFACE_DETECT(HasTurnGlobalInputs, int, std::integral_constant<int, G::NUM_TURN_GLOBAL_INPUTS>::value)
+  GAMEINTERFACE_DETECT(HasAreaSpatialInputs, int, std::integral_constant<int, G::NUM_AREA_SPATIAL_INPUTS>::value)
 }
 
 //The game's extended inputs (NUM_EXTENDED_SPATIAL_INPUTS, NUM_EXTENDED_GLOBAL_INPUTS): the game's, else none.
@@ -786,6 +796,13 @@ template<class E> constexpr int extendedGlobalInputs() {
 template<class E> constexpr int turnGlobalInputs() {
   if constexpr(encoding::HasTurnGlobalInputs<E>::value)
     return E::NUM_TURN_GLOBAL_INPUTS;
+  else
+    return 0;
+}
+//The game's planes of closed areas (NUM_AREA_SPATIAL_INPUTS): the game's, else none.
+template<class E> constexpr int areaSpatialInputs() {
+  if constexpr(encoding::HasAreaSpatialInputs<E>::value)
+    return E::NUM_AREA_SPATIAL_INPUTS;
   else
     return 0;
 }
@@ -880,6 +897,7 @@ template<class E> constexpr bool checkEncoding() {
   static_assert(extendedSpatialInputs<E>() >= 0 && extendedGlobalInputs<E>() >= 0,
                 "game interface, encoding part: the extended inputs are 0 or more");
   static_assert(turnGlobalInputs<E>() >= 0, "game interface, encoding part: the turn inputs are 0 or more");
+  static_assert(areaSpatialInputs<E>() >= 0, "game interface, encoding part: the planes of closed areas are 0 or more");
   return true;
 }
 

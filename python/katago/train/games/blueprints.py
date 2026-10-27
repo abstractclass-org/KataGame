@@ -31,7 +31,8 @@ placements in its own view take, and the minimap with each player's view on it, 
 the rules board map to bins). The legal hand actions move as the hand's points of the mover's blueprints. The window
 boxes are global inputs: each box's two corners move as offsets by the symmetry's linear part, and the turn by 180
 degrees and the second reflection (3 and 7) swap the corners (apply_symmetry_extended_global_inputs). The rows of the
-older versions have none of these.
+older versions have none of these. The planes of closed areas of the inputs version 12 (the areas closed by each
+player's walls) are points of the board, so they move as pixels too.
 
 The value targets are points of the row's view, so they move as pixels: the final board (C0), the cells captured
 before the game's end (C1), the stars 4 and 16 moves later (C2-3), where the points are earned (C4), and the cells
@@ -101,6 +102,10 @@ BOX_FIELDS = 5                     # a window box: 1 when there, then its corner
 # then show the last turns in place of the last actions: turn h's in the planes of action h.
 NUM_TURN_GLOBAL_INPUTS = 8
 NUM_HISTORY_TURNS = 4
+# The planes of closed areas (the inputs version 12), after the extended planes: the hexes of the areas closed by the
+# mover's walls and by the opponent's walls. They move as pixels.
+NUM_AREA_SPATIAL_INPUTS = 2
+MY_CLOSED, THEIR_CLOSED = 101, 102
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
 
 
@@ -176,7 +181,8 @@ def _remap_planes(out, inputs, first, count, image, symmetry, shifts):
 
 
 def apply_symmetry_inputs(binary_inputs, symmetry):
-    """The input planes (N, C, y, x), with the extended planes in the rows of the inputs version 10."""
+    """The input planes (N, C, y, x), with the extended planes in the rows of the inputs versions 10 to 12, and the
+    planes of closed areas, pixels, in the rows of version 12."""
     if symmetry == 0:
         return binary_inputs
     out = apply_symmetry_points(binary_inputs, symmetry).clone()

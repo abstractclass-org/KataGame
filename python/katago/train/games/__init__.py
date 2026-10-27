@@ -68,6 +68,13 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         clears the turn's planes and turn inputs together
                         (data_processing_pytorch.apply_history_dropout). A game with turn inputs gives
                         NUM_HISTORY_TURNS, which divides both counts. Default: 0 and none (turn_global_inputs).
+  NUM_AREA_SPATIAL_INPUTS
+                        the game's planes of closed areas (C++ GameInterface), which the inputs version 12 adds after
+                        version 11's planes. They are points of the board, so apply_symmetry_inputs moves them as
+                        pixels. A model of version 12 reads the rows of version 11 with these planes at 0, and a model
+                        of version 11 reads the rows of version 12 without them
+                        (data_processing_pytorch.fit_binary_input_nchw), so that a run can switch versions with a
+                        converted checkpoint (add_extended_inputs.py). Default: 0 (area_spatial_inputs).
 """
 
 import importlib
@@ -120,11 +127,17 @@ def turn_global_inputs(game):
     return getattr(game, "NUM_TURN_GLOBAL_INPUTS", 0)
 
 
+def area_spatial_inputs(game):
+    """The game's planes of closed areas, which the inputs version 12 adds after version 11's (0 for a game without
+    them)."""
+    return getattr(game, "NUM_AREA_SPATIAL_INPUTS", 0)
+
+
 def row_bytes(game, inputs_version=9):
     """The bytes of one training row of the game, uncompressed: the row writer's arrays (ROW_ above) on the game's
     largest board, without the metadata inputs, which the shuffle leaves out. Self-play writes rows of the inputs
-    version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads, and of version 10 or 11
-    with its config's inputsVersion."""
+    version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads, and of version 10, 11
+    or 12 with its config's inputsVersion."""
     points = game.MAX_BOARD_LEN ** 2
     moves = points * game.POLICY_CHANNELS + 1  # the policy: every point's channels, then pass
     global_inputs = game.NUM_GLOBAL_INPUTS + (ROW_PLAYOUT_INPUTS if inputs_version >= 9 else 0)
@@ -134,6 +147,8 @@ def row_bytes(game, inputs_version=9):
         planes += extended_spatial_inputs(game)
     if inputs_version >= 11:
         global_inputs += turn_global_inputs(game)
+    if inputs_version >= 12:
+        planes += area_spatial_inputs(game)
     return (
         # binaryInputNCHWPacked: KataGo's on-board plane, then the game's planes, a bit a point
         planes * ((points + 7) // 8)

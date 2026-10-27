@@ -40,6 +40,23 @@ def fit_global_input_nc(globalInputNC: np.ndarray, num_global_features: int) -> 
     padded[:, :num_channels] = globalInputNC
     return padded
 
+# KataGame fork (2026-10-27): the rows of the inputs version 12 are version 11's with the game's planes of closed areas
+# after them (games.area_spatial_inputs). A model of version 12 reads a row of version 11 with those planes at 0, and a
+# model of version 11 reads the first planes of a row of version 12, as fit_global_input_nc fits the global inputs. So
+# a run switches versions with a converted checkpoint (add_extended_inputs.py) while its window holds rows of both. The
+# converted weights of those planes start at 0, and a plane at 0 gives its weights no gradient, so the rows of version
+# 11 train them not at all. Any other count of planes stays, and the reader refuses it.
+def fit_binary_input_nchw(binaryInputNCHW: np.ndarray, num_bin_features: int, game) -> np.ndarray:
+    num_channels = binaryInputNCHW.shape[1]
+    areas = games.area_spatial_inputs(game)
+    if areas == 0 or abs(num_channels - num_bin_features) != areas:
+        return binaryInputNCHW
+    if num_channels > num_bin_features:
+        return binaryInputNCHW[:, :num_bin_features]
+    padded = np.zeros((binaryInputNCHW.shape[0], num_bin_features, *binaryInputNCHW.shape[2:]), dtype=binaryInputNCHW.dtype)
+    padded[:, :num_channels] = binaryInputNCHW
+    return padded
+
 # Enclosure fork (owner, 2026-10-03): valueTargetsNCHW gained C5-6 (the territory income), and C7 (2026-10-14: the
 # next mover's nodes, for the symmetries of policy channel 1, not a target); rows written before have 5 or 7
 # channels and are zero-padded (their C69 and C75 flags are 0, so the padding is never read).
@@ -103,7 +120,7 @@ def read_npz_training_data(
                 arr = arr[:, rank]
                 return arr.reshape(num_whole_steps * batch_size, *rest)
 
-            binaryInputNCHWPacked = select_rank_rows(npz["binaryInputNCHWPacked"])
+            binaryInputNCHWPacked = fit_binary_input_nchw(select_rank_rows(npz["binaryInputNCHWPacked"]), num_bin_features, game)
             globalInputNC = fit_global_input_nc(select_rank_rows(npz["globalInputNC"]), num_global_features)
             policyTargetsNCMove = select_rank_rows(npz["policyTargetsNCMove"]).astype(np.float32)
             globalTargetsNC = pad_global_targets_nc(select_rank_rows(npz["globalTargetsNC"]))

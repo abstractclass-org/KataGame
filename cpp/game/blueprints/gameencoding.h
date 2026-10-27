@@ -22,6 +22,9 @@
 // - The turn inputs, which the inputs version 11 adds after those (GameInterface): for each move of each of the last 4
 //   turns, 1 when it was an edit. A move of a turn that stamped nothing and was not an edit was a pass, or is still to
 //   come.
+// - The planes of closed areas, which the inputs version 12 adds after the extended planes (GameInterface): the points
+//   of the view in the areas closed by the mover's walls and by the opponent's walls, where the other player can never
+//   place (for_each_closed).
 // - The komi K is points added to the second player's final margin (KataGo's White), for the whole game. The rules'
 //   scores stay the earned ones, and the front's history adds K to the result (BoardHistory::endAndScoreGameNow). The
 //   inputs read K as a starting score of the side that it favours, the effective scores S0 + max(-K, 0) and S1 +
@@ -48,6 +51,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <initializer_list>
 #include <utility>
 #include <vector>
@@ -175,6 +179,10 @@ struct GameEncoding {
   // global inputs: + TURN_MOVES * h + m, 1 when move m of turn h (Position::turns) was an edit.
   static constexpr int TURN_INPUT = BOX_INPUT + NUM_EXTENDED_GLOBAL_INPUTS;
   static constexpr int NUM_TURN_GLOBAL_INPUTS = HISTORY * TURN_MOVES;  // 8
+  // The planes of closed areas (GameInterface: the inputs version 12), after the extended planes: the hexes of the
+  // area closed by the mover's walls, then by the opponent's walls (for_each_closed).
+  static constexpr int MY_CLOSED = THEIR_WINDOW + 1, THEIR_CLOSED = MY_CLOSED + 1;  // 101, 102
+  static constexpr int NUM_AREA_SPATIAL_INPUTS = 2;
   // The minimap's bins: 5 x 5 points, 67 x 67 of them around the minimap's middle (|u|, |v| <= MINIMAP_REACH). The
   // rules board's 255 x 255 points are 51 x 51 of them, in the middle.
   static constexpr int MINIMAP_BIN = 5;
@@ -187,17 +195,19 @@ struct GameEncoding {
   static void spatial_inputs(const Position& p, const GameInterface::InputOptions& options, Set&& set) {
     const Position& image = options.symmetry == 0 ? p : near_image(p, options.symmetry);
     write_inputs(image, options, set);
+    // The threats, the minimap and the closed areas read cells far from the view, which the image near the view does
+    // not hold. They move as pixels (the trainer maps them so), so they come from p, at the image's points.
+    auto pixel = [&](int x, int y, int plane) {
+      GameInterface::symPoint(x, y, options.symmetry, VIEW, VIEW);
+      set(x, y, plane);
+    };
     if(options.extended) {
-      // The threats and the minimap read cells far from the view, which the image near the view does not hold. They
-      // move as pixels (the trainer maps them so), so they come from p, at the image's points.
-      auto pixel = [&](int x, int y, int plane) {
-        GameInterface::symPoint(x, y, options.symmetry, VIEW, VIEW);
-        set(x, y, plane);
-      };
       write_threats(p, pixel);
       write_legal_hand(image, set);
       write_minimap(p, pixel);
     }
+    if(options.areas)
+      write_closed_areas(p, pixel);
   }
 
   // The inputs but the extended ones. The history planes show p's last actions, or with options.turnHistory its last
@@ -489,6 +499,121 @@ struct GameEncoding {
       for(int plane = MINIMAP; plane <= THEIR_WINDOW; plane++)
         if(marks[i] >> (plane - MINIMAP) & 1)
           set(i % VIEW, i / VIEW, plane);
+  }
+
+  // The area closed by a player's walls, on the rules board: f(x, y) for each of its points. Its components are the
+  // finite connected components (the hex grid's 6 neighbours, DIRS) of the points that hold no wall of the player,
+  // each with no cell of the other player (whose walls count as its cells). The other player can never place there: a
+  // placement fills empty points of one component and touches the placer's cells, and no capture removes a wall. So no
+  // cell inside can be captured either. The area holds the components' empty points and the player's cells that are
+  // not walls. A component that reaches the rules board's border is open: the site's grid has no edge.
+  //
+  // A component that meets the edge of the box of the player's walls reaches beyond it, where no point holds a wall,
+  // so it is open. In the box, each row's runs of points that hold no wall of the player join the runs of the row
+  // before that they touch (a union-find of runs). A run is open on the box's edge, or with a cell of the other player.
+  template<class F>
+  static void for_each_closed(const Position& p, int player, F&& f) {
+    const int8_t wall = cell_value(player, WALL);
+    // The other player's cells, of any type: the values theirs to theirs + 2 (cell_value).
+    const uint8_t theirs = uint8_t(cell_value(1 - player, PLAIN));
+    const Box walls = wall_box(p, player);
+    // A closed point has a wall on each side: the box spans 3 columns and 3 rows at least.
+    if(!walls.any || walls.x1 - walls.x0 < 2 || walls.y1 - walls.y0 < 2)
+      return;
+    // A run: the points a to b of row y, a node of the union-find (parent), open at its root.
+    struct Run {
+      int16_t y, a, b;
+      int parent;
+      bool open;
+    };
+    static thread_local std::vector<Run> runs;
+    runs.clear();
+    auto root = [](int i) {
+      while(runs[i].parent != i) {
+        runs[i].parent = runs[runs[i].parent].parent;
+        i = runs[i].parent;
+      }
+      return i;
+    };
+    int before = 0, start = 0;  // the runs of the row before: before to start - 1
+    for(int y = walls.y0; y <= walls.y1; y++) {
+      const int8_t* row = p.cell.row(y);
+      start = int(runs.size());
+      for(int x = walls.x0; x <= walls.x1;) {
+        if(row[x] == wall) {
+          x++;
+          continue;
+        }
+        Run run{int16_t(y), int16_t(x), 0, int(runs.size()), y == walls.y0 || y == walls.y1 || x == walls.x0};
+        for(; x <= walls.x1 && row[x] != wall; x++)
+          run.open |= uint8_t(uint8_t(row[x]) - theirs) < 3;
+        run.b = int16_t(x - 1);
+        run.open |= run.b == walls.x1;
+        runs.push_back(run);
+      }
+      // The point (x, y) touches (x, y - 1) and (x + 1, y - 1): the run a..b touches the points a..b + 1 of the row
+      // before. Both rows' runs are in order and apart, so one pass joins each pair that touches.
+      for(int i = start, j = before; i < int(runs.size()) && j < start;) {
+        if(runs[j].b < runs[i].a)
+          j++;
+        else if(runs[j].a > runs[i].b + 1)
+          i++;
+        else {
+          const int ri = root(i), rj = root(j);
+          if(ri != rj) {
+            runs[rj].parent = ri;
+            runs[ri].open = runs[ri].open || runs[rj].open;
+          }
+          if(runs[j].b < runs[i].b + 1)
+            j++;
+          else
+            i++;
+        }
+      }
+      before = start;
+    }
+    for(int i = 0; i < int(runs.size()); i++)
+      if(!runs[root(i)].open)
+        for(int x = runs[i].a; x <= runs[i].b; x++)
+          f(x, int(runs[i].y));
+  }
+
+  // The box of the player's walls on the rules board: each row's first wall (memchr) and last wall. On people's boards,
+  // this takes half the time of a scan that compares each point of the cells' box.
+  static Box wall_box(const Position& p, int player) {
+    Box box;
+    const Box& used = p.cell.box();
+    if(!used.any)
+      return box;
+    const int8_t wall = cell_value(player, WALL);
+    const int width = used.x1 - used.x0 + 1;
+    for(int y = used.y0; y <= used.y1; y++) {
+      const int8_t* row = p.cell.row(y) + used.x0;
+      const void* first = std::memchr(row, wall, size_t(width));
+      if(!first)
+        continue;
+      int last = width - 1;
+      while(row[last] != wall)
+        last--;
+      box.add(used.x0 + int(static_cast<const int8_t*>(first) - row), y);
+      box.add(used.x0 + last, y);
+    }
+    return box;
+  }
+
+  // The closed areas (MY_CLOSED, THEIR_CLOSED): the points of the view in the areas closed by the mover's walls and by
+  // the opponent's walls (for_each_closed), in the view's orientation.
+  template<class Set>
+  static void write_closed_areas(const Position& p, Set& set) {
+    const int mover = GameRules::next_player(p);
+    const View view = view_of(p);
+    for(int side = 0; side < 2; side++)
+      for_each_closed(p, side == 0 ? mover : 1 - mover, [&](int rx, int ry) {
+        int x, y;
+        view.view_point(rx, ry, x, y);
+        if(on_view(x, y))
+          set(x, y, side == 0 ? MY_CLOSED : THEIR_CLOSED);
+      });
   }
 
   // A score on a log scale, log10(1 + |points| / 10) / 2 with the score's sign: 100 points give 0.52, 1,000 give 1.00

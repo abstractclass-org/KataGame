@@ -156,6 +156,11 @@ namespace NNInputs {
   //moves. A game without turn inputs has V11 equal to its V10. Model version 20.
   const int NUM_FEATURES_SPATIAL_V11 = NUM_FEATURES_SPATIAL_V10;
   const int NUM_FEATURES_GLOBAL_V11 = NUM_FEATURES_GLOBAL_V10 + GameInterface::turnGlobalInputs<GameEncoding>();
+  //KataGame fork (2026-10-27): V12, V11 with the game's planes of closed areas (InputOptions::areas, GameInterface:
+  //NUM_AREA_SPATIAL_INPUTS) after V11's planes. Blueprints: the areas closed by the mover's walls and by the
+  //opponent's. A game without them has V12 equal to its V11. Model version 21.
+  const int NUM_FEATURES_SPATIAL_V12 = NUM_FEATURES_SPATIAL_V11 + GameInterface::areaSpatialInputs<GameEncoding>();
+  const int NUM_FEATURES_GLOBAL_V12 = NUM_FEATURES_GLOBAL_V11;
 
   Hash128 getHash(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
@@ -238,6 +243,20 @@ namespace NNInputs {
     std::vector<int>* setEntries = NULL
   );
   void fillRowV11Packed(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
+    int symmetry = 0
+  );
+  //V12: the rows of NUM_FEATURES_SPATIAL_V12 planes (NUM_SPATIAL_WORDS_V12 words packed), with rowGlobal holding
+  //NUM_FEATURES_GLOBAL_V12 values (V11's).
+  const int NUM_SPATIAL_ELTS_V12 = NUM_FEATURES_SPATIAL_V12 * NNPos::MAX_BOARD_AREA;
+  const int NUM_SPATIAL_WORDS_V12 = (NUM_SPATIAL_ELTS_V12 + 31) / 32;
+  void fillRowV12(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal,
+    std::vector<int>* setEntries = NULL
+  );
+  void fillRowV12Packed(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
     int symmetry = 0

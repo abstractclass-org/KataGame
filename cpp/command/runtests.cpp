@@ -14,6 +14,7 @@
 #include "../game/board.h"
 #include "../game/rules.h"
 #include "../game/boardhistory.h"
+#include "../neuralnet/modelversion.h"
 #include "../neuralnet/nninputs.h"
 #include "../program/gtpconfig.h"
 #include "../program/setup.h"
@@ -790,13 +791,18 @@ int MainCmds::runconfigtests(const vector<string>& args) {
 
 
 int MainCmds::runenclosurerowtests(const vector<string>& args) {
-  if(args.size() < 2 || args.size() > 4) {
-    cerr << "usage: " << args[0] << " OUT_FILE [SEED [NPZ_DIR]]" << endl;
+  if(args.size() < 2 || args.size() > 5) {
+    cerr << "usage: " << args[0] << " OUT_FILE [SEED [NPZ_DIR [INPUTS_VERSION]]]" << endl;
     return 1;
   }
+  //INPUTS_VERSION: the rows' inputs, self-play's default without it (NNModelVersion::defaultModelVersion's). NPZ_DIR
+  //"" writes no .npz files.
+  const int inputsVersion = args.size() == 5 ? Global::stringToInt(args[4])
+    : NNModelVersion::getInputsVersion(NNModelVersion::defaultModelVersion);
   Board::initHash();
   ScoreValue::initTables();
-  Tests::runEnclosureRowTests(args[1], args.size() >= 3 ? args[2] : "enclosure rows", args.size() == 4 ? args[3] : "");
+  Tests::runEnclosureRowTests(args[1], args.size() >= 3 ? args[2] : "enclosure rows", args.size() >= 4 ? args[3] : "",
+                              inputsVersion);
   ScoreValue::freeTables();
   return 0;
 }

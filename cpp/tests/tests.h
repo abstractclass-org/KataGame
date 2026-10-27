@@ -51,7 +51,8 @@ namespace Tests {
 
   //testsearchnonn.cpp
   void runNNLessSearchTests();
-  void runEnclosureRowTests(const std::string& outFile, const std::string& seed, const std::string& npzDir);
+  void runEnclosureRowTests(const std::string& outFile, const std::string& seed, const std::string& npzDir,
+                            int inputsVersion);
   void runEnclosureNNTests(const std::string& modelFile, const std::string& inputsFile, const std::string& outFile, bool useFP16, bool useNHWC, int symmetry = 0);
   //testsearch.cpp
   void runSearchTests(const std::string& modelFile, bool inputsNHWC, bool cudaNHWC, int symmetry, bool useFP16);

@@ -191,6 +191,9 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
 - **V11** (model version 20, 2026-10-27) gives a game's history planes its last turns in place of its last actions,
   with the game's turn inputs (GAMES.md, `NUM_TURN_GLOBAL_INPUTS`). Enclosure's history planes already count turns
   and it has no turn inputs, so its V11 is its V10.
+- **V12** (model version 21, 2026-10-27) adds a game's planes of closed areas to V11's (GAMES.md,
+  `NUM_AREA_SPATIAL_INPUTS`). Enclosure gives its unreachable points among its own planes, and none here, so its V12
+  is its V11.
 - **Absolute colours,** as in the Enclosure network: plane k is Blue's for k = 0. The player to move is a global
   input. (KataGo's Go inputs are relative to the mover. The choice was "our feature planes, as KataGo uses its Go
   features".)

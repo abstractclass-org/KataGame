@@ -159,6 +159,17 @@ def pad_global_inputs_to_widest(globalInputNCList: list[np.ndarray]) -> None:
             padded[:, :arr.shape[1]] = arr
             globalInputNCList[i] = padded
 
+# KataGame fork (2026-10-27): the rows of the inputs version 12 have the game's planes of closed areas after version
+# 11's planes. Files of both counts merge at the largest count, the rows of version 11 with those planes at 0, as the
+# global inputs above. The trainer fits the count to its model (data_processing_pytorch.fit_binary_input_nchw).
+def pad_binary_inputs_to_widest(binaryInputNCHWPackedList: list[np.ndarray]) -> None:
+    width = max(arr.shape[1] for arr in binaryInputNCHWPackedList)
+    for i, arr in enumerate(binaryInputNCHWPackedList):
+        if arr.shape[1] < width:
+            padded = np.zeros((arr.shape[0], width, *arr.shape[2:]), dtype=arr.dtype)
+            padded[:, :arr.shape[1]] = arr
+            binaryInputNCHWPackedList[i] = padded
+
 def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     """Zero-pad older-format globalTargetsNC rows up to the current channel count."""
     num_channels = globalTargetsNC.shape[1]
@@ -263,6 +274,7 @@ def shardify(
     if len(binaryInputNCHWPackedList) <= 0:
         return num_files_not_found # Early quit since we don't know shapes
 
+    pad_binary_inputs_to_widest(binaryInputNCHWPackedList)
     pad_global_inputs_to_widest(globalInputNCList)
     concatenated_arrs = (
         joint_concatenate(
@@ -369,6 +381,7 @@ def merge_bucket(
         print("WARNING: empty merge bucket: ", out_tmp_dir)
         return []
 
+    pad_binary_inputs_to_widest(binaryInputNCHWPackedList)
     pad_global_inputs_to_widest(globalInputNCList)
     concatenated_arrs = (
         joint_concatenate(
