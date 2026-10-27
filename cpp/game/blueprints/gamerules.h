@@ -837,19 +837,21 @@ inline void shift_points(int32_t* points, int8_t& n, int dx, int dy) {
   }
   n = int8_t(kept);
 }
+// The same for the stamped and the taken points of an action's footprint or of a turn.
+template<class Record>
+inline void shift_record(Record& f, int dx, int dy) {
+  shift_points(f.stamped, f.nStamped, dx, dy);
+  shift_points(f.taken, f.nTaken, dx, dy);
+}
 
 // Moves every point of the rules board by (-dx, -dy) in the position's own records: the history of the actions and of
 // the turns, and the recent placements' boxes. A history's point that leaves the board goes: the cells it took can lie
 // beyond the box.
 inline void shift_records(Position& p, int dx, int dy) {
-  for(Footprint& f : p.history) {
-    shift_points(f.stamped, f.nStamped, dx, dy);
-    shift_points(f.taken, f.nTaken, dx, dy);
-  }
-  for(TurnRecord& t : p.turns) {
-    shift_points(t.stamped, t.nStamped, dx, dy);
-    shift_points(t.taken, t.nTaken, dx, dy);
-  }
+  for(Footprint& f : p.history)
+    shift_record(f, dx, dy);
+  for(TurnRecord& t : p.turns)
+    shift_record(t, dx, dy);
   for(auto& boxes : p.recent)
     for(Box& b : boxes)
       if(b.any) {
@@ -931,12 +933,17 @@ inline void stamp(Position& p, int player, const Blueprint& b, int x, int y, Foo
   p.recent[player][0] = box;
 }
 
-// Makes room for the newest action at the front of the history. An action that leaves no points leaves it empty.
-inline void push_history(Position& p) {
+// Moves the records of a ring of the history (the actions' or the turns', the newest first) back one place, and starts
+// the first again empty.
+template<class Record>
+inline void push_ring(Record (&ring)[HISTORY]) {
   for(int h = HISTORY - 1; h > 0; h--)
-    p.history[h] = p.history[h - 1];
-  p.history[0] = Footprint();
+    ring[h] = ring[h - 1];
+  ring[0] = Record();
 }
+
+// Makes room for the newest action at the front of the history. An action that leaves no points leaves it empty.
+inline void push_history(Position& p) { push_ring(p.history); }
 
 // The hash of the position but its hands and its pick: the cells (cellHash, by site coordinates), the ply, the scores,
 // the recent placements' boxes by site coordinates and the offset, each kind with its own keys (KEY_PLY and the
@@ -1024,11 +1031,8 @@ inline void end_move(Position& p, bool edit) {
   t.edit[p.ply == 0 ? 0 : (p.ply - 1) % 2] = edit;  // the move's place in its turn (turn_of)
   const bool turnEnds = left_of(p.ply) == 1;
   p.ply++;
-  if(turnEnds) {
-    for(int h = HISTORY - 1; h > 0; h--)
-      p.turns[h] = p.turns[h - 1];
-    p.turns[0] = TurnRecord();
-  }
+  if(turnEnds)
+    push_ring(p.turns);
   orient(p);
 }
 
@@ -1829,13 +1833,14 @@ struct GameRules {
   // it. A view that a caller set is not part of the text. RGSC's buffer keeps self-play's states in it
   // (program/rgsc.h).
   static std::string state_text(const Position& p) {
+    auto points = [](const auto& f) {
+      return points_text(f.stamped, f.nStamped) + "|" + points_text(f.taken, f.nTaken);
+    };
     std::string s = position_line(p, true) + " ";
-    for(int h = 0; h < HISTORY; h++) {
-      const Footprint& f = p.history[h];
-      s += (h > 0 ? "/" : "") + points_text(f.stamped, f.nStamped) + "|" + points_text(f.taken, f.nTaken);
-    }
+    for(int h = 0; h < HISTORY; h++)
+      s += (h > 0 ? "/" : "") + points(p.history[h]);
     for(const TurnRecord& t : p.turns) {
-      s += "/" + points_text(t.stamped, t.nStamped) + "|" + points_text(t.taken, t.nTaken) + "|";
+      s += "/" + points(t) + "|";
       for(int m = 0; m < TURN_MOVES; m++)
         s += t.edit[m] ? 'e' : '-';
     }
@@ -1866,34 +1871,35 @@ struct GameRules {
             " turns' points, joined by /";
       return false;
     }
+    // A footprint's or a turn's stamped and taken points (parts[0] and parts[1]), at most as many as the record holds.
+    auto parse_record = [](const std::vector<std::string>& parts, auto& f) {
+      return parse_points(parts[0], int(std::size(f.stamped)), f.stamped, f.nStamped) &&
+             parse_points(parts[1], int(std::size(f.taken)), f.taken, f.nTaken);
+    };
     for(int h = 0; h < HISTORY; h++) {
       const std::vector<std::string> parts = split(footprints[h], '|');
       Footprint& f = s.history[h];
-      if(parts.size() != 2 || !parse_points(parts[0], MAX_CELLS, f.stamped, f.nStamped) ||
-         !parse_points(parts[1], MAX_TAKEN, f.taken, f.nTaken)) {
+      if(parts.size() != 2 || !parse_record(parts, f)) {
         why = "a footprint is the stamped points, |, then the taken points, each q,r on the rules board once, joined "
               "by ;, \"-\" for none: \"" + footprints[h] + "\"";
         return false;
       }
-      shift_points(f.stamped, f.nStamped, dx, dy);
-      shift_points(f.taken, f.nTaken, dx, dy);
+      shift_record(f, dx, dy);
     }
     for(int h = HISTORY; h < int(footprints.size()); h++) {
       const std::vector<std::string> parts = split(footprints[h], '|');
       TurnRecord& t = s.turns[h - HISTORY];
-      bool flags = parts.size() == 3 && parts[2].size() == TURN_MOVES;
-      for(int m = 0; flags && m < TURN_MOVES; m++) {
-        flags = parts[2][m] == 'e' || parts[2][m] == '-';
+      bool flagsRead = parts.size() == 3 && parts[2].size() == TURN_MOVES;
+      for(int m = 0; flagsRead && m < TURN_MOVES; m++) {
+        flagsRead = parts[2][m] == 'e' || parts[2][m] == '-';
         t.edit[m] = parts[2][m] == 'e';
       }
-      if(!flags || !parse_points(parts[0], TURN_MOVES * MAX_CELLS, t.stamped, t.nStamped) ||
-         !parse_points(parts[1], TURN_MOVES * MAX_TAKEN, t.taken, t.nTaken)) {
+      if(!flagsRead || !parse_record(parts, t)) {
         why = "a turn is the stamped points, |, the taken points, each q,r on the rules board once, joined by ;, \"-\" "
               "for none, |, then its moves' edit flags, e or -: \"" + footprints[h] + "\"";
         return false;
       }
-      shift_points(t.stamped, t.nStamped, dx, dy);
-      shift_points(t.taken, t.nTaken, dx, dy);
+      shift_record(t, dx, dy);
     }
     p = s;
     return true;

@@ -99,6 +99,7 @@ BOX_FIELDS = 5                     # a window box: 1 when there, then its corner
 # first, the turn in progress) and each of its 2 moves in their order, 1 when the move was an edit. The history planes
 # then show the last turns in place of the last actions: turn h's in the planes of action h.
 NUM_TURN_GLOBAL_INPUTS = 8
+NUM_HISTORY_TURNS = 4
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
 
 

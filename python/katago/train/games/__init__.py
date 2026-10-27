@@ -53,13 +53,15 @@ A module may also give these optional members (mask_targets and loss_coefficient
   apply_symmetry_extended_global_inputs(extended, symmetry)
                         the extended global inputs (N, NUM_EXTENDED_GLOBAL_INPUTS) at the symmetry, for a game whose
                         extended global inputs name points (apply_symmetry_global_inputs). Default: as they are.
-  NUM_TURN_GLOBAL_INPUTS
+  NUM_TURN_GLOBAL_INPUTS, NUM_HISTORY_TURNS
                         the game's turn inputs (C++ GameInterface), which the inputs version 11 adds after version 10's
-                        global inputs, the newest turn's first. The history planes then show the last turns in place
-                        of the last actions. The turn inputs name no point. The history dropout clears turn input i
-                        with the history plane i * NUM_HISTORY_PLANES // NUM_TURN_GLOBAL_INPUTS, so the inputs of a
-                        turn with its turn's planes when the two counts are a turn's multiples
-                        (data_processing_pytorch.apply_history_dropout). Default: 0 (turn_global_inputs).
+                        global inputs, and the turns that they and the history planes then show in place of the last
+                        actions, the newest first. Each turn has NUM_HISTORY_PLANES // NUM_HISTORY_TURNS planes and
+                        NUM_TURN_GLOBAL_INPUTS // NUM_HISTORY_TURNS turn inputs, in its order. The turn inputs name no
+                        point. In the rows of the inputs version 11 the history dropout draws once for each turn, and
+                        clears the turn's planes and turn inputs together
+                        (data_processing_pytorch.apply_history_dropout). A game with turn inputs gives
+                        NUM_HISTORY_TURNS, which divides both counts. Default: 0 and none (turn_global_inputs).
 """
 
 import importlib
@@ -163,6 +165,11 @@ def get(name: str):
     if unknown:
         raise ValueError(f"the trainer's module of the game {name!r} sets the coefficient of no loss named "
                          f"{', '.join(unknown)} (LOSS_COEFFICIENTS: {', '.join(LOSS_COEFFICIENTS)})")
+    turns = getattr(game, "NUM_HISTORY_TURNS", 0)
+    if turn_global_inputs(game) and not (turns > 0 and game.NUM_HISTORY_PLANES % turns == 0 and
+                                         turn_global_inputs(game) % turns == 0):
+        raise ValueError(f"the trainer's module of the game {name!r} has turn inputs, so it gives NUM_HISTORY_TURNS, "
+                         "which divides NUM_HISTORY_PLANES and NUM_TURN_GLOBAL_INPUTS")
     return game
 
 

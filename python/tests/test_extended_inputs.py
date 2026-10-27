@@ -218,31 +218,48 @@ def dropout_before(game, binary):
     return out
 
 
-def test_the_history_dropout_drops_each_turns_inputs_with_its_planes():
+def test_the_history_dropout_drops_each_turn_with_its_planes_and_its_turn_inputs():
     from katago.train.data_processing_pytorch import apply_history_dropout
     game = games.get("blueprints")
     n = 4000
     binary = torch.ones(n, 1 + game.NUM_SPATIAL_INPUTS + game.NUM_EXTENDED_SPATIAL_INPUTS, 1, 1)
-    # The rows of version 10: the planes as before, from the same draws, and the global inputs as they are.
+    history = slice(1 + game.HISTORY_PLANE, 1 + game.HISTORY_PLANE + game.NUM_HISTORY_PLANES)
+    # The rows of version 10: a draw for each plane, as before, and the global inputs as they are.
     v10 = torch.ones(n, V10_GLOBALS)
     torch.manual_seed(1)
     before = dropout_before(game, binary)
     torch.manual_seed(1)
-    planes, globals_ = apply_history_dropout(game, binary, v10)
+    planes, globals_ = apply_history_dropout(game, binary, v10, 10)
     assert torch.equal(planes, before) and globals_ is v10
-    # The rows of version 11: turn input i with the history plane i (8 planes, 8 inputs), from the same draws.
+    # The rows of version 11: a draw for each of the 4 turns, which clears the turn's 2 planes and its 2 turn inputs
+    # together, and never a newer turn without the older ones.
     v11 = torch.ones(n, V10_GLOBALS + TURNS)
     torch.manual_seed(1)
-    planes, globals_ = apply_history_dropout(game, binary, v11)
-    assert torch.equal(planes, before)
-    kept = planes[:, 1 + game.HISTORY_PLANE:1 + game.HISTORY_PLANE + game.NUM_HISTORY_PLANES, 0, 0]
-    assert torch.equal(globals_[:, V10_GLOBALS:], kept)
+    planes, globals_ = apply_history_dropout(game, binary, v11, 11)
+    kept = planes[:, history, 0, 0].reshape(n, 4, 2)  # turn, then its stamped and taken planes
+    assert torch.equal(kept[:, :, 0], kept[:, :, 1])
+    assert torch.equal(globals_[:, V10_GLOBALS:].reshape(n, 4, 2), kept)  # turn, then its moves' edit flags
+    torch.manual_seed(1)
+    stops = torch.rand((n, 4)) >= 0.98
+    assert torch.equal(kept[:, :, 0], (torch.cumsum(stops, axis=1, dtype=torch.float32) <= 0.1).float())
+    assert 0 < int((kept == 0).any(dim=(1, 2)).sum()) < n  # some rows drop history, most do not
+    others = torch.ones(planes.shape[1], dtype=torch.bool)
+    others[history] = False
+    assert torch.equal(planes[:, others], binary[:, others])
     assert torch.equal(globals_[:, :V10_GLOBALS], v11[:, :V10_GLOBALS])
-    assert 0 < int((kept == 0).any(dim=1).sum()) < n  # some rows drop history, most do not
+    # A game with turn inputs names its turns, which divide its planes and its turn inputs.
+    for turns in (None, 3):
+        with pytest.MonkeyPatch.context() as patch:
+            if turns is None:
+                patch.delattr(blueprints, "NUM_HISTORY_TURNS")
+            else:
+                patch.setattr(blueprints, "NUM_HISTORY_TURNS", turns)
+            with pytest.raises(ValueError, match="NUM_HISTORY_TURNS"):
+                games.get("blueprints")
     # A game without turn inputs: its global inputs as they are.
     enclosure = games.get("enclosure")
     rows = torch.ones(5, 7)
-    assert apply_history_dropout(enclosure, torch.ones(5, 1 + enclosure.NUM_SPATIAL_INPUTS, 1, 1), rows)[1] is rows
+    assert apply_history_dropout(enclosure, torch.ones(5, 1 + enclosure.NUM_SPATIAL_INPUTS, 1, 1), rows, 11)[1] is rows
 
 
 def test_the_export_writes_model_version_20(tmp_path):

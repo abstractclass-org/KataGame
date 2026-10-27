@@ -70,6 +70,7 @@ def read_npz_training_data(
     rand = np.random.default_rng(seed=list(os.urandom(12)))
     num_bin_features = modelconfigs.get_num_bin_input_features(model_config)
     num_global_features = modelconfigs.get_num_global_input_features(model_config)
+    inputs_version = modelconfigs.get_inputs_version(model_config)
     # Enclosure fork: the history dropout and the symmetries are the game's (apply_history_dropout, katago/train/games).
     game = modelconfigs.get_game(model_config)
     symmetries = games.symmetries(game)
@@ -184,7 +185,7 @@ def read_npz_training_data(
 
                 # KataGame fork: the targets that the game's symmetries cannot map get weight 0, in every batch.
                 batch_globalTargetsNC = games.mask_targets(game, batch_binaryInputNCHW, batch_globalInputNC, batch_valueTargetsNCHW, batch_globalTargetsNC)
-                batch_binaryInputNCHW, batch_globalInputNC = apply_history_dropout(game, batch_binaryInputNCHW, batch_globalInputNC)
+                batch_binaryInputNCHW, batch_globalInputNC = apply_history_dropout(game, batch_binaryInputNCHW, batch_globalInputNC, inputs_version)
 
                 if randomize_symmetries:
                     # Enclosure fork: one of the game's allowed symmetries, applied by the game (katago/train/games).
@@ -340,32 +341,34 @@ def build_history_matrices(model_config: modelconfigs.ModelConfig, device):
 # item k is kept only if none of k+1 independent draws stops it (each with probability 0.02), so older history is
 # dropped more often, and never a newer item without the older ones. The C++ evaluation without history
 # (maxHistory <= 0) drops them all. A game without history planes draws nothing. KataGame fork (2026-10-27): in the rows
-# of the inputs version 11, the game's turn inputs go with its history planes (games.turn_global_inputs), as KataGo's
-# pass inputs go with their moves: turn input i with the plane i * NUM_HISTORY_PLANES // NUM_TURN_GLOBAL_INPUTS, from
-# the same draws.
+# of the inputs version 11 the items are the game's turns (NUM_HISTORY_TURNS), one draw each, and a turn goes with its
+# planes and its turn inputs (games.turn_global_inputs), as KataGo's pass inputs go with their moves. The rows of the
+# other versions keep a draw for each plane.
 # Enclosure fork, for input-plane comparisons (2026-10-02): ENCLOSURE_ZERO_INPUT_CHANNELS="200,201,209,210" blanks
 # those spatial input channels in every row read, training and validation alike (feature planes start at 193; per
 # player 9: node, enclosed, solid, reach 1-3, unreached, held ground, its openings). Unset: no change.
 ENCLOSURE_ZERO_INPUT_CHANNELS = [int(c) for c in os.environ.get("ENCLOSURE_ZERO_INPUT_CHANNELS", "").split(",") if c]
 
-def apply_history_dropout(game, batch_binaryInputNCHW, batch_globalInputNC):
+def apply_history_dropout(game, batch_binaryInputNCHW, batch_globalInputNC, inputs_version):
     num_history = game.NUM_HISTORY_PLANES
     if num_history == 0:
         return batch_binaryInputNCHW, batch_globalInputNC
     start = 1 + game.HISTORY_PLANE  # after KataGo's on-board plane
     assert start + num_history <= 1 + game.NUM_SPATIAL_INPUTS
     n = batch_binaryInputNCHW.shape[0]
-    should_stop_history = torch.rand((n, num_history), device=batch_binaryInputNCHW.device) >= 0.98
+    # The history's items: each plane, or under the inputs version 11 (the model's, as the reader fits the rows' global
+    # inputs to it) each turn with its planes and its turn inputs, the last global inputs.
+    turns = games.turn_global_inputs(game) if inputs_version >= 11 else 0
+    items = game.NUM_HISTORY_TURNS if turns else num_history
+    should_stop_history = torch.rand((n, items), device=batch_binaryInputNCHW.device) >= 0.98
     include_history = (torch.cumsum(should_stop_history, axis=1, dtype=torch.float32) <= 0.1).to(batch_binaryInputNCHW.dtype)
     out = batch_binaryInputNCHW.clone()
-    out[:, start:start + num_history] *= include_history.view(n, num_history, 1, 1)
-    turns = games.turn_global_inputs(game)
-    v11 = game.NUM_GLOBAL_INPUTS + games.ROW_PLAYOUT_INPUTS + games.extended_global_inputs(game) + turns
-    if turns == 0 or batch_globalInputNC.shape[1] != v11:
+    planes = include_history.repeat_interleave(num_history // items, dim=1)  # each item's draw on its planes
+    out[:, start:start + num_history] *= planes.view(n, num_history, 1, 1)
+    if not turns:
         return out, batch_globalInputNC
-    planes = torch.arange(turns, device=include_history.device) * num_history // turns
     out_global = batch_globalInputNC.clone()
-    out_global[:, -turns:] *= include_history[:, planes].to(batch_globalInputNC.dtype)
+    out_global[:, -turns:] *= include_history.repeat_interleave(turns // items, dim=1).to(batch_globalInputNC.dtype)
     return out, out_global
 
 def apply_history_matrices(model_config, batch_binaryInputNCHW, batch_globalInputNC, batch_globalTargetsNC, h_base, h_builder):

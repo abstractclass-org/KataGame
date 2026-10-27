@@ -598,21 +598,19 @@ struct GameEncoding {
   // flags. Both histories, so that the network's cache and RGSC's states are exact under each inputs version.
   static Hash128 input_hash(const Position& p) {
     Hash128 h;
-    for(int t = 0; t < HISTORY; t++) {
-      const Footprint& f = p.history[t];
+    // An action's or a turn's points from the keys of its place in its ring: + a stamped point, + RULES_AREA + a taken
+    // point.
+    auto add_points = [&h](uint64_t keys, const auto& f) {
       for(int i = 0; i < f.nStamped; i++)
-        h ^= key(KEY_HISTORY + uint64_t(t) * 2 * RULES_AREA + uint64_t(f.stamped[i]), 0);
+        h ^= key(keys + uint64_t(f.stamped[i]), 0);
       for(int i = 0; i < f.nTaken; i++)
-        h ^= key(KEY_HISTORY + uint64_t(t) * 2 * RULES_AREA + RULES_AREA + uint64_t(f.taken[i]), 0);
-    }
+        h ^= key(keys + RULES_AREA + uint64_t(f.taken[i]), 0);
+    };
     for(int t = 0; t < HISTORY; t++) {
-      const TurnRecord& record = p.turns[t];
-      for(int i = 0; i < record.nStamped; i++)
-        h ^= key(KEY_TURNS + uint64_t(t) * 2 * RULES_AREA + uint64_t(record.stamped[i]), 0);
-      for(int i = 0; i < record.nTaken; i++)
-        h ^= key(KEY_TURNS + uint64_t(t) * 2 * RULES_AREA + RULES_AREA + uint64_t(record.taken[i]), 0);
+      add_points(KEY_HISTORY + uint64_t(t) * 2 * RULES_AREA, p.history[t]);
+      add_points(KEY_TURNS + uint64_t(t) * 2 * RULES_AREA, p.turns[t]);
       for(int m = 0; m < TURN_MOVES; m++)
-        if(record.edit[m])
+        if(p.turns[t].edit[m])
           h ^= key(KEY_TURN_EDIT + uint64_t(t * TURN_MOVES + m), 0);
     }
     return h;
