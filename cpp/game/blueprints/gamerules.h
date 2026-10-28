@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -46,8 +47,8 @@
 
 namespace blueprints {
 
-constexpr int RULES_RADIUS = 127;                // the rules board: |q|, |r| <= RULES_RADIUS from its middle
-constexpr int RULES_LEN = 2 * RULES_RADIUS + 1;  // 255
+constexpr int RULES_RADIUS = 255;                // the rules board: |q|, |r| <= RULES_RADIUS from its middle
+constexpr int RULES_LEN = 2 * RULES_RADIUS + 1;  // 511
 constexpr int RULES_AREA = RULES_LEN * RULES_LEN;
 constexpr int VIEW_RADIUS = 33;                  // the view: |q|, |r| <= VIEW_RADIUS from the window's middle
 constexpr int VIEW = 2 * VIEW_RADIUS + 1;        // 67, the front's board
@@ -152,9 +153,19 @@ constexpr uint64_t KEY_BOX = 60000;      // + player * RECENT + i, and the recen
 constexpr uint64_t KEY_OFFSET = 60100;   // the offset
 constexpr uint64_t KEY_ORIENTATION = 60101;  // the view's orientation, when it is not 0
 constexpr uint64_t KEY_VIEW = 60102;     // the middle of a view that a caller set (set_view)
-constexpr uint64_t KEY_HISTORY = 70000;  // gameencoding.h's input_hash: + h * 2 * RULES_AREA + a point of action h
-constexpr uint64_t KEY_TURNS = 600000;   // input_hash: + h * 2 * RULES_AREA + a point of turn h
+// gameencoding.h's input_hash: the points of the history of the actions (KEY_HISTORY) and of the turns (KEY_TURNS), +
+// h * 2 * KEY_AREA + a point's number within KEY_RADIUS for record h's stamped points, and KEY_AREA more for its taken
+// points. A point beyond KEY_RADIUS takes its key from KEY_FAR_HISTORY or KEY_FAR_TURNS instead: + h * 2 * RULES_AREA
+// + its index on the rules board, and RULES_AREA more for a taken point.
+constexpr uint64_t KEY_HISTORY = 70000;
+constexpr uint64_t KEY_TURNS = 600000;
 constexpr uint64_t KEY_TURN_EDIT = 1200000;  // input_hash: + h * TURN_MOVES + m, when move m of turn h was an edit
+constexpr uint64_t KEY_FAR_HISTORY = 1300000;
+constexpr uint64_t KEY_FAR_TURNS = 3400000;
+// The points within KEY_RADIUS of the rules board's middle have the numbers that they had on the port's first rules
+// board, 255 x 255 points: (r + KEY_RADIUS) * KEY_LEN + q + KEY_RADIUS, (q, r) from the middle. So a state whose points
+// lie there keeps its key, and RGSC's buffers, which hold each state's key (program/rgsc.cpp), load as before.
+constexpr int KEY_RADIUS = 127, KEY_LEN = 2 * KEY_RADIUS + 1, KEY_AREA = KEY_LEN * KEY_LEN;
 static_assert(KEY_HAND + 6 * 4096 <= KEY_PLY && KEY_PLY + 121 <= KEY_PICK && KEY_PICK + 3 * 4096 <= KEY_SCORE &&
               KEY_SCORE + 2 <= KEY_BOX && KEY_BOX + 4 <= KEY_OFFSET && KEY_OFFSET < KEY_ORIENTATION &&
               KEY_ORIENTATION < KEY_VIEW && KEY_VIEW < KEY_HISTORY,
@@ -326,9 +337,12 @@ struct Footprint {
 // the points that its placements stamped and whose cells they took, and for each of its moves, in their order, whether
 // it was an edit (a pick and its drop). A turn has at most TURN_MOVES moves (turn_of: 1, then 2 each).
 constexpr int TURN_MOVES = 2;
-static_assert(KEY_HISTORY + HISTORY * 2 * RULES_AREA <= KEY_TURNS &&
-                KEY_TURNS + HISTORY * 2 * RULES_AREA <= KEY_TURN_EDIT,
-              "the hash's ranges of keys do not meet");
+static_assert(KEY_RADIUS <= RULES_RADIUS && KEY_HISTORY + HISTORY * 2 * KEY_AREA <= KEY_TURNS &&
+                KEY_TURNS + HISTORY * 2 * KEY_AREA <= KEY_TURN_EDIT &&
+                KEY_TURN_EDIT + HISTORY * TURN_MOVES <= KEY_FAR_HISTORY &&
+                KEY_FAR_HISTORY + HISTORY * 2 * RULES_AREA <= KEY_FAR_TURNS &&
+                KEY_FAR_TURNS + HISTORY * 2 * RULES_AREA <= 1000000000,
+              "the hash's ranges of keys do not meet, and stay below the cells' keys");
 struct TurnRecord {
   int8_t nStamped = 0, nTaken = 0;
   bool edit[TURN_MOVES] = {};
@@ -363,20 +377,23 @@ inline int half_off_middle(int lo, int hi) { return (lo + hi - 2 * RULES_RADIUS)
 // The rules board's cells, [y * RULES_LEN + x]: cell_value. A box (box()) holds every cell (it can be larger than the
 // cells' box), and every point outside it is empty. So a copy, a clear and a scan of the cells read that box, not the
 // RULES_AREA points. Every write goes through set(), which grows the box.
+// The points are on the heap, so that a position is small on the stack. KataGo's functions keep boards and histories
+// there (a history holds 7 boards), and with the points in the position, self-play's game function alone took a frame
+// of 4.2 MB, more than a thread's 8 MB stack held with the search under it.
 class Cells {
-  int8_t v[RULES_AREA] = {};
+  std::unique_ptr<int8_t[]> v{new int8_t[RULES_AREA]()};
   Box used;
 
   void clear_box(const Box& b) {
     if(b.any)
       for(int y = b.y0; y <= b.y1; y++)
-        std::memset(v + y * RULES_LEN + b.x0, 0, size_t(b.x1 - b.x0 + 1));
+        std::memset(v.get() + y * RULES_LEN + b.x0, 0, size_t(b.x1 - b.x0 + 1));
   }
   void copy_box(const Cells& o) {
     const Box& b = o.used;
     if(b.any)
       for(int y = b.y0; y <= b.y1; y++)
-        std::memcpy(v + y * RULES_LEN + b.x0, o.v + y * RULES_LEN + b.x0, size_t(b.x1 - b.x0 + 1));
+        std::memcpy(v.get() + y * RULES_LEN + b.x0, o.v.get() + y * RULES_LEN + b.x0, size_t(b.x1 - b.x0 + 1));
   }
 
  public:
@@ -391,7 +408,7 @@ class Cells {
     return *this;
   }
   int8_t operator[](int index) const { return v[index]; }
-  const int8_t* row(int y) const { return v + y * RULES_LEN; }
+  const int8_t* row(int y) const { return v.get() + y * RULES_LEN; }
   const Box& box() const { return used; }
   void set(int index, int8_t value) {
     v[index] = value;
@@ -1606,8 +1623,9 @@ struct GameRules {
   static std::string position_line(const Position& p, bool sortCells) {
     std::string s = std::to_string(p.ply) + " " + std::to_string(p.scores[0]) + " " + std::to_string(p.scores[1]) + " ";
     std::string board;
-    for(int y = 0; y < RULES_LEN; y++)
-      for(int x = 0; x < RULES_LEN; x++) {
+    const Box& used = p.cell.box();  // it holds every cell (Cells)
+    for(int y = used.y0; used.any && y <= used.y1; y++)
+      for(int x = used.x0; x <= used.x1; x++) {
         const int8_t v = p.cell[y * RULES_LEN + x];
         if(!v)
           continue;

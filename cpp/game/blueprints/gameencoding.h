@@ -184,12 +184,12 @@ struct GameEncoding {
   static constexpr int MY_CLOSED = THEIR_WINDOW + 1, THEIR_CLOSED = MY_CLOSED + 1;  // 101, 102
   static constexpr int NUM_AREA_SPATIAL_INPUTS = 2;
   // The minimap's bins: 5 x 5 points, 67 x 67 of them around the minimap's middle (|u|, |v| <= MINIMAP_REACH). The
-  // rules board's 255 x 255 points are 51 x 51 of them, in the middle.
+  // points within 127 of the middle are 51 x 51 of them, in the middle. A point beyond MINIMAP_REACH is in the bin at
+  // the edge (minimap_bin).
   static constexpr int MINIMAP_BIN = 5;
   static constexpr int MINIMAP_REACH = (VIEW * MINIMAP_BIN - 1) / 2;  // 167
-  static_assert(VIEW * MINIMAP_BIN % 2 == 1 && RULES_LEN % MINIMAP_BIN == 0 &&
-                (MINIMAP_REACH - RULES_RADIUS) % MINIMAP_BIN == 0,
-                "the minimap's bins are the rules board's 5 x 5 points, the board in the middle");
+  static_assert(VIEW * MINIMAP_BIN % 2 == 1 && (MINIMAP_REACH - 127) % MINIMAP_BIN == 0,
+                "the minimap's bins are 5 x 5 points, and 51 x 51 of them hold the 255 x 255 points in the middle");
 
   template<class Set>
   static void spatial_inputs(const Position& p, const GameInterface::InputOptions& options, Set&& set) {
@@ -436,7 +436,7 @@ struct GameEncoding {
   // The minimap (MINIMAP to THEIR_WINDOW), the whole board at a coarse scale, in the view's frame: the cells turned by
   // R^back(o) around the view's middle (view_middle), as the turned position (the view's in orientation 0) holds them,
   // then moved so that their box is in the middle, as the rules board recenters (center_box). So in orientation 0 the
-  // bins are the rules board's 5 x 5 points (the board recenters after each placement), 51 x 51 bins in the middle. A
+  // bins are 5 x 5 points of the rules board around its middle (the board recenters after each placement). A
   // bin of planes MINIMAP + 3 * side + type holds a cell of that player (side 0 the mover) and type. MY_WINDOW and
   // THEIR_WINDOW: the bins that each player's view meets, a square of the turned frame: the mover's view (view_of: its
   // window, or a view that a caller set), and the view where the opponent places (player_view). The planes of the
@@ -728,17 +728,25 @@ struct GameEncoding {
   // flags. Both histories, so that the network's cache and RGSC's states are exact under each inputs version.
   static Hash128 input_hash(const Position& p) {
     Hash128 h;
-    // An action's or a turn's points from the keys of its place in its ring: + a stamped point, + RULES_AREA + a taken
-    // point.
-    auto add_points = [&h](uint64_t keys, const auto& f) {
+    // An action's or a turn's points from the keys of its place in its ring (gamerules.h, KEY_HISTORY): from `near` a
+    // point within KEY_RADIUS of the rules board's middle by its number there, from `far` a point beyond by its index,
+    // and a taken point after the stamped points.
+    auto add_points = [&h](uint64_t near, uint64_t far, const auto& f) {
+      auto point_key = [near, far](int32_t index, bool taken) {
+        const int q = index % RULES_LEN - RULES_RADIUS, r = index / RULES_LEN - RULES_RADIUS;
+        if(std::abs(q) <= KEY_RADIUS && std::abs(r) <= KEY_RADIUS)
+          return near + (taken ? KEY_AREA : 0) + uint64_t((r + KEY_RADIUS) * KEY_LEN + q + KEY_RADIUS);
+        return far + (taken ? RULES_AREA : 0) + uint64_t(index);
+      };
       for(int i = 0; i < f.nStamped; i++)
-        h ^= key(keys + uint64_t(f.stamped[i]), 0);
+        h ^= key(point_key(f.stamped[i], false), 0);
       for(int i = 0; i < f.nTaken; i++)
-        h ^= key(keys + RULES_AREA + uint64_t(f.taken[i]), 0);
+        h ^= key(point_key(f.taken[i], true), 0);
     };
     for(int t = 0; t < HISTORY; t++) {
-      add_points(KEY_HISTORY + uint64_t(t) * 2 * RULES_AREA, p.history[t]);
-      add_points(KEY_TURNS + uint64_t(t) * 2 * RULES_AREA, p.turns[t]);
+      const uint64_t ring = uint64_t(t) * 2;
+      add_points(KEY_HISTORY + ring * KEY_AREA, KEY_FAR_HISTORY + ring * RULES_AREA, p.history[t]);
+      add_points(KEY_TURNS + ring * KEY_AREA, KEY_FAR_TURNS + ring * RULES_AREA, p.turns[t]);
       for(int m = 0; m < TURN_MOVES; m++)
         if(p.turns[t].edit[m])
           h ^= key(KEY_TURN_EDIT + uint64_t(t * TURN_MOVES + m), 0);

@@ -30,7 +30,7 @@
 // - An edit is two actions of the mover, the pick "I:q,r" and the drop "J:q,r". A candidate edit has the values of its
 //   pick's node, and its move joins the pick with its best drop: the next move of its line, or the drop of the highest
 //   prior at the pick's node when the line stops at the pick. A line joins each pick with its drop.
-// - The rules board holds 255 x 255 hexes: a placement that would make the cells span more is refused, with an error
+// - The rules board holds 511 x 511 hexes: a placement that would make the cells span more is refused, with an error
 //   that names the limit.
 // The ownership is the network's at the root, over the view's hexes, with the view's place ("view"): KataGo's average
 // over the search's tree would add the maps of nodes whose views lie elsewhere (each mover's view follows its play).
@@ -124,7 +124,7 @@ bool flag(const json& q, const char* key) {
 }
 
 // A position for the work of one request beside the game's own: a copy into it reads only the copy's box of cells
-// (bp::Cells), where a new Position clears all 65,025 points of its rules board.
+// (bp::Cells), where a new Position clears all 261,121 points of its rules board.
 Pos& scratch(int i) {
   static Pos* positions[3] = {new Pos(), new Pos(), new Pos()};
   return *positions[i];
