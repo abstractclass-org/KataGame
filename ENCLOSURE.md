@@ -55,10 +55,9 @@ the subtree value bias keys a node on the literal previous move, which can be th
 local pattern is adapted to edges ("Subtree value bias").
 
 **Go only, kept neutral:** GAMES.md, "Go's features, kept neutral", lists them. `getEndingWhiteScoreBonus` returns 0
-because an edge has no single point for Go's ownership bonus. `rootPruneUselessMoves` still has Go's repeated-pass
-condition and point indexing. Both games' self-play configs enable it. Connect-4 has no pass and never reaches the
-pattern. Whether Enclosure's self-play reaches it is open (abscls-irkf). [The front's
-assumptions](GAMES.md#assumptions-that-stay-in-the-front-and-the-search) describe the remaining code work.
+because an edge has no single point for Go's ownership bonus. `rootPruneUselessMoves` prunes no edge: its test of
+Go's pass-alive area skips a move. Enclosure's area is not safe, because an edge that crosses an opponent's edge
+removes that edge and can open its region.
 
 **Graph search:** `Board::simpleRepetitionBoundGt` returns true (GAMES.md, "The player to move in the search").
 Enclosure positions never recur, because the edge count only rises and is in the hash.
@@ -92,6 +91,11 @@ exact results at the end of the game). Graph search and subtree value bias are o
   - All 10 invariant positions pass (55-1,387 nodes each).
   - Red opens with I9-F9 (win value 0.997). The root keeps 93,891 visits after `makeMove`. Red completes the square
     with F6-F9 (0.999).
+- **Go's prune of useless root moves after four passes.** Seven passes from the start (each pass forfeits the turn)
+  make Blue's last four moves passes, with Red to move. A search with `rootPruneUselessMoves` on and a search with it
+  off must give the same root: the same edges, with the same visits (30 edges). Each search has its own evaluator,
+  with one seed, so both draw the same random outputs. Before the fix, the Debug build stopped at the first root
+  edge: the prune read `rootSafeArea`, a vector of points, at a move `Loc`.
 
 **Terminal scores:** Enclosure scores are exact areas, so a final score is a point mass (GAMES.md, "The player to
 move in the search"). This agrees with the Enclosure score bins ("Score distribution bins").

@@ -291,6 +291,45 @@ int runenclosuretests(const vector<string>& args) {
          << " with a mirror image), " << listed.size() << " listed with images" << endl;
   }
 
+  //5. KataGo's prune of useless root moves (rootPruneUselessMoves) at its pattern: the opponent's last four moves
+  //are passes. A pass forfeits the rest of the turn (the site's timeout pass, which a replay tolerates), so seven
+  //passes from the start reach it, with Red to move. Go's test reads the root's area (rootSafeArea), a point array,
+  //at the move, and an edge is a move Loc, not a point: the prune skips every edge, and the search is the one
+  //without it.
+  {
+    Board board;
+    BoardHistory hist(board, P_BLACK, Rules(), 0);
+    for(int n = 0; n < 7; n++)
+      testAssert(hist.makeBoardMoveTolerant(board, Board::PASS_LOC, hist.presumedNextMovePla));
+    const vector<Move>& moves = hist.moveHistory;
+    testAssert(moves.size() == 7 && hist.presumedNextMovePla == P_WHITE);
+    for(int i = 0; i < 7; i++)
+      testAssert(moves[i].loc == Board::PASS_LOC && moves[i].pla == (i % 2 == 0 ? P_BLACK : P_WHITE));
+    //Each search has its own evaluator, with one seed, so both draw the same random outputs. With one evaluator, the
+    //second search would miss the cache where the first one's entries collided, and draw other outputs there.
+    auto rootChildren = [&](bool prune) {
+      NNEvaluator* eval = startNNEval("/dev/null", logger, "root prune", 19, 19, 0, true, false, false, true, false);
+      vector<pair<Loc, int64_t>> children;
+      {
+        SearchParams params = testParams(500);
+        params.rootPruneUselessMoves = prune;
+        Search search(params, eval, &logger, "enclosure root prune after passes");
+        search.setPosition(P_WHITE, board, hist);
+        search.runWholeSearch(P_WHITE);
+        ConstSearchNodeChildrenReference kids = search.rootNode->getChildren();
+        for(int i = 0; i < kids.iterateAndCountChildren(); i++)
+          children.push_back(make_pair(kids[i].getMoveLoc(), kids[i].getEdgeVisits()));
+      }
+      delete eval;
+      return children;
+    };
+    vector<pair<Loc, int64_t>> pruned = rootChildren(true);
+    vector<pair<Loc, int64_t>> unpruned = rootChildren(false);
+    testAssert(pruned.size() > 1);
+    testAssert(pruned == unpruned);
+    cout << "Root prune after four passes: " << pruned.size() << " root edges searched, as without the prune" << endl;
+  }
+
   delete nnEval;
   NeuralNet::globalCleanup();
   cout << "Enclosure search tests passed" << endl;

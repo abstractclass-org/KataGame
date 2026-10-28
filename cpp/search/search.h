@@ -140,7 +140,9 @@ struct Search {
   std::vector<int> rootPruneOnlySymmetries;
 
   //Strictly pass-alive areas in the root board position
-  Color* rootSafeArea;
+  //KataGame fork: one entry per point, in a vector, so that a Debug build's assertions catch a move Loc used as a
+  //point (GAMES.md "Moves and points").
+  std::vector<Color> rootSafeArea;
   //Used to center for dynamic scorevalue
   double recentScoreCenter;
   //KataGame fork: the centre that the next searches take in place of their root's (computeRootValues), or NAN for the

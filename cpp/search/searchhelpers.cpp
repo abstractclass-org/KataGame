@@ -315,9 +315,13 @@ bool Search::isAllowedRootMove(Loc moveLoc) const {
   //To mitigate some of this and save computation, we make it so that at the root, if the last four moves by the opponent
   //were passes, we will never play a move in either player's pass-alive area. In theory this could prune
   //a good move in situations like https://senseis.xmp.net/?1EyeFlaw, but this should be extraordinarly rare,
+  //KataGame fork: rootSafeArea is indexed by points, and a move other than a pass is a move Loc, so the test skips
+  //every move. A game's area is its area now (GameRules::area), which later moves can change, so a move there is not
+  //useless (GAMES.md "Go's features, kept neutral").
   if(searchParams.rootPruneUselessMoves &&
      rootHistory.moveHistory.size() > 0 &&
-     moveLoc != Board::PASS_LOC
+     moveLoc != Board::PASS_LOC &&
+     moveLoc < Board::MOVE_LOC_BASE
   ) {
     size_t lastIdx = rootHistory.moveHistory.size()-1;
     Player opp = getOpp(rootPla);
@@ -405,7 +409,7 @@ double Search::getEndingWhiteScoreBonus(const SearchNode& parent, Loc moveLoc) c
       }
       else if(plaOwnership >= extreme) {
         if(!rootBoard.isAdjacentToPla(moveLoc,getOpp(rootPla)) &&
-           !rootBoard.isNonPassAliveSelfConnection(moveLoc,rootPla,rootSafeArea)) {
+           !rootBoard.isNonPassAliveSelfConnection(moveLoc,rootPla,rootSafeArea.data())) {
           extraRootPoints -= searchParams.rootEndingBonusPoints * ((plaOwnership - extreme) / tail);
         }
       }
@@ -431,7 +435,7 @@ double Search::getEndingWhiteScoreBonus(const SearchNode& parent, Loc moveLoc) c
         extraRootPoints -= searchParams.rootEndingBonusPoints * ((-extreme - plaOwnership) / tail);
       else if(plaOwnership >= extreme) {
         if(!rootBoard.isAdjacentToPla(moveLoc,getOpp(rootPla)) &&
-           !rootBoard.isNonPassAliveSelfConnection(moveLoc,rootPla,rootSafeArea)) {
+           !rootBoard.isNonPassAliveSelfConnection(moveLoc,rootPla,rootSafeArea.data())) {
           extraRootPoints -= searchParams.rootEndingBonusPoints * ((plaOwnership - extreme) / tail);
         }
       }

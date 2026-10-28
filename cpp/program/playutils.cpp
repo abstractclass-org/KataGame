@@ -1136,7 +1136,7 @@ Loc PlayUtils::maybeCleanupBeforePass(
     (rules.friendlyPassOk == false && rules.scoringRule == Rules::SCORING_AREA);
   if(doCleanupBeforePass && moveLoc == Board::PASS_LOC && hist.isFinalPhase() && !hist.hasButton) {
     const Board& board = bot->getRootBoard();
-    const Color* safeArea = bot->getSearch()->rootSafeArea;
+    const Color* safeArea = bot->getSearch()->rootSafeArea.data();
     testAssert(safeArea != NULL);
     //Scan the board for any spot that is adjacent to an opponent group that is part of our pass-alive territory.
     for(int y = 0; y<board.y_size; y++) {

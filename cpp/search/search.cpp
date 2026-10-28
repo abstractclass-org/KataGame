@@ -82,7 +82,7 @@ Search::Search(const SearchParams& params, NNEvaluator* nnEval, NNEvaluator* hum
    rootFocus(nullptr),rootFocusCleanupMutex(),rootFocusToCleanUp(),
    rootSymmetries(),
    rootPruneOnlySymmetries(),
-   rootSafeArea(NULL),
+   rootSafeArea(),
    recentScoreCenter(0.0),
    fixedScoreCenter(std::numeric_limits<double>::quiet_NaN()),
    mirroringPla(C_EMPTY),
@@ -134,7 +134,7 @@ Search::Search(const SearchParams& params, NNEvaluator* nnEval, NNEvaluator* hum
 
   rootKoHashTable = new KoHashTable();
 
-  rootSafeArea = new Color[Board::MAX_ARR_SIZE];
+  rootSafeArea.assign(Board::MAX_ARR_SIZE, C_EMPTY);
 
   valueWeightDistribution = new DistributionTable(
     [](double z) { return FancyMath::tdistpdf(z,VALUE_WEIGHT_DEGREES_OF_FREEDOM); },
@@ -158,7 +158,6 @@ Search::~Search() {
 
   cleanUpOldRootFocus();
   delete rootFocus.load(std::memory_order_acquire);
-  delete[] rootSafeArea;
   delete rootKoHashTable;
   delete valueWeightDistribution;
 
@@ -1212,7 +1211,7 @@ void Search::computeRootValues() {
   bool unsafeBigTerritories = false;
   bool isMultiStoneSuicideLegal = rootHistory.suicideLegalForPassAlive();
   rootBoard.calculateArea(
-    rootSafeArea,
+    rootSafeArea.data(),
     nonPassAliveStones,
     safeBigTerritories,
     unsafeBigTerritories,
