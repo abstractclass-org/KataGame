@@ -1084,6 +1084,7 @@ add_executable(katago
   program/gtpconfig.cpp
   program/setup.cpp
   program/playutils.cpp
+  program/rootviews.cpp
   program/playsettings.cpp
   program/play.cpp
   program/rgsc.cpp

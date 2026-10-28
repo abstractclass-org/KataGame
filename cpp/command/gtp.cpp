@@ -13,6 +13,7 @@
 #include "../program/setup.h"
 #include "../program/playutils.h"
 #include "../program/play.h"
+#include "../program/rootviews.h"
 #include "../tests/tests.h"
 #include "../command/commandline.h"
 #include "../command/gtpsession.h"
@@ -111,6 +112,23 @@ static const vector<string> knownCommands = {
 
 static bool tryParseLoc(const string& s, const Board& b, Loc& loc) {
   return Location::tryOfString(s,b,loc);
+}
+
+//KataGame fork (abscls-il4e.4): a move as genmove writes it and play reads it, in a game with views of its own: the
+//move's text, or, for a move that the position's own view cannot name, its text in a view of the game's
+//(GameInterface::setView), "/" and the view, such as 2@3,-4/5,6,1 in Blueprints. Sets view to the view's text, "" for
+//the position's own view.
+static bool tryParseMoveInView(const string& s, const Board& b, Loc& loc, string& view) {
+  view.clear();
+  const size_t slash = GameInterface::hasViews<GameRules>() ? s.rfind('/') : string::npos;
+  if(slash == string::npos)
+    return tryParseLoc(s,b,loc);
+  Board board = b;
+  string why;
+  if(slash + 1 == s.size() || !RootViews::setBoardView(board,s.substr(slash+1),why))
+    return false;
+  view = GameInterface::viewText<GameRules>(board.pos);
+  return tryParseLoc(s.substr(0,slash),board,loc);
 }
 
 //Filter out all double newlines, since double newline terminates GTP command responses
@@ -384,6 +402,11 @@ struct GTPEngine {
   Board initialBoard;
   Player initialPla;
   vector<Move> moveHistory;
+  //KataGame fork (abscls-il4e.4): the view that names each move of moveHistory: "" for the position's own view, else a
+  //view of the game's (playInView). The game's first turn number, which undo starts from: a move in another view
+  //starts the bot's history again (playInView).
+  vector<string> moveViews;
+  int64_t initialTurnNumber;
 
   vector<double> recentWinLossValues;
   double lastSearchFactor;
@@ -437,6 +460,8 @@ struct GTPEngine {
      initialBoard(),
      initialPla(P_BLACK),
      moveHistory(),
+     moveViews(),
+     initialTurnNumber(0),
      recentWinLossValues(),
      lastSearchFactor(1.0),
      desiredDynamicPDAForWhite(0.0),
@@ -595,6 +620,8 @@ struct GTPEngine {
     initialBoard = newInitialBoard;
     initialPla = newInitialPla;
     moveHistory = newMoveHistory;
+    moveViews.assign(newMoveHistory.size(), string());
+    initialTurnNumber = hist.initialTurnNumber;
     recentWinLossValues.clear();
     updateDynamicPDA();
   }
@@ -665,12 +692,36 @@ struct GTPEngine {
     );
   }
 
-  bool play(Loc loc, Player pla) {
+  //KataGame fork (abscls-il4e.4): view names the view in which loc is the move, "" for the position's own (playInView).
+  bool play(Loc loc, Player pla, const string& view = string()) {
     testAssert(bot->getRootHist().rules == currentRules);
-    bool suc = bot->makeMove(loc,pla,preventEncore);
-    if(suc)
+    bool suc = view.empty() ? bot->makeMove(loc,pla,preventEncore) : playInView(loc,pla,view);
+    if(suc) {
       moveHistory.emplace_back(loc,pla);
+      moveViews.push_back(view);
+    }
     return suc;
+  }
+
+  //KataGame fork (abscls-il4e.4): a move in a view of the game's that the position's own view cannot name (a move of
+  //the root views' search, program/rootviews.h). The bot's history starts again after it, at the game's turn number, as
+  //in the analysis engine: the search's graph hash replays the history's moves from its start, where this move would
+  //name another action. The game's position keeps what its inputs read of the earlier moves. moveHistory and moveViews
+  //keep every move with its view, so undo replays the game.
+  bool playInView(Loc loc, Player pla, const string& view) {
+    Board board = bot->getRootBoard();
+    BoardHistory hist = bot->getRootHist();
+    string why;
+    if(!RootViews::setBoardView(board,view,why) || !hist.isLegalTolerant(board,loc,pla))
+      return false;
+    hist.makeBoardMoveAssumeLegal(board,loc,pla,NULL,preventEncore);
+    if(!hist.isGameFinished) {
+      const int64_t turnNumber = hist.getCurrentTurnNumber();
+      hist.clear(board,hist.presumedNextMovePla,hist.rules,hist.encorePhase);
+      hist.setInitialTurnNumber(turnNumber);
+    }
+    bot->setPosition(hist.presumedNextMovePla,board,hist);
+    return true;
   }
 
   bool undo() {
@@ -679,17 +730,18 @@ struct GTPEngine {
     testAssert(bot->getRootHist().rules == currentRules);
 
     vector<Move> moveHistoryCopy = moveHistory;
+    vector<string> moveViewsCopy = moveViews;
 
     Board undoneBoard = initialBoard;
     BoardHistory undoneHist(undoneBoard,initialPla,currentRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
-    undoneHist.setInitialTurnNumber(bot->getRootHist().initialTurnNumber);
+    undoneHist.setInitialTurnNumber(initialTurnNumber);
     vector<Move> emptyMoveHistory;
     setPositionAndRules(initialPla,undoneBoard,undoneHist,initialBoard,initialPla,emptyMoveHistory);
 
     for(int i = 0; i<moveHistoryCopy.size()-1; i++) {
       Loc moveLoc = moveHistoryCopy[i].loc;
       Player movePla = moveHistoryCopy[i].pla;
-      bool suc = play(moveLoc,movePla);
+      bool suc = play(moveLoc,movePla,moveViewsCopy[i]);
       testAssert(suc);
     }
     return true;
@@ -708,17 +760,18 @@ struct GTPEngine {
     }
 
     vector<Move> moveHistoryCopy = moveHistory;
+    vector<string> moveViewsCopy = moveViews;
 
     Board board = initialBoard;
     BoardHistory hist(board,initialPla,newRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
-    hist.setInitialTurnNumber(bot->getRootHist().initialTurnNumber);
+    hist.setInitialTurnNumber(initialTurnNumber);
     vector<Move> emptyMoveHistory;
     setPositionAndRules(initialPla,board,hist,initialBoard,initialPla,emptyMoveHistory);
 
     for(int i = 0; i<moveHistoryCopy.size(); i++) {
       Loc moveLoc = moveHistoryCopy[i].loc;
       Player movePla = moveHistoryCopy[i].pla;
-      bool suc = play(moveLoc,movePla);
+      bool suc = play(moveLoc,movePla,moveViewsCopy[i]);
 
       //Because internally we use a highly tolerant test, we don't expect this to actually trigger
       //even if a rules change did make some earlier moves illegal. But this check simply futureproofs
@@ -741,16 +794,17 @@ struct GTPEngine {
   void rereplayGameForHistoryModesChange() {
     testAssert(bot->getRootHist().rules == currentRules);
     vector<Move> moveHistoryCopy = moveHistory;
+    vector<string> moveViewsCopy = moveViews;
 
     Board board = initialBoard;
     BoardHistory hist(board,initialPla,currentRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
-    hist.setInitialTurnNumber(bot->getRootHist().initialTurnNumber);
+    hist.setInitialTurnNumber(initialTurnNumber);
     vector<Move> emptyMoveHistory;
     setPositionAndRules(initialPla,board,hist,initialBoard,initialPla,emptyMoveHistory);
 
     for(int i = 0; i<moveHistoryCopy.size(); i++) {
       //Tolerant internal replay, same as undo() - the mode never affects move legality.
-      bool suc = play(moveHistoryCopy[i].loc,moveHistoryCopy[i].pla);
+      bool suc = play(moveHistoryCopy[i].loc,moveHistoryCopy[i].pla,moveViewsCopy[i]);
       testAssert(suc);
     }
   }
@@ -774,6 +828,9 @@ struct GTPEngine {
     bool logSearchInfoForChosenMove;
     PrintTreeOptions logSearchTreeOptions;
     bool debug;
+    //KataGame fork (abscls-il4e.4): whether genmove searches the root's views (genMoveRootViews), and their settings.
+    bool rootViews = false;
+    RootViews::Settings rootViewSettings;
   };
 
   struct AnalyzeArgs {
@@ -1073,6 +1130,15 @@ struct GTPEngine {
     const std::function<void(const string&, bool)>& printGTPResponse,
     bool& maybeStartPondering
   ) {
+    //KataGame fork (abscls-il4e.4): with rootViews, a position that needs a view other than the rule's takes the root
+    //views' search. The rule's view alone gives the usual search below.
+    if(gargs.rootViews && !args.analyzing) {
+      const vector<string> views = RootViews::cover(bot->getRootBoard());
+      if(views.size() > 1 || !views[0].empty()) {
+        genMoveRootViews(pla,logger,gargs,views,playChosenMove,printGTPResponse,maybeStartPondering);
+        return;
+      }
+    }
     bool onMoveWasCalled = false;
     Loc genmoveMoveLoc = Board::NULL_LOC;
     auto onMove = [&genmoveMoveLoc,&onMoveWasCalled](Loc moveLoc, int searchId, Search* search) noexcept {
@@ -1141,12 +1207,44 @@ struct GTPEngine {
     const AnalyzeArgs& args,
     const std::function<void(Loc, int, Search*)>& onMove
   ) {
+    TimeControls tc = pla == P_BLACK ? bTimeControls : wTimeControls;
+    double searchFactor = prepareGenMove(pla,gargs,args);
+
+    //So that we can tell by the end of the search whether we still care for the result.
+    int expectedSearchId = (genmoveExpectedId.load() + 1) & 0x3FFFFFFF;
+    genmoveExpectedId.store(expectedSearchId);
+
+    if(args.analyzing) {
+      std::function<void(const Search* search)> callback = getAnalyzeCallback(pla,args);
+      if(args.showOwnership || args.showOwnershipStdev || args.showMovesOwnership || args.showMovesOwnershipStdev)
+        bot->setAlwaysIncludeOwnerMap(true);
+      else
+        bot->setAlwaysIncludeOwnerMap(false);
+
+      //Make sure callback happens at least once
+      auto onMoveWrapped = [onMove,callback](Loc moveLoc, int searchId, Search* search) {
+        callback(search);
+        onMove(moveLoc,searchId,search);
+      };
+      bot->genMoveAsyncAnalyze(pla, expectedSearchId, tc, searchFactor, onMoveWrapped, args.secondsPerReport, args.secondsPerReport, callback);
+    }
+    else {
+      bot->genMoveAsync(pla,expectedSearchId,tc,searchFactor,onMove);
+    }
+  }
+
+  //A genmove's settings (KataGame fork: launchGenMove's first part, which genMoveRootViews shares): starts the timer,
+  //sets the params, the moves to avoid and the root's focus, and returns the search factor.
+  double prepareGenMove(
+    Player pla,
+    const GenmoveArgs& gargs,
+    const AnalyzeArgs& args
+  ) {
     genmoveTimer.reset();
 
     nnEval->clearStats();
     if(humanEval != NULL)
       humanEval->clearStats();
-    TimeControls tc = pla == P_BLACK ? bTimeControls : wTimeControls;
 
     if(!isGenmoveParams) {
       bot->setParams(genmoveParams);
@@ -1190,28 +1288,106 @@ struct GTPEngine {
 
     bot->setAvoidMoveUntilByLoc(args.avoidMoveUntilByLocBlack,args.avoidMoveUntilByLocWhite);
     bot->setRootFocus(args.focusMoves,args.focusWeights,args.focusProb);
+    return searchFactor;
+  }
 
-    //So that we can tell by the end of the search whether we still care for the result.
-    int expectedSearchId = (genmoveExpectedId.load() + 1) & 0x3FFFFFFF;
-    genmoveExpectedId.store(expectedSearchId);
-
-    if(args.analyzing) {
-      std::function<void(const Search* search)> callback = getAnalyzeCallback(pla,args);
-      if(args.showOwnership || args.showOwnershipStdev || args.showMovesOwnership || args.showMovesOwnershipStdev)
-        bot->setAlwaysIncludeOwnerMap(true);
-      else
-        bot->setAlwaysIncludeOwnerMap(false);
-
-      //Make sure callback happens at least once
-      auto onMoveWrapped = [onMove,callback](Loc moveLoc, int searchId, Search* search) {
-        callback(search);
-        onMove(moveLoc,searchId,search);
-      };
-      bot->genMoveAsyncAnalyze(pla, expectedSearchId, tc, searchFactor, onMoveWrapped, args.secondsPerReport, args.secondsPerReport, callback);
+  //KataGame fork (abscls-il4e.4): genmove with the search of the root's views (program/rootviews.h), for a position
+  //whose cover, views, needs a view other than the rule's. Each search takes its share of the genmove's limits and of
+  //its player's clock through genMoveSynchronous's searchFactor, so the move takes the clock's time of one search. The
+  //answer names a move that the position's own view cannot name as play reads it (MOVE/VIEW), and resignation reads
+  //the chosen move's value. The bot's tree does not carry over to the next move. ogsChatToStderr, delayMoveScale,
+  //friendlyPass, cleanupBeforePass and the automatic avoid patterns, which read one search's tree, do not act here.
+  void genMoveRootViews(
+    Player pla,
+    Logger& logger,
+    const GenmoveArgs& gargs,
+    const vector<string>& views,
+    bool playChosenMove,
+    const std::function<void(const string&, bool)>& printGTPResponse,
+    bool& maybeStartPondering
+  ) {
+    TimeControls tc = pla == P_BLACK ? bTimeControls : wTimeControls;
+    double searchFactor = prepareGenMove(pla,gargs,AnalyzeArgs());
+    const Board rootBoard = bot->getRootBoard();
+    const BoardHistory rootHist = bot->getRootHist();
+    RootViews::Report report;
+    report.perspective = P_WHITE;  //resignation's side
+    report.analysisPVLen = analysisPVLen;
+    report.preventEncore = preventEncore;
+    nlohmann::json ret;
+    RootViews::Pick pick;
+    bool suc = RootViews::search(
+      bot,rootBoard,rootHist,pla,views,tc,searchFactor,gargs.rootViewSettings,report,
+      std::function<void()>(),std::function<bool()>(),ret,pick
+    );
+    bot->setPosition(pla,rootBoard,rootHist);
+    if(!suc || pick.loc == Board::NULL_LOC) {
+      genmoveTimeSum += genmoveTimer.getSeconds();
+      ostringstream sout;
+      sout << "genmove: the root views' search gave no move" << "\n";
+      sout << rootBoard << "\n";
+      sout << "Pla: " << PlayerIO::playerToString(pla) << "\n";
+      logger.write(sout.str());
+      printGTPResponse("genmove returned null location or illegal move",true);
+      return;
     }
-    else {
-      bot->genMoveAsync(pla,expectedSearchId,tc,searchFactor,onMove);
+
+    //The chosen move's values, from White's side.
+    const double winLossValue = 2.0 * ret["rootInfo"]["winrate"].get<double>() - 1.0;
+    const double lead = ret["rootInfo"]["scoreLead"].get<double>();
+    recentWinLossValues.push_back(winLossValue);
+    bool resigned = gargs.allowResignation && shouldResign(
+      rootBoard,rootHist,pla,recentWinLossValues,lead,
+      gargs.resignThreshold,gargs.resignConsecTurns,gargs.resignMinScoreDifference,gargs.resignMinMovesPerBoardArea
+    );
+    double timeTaken = genmoveTimer.getSeconds();
+    genmoveTimeSum += timeTaken;
+
+    const string move = Location::toString(pick.loc,rootBoard) + (pick.view.empty() ? "" : "/" + pick.view);
+    if(gargs.logSearchInfo || gargs.debug) {
+      const string log = rootViewsLog(ret,move,timeTaken);
+      if(gargs.logSearchInfo)
+        logger.write(log);
+      if(gargs.debug)
+        cerr << log << endl;
     }
+    printGTPResponse(resigned ? "resign" : move,false);
+    if(!resigned && playChosenMove) {
+      if(!play(pick.loc,pla,pick.view)) {
+        ostringstream sout;
+        sout << "Engine chose move but makeMove failed" << "\n";
+        sout << rootBoard << "\n";
+        sout << "Pla: " << PlayerIO::playerToString(pla) << "\n";
+        sout << "Move: " << move << "\n";
+        logger.write(sout.str());
+        Global::fatalError(sout.str());
+      }
+      maybeStartPondering = true;
+    }
+  }
+
+  //KataGame fork (abscls-il4e.4): the log line of a root views' search: the move as genmove answers it, the time, the
+  //cover's views, the searches and their visits, and the best candidates (the analysis engine's moveInfos, the values
+  //from White's side), as one JSON object.
+  static string rootViewsLog(const nlohmann::json& ret, const string& move, double timeTaken) {
+    nlohmann::json log;
+    log["move"] = move;
+    log["seconds"] = timeTaken;
+    log["views"] = ret["rootInfo"]["views"];
+    log["searches"] = ret["rootInfo"]["searches"];
+    log["visits"] = ret["rootInfo"]["visits"];
+    log["candidates"] = nlohmann::json::array();
+    for(const nlohmann::json& info : ret["moveInfos"]) {
+      if(log["candidates"].size() >= 10)
+        break;
+      nlohmann::json candidate;
+      for(const char* key : {"move", "view", "visits", "checkVisits", "winrate", "scoreLead", "utility", "order"}) {
+        if(info.contains(key))
+          candidate[key] = info[key];
+      }
+      log["candidates"].push_back(candidate);
+    }
+    return "rootViews " + log.dump();
   }
 
   void handleGenMoveResult(
@@ -2134,6 +2310,18 @@ class GTPSession {
   std::function<void(bool)> maybeSaveAvoidPatterns;
   bool currentlyGenmoving = false;
   bool currentlyAnalyzing = false;
+
+  //KataGame fork (abscls-il4e.4): the setting rootViews (the config and kata-set-param) and the root views' settings.
+  bool rootViews = false;
+  RootViews::Settings rootViewSettings;
+  //Whether genmove searches the root's views (GTPEngine::genMoveRootViews): rootViews, in a game with views of its own.
+  //The commands that show one search as it runs, or end it on a new line, refuse to run while it is on.
+  bool rootViewsOn() const {
+    return rootViews && GameInterface::hasViews<GameRules>();
+  }
+  string rootViewsRefusal(const string& command) const {
+    return command + " does not combine with rootViews, which searches several roots (kata-set-param rootViews false)";
+  }
 };
 
 int MainCmds::gtp(const vector<string>& args) {
@@ -2246,6 +2434,12 @@ GTPSession::GTPSession(
   logger.write("Using " + Global::intToString(initialGenmoveParams.numThreads) + " CPU thread(s) for search");
 
   ponderingEnabled = cfg.contains("ponderingEnabled") ? cfg.getBool("ponderingEnabled") : false;
+
+  //KataGame fork (abscls-il4e.4): the root views in genmove, off by default (GTPEngine::genMoveRootViews).
+  rootViews = cfg.contains("rootViews") ? cfg.getBool("rootViews") : false;
+  rootViewSettings = RootViews::loadSettings(cfg);
+  if(rootViews && !GameInterface::hasViews<GameRules>())
+    logger.write(string("Note: rootViews: the game ") + GameRules::NAME + " has one view, so genmove has one search");
 
   cleanupBeforePass = cfg.contains("cleanupBeforePass") ? cfg.getEnabled("cleanupBeforePass") : enabled_t::Auto;
   friendlyPass = cfg.contains("friendlyPass") ? cfg.getEnabled("friendlyPass") : enabled_t::Auto;
@@ -2742,6 +2936,7 @@ bool GTPSession::handle(string line) {
       paramsList.emplace_back("ponderingEnabled");
       paramsList.emplace_back("delayMoveScale");
       paramsList.emplace_back("delayMoveMax");
+      paramsList.emplace_back("rootViews");  //KataGame fork (abscls-il4e.4)
       nlohmann::json params = engine->getGenmoveParams().changeableParametersToJson();
       for(auto& elt : params.items()) {
         paramsList.push_back(elt.key());
@@ -2775,6 +2970,8 @@ bool GTPSession::handle(string line) {
           response = Global::doubleToString(engine->delayMoveScale);
         else if(pieces[0] == "delayMoveMax")
           response = Global::doubleToString(engine->delayMoveMax);
+        else if(pieces[0] == "rootViews")  //KataGame fork (abscls-il4e.4)
+          response = Global::boolToString(rootViews);
         else {
           nlohmann::json params = engine->getGenmoveParams().changeableParametersToJson();
           if(params.find(pieces[0]) == params.end()) {
@@ -2824,6 +3021,7 @@ bool GTPSession::handle(string line) {
       params["ponderingEnabled"] = Global::boolToString(ponderingEnabled);
       params["delayMoveScale"] = Global::doubleToString(engine->delayMoveScale);
       params["delayMoveMax"] = Global::doubleToString(engine->delayMoveMax);
+      params["rootViews"] = Global::boolToString(rootViews);  //KataGame fork (abscls-il4e.4)
       response = params.dump();
     }
     else if(command == "kata-set-param" || command == "kata-set-params") {
@@ -2884,6 +3082,10 @@ bool GTPSession::handle(string line) {
             cleanCfg.markKeyUsed("ponderingEnabled");
             cleanCfg.markKeyUsed("delayMoveScale");
             cleanCfg.markKeyUsed("delayMoveMax");
+            //KataGame fork (abscls-il4e.4): the root views in genmove, a boolean, read here so that a bad value is
+            //refused before it enters the config.
+            if(cleanCfg.contains("rootViews"))
+              cleanCfg.getBool("rootViews");
 
             vector<string> unusedKeys = cleanCfg.unusedKeys();
             for(const string& unused: unusedKeys) {
@@ -2907,6 +3109,7 @@ bool GTPSession::handle(string line) {
           bool desiredPonderingEnabled = cfg.contains("ponderingEnabled") ? cfg.getBool("ponderingEnabled") : ponderingEnabled;
           double desiredDelayMoveScale = cfg.contains("delayMoveScale") ? cfg.getDouble("delayMoveScale",0.0,10000.0) : engine->delayMoveScale;
           double desiredDelayMoveMax = cfg.contains("delayMoveMax") ? cfg.getDouble("delayMoveMax",0.0,1000000.0) : engine->delayMoveMax;
+          bool desiredRootViews = cfg.contains("rootViews") ? cfg.getBool("rootViews") : rootViews;
 
           SearchParams::failIfParamsDifferOnUnchangeableParameter(initialGenmoveParams,genmoveParams);
           SearchParams::failIfParamsDifferOnUnchangeableParameter(initialAnalysisParams,analysisParams);
@@ -2925,6 +3128,7 @@ bool GTPSession::handle(string line) {
           ponderingEnabled = desiredPonderingEnabled;
           engine->delayMoveScale = desiredDelayMoveScale;
           engine->delayMoveMax = desiredDelayMoveMax;
+          rootViews = desiredRootViews;
         }
         catch(const StringError& exception) {
           responseIsError = true;
@@ -3194,6 +3398,7 @@ bool GTPSession::handle(string line) {
     else if(command == "play") {
       Player pla;
       Loc loc;
+      string view;  //KataGame fork (abscls-il4e.4): the view that names the move (tryParseMoveInView)
       if(pieces.size() != 2) {
         responseIsError = true;
         response = "Expected two arguments for play but got '" + Global::concat(pieces," ") + "'";
@@ -3202,7 +3407,7 @@ bool GTPSession::handle(string line) {
         responseIsError = true;
         response = "Could not parse color: '" + pieces[0] + "'";
       }
-      else if(!tryParseLoc(pieces[1],engine->bot->getRootBoard(),loc)) {
+      else if(!tryParseMoveInView(pieces[1],engine->bot->getRootBoard(),loc,view)) {
         responseIsError = true;
         response = "Could not parse vertex: '" + pieces[1] + "'";
       }
@@ -3211,7 +3416,7 @@ bool GTPSession::handle(string line) {
         response = turnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla);
       }
       else {
-        bool suc = engine->play(loc,pla);
+        bool suc = engine->play(loc,pla,view);
         if(!suc) {
           responseIsError = true;
           response = "illegal move";
@@ -3289,6 +3494,10 @@ bool GTPSession::handle(string line) {
         responseIsError = true;
         response = turnError(engine->bot->getRootBoard(),engine->bot->getRootHist(),pla);
       }
+      else if(command == "kata-search_cancellable" && rootViewsOn()) {  //KataGame fork: a new line ends one search
+        responseIsError = true;
+        response = rootViewsRefusal(command);
+      }
       else {
         bool debug = command == "genmove_debug" || command == "kata-search_debug";
         bool playChosenMove = command == "genmove" || command == "genmove_debug";
@@ -3308,6 +3517,8 @@ bool GTPSession::handle(string line) {
         gargs.logSearchInfoForChosenMove = logSearchInfoForChosenMove;
         gargs.logSearchTreeOptions = logSearchTreeOptions;
         gargs.debug = debug;
+        gargs.rootViews = rootViewsOn();
+        gargs.rootViewSettings = rootViewSettings;
 
         if(command == "kata-search_cancellable") {
           engine->genMoveCancellable(
@@ -3345,7 +3556,11 @@ bool GTPSession::handle(string line) {
       Player pla = engine->bot->getRootPla();
       bool parseFailed = false;
       GTPEngine::AnalyzeArgs analyzeArgs = parseAnalyzeCommand(command, pieces, pla, parseFailed, engine);
-      if(parseFailed) {
+      if(rootViewsOn()) {  //KataGame fork (abscls-il4e.4): its lines show one search as it runs
+        responseIsError = true;
+        response = rootViewsRefusal(command);
+      }
+      else if(parseFailed) {
         responseIsError = true;
         response = "Could not parse genmove_analyze arguments or arguments out of range: '" + Global::concat(pieces," ") + "'";
       }
@@ -3722,7 +3937,11 @@ bool GTPSession::handle(string line) {
       bool parseFailed = false;
       GTPEngine::AnalyzeArgs analyzeArgs = parseAnalyzeCommand(command, pieces, pla, parseFailed, engine);
 
-      if(parseFailed) {
+      if(rootViewsOn()) {  //KataGame fork (abscls-il4e.4): its lines show one search as it runs
+        responseIsError = true;
+        response = rootViewsRefusal(command);
+      }
+      else if(parseFailed) {
         responseIsError = true;
         response = "Could not parse analyze arguments or arguments out of range: '" + Global::concat(pieces," ") + "'";
       }
