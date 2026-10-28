@@ -434,13 +434,14 @@ struct GameEncoding {
   }
 
   // The minimap (MINIMAP to THEIR_WINDOW), the whole board at a coarse scale, in the view's frame: the cells turned by
-  // R^back(o) around the window's middle, as the turned position (the view's in orientation 0) holds them, then moved
-  // so that their box is in the middle, as the rules board recenters (center_box). So in orientation 0 the bins are
-  // the rules board's 5 x 5 points (the board recenters after each placement), 51 x 51 bins in the middle. A bin of
-  // planes MINIMAP + 3 * side + type holds a cell of that player (side 0 the mover) and type. MY_WINDOW and
-  // THEIR_WINDOW: the bins that each player's view meets (player_view), a square of the turned frame. The planes of
-  // the position's image at a symmetry are the planes' image, a pixel map (spatial_inputs): the bins of the rules board
-  // map to bins, and the box's middle rounds toward zero, as the recentering does.
+  // R^back(o) around the view's middle (view_middle), as the turned position (the view's in orientation 0) holds them,
+  // then moved so that their box is in the middle, as the rules board recenters (center_box). So in orientation 0 the
+  // bins are the rules board's 5 x 5 points (the board recenters after each placement), 51 x 51 bins in the middle. A
+  // bin of planes MINIMAP + 3 * side + type holds a cell of that player (side 0 the mover) and type. MY_WINDOW and
+  // THEIR_WINDOW: the bins that each player's view meets, a square of the turned frame: the mover's view (view_of: its
+  // window, or a view that a caller set), and the view where the opponent places (player_view). The planes of the
+  // position's image at a symmetry are the planes' image, a pixel map (spatial_inputs): the bins of the rules board map
+  // to bins, and the box's middle rounds toward zero, as the recentering does.
   template<class Set>
   static void write_minimap(const Position& p, Set& set) {
     const int mover = GameRules::next_player(p);
@@ -488,7 +489,7 @@ struct GameEncoding {
     for(const Cell& c : cells)
       mark(minimap_bin(c.u - du), minimap_bin(c.v - dv), MINIMAP + c.plane);
     for(int side = 0; side < 2; side++) {
-      const View window = player_view(p, side == 0 ? mover : 1 - mover);
+      const View window = side == 0 ? view : player_view(p, 1 - mover);
       int u, v;
       turned(window.wx, window.wy, u, v);
       for(int by = minimap_bin(v - dv - VIEW_RADIUS); by <= minimap_bin(v - dv + VIEW_RADIUS); by++)
@@ -688,19 +689,24 @@ struct GameEncoding {
   }
   // The window boxes of the image at the symmetry, the state of the window's rule (window_middle): each player's last
   // RECENT placements' boxes, the newest first, the mover's first, as BOX_FIELDS values each (BOX_INPUT): 1 when the
-  // box is there, then the box's corners (x0, y0) and (x1, y1) from the mover's window's middle, in the view's frame
-  // (turned by R^back(o)), / VIEW: the first corner's x and the second's, then the first corner's y and the second's.
-  // In orientation 0 they are the box's least and most x and y. A turned box is not a box, so its two corners stand
-  // for it. A symmetry maps the corners as offsets (sym_offset), and the turn by 180 degrees and the second reflection
-  // (3 and 7) swap them: the trainer's map (katago/train/games/blueprints.py). Absent boxes hold 0.
+  // box is there, then the box's corners (x0, y0) and (x1, y1) from the view's middle (view_middle: the mover's
+  // window's middle, or the middle of a view that a caller set), in the view's frame (turned by R^back(o)), / VIEW: the
+  // first corner's x and the second's, then the first corner's y and the second's. In orientation 0 they are the box's
+  // least and most x and y. A turned box is not a box, so its two corners stand for it. A symmetry maps the corners as
+  // offsets (sym_offset), as both middles map as pixels, and the turn by 180 degrees and the second reflection (3 and
+  // 7) swap them: the trainer's map (katago/train/games/blueprints.py). Absent boxes hold 0.
   static void box_inputs(const Position& p, int symmetry, float* out) {
     const int mover = GameRules::next_player(p);
     Box recent[2][RECENT];
     for(int player = 0; player < 2; player++)
       for(int i = 0; i < RECENT; i++)
         recent[player][i] = symmetry == 0 ? p.recent[player][i] : sym_box(p.recent[player][i], symmetry);
-    int wx, wy;
-    window_middle(recent[mover], wx, wy);
+    // The image's view middle: the set view's middle's pixel, or the image's window's middle.
+    int wx = p.viewX, wy = p.viewY;
+    if(p.viewSet)
+      sym_rules(wx, wy, symmetry);
+    else
+      window_middle(recent[mover], wx, wy);
     const int turnBack = back(sym_orientation(p.orientation, symmetry));
     for(int side = 0; side < 2; side++)
       for(int i = 0; i < RECENT; i++) {
