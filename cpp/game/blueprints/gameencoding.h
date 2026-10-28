@@ -489,9 +489,9 @@ struct GameEncoding {
     for(const Cell& c : cells)
       mark(minimap_bin(c.u - du), minimap_bin(c.v - dv), MINIMAP + c.plane);
     for(int side = 0; side < 2; side++) {
-      const View window = side == 0 ? view : player_view(p, 1 - mover);
+      const View sideView = side == 0 ? view : player_view(p, 1 - mover);
       int u, v;
-      turned(window.wx, window.wy, u, v);
+      turned(sideView.wx, sideView.wy, u, v);
       for(int by = minimap_bin(v - dv - VIEW_RADIUS); by <= minimap_bin(v - dv + VIEW_RADIUS); by++)
         for(int bx = minimap_bin(u - du - VIEW_RADIUS); bx <= minimap_bin(u - du + VIEW_RADIUS); bx++)
           mark(bx, by, side == 0 ? MY_WINDOW : THEIR_WINDOW);
@@ -693,20 +693,19 @@ struct GameEncoding {
   // window's middle, or the middle of a view that a caller set), in the view's frame (turned by R^back(o)), / VIEW: the
   // first corner's x and the second's, then the first corner's y and the second's. In orientation 0 they are the box's
   // least and most x and y. A turned box is not a box, so its two corners stand for it. A symmetry maps the corners as
-  // offsets (sym_offset), as both middles map as pixels, and the turn by 180 degrees and the second reflection (3 and
-  // 7) swap them: the trainer's map (katago/train/games/blueprints.py). Absent boxes hold 0.
+  // offsets (sym_offset), because both middles map as pixels, and the turn by 180 degrees and the second reflection (3
+  // and 7) swap them: the trainer's map (katago/train/games/blueprints.py). Absent boxes hold 0.
   static void box_inputs(const Position& p, int symmetry, float* out) {
     const int mover = GameRules::next_player(p);
     Box recent[2][RECENT];
     for(int player = 0; player < 2; player++)
       for(int i = 0; i < RECENT; i++)
         recent[player][i] = symmetry == 0 ? p.recent[player][i] : sym_box(p.recent[player][i], symmetry);
-    // The image's view middle: the set view's middle's pixel, or the image's window's middle.
-    int wx = p.viewX, wy = p.viewY;
-    if(p.viewSet)
-      sym_rules(wx, wy, symmetry);
-    else
-      window_middle(recent[mover], wx, wy);
+    // The image's view middle: the view's middle maps as a pixel, a set view's (sym_records) and the mover's window's
+    // (half_off_middle commutes with the symmetries).
+    int wx, wy;
+    view_middle(p, wx, wy);
+    sym_rules(wx, wy, symmetry);
     const int turnBack = back(sym_orientation(p.orientation, symmetry));
     for(int side = 0; side < 2; side++)
       for(int i = 0; i < RECENT; i++) {
