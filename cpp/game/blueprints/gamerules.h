@@ -155,13 +155,12 @@ constexpr uint64_t KEY_ORIENTATION = 60101;  // the view's orientation, when it 
 constexpr uint64_t KEY_VIEW = 60102;     // the middle of a view that a caller set (set_view)
 // gameencoding.h's input_hash: the points of the history of the actions (KEY_HISTORY) and of the turns (KEY_TURNS), +
 // h * 2 * KEY_AREA + a point's number within KEY_RADIUS for record h's stamped points, and KEY_AREA more for its taken
-// points. A point beyond KEY_RADIUS takes its key from KEY_FAR_HISTORY or KEY_FAR_TURNS instead: + h * 2 * RULES_AREA
-// + its index on the rules board, and RULES_AREA more for a taken point.
+// points. A point beyond KEY_RADIUS takes its key from KEY_FAR, with its site_key from the middle: no range of keys
+// grows with the rules board.
 constexpr uint64_t KEY_HISTORY = 70000;
 constexpr uint64_t KEY_TURNS = 600000;
 constexpr uint64_t KEY_TURN_EDIT = 1200000;  // input_hash: + h * TURN_MOVES + m, when move m of turn h was an edit
-constexpr uint64_t KEY_FAR_HISTORY = 1300000;
-constexpr uint64_t KEY_FAR_TURNS = 3400000;
+constexpr uint64_t KEY_FAR = 1300000;    // input_hash: + h * 4, + 2 for a turn's point, + 1 for a taken point
 // The points within KEY_RADIUS of the rules board's middle have the numbers that they had on the port's first rules
 // board, 255 x 255 points: (r + KEY_RADIUS) * KEY_LEN + q + KEY_RADIUS, (q, r) from the middle. So a state whose points
 // lie there keeps its key, and RGSC's buffers, which hold each state's key (program/rgsc.cpp), load as before.
@@ -338,11 +337,8 @@ struct Footprint {
 // it was an edit (a pick and its drop). A turn has at most TURN_MOVES moves (turn_of: 1, then 2 each).
 constexpr int TURN_MOVES = 2;
 static_assert(KEY_RADIUS <= RULES_RADIUS && KEY_HISTORY + HISTORY * 2 * KEY_AREA <= KEY_TURNS &&
-                KEY_TURNS + HISTORY * 2 * KEY_AREA <= KEY_TURN_EDIT &&
-                KEY_TURN_EDIT + HISTORY * TURN_MOVES <= KEY_FAR_HISTORY &&
-                KEY_FAR_HISTORY + HISTORY * 2 * RULES_AREA <= KEY_FAR_TURNS &&
-                KEY_FAR_TURNS + HISTORY * 2 * RULES_AREA <= 1000000000,
-              "the hash's ranges of keys do not meet, and stay below the cells' keys");
+                KEY_TURNS + HISTORY * 2 * KEY_AREA <= KEY_TURN_EDIT && KEY_TURN_EDIT + HISTORY * TURN_MOVES <= KEY_FAR,
+              "the hash's ranges of keys do not meet");
 struct TurnRecord {
   int8_t nStamped = 0, nTaken = 0;
   bool edit[TURN_MOVES] = {};
@@ -1624,17 +1620,18 @@ struct GameRules {
     std::string s = std::to_string(p.ply) + " " + std::to_string(p.scores[0]) + " " + std::to_string(p.scores[1]) + " ";
     std::string board;
     const Box& used = p.cell.box();  // it holds every cell (Cells)
-    for(int y = used.y0; used.any && y <= used.y1; y++)
-      for(int x = used.x0; x <= used.x1; x++) {
-        const int8_t v = p.cell[y * RULES_LEN + x];
-        if(!v)
-          continue;
-        if(!board.empty())
-          board += ';';
-        const char letter = TYPE_LETTERS[cell_type(v)];
-        board += cell_text(x - RULES_RADIUS, y - RULES_RADIUS) + "," +
-                 char(cell_owner(v) ? std::toupper(letter) : letter);
-      }
+    if(used.any)
+      for(int y = used.y0; y <= used.y1; y++)
+        for(int x = used.x0; x <= used.x1; x++) {
+          const int8_t v = p.cell[y * RULES_LEN + x];
+          if(!v)
+            continue;
+          if(!board.empty())
+            board += ';';
+          const char letter = TYPE_LETTERS[cell_type(v)];
+          board += cell_text(x - RULES_RADIUS, y - RULES_RADIUS) + "," +
+                   char(cell_owner(v) ? std::toupper(letter) : letter);
+        }
     s += board.empty() ? "-" : board;
     for(int player = 0; player < 2; player++) {
       s += ' ';

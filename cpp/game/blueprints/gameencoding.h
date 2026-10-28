@@ -728,25 +728,25 @@ struct GameEncoding {
   // flags. Both histories, so that the network's cache and RGSC's states are exact under each inputs version.
   static Hash128 input_hash(const Position& p) {
     Hash128 h;
-    // An action's or a turn's points from the keys of its place in its ring (gamerules.h, KEY_HISTORY): from `near` a
-    // point within KEY_RADIUS of the rules board's middle by its number there, from `far` a point beyond by its index,
-    // and a taken point after the stamped points.
+    // An action's or a turn's points by the keys of its place in its ring (gamerules.h, KEY_HISTORY): from `near` a
+    // point within KEY_RADIUS of the rules board's middle by its number there, a taken point after the stamped points,
+    // and from `far` a point beyond by its site_key from the middle, a taken point at far + 1.
     auto add_points = [&h](uint64_t near, uint64_t far, const auto& f) {
       auto point_key = [near, far](int32_t index, bool taken) {
         const int q = index % RULES_LEN - RULES_RADIUS, r = index / RULES_LEN - RULES_RADIUS;
         if(std::abs(q) <= KEY_RADIUS && std::abs(r) <= KEY_RADIUS)
-          return near + (taken ? KEY_AREA : 0) + uint64_t((r + KEY_RADIUS) * KEY_LEN + q + KEY_RADIUS);
-        return far + (taken ? RULES_AREA : 0) + uint64_t(index);
+          return key(near + (taken ? KEY_AREA : 0) + uint64_t((r + KEY_RADIUS) * KEY_LEN + q + KEY_RADIUS), 0);
+        return key(far + (taken ? 1 : 0), site_key(q, r));
       };
       for(int i = 0; i < f.nStamped; i++)
-        h ^= key(point_key(f.stamped[i], false), 0);
+        h ^= point_key(f.stamped[i], false);
       for(int i = 0; i < f.nTaken; i++)
-        h ^= key(point_key(f.taken[i], true), 0);
+        h ^= point_key(f.taken[i], true);
     };
     for(int t = 0; t < HISTORY; t++) {
       const uint64_t ring = uint64_t(t) * 2;
-      add_points(KEY_HISTORY + ring * KEY_AREA, KEY_FAR_HISTORY + ring * RULES_AREA, p.history[t]);
-      add_points(KEY_TURNS + ring * KEY_AREA, KEY_FAR_TURNS + ring * RULES_AREA, p.turns[t]);
+      add_points(KEY_HISTORY + ring * KEY_AREA, KEY_FAR + ring * 2, p.history[t]);
+      add_points(KEY_TURNS + ring * KEY_AREA, KEY_FAR + ring * 2 + 2, p.turns[t]);
       for(int m = 0; m < TURN_MOVES; m++)
         if(p.turns[t].edit[m])
           h ^= key(KEY_TURN_EDIT + uint64_t(t * TURN_MOVES + m), 0);
