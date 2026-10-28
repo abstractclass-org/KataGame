@@ -162,9 +162,9 @@ namespace NNInputs {
   //opponent's. A game without them has V12 equal to its V11. Model version 21.
   const int NUM_FEATURES_SPATIAL_V12 = NUM_FEATURES_SPATIAL_V11 + GameInterface::areaSpatialInputs<GameEncoding>();
   const int NUM_FEATURES_GLOBAL_V12 = NUM_FEATURES_GLOBAL_V11;
-  //KataGame fork (2026-10-29): V13, V12's inputs with the game's labels in their canonical order (InputOptions::canonical,
-  //GameInterface: CanonicalActionMap), and the policy in the same order. Blueprints: each hand in an order of its
-  //blueprints' cells. A game without the order has V13 equal to its V12. Model version 22.
+  //KataGame fork (2026-10-29): V13, V12's inputs with the game's labels in their canonical order
+  //(InputOptions::canonical, GameInterface: CanonicalActionMap), and the policy in the same order. Blueprints: each
+  //hand in an order of its blueprints' cells. A game without the order has V13 equal to its V12. Model version 22.
   const int NUM_FEATURES_SPATIAL_V13 = NUM_FEATURES_SPATIAL_V12;
   const int NUM_FEATURES_GLOBAL_V13 = NUM_FEATURES_GLOBAL_V12;
 

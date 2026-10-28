@@ -31,14 +31,8 @@ def test_version_13_has_version_12s_inputs():
     assert not games.canonical_labels(games.get("enclosure"))  # a game without the order: version 13 is version 12
 
 
-def checkpoint_12():
-    ckpt = checkpoint(11)
-    add_extended_inputs.convert(ckpt, 12)
-    return ckpt
-
-
 def test_the_conversion_sets_the_version_and_changes_no_weight():
-    ckpt = checkpoint_12()
+    ckpt = checkpoint(12)
     before = {part: {k: v.clone() for k, v in ckpt[part].items()} for part in ("model", "swa_model")}
     old, old_swa = models(ckpt)
     assert add_extended_inputs.convert(ckpt, 13) == []
@@ -56,7 +50,7 @@ def test_the_conversion_sets_the_version_and_changes_no_weight():
 
 
 def test_the_converter_refuses_other_inputs():
-    ckpt = checkpoint_12()
+    ckpt = checkpoint(12)
     add_extended_inputs.convert(ckpt, 13)
     with pytest.raises(ValueError, match="version 13, not 12"):
         add_extended_inputs.convert(ckpt, 13)
@@ -67,7 +61,7 @@ def test_the_converter_refuses_other_inputs():
 
 
 def test_the_command_line_gives_version_13(tmp_path):
-    torch.save(checkpoint_12(), tmp_path / "v12.ckpt")
+    torch.save(checkpoint(12), tmp_path / "v12.ckpt")
     script = os.path.join(os.path.dirname(__file__), "..", "add_extended_inputs.py")
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
     run = subprocess.run([sys.executable, script, str(tmp_path / "v12.ckpt"), str(tmp_path / "v13.ckpt"),
@@ -79,7 +73,7 @@ def test_the_command_line_gives_version_13(tmp_path):
 
 
 def test_the_export_writes_model_version_22(tmp_path):
-    ckpt = checkpoint_12()
+    ckpt = checkpoint(12)
     add_extended_inputs.convert(ckpt, 13)
     torch.save(ckpt, tmp_path / "checkpoint.ckpt")
     args = dict(export.args, export_dir=str(tmp_path / "out"), model_name="t", filename_prefix="model",

@@ -260,9 +260,12 @@
  *                           position as a listed action, up to the labels: it maps to that action's index, so that the
  *                           two are one edge of the search, with one prior. The order must not depend on the
  *                           symmetries: the image's order is the position's, so the front maps an action through
- *                           SymActionMap, then through this. Blueprints: each hand in the order of its blueprints'
- *                           cells, and of equal blueprints the lowest-numbered one listed. Default: none, every action
- *                           listed at its own index, and V13 is V12 (CanonicalActions).
+ *                           SymActionMap, then through this. The training rows write the next move's policy target in
+ *                           the next position's frame, and the trainer reads it with the row's inputs: wherever the
+ *                           trainer weighs that target (the game's mask_targets), the next position's order of the
+ *                           next mover's labels must be the row's. Blueprints: each hand in the order of its
+ *                           blueprints' cells, and of equal blueprints the lowest-numbered one listed. Default: none,
+ *                           every action listed at its own index, and V13 is V12 (CanonicalActions).
  */
 
 #include <algorithm>

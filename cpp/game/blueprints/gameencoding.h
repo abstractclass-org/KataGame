@@ -145,11 +145,12 @@ inline void whole_hand(const Position& p, int player, Blueprint* hand) {
 // same inputs. A player's blueprint a comes before blueprint b when a has more cells, else more stars, else more walls,
 // else the lesser shape (shape_codes). The mover's blueprint with a pick waiting counts as the whole blueprint
 // (whole_hand). The key does not depend on the board's frame: a view of any orientation, and the image at any of the
-// game's symmetries, give the position's order, so the trainer's symmetries keep each blueprint's slot. Blueprints
-// whose keys tie are equal, or one is the image of the other (in people's games, 0.7% of the hands): the one with the
-// pick first, then the order of their numbers, the lower first. So equal blueprints give their lowest-numbered one,
-// whose actions the search lists (CanonicalActionMap), the lowest slot, and a pick that the search lists keeps the
-// order of the position before it.
+// game's symmetries, give the position's order, so the trainer's symmetries keep each blueprint's slot. Of equal
+// blueprints, the one with the pick comes first, then the lower number: their lowest-numbered one, whose actions the
+// search lists (CanonicalActionMap), has the lowest slot. Blueprints that are images of each other but not equal tie on
+// the key (in people's games, 0.7% of the hands): they keep the order of their equal blueprints' lowest numbers,
+// whatever the pick. So a pick that the search lists keeps the order of the position before it, and the row's second
+// policy target, in the next position's frame (trainingwrite.cpp), has the row's slots.
 struct HandOrder {
   int8_t slot[2][HAND];  // the slot of each player's blueprint k in the order
 
@@ -163,23 +164,37 @@ struct HandOrder {
         count[k][1] = int(std::count(hand[k].t, hand[k].t + hand[k].n, STAR));
         count[k][2] = int(std::count(hand[k].t, hand[k].t + hand[k].n, WALL));
       }
-      // The codes and the shapes, when two blueprints' counts tie.
+      // The codes, when two blueprints' counts tie, and the shapes, when their codes differ too.
       int16_t codes[HAND][MAX_CELLS], shapes[HAND][MAX_CELLS];
       bool coded[HAND] = {}, shaped[HAND] = {};
-      const int picked = player == turn_of(p.ply) ? p.picked : -1;
-      // Equal keys: the blueprint with the pick first, then the lower number.
-      auto tie = [picked](int a, int b) { return picked == a || picked == b ? picked == a : a < b; };
-      auto before = [&](int a, int b) {
+      auto equal = [&](int a, int b) {
         if(!std::equal(count[a], count[a] + 3, count[b]))
-          return std::lexicographical_compare(count[b], count[b] + 3, count[a], count[a] + 3);
-        const int n = hand[a].n;
+          return false;
         for(int k : {a, b})
           if(!coded[k]) {
             cell_codes(hand[k], codes[k]);
             coded[k] = true;
           }
-        if(std::equal(codes[a], codes[a] + n, codes[b]))
-          return tie(a, b);
+        return std::equal(codes[a], codes[a] + hand[a].n, codes[b]);
+      };
+      // Each blueprint's lowest-numbered equal blueprint, itself when none comes before it.
+      int first[HAND];
+      for(int k = 0; k < HAND; k++) {
+        first[k] = k;
+        for(int j = 0; j < k; j++)
+          if(equal(j, k)) {
+            first[k] = j;
+            break;
+          }
+      }
+      const int picked = player == turn_of(p.ply) ? p.picked : -1;
+      // The key: the counts, the shape, the lowest number of the equal blueprints, the pick, the number.
+      auto before = [&](int a, int b) {
+        if(!std::equal(count[a], count[a] + 3, count[b]))
+          return std::lexicographical_compare(count[b], count[b] + 3, count[a], count[a] + 3);
+        if(first[a] == first[b])  // equal: the one with the pick first, then the lower number
+          return picked == a || picked == b ? picked == a : a < b;
+        const int n = hand[a].n;
         for(int k : {a, b})
           if(!shaped[k]) {
             shape_codes(hand[k], shapes[k]);
@@ -187,7 +202,7 @@ struct HandOrder {
           }
         if(!std::equal(shapes[a], shapes[a] + n, shapes[b]))
           return std::lexicographical_compare(shapes[a], shapes[a] + n, shapes[b], shapes[b] + n);
-        return tie(a, b);
+        return first[a] < first[b];  // images of each other, whatever the pick
       };
       int order[HAND] = {0, 1, 2};
       static_assert(HAND == 3, "the order of three blueprints");

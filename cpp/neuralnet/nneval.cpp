@@ -1277,7 +1277,7 @@ static const std::bitset<GameRules::NUM_ACTIONS>& listedMoves(const Board& board
 //NNResultBuf::policyGather) the policy is read through that list instead and left as it is here.
 //KataGame fork (2026-10-29): the moves map through netAction (SymmetryHelpers::NetActionMap), which from the inputs
 //version 13 also gives the network's frame of the game's labels, even at symmetry 0, and legal holds the moves that
-//the search lists (listedMoves).
+//the search lists (listedMoves). The points move at a symmetry only: the labels' frame leaves them as they are.
 static void mapOutputBack(NNOutput& output, const Board& board, const std::bitset<GameRules::NUM_ACTIONS>& legal,
                           const SymmetryHelpers::NetActionMap& netAction, int symmetry, int policySize,
                           bool mapPolicy) {

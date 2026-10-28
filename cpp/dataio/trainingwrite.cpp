@@ -630,9 +630,9 @@ void TrainingWriteBuffers::addRow(
   //KataGame fork (2026-10-29): from the inputs version 13, the policy targets in the network's frame of the game's
   //labels: the row's moves in the row's position's (labels, which the q-value targets read too), and the next move's
   //in the next position's (nextLabels), as the trainer reads that target with the frames of the next mover
-  //(katago/train/games). Where its blueprints and its view are the row's (the trainer's weight of the target is 0 in
-  //the other rows, mask_targets), Blueprints' order of the next mover's hand is the row's. A game without the order
-  //writes V12's targets.
+  //(katago/train/games). The game's order makes the next position's order of the next mover's labels the row's
+  //wherever the trainer weighs that target (GameInterface: CanonicalActionMap). A game without the order writes V12's
+  //targets.
   std::optional<RowLabels> labels, nextLabels;
   if(inputsVersion >= 13 && GameInterface::hasCanonicalActions<GameEncoding>()) {
     labels.emplace(board.pos);
