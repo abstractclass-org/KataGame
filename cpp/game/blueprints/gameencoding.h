@@ -25,12 +25,15 @@
 // - The planes of closed areas, which the inputs version 12 adds after the extended planes (GameInterface): the points
 //   of the view in the areas closed by the mover's walls and by the opponent's walls, where the other player can never
 //   place (for_each_closed).
+// - The hand's canonical order, which the inputs version 13 reads (GameInterface, CanonicalActionMap): the same inputs
+//   as version 12, with each hand's blueprints in an order of their cells (HandOrder) in place of their numbers'. So
+//   are the policy's channels, and of equal blueprints the search lists the lowest-numbered one's actions only.
 // - The komi K is points added to the second player's final margin (KataGo's White), for the whole game. The rules'
 //   scores stay the earned ones, and the front's history adds K to the result (BoardHistory::endAndScoreGameNow). The
 //   inputs read K as a starting score of the side that it favours, the effective scores S0 + max(-K, 0) and S1 +
 //   max(K, 0). No rule reads a score, so a position at komi K plays as the position with those scores at komi 0.
 // - The policy: 6 channels a point, the actions of gamerules.h (placements, then the cells of the hand: picks, or
-//   drops after a pick).
+//   drops after a pick), each blueprint's at its slot of the hand's order under the inputs version 13.
 // - The view's orientation (gamerules.h): the inputs, the policy and the spatial targets are in the view's frame, and
 //   the hand's planes show the blueprints in the view's frame (ViewHand). So a position in orientation o gives the
 //   inputs of the position turned by R^back(o) around the window's middle in orientation 0.
@@ -53,6 +56,7 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -96,6 +100,127 @@ inline int32_t sym_rules_index(int32_t index, int symmetry) {
 // How far from the view the inputs read the rules board: a placement lies in the view, and the cells next to its
 // cells, or next to the frontier's points, one point beyond.
 constexpr int INPUT_REACH = 2;
+
+// A blueprint's cells as codes (r * 64 + q + 32) * 3 + type, sorted: the least r, then the least q, first, as
+// sorted_cells orders them. In the site's frame (|q|, r <= 20), two blueprints have the same codes when they are equal.
+// Returns the number of cells.
+inline int cell_codes(const Blueprint& b, int16_t* out) {
+  for(int i = 0; i < b.n; i++)
+    out[i] = int16_t((b.r[i] * 64 + b.q[i] + 32) * 3 + b.t[i]);
+  std::sort(out, out + b.n);
+  return b.n;
+}
+
+// A blueprint's shape: of the codes of its 12 images under the hex grid's symmetries, each in the site's frame, the
+// least in the order of a dictionary. The 12 are the view's 6 turns (turn), each with and without the reflection that
+// swaps q and r. Two blueprints have the same shape when one is an image of the other.
+inline void shape_codes(const Blueprint& b, int16_t* out) {
+  int16_t codes[MAX_CELLS];
+  for(int image = 0; image < 2 * ORIENTATIONS; image++) {
+    const bool reflect = image >= ORIENTATIONS;
+    const int o = image % ORIENTATIONS;
+    Blueprint mapped;
+    int mq, mr, noQ = 0, noR = 0;
+    map_blueprint(b, [reflect, o](int& q, int& r) {
+      if(reflect)
+        std::swap(q, r);
+      turn(q, r, o);
+    }, false, noQ, noR, mapped, mq, mr);
+    cell_codes(mapped, codes);
+    if(image == 0 || std::lexicographical_compare(codes, codes + b.n, out, out + b.n))
+      std::copy(codes, codes + b.n, out);
+  }
+}
+
+// A player's blueprints as the hand's order reads them: the mover's blueprint whose cell a pick took is the whole
+// blueprint, the picked cell back in it (its rest keeps the whole blueprint's frame until the drop).
+inline void whole_hand(const Position& p, int player, Blueprint* hand) {
+  std::copy(p.hand[player], p.hand[player] + HAND, hand);
+  if(player == turn_of(p.ply) && p.picked >= 0)
+    hand[p.picked].add(p.pickQ, p.pickR, p.pickType);
+}
+
+// The hand's canonical order, which the inputs version 13 reads (InputOptions::canonical). No rule reads a blueprint's
+// number, so a hand's order is a label, and in this order two positions whose hands differ only in their order give the
+// same inputs. A player's blueprint a comes before blueprint b when a has more cells, else more stars, else more walls,
+// else the lesser shape (shape_codes). The mover's blueprint with a pick waiting counts as the whole blueprint
+// (whole_hand). The key does not depend on the board's frame: a view of any orientation, and the image at any of the
+// game's symmetries, give the position's order, so the trainer's symmetries keep each blueprint's slot. Blueprints
+// whose keys tie are equal, or one is the image of the other (in people's games, 0.7% of the hands): the one with the
+// pick first, then the order of their numbers, the lower first. So equal blueprints give their lowest-numbered one,
+// whose actions the search lists (CanonicalActionMap), the lowest slot, and a pick that the search lists keeps the
+// order of the position before it.
+struct HandOrder {
+  int8_t slot[2][HAND];  // the slot of each player's blueprint k in the order
+
+  explicit HandOrder(const Position& p) {
+    for(int player = 0; player < 2; player++) {
+      Blueprint hand[HAND];
+      whole_hand(p, player, hand);
+      int count[HAND][3];
+      for(int k = 0; k < HAND; k++) {
+        count[k][0] = hand[k].n;
+        count[k][1] = int(std::count(hand[k].t, hand[k].t + hand[k].n, STAR));
+        count[k][2] = int(std::count(hand[k].t, hand[k].t + hand[k].n, WALL));
+      }
+      // The codes and the shapes, when two blueprints' counts tie.
+      int16_t codes[HAND][MAX_CELLS], shapes[HAND][MAX_CELLS];
+      bool coded[HAND] = {}, shaped[HAND] = {};
+      const int picked = player == turn_of(p.ply) ? p.picked : -1;
+      // Equal keys: the blueprint with the pick first, then the lower number.
+      auto tie = [picked](int a, int b) { return picked == a || picked == b ? picked == a : a < b; };
+      auto before = [&](int a, int b) {
+        if(!std::equal(count[a], count[a] + 3, count[b]))
+          return std::lexicographical_compare(count[b], count[b] + 3, count[a], count[a] + 3);
+        const int n = hand[a].n;
+        for(int k : {a, b})
+          if(!coded[k]) {
+            cell_codes(hand[k], codes[k]);
+            coded[k] = true;
+          }
+        if(std::equal(codes[a], codes[a] + n, codes[b]))
+          return tie(a, b);
+        for(int k : {a, b})
+          if(!shaped[k]) {
+            shape_codes(hand[k], shapes[k]);
+            shaped[k] = true;
+          }
+        if(!std::equal(shapes[a], shapes[a] + n, shapes[b]))
+          return std::lexicographical_compare(shapes[a], shapes[a] + n, shapes[b], shapes[b] + n);
+        return tie(a, b);
+      };
+      int order[HAND] = {0, 1, 2};
+      static_assert(HAND == 3, "the order of three blueprints");
+      if(before(order[1], order[0]))
+        std::swap(order[0], order[1]);
+      if(before(order[2], order[1]))
+        std::swap(order[1], order[2]);
+      if(before(order[1], order[0]))
+        std::swap(order[0], order[1]);
+      for(int i = 0; i < HAND; i++)
+        slot[player][order[i]] = int8_t(i);
+    }
+  }
+};
+
+// For each of the mover's blueprints k, the lowest-numbered blueprint equal to it (k itself when none comes before
+// it). A pick waiting for its drop leaves its blueprint out: a drop into either of two equal blueprints gives the same
+// position up to the hand's order, and a drop into the picked blueprint gives a position of its own.
+inline void first_equal(const Position& p, int8_t* first) {
+  const Blueprint* hand = p.hand[turn_of(p.ply)];
+  int16_t codes[HAND][MAX_CELLS];
+  for(int k = 0; k < HAND; k++) {
+    cell_codes(hand[k], codes[k]);
+    first[k] = int8_t(k);
+    if(k == p.picked)
+      continue;
+    for(int j = 0; j < k; j++)
+      if(j != p.picked && hand[j].n == hand[k].n && std::equal(codes[j], codes[j] + hand[k].n, codes[k])) {
+        first[k] = int8_t(j);
+        break;
+      }
+  }
+}
 
 // A box's image: the box of its corners' images on the rules board (sym_rules).
 inline Box sym_box(const Box& b, int symmetry) {
@@ -194,7 +319,12 @@ struct GameEncoding {
   template<class Set>
   static void spatial_inputs(const Position& p, const GameInterface::InputOptions& options, Set&& set) {
     const Position& image = options.symmetry == 0 ? p : near_image(p, options.symmetry);
-    write_inputs(image, options, set);
+    // The hand's order of the inputs version 13: the image's is the position's (HandOrder).
+    std::optional<HandOrder> order;
+    if(options.canonical)
+      order.emplace(p);
+    const HandOrder* slots = order ? &*order : nullptr;
+    write_inputs(image, options, slots, set);
     // The threats, the minimap and the closed areas read cells far from the view, which the image near the view does
     // not hold. They move as pixels (the trainer maps them so), so they come from p, at the image's points.
     auto pixel = [&](int x, int y, int plane) {
@@ -203,17 +333,21 @@ struct GameEncoding {
     };
     if(options.extended) {
       write_threats(p, pixel);
-      write_legal_hand(image, set);
+      write_legal_hand(image, slots, set);
       write_minimap(p, pixel);
     }
     if(options.areas)
       write_closed_areas(p, pixel);
   }
 
+  // A player's blueprint k's slot in the planes: k, or its slot of the hand's order (order, the inputs version 13).
+  static int slot_of(const HandOrder* order, int player, int k) { return order ? order->slot[player][k] : k; }
+
   // The inputs but the extended ones. The history planes show p's last actions, or with options.turnHistory its last
-  // turns, or nothing without options.history.
+  // turns, or nothing without options.history. Each blueprint's planes are at its slot (slot_of).
   template<class Set>
-  static void write_inputs(const Position& p, const GameInterface::InputOptions& options, Set& set) {
+  static void write_inputs(const Position& p, const GameInterface::InputOptions& options, const HandOrder* order,
+                           Set& set) {
     const int mover = GameRules::next_player(p), opponent = 1 - mover;
     const View view = view_of(p);
     auto cell_at = [&](int x, int y) {
@@ -275,6 +409,7 @@ struct GameEncoding {
         const int taken = player == mover ? THEIRS_TAKEN : MINE_TAKEN;
         for(int k = 0; k < HAND; k++) {
           const Blueprint& b = hands[player].b[k];
+          const int s = slot_of(order, player, k);
           // The points next to b's cells, each once, from b's (0, 0) cell: a placement captures the opponent's cells
           // there (taken_by).
           int8_t nq[6 * MAX_CELLS], nr[6 * MAX_CELLS];
@@ -292,7 +427,7 @@ struct GameEncoding {
               }
             }
           for_each_fit(b, rows.empty, rows.frontier[player], [&](int x, int y) {
-            set(x, y, places + k);
+            set(x, y, places + s);
             int stars = 0;
             for(int m = 0; m < nn; m++) {
               const int tx = x + nq[m], ty = y + nr[m];
@@ -304,11 +439,11 @@ struct GameEncoding {
                 set(tx, ty, taken);
             }
             for(int level = 1; level <= std::min(stars, STAR_LEVELS); level++)
-              set(x, y, places + level * HAND + k);
+              set(x, y, places + level * HAND + s);
             const int score = stars * p.stars[player];
             for(int i = 0; i < NUM_POINT_LEVELS; i++)
               if(score >= POINT_LEVELS[i])
-                set(x, y, places + (1 + STAR_LEVELS + i) * HAND + k);
+                set(x, y, places + (1 + STAR_LEVELS + i) * HAND + s);
           });
         }
       }
@@ -317,18 +452,19 @@ struct GameEncoding {
       const int base = player == mover ? MY_HAND : THEIR_HAND;
       for(int k = 0; k < HAND; k++) {
         const Blueprint& b = hands[player].b[k];
+        const int s = slot_of(order, player, k);
         for(int i = 0; i < b.n; i++) {
           const int x = b.q[i] + HAND_X, y = b.r[i] + HAND_Y;
-          set(x, y, base + k);
+          set(x, y, base + s);
           if(b.t[i] == STAR)
-            set(x, y, base + HAND + k);
+            set(x, y, base + HAND + s);
           if(b.t[i] == WALL)
-            set(x, y, base + 2 * HAND + k);
+            set(x, y, base + 2 * HAND + s);
         }
       }
     }
     if(p.picked >= 0)
-      set(hands[mover].pickQ + HAND_X, hands[mover].pickR + HAND_Y, PICKED + p.picked);
+      set(hands[mover].pickQ + HAND_X, hands[mover].pickR + HAND_Y, PICKED + slot_of(order, mover, p.picked));
     // The actions' footprints or the turns, the newest first.
     auto write_history = [&](const auto* history) {
       for(int h = 0; h < HISTORY; h++) {
@@ -416,14 +552,16 @@ struct GameEncoding {
   }
 
   // The legal hand actions (LEGAL_HAND + k): the hand's points of the mover's blueprint k (in the view's frame,
-  // ViewHand) where a pick is legal now, or a drop after a pick, as legal_actions gives them (for_each_hand_action).
+  // ViewHand) where a pick is legal now, or a drop after a pick, as legal_actions gives them (for_each_hand_action), at
+  // the blueprint's slot (slot_of). The rules' legal actions: an equal blueprint's too, which the search does not list.
   template<class Set>
-  static void write_legal_hand(const Position& p, Set& set) {
+  static void write_legal_hand(const Position& p, const HandOrder* order, Set& set) {
     if(GameRules::terminal(p))
       return;
+    const int mover = GameRules::next_player(p);
     ViewHand view;
-    view_hand(p, GameRules::next_player(p), view);
-    for_each_hand_action(p, view, [&](int k, int x, int y) { set(x, y, LEGAL_HAND + k); });
+    view_hand(p, mover, view);
+    for_each_hand_action(p, view, [&](int k, int x, int y) { set(x, y, LEGAL_HAND + slot_of(order, mover, k)); });
   }
 
   // The minimap's bin (0 to VIEW - 1) of a point u of the minimap's frame, from its middle: the bins beyond its reach
@@ -656,7 +794,7 @@ struct GameEncoding {
     out[8] = squash(mine - theirs);
     if(p.picked >= 0) {
       out[9] = 1.0f;
-      out[10 + p.picked] = 1.0f;
+      out[10 + (options.canonical ? HandOrder(p).slot[mover][p.picked] : p.picked)] = 1.0f;
       out[13 + p.pickType] = 1.0f;
       out[16] = p.pickConnected ? 1.0f : 0.0f;
     }
@@ -761,6 +899,43 @@ struct GameEncoding {
     channel = action_channel(action);
   }
   static int point_action(int x, int y, int channel) { return action_at(x, y, channel); }
+
+  // The network's frame of the mover's actions under the inputs version 13 (GameInterface): an action's blueprint at
+  // its slot of the hand's order (HandOrder), its point as it is. Of equal blueprints, the search lists the actions of
+  // the lowest-numbered one only (first_equal): a placement of the other one is the same placement, and its pick or a
+  // drop into it gives the same position up to the hand's order. Its actions map to the listed one's policy index, so
+  // that equal blueprints give one edge, with one prior and its visits. Equal blueprints have the same frame, so the
+  // listed action has the same point (listed_action). The rules still allow both, as the site does.
+  struct CanonicalActionMap {
+    int8_t policyChannel[CHANNELS];  // each channel's channel in the network's frame
+    int8_t listedChannel[CHANNELS];  // the channel of the listed action that an action of each channel stands for
+
+    explicit CanonicalActionMap(const Position& p) {
+      const HandOrder order(p);
+      int8_t first[HAND];
+      first_equal(p, first);
+      const int mover = GameRules::next_player(p);
+      for(int c = 0; c < CHANNELS; c++) {
+        const int base = c < HAND_CHANNEL ? PLACE : HAND_CHANNEL, k = first[c - base];
+        listedChannel[c] = int8_t(base + k);
+        policyChannel[c] = int8_t(base + order.slot[mover][k]);
+      }
+    }
+    int operator()(int action) const {
+      if(action == GameRules::PASS_ACTION)
+        return action;
+      const int c = action_channel(action);
+      return action - c + policyChannel[c];
+    }
+    bool listed(int action) const { return listed_action(action) == action; }
+    // The listed action that an action stands for: itself, or the same point of the lowest-numbered equal blueprint.
+    int listed_action(int action) const {
+      if(action == GameRules::PASS_ACTION)
+        return action;
+      const int c = action_channel(action);
+      return action - c + listedChannel[c];
+    }
+  };
 
   static constexpr unsigned SYMMETRIES = (1u << 0) | (1u << 3) | (1u << 4) | (1u << 7);
 

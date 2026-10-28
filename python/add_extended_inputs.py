@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""KataGame fork: give a training checkpoint the inputs version 10, 11 or 12, and scale its outputs in points.
+"""KataGame fork: give a training checkpoint the inputs version 10, 11, 12 or 13, and scale its outputs in points.
 
     python add_extended_inputs.py CHECKPOINT OUT -inputs-version VERSION [-old-score-scale S]
 
@@ -18,7 +18,7 @@ the model, the SWA model and the optimizer's state, so that the network computes
 moves them, whatever the new inputs hold. The optimizer keeps every state by position (no parameter is added): the new
 channels and columns start at 0 in each state tensor of the widened weights (SGD's momentum, Adam's moments). A
 checkpoint without an optimizer or an SWA model (a network alone) gets the rest. The checkpoint's inputs must be the
-version before VERSION: 9 for 10, 10 for 11, 11 for 12.
+version before VERSION: 9 for 10, 10 for 11, 11 for 12, 12 for 13.
 
 -inputs-version 12 gives a checkpoint of the inputs version 11 the version 12 (2026-10-27; C++ NNInputs V12, model
 version 21): version 11's inputs with the game's planes of closed areas after its planes (katago/train/games:
@@ -26,6 +26,15 @@ NUM_AREA_SPATIAL_INPUTS), as zero input channels of conv_spatial in the same way
 A run of version 11 of Blueprints takes the areas closed by each player's walls this way, with no new run: the
 trainer reads the rows of version 11 in its window with those planes at 0
 (data_processing_pytorch.fit_binary_input_nchw).
+
+-inputs-version 13 gives a checkpoint of the inputs version 12 the version 13 (2026-10-29; C++ NNInputs V13, model
+version 22): version 12's inputs with the game's labels in their canonical order (katago/train/games:
+CANONICAL_LABELS), and the policy in that order too. Version 13 adds no input, so this sets the config's version and
+changes no weight: the network then reads each label's inputs, and gives its policy, at its place in that order. It
+computes what it did wherever that order is the labels' own. Blueprints: each hand in an order of its blueprints'
+cells, which is the order of their numbers in 97% of bpj4's self-play hands (the engine repository's
+games/blueprints/docs/decisions/training.md). The rows of version 12 have the same shapes with the labels in their
+own order, so a run that switches trains on the rows of version 13 only.
 
 -old-score-scale S names the game's SCORE_SCALE that trained the checkpoint, and this code's SCORE_SCALE s replaces it.
 It multiplies by F = S / s the outputs that become points through a plain factor, KataGo's score multiplier of 20
@@ -52,11 +61,11 @@ import sys
 import torch
 
 from enclosure_add_regret_heads import group_names
-from katago.train import modelconfigs
+from katago.train import games, modelconfigs
 from katago.train.model_pytorch import Model
 
 # Each inputs version that this gives, and the version that it needs.
-PREVIOUS = {10: 9, 11: 10, 12: 11}
+PREVIOUS = {10: 9, 11: 10, 12: 11, 13: 12}
 # The outputs that become points through a plain factor (Model.postprocess_output): rows of each value head's last
 # linear layers, the score mean and the lead, then the 3 TD scores.
 SCORE_ROWS = {"linear_miscvaluehead": [0, 2], "linear_moremiscvaluehead": [5, 6, 7]}
@@ -107,8 +116,8 @@ def optimizer_states(ckpt, names):
 
 
 def convert(ckpt, inputs_version):
-    """ckpt (a loaded checkpoint) with the inputs version inputs_version (10, 11 or 12), in place. Returns what it
-    widened, one line each."""
+    """ckpt (a loaded checkpoint) with the inputs version inputs_version (10, 11, 12 or 13), in place. Returns what
+    it widened, one line each: nothing for 13, which adds no input."""
     if inputs_version not in PREVIOUS:
         raise ValueError(f"the inputs version {inputs_version}: this gives {' or '.join(map(str, PREVIOUS))}")
     config = ckpt["config"]
@@ -125,8 +134,10 @@ def convert(ckpt, inputs_version):
         old_n, new_n = count(config), count(new_config)
         if old_n != new_n:
             sizes[name] = (old_n, new_n)
-    if not sizes:
-        raise ValueError(f"the game {modelconfigs.get_game(config).NAME} has no inputs new in version {inputs_version}")
+    game = modelconfigs.get_game(config)
+    # Version 13 reads the same inputs in the order of the game's labels: new for a game that has that order.
+    if not sizes and not (inputs_version == 13 and games.canonical_labels(game)):
+        raise ValueError(f"the game {game.NAME} has no inputs new in version {inputs_version}")
 
     touched = []
     for part in ("model", "swa_model"):
@@ -187,7 +198,7 @@ def main():
     parser.add_argument("out", help="the new checkpoint, which must not exist")
     parser.add_argument("-inputs-version", type=int, choices=sorted(PREVIOUS), required=True,
                         help="the inputs version to give: 10 to a checkpoint of 9, 11 to a checkpoint of 10, "
-                             "12 to a checkpoint of 11")
+                             "12 to a checkpoint of 11, 13 to a checkpoint of 12")
     parser.add_argument("-old-score-scale", type=float,
                         help="the game's SCORE_SCALE that trained the checkpoint: give its outputs in points this "
                              "code's SCORE_SCALE")

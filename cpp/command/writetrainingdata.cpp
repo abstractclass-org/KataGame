@@ -691,7 +691,7 @@ int MainCmds::writetrainingdata(const vector<string>& args) {
     throw StringError("dataBoardLen > maximum board len, must recompile to increase");
 
   //Enclosure fork: this command converts Go SGFs (Go's V7 inputs) and is not used.
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 12, "");
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 13, "");
   const int inputsVersion = 7;
   const int numBinaryChannels = NNInputs::NUM_FEATURES_SPATIAL_V7;
   const int numGlobalChannels = NNInputs::NUM_FEATURES_GLOBAL_V7;

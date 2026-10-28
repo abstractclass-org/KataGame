@@ -198,6 +198,8 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
 - **V12** (model version 21, 2026-10-27) adds a game's planes of closed areas to V11's (GAMES.md,
   `NUM_AREA_SPATIAL_INPUTS`). Enclosure gives its unreachable points among its own planes, and none here, so its V12
   is its V11.
+- **V13** (model version 22, 2026-10-29) reads a game's labels in a canonical order (GAMES.md, `CanonicalActionMap`).
+  Enclosure's position holds no label that its rules leave unread, so its V13 is its V12.
 - **Absolute colours,** as in the Enclosure network: plane k is Blue's for k = 0. The player to move is a global
   input. (KataGo's Go inputs are relative to the mover. The choice was "our feature planes, as KataGo uses its Go
   features".)

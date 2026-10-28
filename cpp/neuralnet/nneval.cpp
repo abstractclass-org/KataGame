@@ -571,12 +571,12 @@ void NNEvaluator::fillRowBufs(
   int symmetry
 ) const {
   const int rowSpatialLen = NNModelVersion::getNumSpatialFeatures(modelVersion) * nnXLen * nnYLen;
-  //Enclosure fork (owner, 2026-10-06): symmetry, the image's row written from board, for V8 to V12 only. KataGame
-  //fork: V8 to V12 are the game's inputs (NNInputs::NUM_FEATURES_SPATIAL_V8, V10 with its extended inputs, V11 with
-  //its turns too, V12 with its planes of closed areas too).
-  const bool gameInputs = inputsVersion >= 8 && inputsVersion <= 12;
+  //Enclosure fork (owner, 2026-10-06): symmetry, the image's row written from board, for V8 to V13 only. KataGame
+  //fork: V8 to V13 are the game's inputs (NNInputs::NUM_FEATURES_SPATIAL_V8, V10 with its extended inputs, V11 with
+  //its turns too, V12 with its planes of closed areas too, V13 with its labels in their canonical order).
+  const bool gameInputs = inputsVersion >= 8 && inputsVersion <= 13;
   testAssert(symmetry == 0 || gameInputs);
-  //V8 to V12 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
+  //V8 to V13 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
   if(!gameInputs && buf.rowSpatialBuf.size() < rowSpatialLen)
     buf.rowSpatialBuf.resize(rowSpatialLen);
   const int rowGlobalLen = NNModelVersion::getNumGlobalFeatures(modelVersion);
@@ -586,19 +586,21 @@ void NNEvaluator::fillRowBufs(
   if(buf.rowMetaBuf.size() < rowMetaLen)
     buf.rowMetaBuf.resize(rowMetaLen);
 
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 12, "");
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 13, "");
   //Enclosure fork (owner, 2026-10-06): V8 rows packed, one bit per entry (NNResultBuf::rowSpatialBits). This replaces
   //the float row cleared by its last entries (2026-10-05): the packed row is 9.7 KB, cleared whole. V9 rows are V8's
   //with two more global inputs (2026-10-13), V10 rows V9's with the game's extended inputs (2026-10-26), V11 rows
-  //V10's planes with the game's turns (2026-10-27), and V12 rows V11's with the game's planes of closed areas
-  //(2026-10-27).
+  //V10's planes with the game's turns (2026-10-27), V12 rows V11's with the game's planes of closed areas
+  //(2026-10-27), and V13 rows V12's with the game's labels in their canonical order (2026-10-29).
   buf.rowSpatialPacked = gameInputs;
   if(gameInputs) {
     testAssert(rowSpatialLen == NNInputs::gameSpatialFeatures(inputsVersion) * NNPos::MAX_BOARD_AREA);
     const size_t words = NNInputs::gameSpatialWords(inputsVersion);
     if(buf.rowSpatialBits.size() < words)
       buf.rowSpatialBits.resize(words);
-    if(inputsVersion == 12)
+    if(inputsVersion == 13)
+      NNInputs::fillRowV13Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
+    else if(inputsVersion == 12)
       NNInputs::fillRowV12Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
     else if(inputsVersion == 11)
       NNInputs::fillRowV11Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
@@ -1252,22 +1254,42 @@ static Rand& clientSymmetryRand(const string& randSeed) {
   return *rand;
 }
 
+//KataGame fork (2026-10-29): the moves that the network's search lists: board's legal moves, less, from the inputs
+//version 13, those that another listed move stands for (NetActionMap::listed: Blueprints' actions of a blueprint equal
+//to a lower-numbered one). A reference to board's own list, or to this thread's copy until its next call.
+static const std::bitset<GameRules::NUM_ACTIONS>& listedMoves(const Board& board,
+                                                             const SymmetryHelpers::NetActionMap& netAction) {
+  const std::bitset<GameRules::NUM_ACTIONS>& legal = board.legalActions();
+  if(!netAction.labels)
+    return legal;
+  static thread_local std::bitset<GameRules::NUM_ACTIONS> listed;
+  listed = legal;
+  for(size_t i = bitsFirst(legal); i < (size_t)NNPos::PASS_POS; i = bitsNext(legal, i))
+    if(!netAction.listed((int)i))
+      listed.reset(i);
+  return listed;
+}
+
 //Enclosure fork: map an output computed on the image of board under symmetry back to board. Policy
 //entries follow the moves (only board's legal moves matter; the rest are masked afterwards), and
 //ownership follows the points.
 //With mapPolicy false (owner, 2026-10-06: the request listed its policy entries already in the network's frame,
 //NNResultBuf::policyGather) the policy is read through that list instead and left as it is here.
-static void mapOutputBack(NNOutput& output, const Board& board, const SymmetryHelpers::SymActionMap& symAction,
-                          int symmetry, int policySize, bool mapPolicy) {
+//KataGame fork (2026-10-29): the moves map through netAction (SymmetryHelpers::NetActionMap), which from the inputs
+//version 13 also gives the network's frame of the game's labels, even at symmetry 0, and legal holds the moves that
+//the search lists (listedMoves).
+static void mapOutputBack(NNOutput& output, const Board& board, const std::bitset<GameRules::NUM_ACTIONS>& legal,
+                          const SymmetryHelpers::NetActionMap& netAction, int symmetry, int policySize,
+                          bool mapPolicy) {
   static thread_local std::vector<float> buf;
   if(mapPolicy) {
     buf.assign(policySize, 0.0f);
     for(int i = 0; i < policySize; i++)
-      if(i == NNPos::PASS_POS || board.legalActions()[i])
-        buf[i] = output.policyDense[symAction(i)];
+      if(i == NNPos::PASS_POS || legal[i])
+        buf[i] = output.policyDense[netAction(i)];
     std::copy(buf.begin(), buf.end(), output.policyDense);
   }
-  if(output.whiteOwnerMap != NULL) {
+  if(symmetry != 0 && output.whiteOwnerMap != NULL) {
     const int nnXLen = output.nnXLen, nnYLen = output.nnYLen;
     buf.assign(nnXLen * nnYLen, 0.0f);
     for(int y = 0; y < board.y_size; y++)
@@ -1278,7 +1300,7 @@ static void mapOutputBack(NNOutput& output, const Board& board, const SymmetryHe
     std::copy(buf.begin(), buf.end(), output.whiteOwnerMap);
   }
   //Enclosure fork (owner, 2026-10-04): the aux maps follow the points too, channel by channel.
-  if(output.auxMap != NULL) {
+  if(symmetry != 0 && output.auxMap != NULL) {
     const int nnXLen = output.nnXLen, nnYLen = output.nnYLen;
     for(int c = 0; c < NNOutput::NUM_AUX_MAP_CHANNELS; c++) {
       float* channel = output.auxMap + c * nnXLen * nnYLen;
@@ -1297,8 +1319,8 @@ static void mapOutputBack(NNOutput& output, const Board& board, const SymmetryHe
       float* policy = output.auxPolicy + (size_t)a * NNPos::MAX_NN_POLICY_SIZE;
       buf.assign(policySize, 0.0f);
       for(int i = 0; i < policySize; i++)
-        if(i == NNPos::PASS_POS || board.legalActions()[i])
-          buf[i] = policy[symAction(i)];
+        if(i == NNPos::PASS_POS || legal[i])
+          buf[i] = policy[netAction(i)];
       std::copy(buf.begin(), buf.end(), policy);
     }
   }
@@ -1502,8 +1524,12 @@ void NNEvaluator::evaluate(
   }
   testAssert(SymmetryHelpers::isAllowed(symmetry));
   //Enclosure fork (owner, 2026-10-06): no image board: the inputs are the image's, written from board
-  //(fillRowBufs' symmetry), and moves map through symAction (SymmetryHelpers::SymActionMap).
-  const SymmetryHelpers::SymActionMap symAction(board, symmetry);
+  //(fillRowBufs' symmetry), and moves map through symAction (SymmetryHelpers::SymActionMap). KataGame fork
+  //(2026-10-29): from the inputs version 13, through the network's frame of the game's labels too (NetActionMap), and
+  //the network gives a policy over the moves that its search lists only (listedMoves): legalBits stands for
+  //board.legalActions() below.
+  const SymmetryHelpers::NetActionMap netAction(board, symmetry, inputsVersion);
+  const std::bitset<GameRules::NUM_ACTIONS>& legalBits = listedMoves(board, netAction);
 
   if(!debugSkipNeuralNet) {
     fillRowBufs(board, history, nextPlayer, sgfMeta, nnInputParams, buf, symmetry);
@@ -1515,9 +1541,8 @@ void NNEvaluator::evaluate(
   //ENCLOSURE_NO_POLICY_GATHER=1 (tests only): no list, so the backends copy the whole policy as before the gather.
   static const bool noPolicyGather = getenv("ENCLOSURE_NO_POLICY_GATHER") != NULL;
   if(!debugSkipNeuralNet && !noPolicyGather) {
-    const auto& legalBits = board.legalActions();
     for(size_t i = bitsFirst(legalBits); i < (size_t)NNPos::PASS_POS; i = bitsNext(legalBits, i))
-      buf.policyGather.push_back((uint16_t)symAction((int)i));
+      buf.policyGather.push_back((uint16_t)netAction((int)i));
     buf.policyGather.push_back((uint16_t)NNPos::PASS_POS);
   }
 
@@ -1544,8 +1569,8 @@ void NNEvaluator::evaluate(
   //below reads those only (listedPolicy), already through the symmetry. Not with the dagger hack (Go's), which masks
   //moves beyond the board's legality.
   const bool listedPolicy = !buf.policyGather.empty() && !nnInputParams.avoidMYTDaggerHack;
-  if(symmetry != 0)
-    mapOutputBack(*buf.result, board, symAction, symmetry, policySize, !listedPolicy);
+  if(symmetry != 0 || netAction.labels)
+    mapOutputBack(*buf.result, board, legalBits, netAction, symmetry, policySize, !listedPolicy);
 
   // Perform postprocessing on the result - turn the nn output into probabilities
   // As a hack though, if the only thing we were missing was the ownermap, just grab the old policy and values
@@ -1599,7 +1624,6 @@ void NNEvaluator::evaluate(
     legal.resize(n);
     testAssert(nextPlayer == history.presumedNextMovePla);
     {
-      const auto& legalBits = board.legalActions();
       const bool canMove = !history.isGameFinished && nextPlayer == board.nextPla() && !board.isGameOver();
       int j = 0;
       for(size_t i = bitsFirst(legalBits); i < (size_t)NNPos::PASS_POS; i = bitsNext(legalBits, i))
@@ -1679,7 +1703,6 @@ void NNEvaluator::evaluate(
     //the last one pass (NNPos::posToLoc), so history.isLegal(board, posToLoc(i), nextPlayer) is the game-state
     //check (the same for every i) and bit i of the list; per entry it was 17,329 full calls per evaluation.
     {
-      const auto& legalBits = board.legalActions();
       const bool canMove = !history.isGameFinished && nextPlayer == board.nextPla() && !board.isGameOver();
       for(int i = 0; i<policySize; i++)
         isLegal[i] = canMove && legalBits.test(i);
@@ -1980,7 +2003,6 @@ void NNEvaluator::evaluate(
   //Export stage 2: policy outputs 1-4 raw with the output scale, 0 at illegal actions (as mapOutputBack leaves them
   //under a symmetry); the score belief finished here.
   if(buf.result->auxPolicy != NULL) {
-    const auto& legalBits = board.legalActions();
     for(int a = 0; a<NNOutput::NUM_AUX_POLICIES; a++) {
       float* policy = buf.result->auxPolicy + (size_t)a * NNPos::MAX_NN_POLICY_SIZE;
       for(int i = 0; i<policySize; i++)

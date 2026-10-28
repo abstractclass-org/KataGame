@@ -75,6 +75,14 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         of version 11 reads the rows of version 12 without them
                         (data_processing_pytorch.fit_binary_input_nchw), so that a run can switch versions with a
                         converted checkpoint (add_extended_inputs.py). Default: 0 (area_spatial_inputs).
+  CANONICAL_LABELS      True for a game whose position holds labels that no rule reads, which the inputs version 13
+                        reads in a canonical order (C++ GameInterface: CanonicalActionMap): its inputs and its policy
+                        targets with each label at its place in that order, where Blueprints' hands are in an order of
+                        their blueprints' cells. The order does not depend on the symmetries, so the augmentation maps
+                        the rows of version 13 as those of version 12. They have the same count of planes and of global
+                        inputs as the rows of version 12, but other meanings: a run that switches to version 13
+                        (add_extended_inputs.py) trains on the rows of version 13 only. Default: False, and version 13
+                        is version 12 (canonical_labels).
 """
 
 import importlib
@@ -133,11 +141,16 @@ def area_spatial_inputs(game):
     return getattr(game, "NUM_AREA_SPATIAL_INPUTS", 0)
 
 
+def canonical_labels(game):
+    """Whether the game's inputs version 13 reads its labels in a canonical order (False: version 13 is version 12)."""
+    return getattr(game, "CANONICAL_LABELS", False)
+
+
 def row_bytes(game, inputs_version=9):
     """The bytes of one training row of the game, uncompressed: the row writer's arrays (ROW_ above) on the game's
     largest board, without the metadata inputs, which the shuffle leaves out. Self-play writes rows of the inputs
-    version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads, and of version 10, 11
-    or 12 with its config's inputsVersion."""
+    version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads, and of version 10, 11,
+    12 or 13 with its config's inputsVersion."""
     points = game.MAX_BOARD_LEN ** 2
     moves = points * game.POLICY_CHANNELS + 1  # the policy: every point's channels, then pass
     global_inputs = game.NUM_GLOBAL_INPUTS + (ROW_PLAYOUT_INPUTS if inputs_version >= 9 else 0)

@@ -68,9 +68,11 @@ def with_game(config: ModelConfig, game_name: Union[str,None]) -> ModelConfig:
 # NNInputs V10, exported as model version 19; games.extended_spatial_inputs). 11 (2026-10-27) adds the game's turn
 # inputs after V10's global inputs, and its history planes show its last turns in place of its last actions (C++
 # NNInputs V11, exported as model version 20; games.turn_global_inputs). 12 (2026-10-27) adds the game's planes of
-# closed areas after V11's planes (C++ NNInputs V12, exported as model version 21; games.area_spatial_inputs).
+# closed areas after V11's planes (C++ NNInputs V12, exported as model version 21; games.area_spatial_inputs). 13
+# (2026-10-29) has V12's inputs with the game's labels in their canonical order, and the policy in that order too (C++
+# NNInputs V13, exported as model version 22; games.canonical_labels).
 PLAYOUT_GLOBAL_INPUTS = 2
-INPUTS_VERSIONS = (8, 9, 10, 11, 12)
+INPUTS_VERSIONS = (8, 9, 10, 11, 12, 13)
 
 def get_inputs_version(config: ModelConfig):
     return config.get("inputs_version", 8)

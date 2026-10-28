@@ -249,6 +249,20 @@
  *                           after V11's planes. They move as pixels under the symmetries. Blueprints: the hexes of the
  *                           areas closed by the mover's walls and by the opponent's walls. Default: 0, and V12 is V11
  *                           (areaSpatialInputs).
+ *   CanonicalActionMap      a type, for a game whose position holds labels that no rule reads (Blueprints' numbers of
+ *                           the blueprints): the inputs version 13 (NNInputs V13, model version 22) reads the labels
+ *                           in an order that depends only on what they label, so that two positions that differ only
+ *                           in their labels give the same inputs. With options.canonical, spatial_inputs and
+ *                           global_inputs write each label's inputs at its place in that order. CanonicalActionMap(p)
+ *                           gives the network's frame of p's actions: operator() maps each legal action of p and pass
+ *                           (int to int) to its policy index with the labels in that order, and listed(action) says
+ *                           whether the search lists the legal action. An action is not listed when it gives the same
+ *                           position as a listed action, up to the labels: it maps to that action's index, so that the
+ *                           two are one edge of the search, with one prior. The order must not depend on the
+ *                           symmetries: the image's order is the position's, so the front maps an action through
+ *                           SymActionMap, then through this. Blueprints: each hand in the order of its blueprints'
+ *                           cells, and of equal blueprints the lowest-numbered one listed. Default: none, every action
+ *                           listed at its own index, and V13 is V12 (CanonicalActions).
  */
 
 #include <algorithm>
@@ -273,6 +287,8 @@ struct InputOptions {
   //(NUM_TURN_GLOBAL_INPUTS): the inputs version 11.
   bool turnHistory = false;
   bool areas = false;  //True: the game's planes of closed areas too (NUM_AREA_SPATIAL_INPUTS), the inputs version 12.
+  //True: the game's labels in their canonical order (CanonicalActionMap), the inputs version 13.
+  bool canonical = false;
 };
 
 //The optional training targets: the slots of KataGo's spatial targets (its training rows' valueTargetsNCHW) and the
@@ -777,6 +793,11 @@ namespace encoding {
   GAMEINTERFACE_DETECT(HasExtendedGlobalInputs, int, std::integral_constant<int, G::NUM_EXTENDED_GLOBAL_INPUTS>::value)
   GAMEINTERFACE_DETECT(HasTurnGlobalInputs, int, std::integral_constant<int, G::NUM_TURN_GLOBAL_INPUTS>::value)
   GAMEINTERFACE_DETECT(HasAreaSpatialInputs, int, std::integral_constant<int, G::NUM_AREA_SPATIAL_INPUTS>::value)
+  template<class G, class = void> struct HasCanonicalActionMap : std::false_type {};
+  template<class G> struct HasCanonicalActionMap<G, std::enable_if_t<std::is_convertible<
+    decltype(std::declval<const typename G::CanonicalActionMap&>()(0)), int>::value &&
+    std::is_convertible<decltype(std::declval<const typename G::CanonicalActionMap&>().listed(0)), bool>::value &&
+    std::is_constructible<typename G::CanonicalActionMap, const P<G>&>::value>> : std::true_type {};
 }
 
 //The game's extended inputs (NUM_EXTENDED_SPATIAL_INPUTS, NUM_EXTENDED_GLOBAL_INPUTS): the game's, else none.
@@ -806,6 +827,19 @@ template<class E> constexpr int areaSpatialInputs() {
   else
     return 0;
 }
+
+//Whether the game has a canonical order of its labels (CanonicalActionMap), which the inputs version 13 reads.
+template<class E> constexpr bool hasCanonicalActions() { return encoding::HasCanonicalActionMap<E>::value; }
+//The network's frame of p's actions under the inputs version 13 (CanonicalActionMap): the game's, else every action
+//listed at its own index.
+template<class E, bool = encoding::HasCanonicalActionMap<E>::value> struct CanonicalActions {
+  explicit CanonicalActions(const encoding::P<E>&) {}
+  int operator()(int action) const { return action; }
+  bool listed(int) const { return true; }
+};
+template<class E> struct CanonicalActions<E, true> : E::CanonicalActionMap {
+  explicit CanonicalActions(const encoding::P<E>& p) : E::CanonicalActionMap(p) {}
+};
 
 //The slots of TARGETS that the game computes itself (training_targets): the game's, else all but the FRONT_TARGETS.
 template<class E> constexpr unsigned ownTargets() {

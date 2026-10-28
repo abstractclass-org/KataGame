@@ -2,6 +2,7 @@
 #define NEURALNET_NNINPUTS_H_
 
 #include <memory>
+#include <optional>
 
 #include "../core/global.h"
 #include "../core/hash.h"
@@ -161,6 +162,11 @@ namespace NNInputs {
   //opponent's. A game without them has V12 equal to its V11. Model version 21.
   const int NUM_FEATURES_SPATIAL_V12 = NUM_FEATURES_SPATIAL_V11 + GameInterface::areaSpatialInputs<GameEncoding>();
   const int NUM_FEATURES_GLOBAL_V12 = NUM_FEATURES_GLOBAL_V11;
+  //KataGame fork (2026-10-29): V13, V12's inputs with the game's labels in their canonical order (InputOptions::canonical,
+  //GameInterface: CanonicalActionMap), and the policy in the same order. Blueprints: each hand in an order of its
+  //blueprints' cells. A game without the order has V13 equal to its V12. Model version 22.
+  const int NUM_FEATURES_SPATIAL_V13 = NUM_FEATURES_SPATIAL_V12;
+  const int NUM_FEATURES_GLOBAL_V13 = NUM_FEATURES_GLOBAL_V12;
 
   Hash128 getHash(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
@@ -261,7 +267,18 @@ namespace NNInputs {
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
     int symmetry = 0
   );
-  //The planes of the inputs versions 8 to 12 (NUM_FEATURES_SPATIAL_V8, V10 or V12) and the words of a packed row.
+  //V13: V12's rows (NUM_SPATIAL_WORDS_V12 words packed), with the game's labels in their canonical order.
+  void fillRowV13(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal,
+    std::vector<int>* setEntries = NULL
+  );
+  void fillRowV13Packed(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
+    int symmetry = 0
+  );
+  //The planes of the inputs versions 8 to 13 (NUM_FEATURES_SPATIAL_V8, V10 or V12) and the words of a packed row.
   int gameSpatialFeatures(int inputsVersion);
   int gameSpatialWords(int inputsVersion);
   //The packed row's first n entries as floats (0 or 1) into out.
@@ -461,6 +478,24 @@ namespace SymmetryHelpers {
   //image board (GameEncoding::SymActionMap, built once for each board and symmetry).
   struct SymActionMap : GameEncoding::SymActionMap {
     SymActionMap(const Board& board, int sym) : GameEncoding::SymActionMap(board.pos, sym) {}
+  };
+  //KataGame fork (2026-10-29): the policy index of a legal move of board (an action), or pass, for a network of the
+  //inputs version inputsVersion at an allowed symmetry: its image (SymActionMap), then from V13 the image's action in
+  //the network's frame of the game's labels (GameInterface::CanonicalActions; the labels' order is the same at every
+  //symmetry). From V13, the network's search lists only the moves that listed() names: of the moves that give the
+  //same position up to the labels, one. A game without the order has V13 equal to V12.
+  struct NetActionMap {
+    SymActionMap sym;
+    std::optional<GameInterface::CanonicalActions<GameEncoding>> labels;  //from V13, in a game with the order only
+    NetActionMap(const Board& board, int symmetry, int inputsVersion) : sym(board, symmetry) {
+      if(inputsVersion >= 13 && GameInterface::hasCanonicalActions<GameEncoding>())
+        labels.emplace(board.pos);
+    }
+    int operator()(int action) const {
+      const int image = sym(action);
+      return labels ? (*labels)(image) : image;
+    }
+    bool listed(int action) const { return !labels || labels->listed(action); }
   };
   //The image of a legal move of board (a move Loc), pass or the null move, as SymActionMap maps it. board is the
   //board that the move is played on, as in getSymLoc.

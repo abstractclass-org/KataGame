@@ -186,8 +186,8 @@ def test_the_converter_refuses_other_inputs():
     add_extended_inputs.convert(ckpt, 10)
     with pytest.raises(ValueError, match="version 10, not 9"):
         add_extended_inputs.convert(ckpt, 10)
-    with pytest.raises(ValueError, match="this gives 10 or 11 or 12"):
-        add_extended_inputs.convert(ckpt, 13)
+    with pytest.raises(ValueError, match="this gives 10 or 11 or 12 or 13"):
+        add_extended_inputs.convert(ckpt, 14)
     for version, target, _ in CONVERSIONS:  # a game without the target's new inputs
         with pytest.raises(ValueError, match=f"no inputs new in version {target}"):
             add_extended_inputs.convert({"config": config("enclosure", version)}, target)

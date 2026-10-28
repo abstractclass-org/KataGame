@@ -348,15 +348,26 @@ static void uniformPolicyTarget(int policySize, int16_t* target) {
     target[pos] = 1;
 }
 
+//KataGame fork (2026-10-29): the network's frame of a position's moves in the rows of the inputs version 13
+//(GameInterface::CanonicalActions), or none (NULL) in the rows before.
+typedef GameInterface::CanonicalActions<GameEncoding> RowLabels;
+
 //Copy playouts into target, expanding out the sparse representation into a full plane.
-static void fillPolicyTarget(const vector<PolicyTargetMove>& policyTargetMoves, int policySize, int dataXLen, int dataYLen, int boardXSize, int16_t* target) {
+//KataGame fork (2026-10-29): with labels, each move at its index in the network's frame of the game's labels, where
+//the moves that give the same position up to the labels add up (a search lists one of them from V13).
+static void fillPolicyTarget(const vector<PolicyTargetMove>& policyTargetMoves, int policySize, int dataXLen, int dataYLen, int boardXSize, const RowLabels* labels, int16_t* target) {
   zeroPolicyTarget(policySize,target);
   size_t size = policyTargetMoves.size();
   for(size_t i = 0; i<size; i++) {
     const PolicyTargetMove& move = policyTargetMoves[i];
     int pos = NNPos::locToPos(move.loc, boardXSize, dataXLen, dataYLen);
     testAssert(pos >= 0 && pos < policySize);
-    target[pos] = move.policyTarget;
+    if(labels == NULL)
+      target[pos] = move.policyTarget;
+    else {
+      pos = (*labels)(pos);
+      target[pos] = (int16_t)std::min(32767, (int)target[pos] + (int)move.policyTarget);
+    }
   }
 }
 
@@ -387,18 +398,30 @@ static int16_t clampToRadius32000(float x, Rand& rand) {
   else return (int16_t)(rand.nextBool(lambda) ? high : low);
 }
 
-static void fillQValueTarget(const vector<QValueTargetMove>& whiteQValueTargets, Player nextPlayer, int policySize, int dataXLen, int dataYLen, int boardXSize, int16_t* cPosTarget, Rand& rand) {
+//KataGame fork (2026-10-29): with labels, as fillPolicyTarget, the moves in the order of their visits, so that of the
+//moves at one index the one with the most visits stays.
+static void fillQValueTarget(const vector<QValueTargetMove>& whiteQValueTargets, Player nextPlayer, int policySize, int dataXLen, int dataYLen, int boardXSize, const RowLabels* labels, int16_t* cPosTarget, Rand& rand) {
   for(int i = 0; i < QVALUE_SPATIAL_TARGET_NUM_CHANNELS * policySize; i++) {
     cPosTarget[i] = 0;
   }
 
   float scoreTargetCap = (float)NNPos::SCORE_TARGET_CAP;  //Enclosure fork: SCORE_SCALE
 
-  size_t size = whiteQValueTargets.size();
+  const vector<QValueTargetMove>* entries = &whiteQValueTargets;
+  static thread_local vector<QValueTargetMove> byVisits;
+  if(labels != NULL) {
+    byVisits = whiteQValueTargets;
+    std::stable_sort(byVisits.begin(), byVisits.end(),
+                     [](const QValueTargetMove& a, const QValueTargetMove& b) { return a.visits < b.visits; });
+    entries = &byVisits;
+  }
+  size_t size = entries->size();
   for(size_t i = 0; i<size; i++) {
-    const QValueTargetMove& entry = whiteQValueTargets[i];
+    const QValueTargetMove& entry = (*entries)[i];
     int pos = NNPos::locToPos(entry.loc, boardXSize, dataXLen, dataYLen);
     testAssert(pos >= 0 && pos < policySize);
+    if(labels != NULL)
+      pos = (*labels)(pos);
 
     float winLoss = nextPlayer == P_WHITE ? entry.winLoss : -entry.winLoss;
     float score = nextPlayer == P_WHITE ? entry.score : -entry.score;
@@ -509,8 +532,8 @@ void TrainingWriteBuffers::addRow(
   Rand& rand,
   const ReanalysisData& reanalysisData
 ) {
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 12, "");
-  if(inputsVersion < 3 || inputsVersion > 12)
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 13, "");
+  if(inputsVersion < 3 || inputsVersion > 13)
     throw StringError("Training write buffers: Does not support input version: " + Global::intToString(inputsVersion));
 
   int posArea = dataXLen*dataYLen;
@@ -530,8 +553,13 @@ void TrainingWriteBuffers::addRow(
     bool inputsUseNHWC = false;
     float* rowBin = binaryInputNCHWUnpacked;
     float* rowGlobal = globalInputNC.data + curRows * numGlobalChannels;
-    static_assert(NNModelVersion::latestInputsVersionImplemented == 12, "");
-    if(inputsVersion == 12) {
+    static_assert(NNModelVersion::latestInputsVersionImplemented == 13, "");
+    if(inputsVersion == 13) {
+      testAssert(NNInputs::NUM_FEATURES_SPATIAL_V13 == numBinaryChannels);
+      testAssert(NNInputs::NUM_FEATURES_GLOBAL_V13 == numGlobalChannels);
+      NNInputs::fillRowV13(board, hist, nextPlayer, nnInputParams, dataXLen, dataYLen, inputsUseNHWC, rowBin, rowGlobal);
+    }
+    else if(inputsVersion == 12) {
       testAssert(NNInputs::NUM_FEATURES_SPATIAL_V12 == numBinaryChannels);
       testAssert(NNInputs::NUM_FEATURES_GLOBAL_V12 == numGlobalChannels);
       NNInputs::fillRowV12(board, hist, nextPlayer, nnInputParams, dataXLen, dataYLen, inputsUseNHWC, rowBin, rowGlobal);
@@ -599,9 +627,23 @@ void TrainingWriteBuffers::addRow(
   //Fill policy
   const int policySize = NNPos::getPolicySize(dataXLen,dataYLen);
   int16_t* rowPolicy = policyTargetsNCMove.data + curRows * POLICY_TARGET_NUM_CHANNELS * policySize;
+  //KataGame fork (2026-10-29): from the inputs version 13, the policy targets in the network's frame of the game's
+  //labels: the row's moves in the row's position's (labels, which the q-value targets read too), and the next move's
+  //in the next position's (nextLabels), as the trainer reads that target with the frames of the next mover
+  //(katago/train/games). Where its blueprints and its view are the row's (the trainer's weight of the target is 0 in
+  //the other rows, mask_targets), Blueprints' order of the next mover's hand is the row's. A game without the order
+  //writes V12's targets.
+  std::optional<RowLabels> labels, nextLabels;
+  if(inputsVersion >= 13 && GameInterface::hasCanonicalActions<GameEncoding>()) {
+    labels.emplace(board.pos);
+    if(policyTarget1 != NULL) {
+      testAssert(posHistForFutureBoards != NULL && whiteValueTargetsIdx + 1 < (int)posHistForFutureBoards->size());
+      nextLabels.emplace((*posHistForFutureBoards)[whiteValueTargetsIdx + 1].pos);
+    }
+  }
 
   if(policyTarget0 != NULL) {
-    fillPolicyTarget(*policyTarget0, policySize, dataXLen, dataYLen, board.x_size, rowPolicy + 0 * policySize);
+    fillPolicyTarget(*policyTarget0, policySize, dataXLen, dataYLen, board.x_size, labels ? &*labels : NULL, rowPolicy + 0 * policySize);
     rowGlobal[26] = 1.0f;
   }
   else {
@@ -610,7 +652,7 @@ void TrainingWriteBuffers::addRow(
   }
 
   if(policyTarget1 != NULL) {
-    fillPolicyTarget(*policyTarget1, policySize, dataXLen, dataYLen, board.x_size, rowPolicy + 1 * policySize);
+    fillPolicyTarget(*policyTarget1, policySize, dataXLen, dataYLen, board.x_size, nextLabels ? &*nextLabels : NULL, rowPolicy + 1 * policySize);
     rowGlobal[28] = 1.0f;
   }
   else {
@@ -911,7 +953,7 @@ void TrainingWriteBuffers::addRow(
   {
     testAssert(whiteValueTargetsIdx < whiteQValueTargets.size());
     int16_t* rowQValues = qValueTargetsNCMove.data + curRows * QVALUE_SPATIAL_TARGET_NUM_CHANNELS * policySize;
-    fillQValueTarget(whiteQValueTargets[whiteValueTargetsIdx].targets, nextPlayer, policySize, dataXLen, dataYLen, board.x_size, rowQValues, rand);
+    fillQValueTarget(whiteQValueTargets[whiteValueTargetsIdx].targets, nextPlayer, policySize, dataXLen, dataYLen, board.x_size, labels ? &*labels : NULL, rowQValues, rand);
   }
 
   if(hasMetadataInput) {
@@ -1070,8 +1112,12 @@ TrainingDataWriter::TrainingDataWriter(const string& outDir, ostream* dbgOut, in
   int numGlobalChannels;
   //Note that this inputsVersion is for data writing, it might be different than the inputsVersion used
   //to feed into a model during selfplay
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 12, "");
-  if(inputsVersion == 12) {
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 13, "");
+  if(inputsVersion == 13) {
+    numBinaryChannels = NNInputs::NUM_FEATURES_SPATIAL_V13;
+    numGlobalChannels = NNInputs::NUM_FEATURES_GLOBAL_V13;
+  }
+  else if(inputsVersion == 12) {
     numBinaryChannels = NNInputs::NUM_FEATURES_SPATIAL_V12;
     numGlobalChannels = NNInputs::NUM_FEATURES_GLOBAL_V12;
   }

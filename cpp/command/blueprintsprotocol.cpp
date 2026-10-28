@@ -895,14 +895,17 @@ json analysisReply(const json& q, const Game& g, bool during) {
   if(flag(q, "includePolicy")) {
     // The root's network policy over every legal action, highest first: a placement by its site string, and a pick by
     // its own string "I:q,r", the first half of an edit, with the pick's prior (the network gives an edit's prior in
-    // two steps, the pick's and then the drop's at the pick's node).
+    // two steps, the pick's and then the drop's at the pick's node). A network of the inputs version 13 gives no prior
+    // to an action of a blueprint equal to a lower-numbered one, which its search does not list: the lower one's
+    // action has that prior (NNInputs' NetActionMap), and the policy leaves the other out.
     static float probs[NNPos::MAX_NN_POLICY_SIZE];
     if(E.search->getPolicy(probs)) {
       vector<int> legal;
       GameRules::legal_actions(g.board.pos, legal);
       vector<std::pair<double, string>> rows;
       for(int a : legal)
-        rows.push_back({probs[a], siteText(g.board.pos, a)});
+        if(probs[a] >= 0)
+          rows.push_back({probs[a], siteText(g.board.pos, a)});
       std::stable_sort(rows.begin(), rows.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
       json policy = json::array();
       for(const auto& [prob, name] : rows)

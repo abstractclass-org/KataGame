@@ -34,6 +34,12 @@ degrees and the second reflection (3 and 7) swap the corners (apply_symmetry_ext
 older versions have none of these. The planes of closed areas of the inputs version 12 (the areas closed by each
 player's walls) are points of the board, so they move as pixels too.
 
+The inputs version 13 has each hand in a canonical order (the C++ gameencoding.h, HandOrder): each blueprint's planes,
+its policy channels and the pick's global input are at its slot of an order of the blueprints' cells, not at its
+number. The order does not depend on the board's frame (the counts of cells, stars and walls, then the shape up to the
+hex grid's 12 symmetries), so the image of a row at a symmetry has its blueprints at the same slots: the augmentation
+maps the rows of version 13 as those of version 12. The rows' blueprints and their shifts are then in that order.
+
 The value targets are points of the row's view, so they move as pixels: the final board (C0), the cells captured
 before the game's end (C1), the stars 4 and 16 moves later (C2-3), where the points are earned (C4), and the cells
 that go in the rest of the mover's turn (C5, the opponent's cells) and in the opponent's next turn (C6, the mover's
@@ -106,6 +112,8 @@ NUM_HISTORY_TURNS = 4
 # mover's walls and by the opponent's walls. They move as pixels.
 NUM_AREA_SPATIAL_INPUTS = 2
 MY_CLOSED, THEIR_CLOSED = 101, 102
+# The inputs version 13 reads each hand in an order of its blueprints' cells (the module's docstring).
+CANONICAL_LABELS = True
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
 
 
