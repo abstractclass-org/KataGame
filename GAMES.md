@@ -500,7 +500,7 @@ KataGo's code (`testgameareas` and `testkomi` pin them), and the front computes 
 | `OWN_TARGETS` | The slots of `TARGETS` that the game computes itself (`training_targets`). It holds every slot of `TARGETS` that is not one of the `FRONT_TARGETS`, and it can hold those too: the front then leaves that slot to the game. The check requires both. | `TARGETS` without the `FRONT_TARGETS` (`ownTargets`) | All of its `TARGETS`, C2-3 too: the front's future positions read each later position's own view at the row's points, and Blueprints' view moves with the mover's window. |
 | `NUM_EXTENDED_SPATIAL_INPUTS`, `NUM_EXTENDED_GLOBAL_INPUTS` | The game's extended inputs, which input version 10 adds to version 9's. With `options.extended`, `spatial_inputs` also sets the planes `NUM_SPATIAL_INPUTS` to `NUM_SPATIAL_INPUTS + NUM_EXTENDED_SPATIAL_INPUTS - 1`, and `global_inputs` writes its extended global inputs after its own. The front puts the extended planes after the game's planes, and the extended global inputs after KataGo's 2 playout inputs. A game gives both or neither. | 0 and 0: V10 is V9 (`extendedSpatialInputs`, `extendedGlobalInputs`) | 12 and 20: the opponent's threats in its own view, the legal hand actions, the minimap of the whole board, and the window boxes (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `NUM_TURN_GLOBAL_INPUTS` | The game's turn inputs, which input version 11 adds to version 10's, for a game whose history planes count actions, not turns. With `options.turnHistory`, the history planes show the game's last turns in place of its last actions, and `global_inputs` writes the turn inputs after its extended global inputs: what the planes do not show of those turns. The front puts them after V10's global inputs. Without `options.history` they are 0, as the history planes. | 0: V11 is V10 (`turnGlobalInputs`), as its history planes already count turns | 8: for each of the 4 turns of the history planes (the turn in progress, then the 3 whole turns before it) and each of its 2 moves, 1 when the move was an edit, a pick and its drop (the engine repository's `games/blueprints/README.md`, "The network"). |
-| `NUM_AREA_SPATIAL_INPUTS` | The game's planes of closed areas, which input version 12 adds to version 11's: areas that the rules close to a player for the rest of the game, as KataGo gives Go's pass-alive areas as input planes. With `options.areas`, `spatial_inputs` also sets the planes after the extended ones, and the front puts them after V11's planes. They are points of the board: the symmetries move them as pixels. | 0: V12 is V11 (`areaSpatialInputs`) | 2: the hexes of the areas closed by the mover's walls and by the opponent's walls, which the other player can never fill (the engine repository's `games/blueprints/README.md`, "The network"). |
+| `NUM_AREA_SPATIAL_INPUTS` | The game's planes of closed areas, which input version 12 adds to version 11's: areas that the rules close to a player for the rest of the game. Whether a point is closed depends on cells beyond the convolutions' reach, so the game computes it, as KataGo gives Go's pass-alive areas as input planes. With `options.areas`, `spatial_inputs` also sets the planes after the extended ones, and the front puts them after V11's planes. They are points of the board: the symmetries move them as pixels. | 0: V12 is V11 (`areaSpatialInputs`) | 2: the hexes of the areas closed by the mover's walls and by the opponent's walls, which the other player can never fill (the engine repository's `games/blueprints/README.md`, "The network"). |
 
 `InputOptions` holds what the front gives the input members:
 
@@ -575,10 +575,12 @@ from bpj3). The planes keep their count, and training absorbs the new meaning of
 actions). `-inputs-version 12` gives a checkpoint of V11 the planes of closed areas in the same way, as zero input
 channels of the first convolution. The shuffle merges rows of V11 and V12 at V12's planes, and the reader fits a row's
 planes to its model: a row of V11 gets V12's planes at 0, and a row of V12 loses them for a model of V11. So a run
-switches from V11 to V12 with a converted checkpoint and no new run, while its window holds rows of both. For a new
-`SCORE_SCALE`, `-old-score-scale S`, run with the new code, multiplies by S over the new `SCORE_SCALE` the outputs that
-a plain multiplier puts in points: the score mean, the lead and the TD scores. These outputs keep their values in
-points. Training moves the score's standard deviation and the score belief.
+switches from V11 to V12 with a converted checkpoint and no new run, while its window holds rows of both. Rows of other
+versions stay apart: the shuffle refuses files whose planes and global inputs both differ (V9's and V10's, or V10's and
+V12's), and the reader refuses any other count of planes. For a new `SCORE_SCALE`, `-old-score-scale S`, run with the
+new code, multiplies by S over the new `SCORE_SCALE` the outputs that a plain multiplier puts in points: the score mean,
+the lead and the TD scores. These outputs keep their values in points. Training moves the score's standard deviation and
+the score belief.
 
 | Member | Meaning | Enclosure (`games/enclosure.py`) | Connect-4 (`games/connect4.py`) |
 |---|---|---|---|
@@ -982,8 +984,9 @@ Two files beside the trainer also held Enclosure's facts:
 - `python/export_model_pytorch.py`: the export of the policy convolution (`NUM_OFFSETS` channels for each output), and
   the V9 inputs (7 global inputs) in the model version. Done: the policy head's channels, the game's inputs, and the
   game in the model file. `-game` names the game of a random-initialized model.
-- `python/shuffle.py`: the rows' C5-7 channels and V9's 7 global inputs (`pad_global_inputs_to_widest`). No change:
-  both are the rows' format, which every game shares, and the padding takes the widest file's width.
+- `python/shuffle.py`: the rows' C5-7 channels, V9's 7 global inputs and V12's planes (`pad_inputs_to_widest`,
+  `pad_planes_to_widest`). No change: these are the rows' format, which every game shares, and the padding takes the
+  widest file's width.
 
 ### The training scripts (`python/selfplay/`)
 

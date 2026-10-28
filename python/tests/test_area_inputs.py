@@ -23,13 +23,10 @@ from katago.train.data_processing_pytorch import (  # noqa: E402
     GLOBAL_TARGETS_NC_CHANNELS, VALUE_TARGETS_NCHW_CHANNELS, fit_binary_input_nchw, read_npz_training_data)
 from katago.train.games import blueprints  # noqa: E402
 from katago.train.model_pytorch import Model, policy_len  # noqa: E402
+# The checkpoints and the models' inputs of the conversion's tests of version 10.
+from test_extended_inputs import checkpoint, config, flat, inputs  # noqa: E402
 
-KIND = "b1c6nbt"  # the smallest model kind: the checks below read the first layers only
 V11_PLANES, AREAS, V11_GLOBALS = 1 + 89 + 12, 2, 22 + 2 + 20 + 8
-
-
-def config(game, inputs_version, kind="b6c96"):
-    return dict(modelconfigs.with_game(modelconfigs.config_of_name[kind], game), inputs_version=inputs_version)
 
 
 def test_version_12_adds_the_games_planes_of_closed_areas_after_version_11s():
@@ -57,39 +54,6 @@ def test_the_planes_of_closed_areas_move_as_pixels():
         assert torch.equal(out[:, :V11_PLANES], blueprints.apply_symmetry_inputs(binary[:, :V11_PLANES], s))
 
 
-def flat(outputs):
-    if torch.is_tensor(outputs):
-        return [outputs]
-    if outputs is None:
-        return []
-    return [t for o in outputs for t in flat(o)]
-
-
-def inputs(cfg, n):
-    size = blueprints.MAX_BOARD_LEN
-    binary = (torch.rand(n, modelconfigs.get_num_bin_input_features(cfg), size, size) < 0.2).float()
-    binary[:, 0] = 1.0
-    return binary, torch.randn(n, modelconfigs.get_num_global_input_features(cfg))
-
-
-def checkpoint():
-    """A checkpoint of a random Blueprints model of the inputs version 11, as train.py saves one: the model, its SWA
-    model and an SGD optimizer with momentum after one step, in train.get_param_groups' order."""
-    torch.manual_seed(0)
-    cfg = config("blueprints", 11, KIND)
-    model = Model(cfg, blueprints.MAX_BOARD_LEN)
-    model.initialize()
-    params = dict(model.named_parameters())
-    optimizer = torch.optim.SGD([{"params": [params[n] for n in names]} for _, names in group_names(model)],
-                                lr=0.01, momentum=0.9)
-    binary, global_ = inputs(cfg, 2)
-    sum(t.float().pow(2).mean() for t in flat(model(binary, global_))).backward()
-    optimizer.step()
-    swa = AveragedModel(model)
-    return {"config": cfg, "model": model.state_dict(), "swa_model": swa.state_dict(),
-            "optimizer": optimizer.state_dict()}
-
-
 def models(ckpt):
     """The model and the SWA model of a checkpoint, in eval mode."""
     model = Model(ckpt["config"], blueprints.MAX_BOARD_LEN)
@@ -100,7 +64,7 @@ def models(ckpt):
 
 
 def test_the_converted_network_computes_what_it_did_whatever_the_planes_of_closed_areas():
-    ckpt = checkpoint()
+    ckpt = checkpoint(11)
     old, old_swa = models(ckpt)
     touched = add_extended_inputs.convert(ckpt, 12)
     assert len(touched) == 3, touched  # conv_spatial in the model, the SWA model and the optimizer
@@ -122,7 +86,7 @@ def test_the_converted_network_computes_what_it_did_whatever_the_planes_of_close
 
 
 def test_the_optimizer_state_gets_zero_channels_and_loads():
-    ckpt = checkpoint()
+    ckpt = checkpoint(11)
     before = {i: {k: v.clone() for k, v in s.items()} for i, s in ckpt["optimizer"]["state"].items()}
     add_extended_inputs.convert(ckpt, 12)
     new = Model(ckpt["config"], blueprints.MAX_BOARD_LEN)
@@ -145,14 +109,14 @@ def test_the_optimizer_state_gets_zero_channels_and_loads():
 
 
 def test_a_checkpoint_of_a_network_alone_converts():
-    ckpt = checkpoint()
+    ckpt = checkpoint(11)
     alone = {"config": ckpt["config"], "model": ckpt["model"]}
     assert len(add_extended_inputs.convert(alone, 12)) == 1
     Model(alone["config"], blueprints.MAX_BOARD_LEN).load_state_dict(alone["model"])
 
 
 def test_the_converter_refuses_other_inputs():
-    ckpt = checkpoint()
+    ckpt = checkpoint(11)
     add_extended_inputs.convert(ckpt, 12)
     with pytest.raises(ValueError, match="version 12, not 11"):
         add_extended_inputs.convert(ckpt, 12)
@@ -162,8 +126,8 @@ def test_the_converter_refuses_other_inputs():
         add_extended_inputs.convert({"config": config("enclosure", 11)}, 12)
 
 
-def test_the_command_line_gives_version_12_and_keeps_10_as_its_default(tmp_path):
-    torch.save(checkpoint(), tmp_path / "v11.ckpt")
+def test_the_command_line_gives_version_12_and_10_as_before(tmp_path):
+    torch.save(checkpoint(11), tmp_path / "v11.ckpt")
     script = os.path.join(os.path.dirname(__file__), "..", "add_extended_inputs.py")
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
     run = subprocess.run([sys.executable, script, str(tmp_path / "v11.ckpt"), str(tmp_path / "v12.ckpt"),
@@ -172,15 +136,15 @@ def test_the_command_line_gives_version_12_and_keeps_10_as_its_default(tmp_path)
     assert "with the inputs version 12" in run.stdout
     out = torch.load(tmp_path / "v12.ckpt", map_location="cpu", weights_only=False)
     assert modelconfigs.get_inputs_version(out["config"]) == 12
-    # Without the option, version 10 from 9, as before: a checkpoint of version 11 is refused.
-    run = subprocess.run([sys.executable, script, str(tmp_path / "v11.ckpt"), str(tmp_path / "v10.ckpt")],
-                         capture_output=True, text=True, env=env)
+    # Version 10 from 9, as before: a checkpoint of version 11 is refused.
+    run = subprocess.run([sys.executable, script, str(tmp_path / "v11.ckpt"), str(tmp_path / "v10.ckpt"),
+                          "-inputs-version", "10"], capture_output=True, text=True, env=env)
     assert run.returncode != 0 and "not 9" in run.stderr
     assert not (tmp_path / "v10.ckpt").exists()
 
 
 def test_the_export_writes_model_version_21(tmp_path):
-    ckpt = checkpoint()
+    ckpt = checkpoint(11)
     add_extended_inputs.convert(ckpt, 12)
     torch.save(ckpt, tmp_path / "checkpoint.ckpt")
     args = dict(export.args, export_dir=str(tmp_path / "out"), model_name="t", filename_prefix="model",
@@ -250,7 +214,20 @@ def test_the_shuffle_merges_rows_of_both_counts_at_the_largest():
     narrow = np.ones((3, V11_PLANES, 5), dtype=np.uint8)
     wide = np.full((2, V11_PLANES + AREAS, 5), 7, dtype=np.uint8)
     rows = [narrow, wide]
-    shuffle.pad_binary_inputs_to_widest(rows)
+    shuffle.pad_planes_to_widest(rows, [np.zeros((3, V11_GLOBALS)), np.zeros((2, V11_GLOBALS))])
     assert rows[1] is wide
     assert rows[0].shape == (3, V11_PLANES + AREAS, 5)
     assert np.array_equal(rows[0][:, :V11_PLANES], narrow) and not rows[0][:, V11_PLANES:].any()
+
+
+def test_the_shuffle_refuses_rows_of_other_versions():
+    # Rows of version 9 (90 planes, 24 global inputs) with rows of version 10 (102, 44), and rows of version 10 with
+    # rows of version 12: their planes and their global inputs differ.
+    for (p0, g0), (p1, g1) in (((90, 24), (102, 44)), ((102, 44), (V11_PLANES + AREAS, V11_GLOBALS))):
+        with pytest.raises(ValueError, match="other inputs versions"):
+            shuffle.pad_planes_to_widest([np.ones((3, p0, 5)), np.ones((2, p1, 5))],
+                                         [np.zeros((3, g0)), np.zeros((2, g1))])
+    # Rows of versions 10 and 11 have the same planes: their global inputs merge, as before.
+    rows = [np.ones((3, 102, 5)), np.ones((2, 102, 5))]
+    shuffle.pad_planes_to_widest(rows, [np.zeros((3, 44)), np.zeros((2, V11_GLOBALS))])
+    assert [r.shape[1] for r in rows] == [102, 102]

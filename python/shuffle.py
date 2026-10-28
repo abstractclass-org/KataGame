@@ -150,25 +150,28 @@ def save_output_npz(
 
 # Enclosure fork (2026-10-13): the C++ V9 rows have 7 global inputs, V8's 5 and the playout doubling advantage.
 # Files of both widths merge at the widest width, the narrower zero-padded (no advantage), so the output stays 5 wide
-# until the first V9 rows arrive. The trainer fits the width to its model (fit_global_input_nc).
-def pad_global_inputs_to_widest(globalInputNCList: list[np.ndarray]) -> None:
-    width = max(arr.shape[1] for arr in globalInputNCList)
-    for i, arr in enumerate(globalInputNCList):
-        if arr.shape[1] < width:
-            padded = np.zeros((arr.shape[0], width), dtype=arr.dtype)
-            padded[:, :arr.shape[1]] = arr
-            globalInputNCList[i] = padded
-
-# KataGame fork (2026-10-27): the rows of the inputs version 12 have the game's planes of closed areas after version
-# 11's planes. Files of both counts merge at the largest count, the rows of version 11 with those planes at 0, as the
-# global inputs above. The trainer fits the count to its model (data_processing_pytorch.fit_binary_input_nchw).
-def pad_binary_inputs_to_widest(binaryInputNCHWPackedList: list[np.ndarray]) -> None:
-    width = max(arr.shape[1] for arr in binaryInputNCHWPackedList)
-    for i, arr in enumerate(binaryInputNCHWPackedList):
+# until the first V9 rows arrive. The trainer fits the width to its model (fit_global_input_nc). KataGame fork
+# (2026-10-27): any array of the rows' inputs, on dimension 1 (pad_planes_to_widest).
+def pad_inputs_to_widest(inputList: list[np.ndarray]) -> None:
+    width = max(arr.shape[1] for arr in inputList)
+    for i, arr in enumerate(inputList):
         if arr.shape[1] < width:
             padded = np.zeros((arr.shape[0], width, *arr.shape[2:]), dtype=arr.dtype)
             padded[:, :arr.shape[1]] = arr
-            binaryInputNCHWPackedList[i] = padded
+            inputList[i] = padded
+
+# KataGame fork (2026-10-27): the rows of the inputs version 12 have the game's planes of closed areas after version
+# 11's planes, and version 11's global inputs. Files of both merge at the larger count of planes, the rows of version
+# 11 with those planes at 0, as the trainer reads them (data_processing_pytorch.fit_binary_input_nchw). Files whose
+# planes differ and whose global inputs differ too are of other versions (V9's 90 planes and 24 global inputs against
+# V10's 102 and 44, or V10's against V12's), whose rows differ in more than these planes: they stay refused, as
+# before the planes merged. Call it before the global inputs merge.
+def pad_planes_to_widest(binaryInputNCHWPackedList: list[np.ndarray], globalInputNCList: list[np.ndarray]) -> None:
+    widths = sorted({(b.shape[1], g.shape[1]) for b, g in zip(binaryInputNCHWPackedList, globalInputNCList)})
+    if len({planes for planes, _ in widths}) > 1 and len({inputs for _, inputs in widths}) > 1:
+        raise ValueError(f"files of other inputs versions, (planes, global inputs) {widths}: files of other counts "
+                         "of planes merge only with the same global inputs (the inputs versions 11 and 12)")
+    pad_inputs_to_widest(binaryInputNCHWPackedList)
 
 def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     """Zero-pad older-format globalTargetsNC rows up to the current channel count."""
@@ -274,8 +277,8 @@ def shardify(
     if len(binaryInputNCHWPackedList) <= 0:
         return num_files_not_found # Early quit since we don't know shapes
 
-    pad_binary_inputs_to_widest(binaryInputNCHWPackedList)
-    pad_global_inputs_to_widest(globalInputNCList)
+    pad_planes_to_widest(binaryInputNCHWPackedList, globalInputNCList)
+    pad_inputs_to_widest(globalInputNCList)
     concatenated_arrs = (
         joint_concatenate(
             [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList]
@@ -381,8 +384,8 @@ def merge_bucket(
         print("WARNING: empty merge bucket: ", out_tmp_dir)
         return []
 
-    pad_binary_inputs_to_widest(binaryInputNCHWPackedList)
-    pad_global_inputs_to_widest(globalInputNCList)
+    pad_planes_to_widest(binaryInputNCHWPackedList, globalInputNCList)
+    pad_inputs_to_widest(globalInputNCList)
     concatenated_arrs = (
         joint_concatenate(
             [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList]

@@ -45,17 +45,17 @@ static const int LEN = NNPos::MAX_BOARD_LEN, AREA = LEN * LEN;
 static const int V11 = NNInputs::NUM_FEATURES_SPATIAL_V11, V12 = NNInputs::NUM_FEATURES_SPATIAL_V12;
 static const int G = NNInputs::NUM_FEATURES_GLOBAL_V12;
 
+//The packed fill of V11 or V12.
+static decltype(&NNInputs::fillRowV12Packed) packedFill(int version) {
+  return version == 12 ? NNInputs::fillRowV12Packed : NNInputs::fillRowV11Packed;
+}
+
 static void fillPacked(const Board& board, int version, int symmetry, vector<uint32_t>& bits, vector<float>& global) {
   BoardHistory hist(board, board.nextPla(), Rules(), 0);
   MiscNNInputParams params;
   bits.assign(NNInputs::NUM_SPATIAL_WORDS_V12, 0u);
   global.assign(G, 0.0f);
-  if(version == 12)
-    NNInputs::fillRowV12Packed(board, hist, board.nextPla(), params, LEN, LEN, false, bits.data(), global.data(),
-                               symmetry);
-  else
-    NNInputs::fillRowV11Packed(board, hist, board.nextPla(), params, LEN, LEN, false, bits.data(), global.data(),
-                               symmetry);
+  packedFill(version)(board, hist, board.nextPla(), params, LEN, LEN, false, bits.data(), global.data(), symmetry);
 }
 
 static bool bit(const vector<uint32_t>& bits, int i) { return (bits[i >> 5] >> (i & 31)) & 1u; }
@@ -186,15 +186,11 @@ int main(int argc, char** argv) {
     double seconds[2] = {0.0, 0.0};
     for(int r = 0; r < rounds; r++)
       for(int v = 0; v < 2; v++) {
+        const auto fill = packedFill(11 + v);
         const auto start = chrono::steady_clock::now();
-        for(size_t k = 0; k < samples.size(); k++) {
-          if(v == 0)
-            NNInputs::fillRowV11Packed(samples[k].board, hists[k], samples[k].board.nextPla(), params, LEN, LEN, false,
-                                       bits.data(), global.data());
-          else
-            NNInputs::fillRowV12Packed(samples[k].board, hists[k], samples[k].board.nextPla(), params, LEN, LEN, false,
-                                       bits.data(), global.data());
-        }
+        for(size_t k = 0; k < samples.size(); k++)
+          fill(samples[k].board, hists[k], samples[k].board.nextPla(), params, LEN, LEN, false, bits.data(),
+               global.data(), 0);
         seconds[v] += chrono::duration<double>(chrono::steady_clock::now() - start).count();
       }
     const double fills = (double)rounds * samples.size();

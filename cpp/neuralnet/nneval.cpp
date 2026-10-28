@@ -594,19 +594,15 @@ void NNEvaluator::fillRowBufs(
   //(2026-10-27).
   buf.rowSpatialPacked = gameInputs;
   if(gameInputs) {
-    const bool extended = inputsVersion >= 10;
-    const bool areas = inputsVersion >= 12;
-    testAssert(rowSpatialLen == (areas ? NNInputs::NUM_SPATIAL_ELTS_V12
-                                 : extended ? NNInputs::NUM_SPATIAL_ELTS_V10 : NNInputs::NUM_SPATIAL_ELTS_V8));
-    const size_t words = areas ? NNInputs::NUM_SPATIAL_WORDS_V12
-      : extended ? NNInputs::NUM_SPATIAL_WORDS_V10 : NNInputs::NUM_SPATIAL_WORDS_V8;
+    testAssert(rowSpatialLen == NNInputs::gameSpatialFeatures(inputsVersion) * NNPos::MAX_BOARD_AREA);
+    const size_t words = NNInputs::gameSpatialWords(inputsVersion);
     if(buf.rowSpatialBits.size() < words)
       buf.rowSpatialBits.resize(words);
-    if(areas)
+    if(inputsVersion == 12)
       NNInputs::fillRowV12Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
     else if(inputsVersion == 11)
       NNInputs::fillRowV11Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
-    else if(extended)
+    else if(inputsVersion == 10)
       NNInputs::fillRowV10Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
     else if(inputsVersion == 9)
       NNInputs::fillRowV9Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);

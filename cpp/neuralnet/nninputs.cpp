@@ -2930,13 +2930,13 @@ void NNInputs::fillRowV7(
 
 //The spatial planes of the inputs versions 8 to 12: V9 has V8's, V10 the game's extended planes too, V11 V10's, V12
 //the game's planes of closed areas too.
-static int gameSpatialFeatures(int inputsVersion) {
+int NNInputs::gameSpatialFeatures(int inputsVersion) {
   return inputsVersion >= 12 ? NNInputs::NUM_FEATURES_SPATIAL_V12
     : inputsVersion >= 10 ? NNInputs::NUM_FEATURES_SPATIAL_V10 : NNInputs::NUM_FEATURES_SPATIAL_V8;
 }
 
 //The words of a packed row of the inputs versions 8 to 12 (gameSpatialFeatures).
-static int gameSpatialWords(int inputsVersion) {
+int NNInputs::gameSpatialWords(int inputsVersion) {
   return inputsVersion >= 12 ? NNInputs::NUM_SPATIAL_WORDS_V12
     : inputsVersion >= 10 ? NNInputs::NUM_SPATIAL_WORDS_V10 : NNInputs::NUM_SPATIAL_WORDS_V8;
 }
@@ -2982,7 +2982,7 @@ static void fillRowV8Entries(
   int posStride;
   if(useNHWC) {
     featureStride = 1;
-    posStride = gameSpatialFeatures(inputsVersion);
+    posStride = NNInputs::gameSpatialFeatures(inputsVersion);
   }
   else {
     featureStride = numPos;
@@ -3046,7 +3046,7 @@ static void fillRowV8Floats(
     setEntries->clear();
   }
   else
-    std::fill(rowBin, rowBin + gameSpatialFeatures(inputsVersion) * nnXLen * nnYLen, 0.0f);
+    std::fill(rowBin, rowBin + NNInputs::gameSpatialFeatures(inputsVersion) * nnXLen * nnYLen, 0.0f);
   //Each entry set is recorded for the next fill's clearing.
   fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, 0, inputsVersion, [&](int i) {
     rowBin[i] = 1.0f;
@@ -3060,7 +3060,7 @@ static void fillRowV8Bits(
   const MiscNNInputParams& nnInputParams,
   int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry, int inputsVersion
 ) {
-  std::fill(rowBits, rowBits + gameSpatialWords(inputsVersion), 0u);
+  std::fill(rowBits, rowBits + NNInputs::gameSpatialWords(inputsVersion), 0u);
   fillRowV8Entries(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowGlobal, symmetry, inputsVersion, [&](int i) {
     rowBits[i >> 5] |= 1u << (i & 31);
   });

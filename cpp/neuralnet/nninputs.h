@@ -261,6 +261,9 @@ namespace NNInputs {
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
     int symmetry = 0
   );
+  //The planes of the inputs versions 8 to 12 (NUM_FEATURES_SPATIAL_V8, V10 or V12) and the words of a packed row.
+  int gameSpatialFeatures(int inputsVersion);
+  int gameSpatialWords(int inputsVersion);
   //The packed row's first n entries as floats (0 or 1) into out.
   void unpackSpatialBits(const uint32_t* rowBits, float* out, int n);
 

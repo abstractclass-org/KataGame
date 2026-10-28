@@ -29,14 +29,15 @@ def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
 # Enclosure fork (2026-10-13): the C++ V9 rows add the playout doubling advantage as 2 global inputs after the game's
 # (Enclosure: 5, modelconfigs.get_inputs_version). Rows written before have the game's alone and are zero-padded, as
 # rows with no advantage are. A model with the game's inputs alone reads the first ones of a V9 row: it has no inputs
-# for the advantage.
+# for the advantage. KataGame fork (2026-10-27): it fits any array on dimension 1, the planes too
+# (fit_binary_input_nchw).
 def fit_global_input_nc(globalInputNC: np.ndarray, num_global_features: int) -> np.ndarray:
     num_channels = globalInputNC.shape[1]
     if num_channels == num_global_features:
         return globalInputNC
     if num_channels > num_global_features:
         return globalInputNC[:, :num_global_features]
-    padded = np.zeros((globalInputNC.shape[0], num_global_features), dtype=globalInputNC.dtype)
+    padded = np.zeros((globalInputNC.shape[0], num_global_features, *globalInputNC.shape[2:]), dtype=globalInputNC.dtype)
     padded[:, :num_channels] = globalInputNC
     return padded
 
@@ -45,17 +46,13 @@ def fit_global_input_nc(globalInputNC: np.ndarray, num_global_features: int) -> 
 # model of version 11 reads the first planes of a row of version 12, as fit_global_input_nc fits the global inputs. So
 # a run switches versions with a converted checkpoint (add_extended_inputs.py) while its window holds rows of both. The
 # converted weights of those planes start at 0, and a plane at 0 gives its weights no gradient, so the rows of version
-# 11 train them not at all. Any other count of planes stays, and the reader refuses it.
-def fit_binary_input_nchw(binaryInputNCHW: np.ndarray, num_bin_features: int, game) -> np.ndarray:
-    num_channels = binaryInputNCHW.shape[1]
+# 11 train them not at all. Any other count of planes stays, and the reader refuses it (the shuffle refuses the files
+# of other versions too: shuffle.pad_planes_to_widest). The planes are on dimension 1, packed or not.
+def fit_binary_input_nchw(binaryInputNCHWPacked: np.ndarray, num_bin_features: int, game) -> np.ndarray:
     areas = games.area_spatial_inputs(game)
-    if areas == 0 or abs(num_channels - num_bin_features) != areas:
-        return binaryInputNCHW
-    if num_channels > num_bin_features:
-        return binaryInputNCHW[:, :num_bin_features]
-    padded = np.zeros((binaryInputNCHW.shape[0], num_bin_features, *binaryInputNCHW.shape[2:]), dtype=binaryInputNCHW.dtype)
-    padded[:, :num_channels] = binaryInputNCHW
-    return padded
+    if areas == 0 or abs(binaryInputNCHWPacked.shape[1] - num_bin_features) != areas:
+        return binaryInputNCHWPacked
+    return fit_global_input_nc(binaryInputNCHWPacked, num_bin_features)
 
 # Enclosure fork (owner, 2026-10-03): valueTargetsNCHW gained C5-6 (the territory income), and C7 (2026-10-14: the
 # next mover's nodes, for the symmetries of policy channel 1, not a target); rows written before have 5 or 7
