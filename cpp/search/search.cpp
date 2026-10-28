@@ -82,7 +82,7 @@ Search::Search(const SearchParams& params, NNEvaluator* nnEval, NNEvaluator* hum
    rootFocus(nullptr),rootFocusCleanupMutex(),rootFocusToCleanUp(),
    rootSymmetries(),
    rootPruneOnlySymmetries(),
-   rootSafeArea(),
+   rootSafeArea(Board::MAX_ARR_SIZE, C_EMPTY),
    recentScoreCenter(0.0),
    fixedScoreCenter(std::numeric_limits<double>::quiet_NaN()),
    mirroringPla(C_EMPTY),
@@ -133,8 +133,6 @@ Search::Search(const SearchParams& params, NNEvaluator* nnEval, NNEvaluator* hum
   }
 
   rootKoHashTable = new KoHashTable();
-
-  rootSafeArea.assign(Board::MAX_ARR_SIZE, C_EMPTY);
 
   valueWeightDistribution = new DistributionTable(
     [](double z) { return FancyMath::tdistpdf(z,VALUE_WEIGHT_DEGREES_OF_FREEDOM); },

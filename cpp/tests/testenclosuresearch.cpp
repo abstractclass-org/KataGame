@@ -291,7 +291,7 @@ int runenclosuretests(const vector<string>& args) {
          << " with a mirror image), " << listed.size() << " listed with images" << endl;
   }
 
-  //5. KataGo's prune of useless root moves (rootPruneUselessMoves) at its pattern: the opponent's last four moves
+  //5. Go's prune of useless root moves (rootPruneUselessMoves) at its pattern: the opponent's last four moves
   //are passes. A pass forfeits the rest of the turn (the site's timeout pass, which a replay tolerates), so seven
   //passes from the start reach it, with Red to move. Go's test reads the root's area (rootSafeArea), a point array,
   //at the move, and an edge is a move Loc, not a point: the prune skips every edge, and the search is the one

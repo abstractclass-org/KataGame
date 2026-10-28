@@ -193,9 +193,9 @@ tests use a Debug build with assertions and `-D_GLIBCXX_ASSERTIONS`, so these er
   among the points, all of self-play's random opening moves would fall in one corner, with no error.
 - Point functions given a move: `isOnBoard(moveLoc)` in the root checks and in the filter of avoided moves
   (`searchhelpers.cpp`), and `isAdjacentToPla(moveLoc, ...)`.
-- A point array read at a move: `rootSafeArea` (`search.h`), which Go's prune of useless root moves read after four
-  passes of the opponent. The prune now skips a move ("Go's features, kept neutral"). The array was a raw array,
-  which `-D_GLIBCXX_ASSERTIONS` does not check. It is now a `std::vector`, so the Debug build catches such a read.
+- A point array read at a move: `rootSafeArea` (`search.h`), in Go's prune of useless root moves, which now skips a
+  move ("Go's features, kept neutral"). The array is now a `std::vector`, not a raw array, so that
+  `-D_GLIBCXX_ASSERTIONS` catches such a read.
 - `NNPos::locToPos` took both a move and a point. It now takes moves only, and gives the action, which is the policy
   index. A point's spatial index comes from `NNPos::pointToPos`.
 
@@ -252,15 +252,12 @@ These stay declared, with neutral answers, so that their callers compile unchang
   off by default) remain optional. `getEndingWhiteScoreBonus` returns 0. This disables Go's bonus for filling neutral
   points, which read ownership at the move's point.
 - **The prune of useless root moves** (`rootPruneUselessMoves`) prunes no move of a game. When the opponent's last
-  four moves are passes, Go's prune removes each root move on a point of the pass-alive area (`rootSafeArea`). In Go,
-  such moves only make a training game longer. `Search::isAllowedRootMove` skips that test for a move `Loc`, which is
-  not a point. The other choice was to read the area at the move's point from `action_point`. It was refused, because
-  a game's `rootSafeArea` is its area now (`GameRules::area`), not a safe area: a later move can change it. For
-  example, an Enclosure edge that crosses an opponent's edge removes that edge and can open the opponent's region. So
-  a move from a point of that area is not useless, and the prune would remove real moves. A game that has useless
-  moves needs a prune of its own. The self-play configs of the three games keep the setting on, and it has no effect.
-  `runenclosuretests` checks this after seven passes from the start: the search is the same as the search without
-  the prune.
+  four moves are passes, Go's prune removes each root move on a point of its pass-alive area (`rootSafeArea`).
+  `Search::isAllowedRootMove` skips that test for a move `Loc`, which is not a point. A test at the move's point
+  (`action_point`) would remove real moves. A game's `rootSafeArea` is its area now (`GameRules::area`), not a safe
+  area, and a later move can change it. For example, an Enclosure edge that cuts an enemy edge can open the enemy's
+  region. A game that has useless moves needs a prune of its own. The three games' self-play configs keep the setting
+  on, with no effect. `runenclosuretests` checks this after seven passes.
 - **No result:** the fork never sets `isNoResult`. KataGo's branch for rules without a no-result outcome then sets
   that output to zero, so a win and a loss share the probability, as under Go's area rules.
 
