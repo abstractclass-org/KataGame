@@ -90,10 +90,10 @@ static bool analyzeRootViews(
   std::function<bool()> terminated = [request]() noexcept {
     return request->status.load(std::memory_order_acquire) == AnalyzeRequest::STATUS_TERMINATED;
   };
-  RootViews::Pick pick;
+  RootViews::Choice choice;
   return RootViews::search(
     bot, request->board, request->hist, request->nextPla, RootViews::cover(request->board), TimeControls(), 1.0,
-    settings, report, onSearchBegun, terminated, ret, pick);
+    settings, report, onSearchBegun, terminated, ret, choice);
 }
 
 

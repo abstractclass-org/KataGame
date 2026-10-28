@@ -34,6 +34,11 @@ namespace RootViews {
   //Sets the game's view on the board (GameInterface::setView), or returns false with the reason. "" leaves it as it is.
   bool setBoardView(Board& board, const std::string& view, std::string& why);
 
+  //Starts the history again at the board's position, at the history's turn number, after a move in a view of its own:
+  //the search's graph hash replays the history's moves from its start, where such a move would name another action.
+  //The game's position keeps what its inputs read of the earlier moves.
+  void restartHistory(const Board& board, BoardHistory& hist);
+
   //What each search reports: the arguments of Search::getAnalysisJson.
   struct Report {
     Player perspective = C_EMPTY;
@@ -50,15 +55,15 @@ namespace RootViews {
 
   //The move that the search chose: a move of the root's own view (view ""), or a move that only another view names,
   //with that view (loc is then the move in it).
-  struct Pick {
+  struct Choice {
     Loc loc = Board::NULL_LOC;
     std::string view;
   };
 
   //The search of the root's views (above), of the position's cover views: writes the analysis engine's response in
-  //ret and the chosen move in pick, or returns false when a search was stopped or had no result. Each search takes its
-  //share of the search's limits and of the clock tc times searchFactor (genMoveSynchronous's searchFactor), within the
-  //clock's limit for the root's move, so the searches together take the limits and the clock's time of one search.
+  //ret and the chosen move in choice, or returns false when a search was stopped or had no result. Each search takes
+  //its share of the search's limits and of the clock tc times searchFactor (genMoveSynchronous's searchFactor), within
+  //the clock's limit for the root's move, so the searches together take the limits and the clock's time of one search.
   //The first search calls onSearchBegun, and a later one stops at once when stopped() is true (an empty stopped:
   //never). The bot's position is the last search's at the end.
   bool search(
@@ -66,7 +71,7 @@ namespace RootViews {
     const std::vector<std::string>& views, const TimeControls& tc, double searchFactor,
     const Settings& settings, const Report& report,
     const std::function<void()>& onSearchBegun, const std::function<bool()>& stopped,
-    nlohmann::json& ret, Pick& pick
+    nlohmann::json& ret, Choice& choice
   );
 }
 

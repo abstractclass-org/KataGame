@@ -38,12 +38,18 @@ bool RootViews::setBoardView(Board& board, const string& view, string& why) {
   return true;
 }
 
+void RootViews::restartHistory(const Board& board, BoardHistory& hist) {
+  const int64_t turnNumber = hist.getCurrentTurnNumber();
+  hist.clear(board, hist.presumedNextMovePla, hist.rules, hist.encorePhase);
+  hist.setInitialTurnNumber(turnNumber);
+}
+
 bool RootViews::search(
   AsyncBot* bot, const Board& rootBoard, const BoardHistory& rootHist, Player rootPla,
   const vector<string>& views, const TimeControls& tc, double searchFactor,
   const Settings& settings, const Report& report,
   const std::function<void()>& onSearchBegun, const std::function<bool()>& stopped,
-  json& ret, Pick& pick
+  json& ret, Choice& choice
 ) {
   //Every search reports its values from one side: the report's perspective as the root has it. A check's root has
   //another player to move.
@@ -74,14 +80,15 @@ bool RootViews::search(
     if(isStopped())
       bot->stopWithoutWait();
   };
-  //The clock of each search. A check's root is the next position. When the root's move has more of its turn to come,
-  //Fischer's and absolute time give it at most its share of the time left (TimeControls::getTime), and a check of the
-  //turn's next move would not have that limit: each search takes it as its limit for one move.
+  //The clock of each search: the root's limit for one move (TimeControls::getTime, before the lag buffer, which each
+  //search applies) is each search's. A check's root is the next position, and its own limit can be larger: when the
+  //root's move has more of its turn to come, Fischer's and absolute time give it at most its share of the time left.
   TimeControls clock = tc;
-  const int turnMovesLeft = GameRules::turn_moves_left(rootBoard.pos);
-  if(!tc.isEffectivelyUnlimitedTime() && (tc.increment > 0 || tc.numPeriodsLeftIncludingCurrent <= 0) &&
-     turnMovesLeft > 1)
-    clock.maxTimePerMove = std::min(clock.maxTimePerMove, tc.mainTimeLeft / turnMovesLeft);
+  if(!tc.isEffectivelyUnlimitedTime()) {
+    double minTime, recommendedTime, maxTime;
+    tc.getTime(rootBoard, rootHist, 0.0, minTime, recommendedTime, maxTime);
+    clock.maxTimePerMove = maxTime;
+  }
   int numSearches = 0;
   int64_t totalVisits = 0;
   Loc chosen = Board::NULL_LOC;  //the move that the last search chose
@@ -132,17 +139,17 @@ bool RootViews::search(
     if(info.contains("pv") && !info["pv"].empty())
       info["pv"][0] = text;
   };
-  //The pick: the move of the root's own view when it names the move, else the move in its view.
-  auto setPick = [&pick](Loc loc, Loc own, const string& view) {
-    pick.loc = own != Board::NULL_LOC ? own : loc;
-    pick.view = own != Board::NULL_LOC ? string() : view;
+  //The choice: the move of the root's own view when it names the move, else the move in its view.
+  auto setChoice = [&choice](Loc loc, Loc own, const string& view) {
+    choice.loc = own != Board::NULL_LOC ? own : loc;
+    choice.view = own != Board::NULL_LOC ? string() : view;
   };
 
   if(numViews == 1) {
     const Board board = inView(views[0]);
     if(!runSearch(board, rootHist, rootPla, 1.0, ret))
       return false;
-    setPick(chosen, Board::NULL_LOC, views[0]);
+    setChoice(chosen, Board::NULL_LOC, views[0]);
     if(!views[0].empty()) {
       for(json& info : ret["moveInfos"]) {
         Loc loc;
@@ -151,7 +158,7 @@ bool RootViews::search(
       }
       ret["view"] = views[0];  //the frame of the ownership and the policy
       if(chosen != Board::NULL_LOC)
-        setPick(chosen, ownMove(childHash(board, chosen)), views[0]);
+        setChoice(chosen, ownMove(childHash(board, chosen)), views[0]);
     }
     ret["rootInfo"]["views"] = views;
     ret["rootInfo"]["searches"] = numSearches;
@@ -216,14 +223,13 @@ bool RootViews::search(
   vector<size_t> order(candidates.size());
   for(size_t i = 0; i < order.size(); i++)
     order[i] = i;
-  std::stable_sort(order.begin(), order.end(),
-                   [&](size_t a, size_t b) { return candidates[a].value > candidates[b].value; });
+  auto byValue = [&](size_t a, size_t b) { return candidates[a].value > candidates[b].value; };
+  std::stable_sort(order.begin(), order.end(), byValue);
   const size_t numFinalists = std::min<size_t>(std::max(1, settings.finalists), order.size());
   json checks = json::array();
   for(size_t f = 0; f < numFinalists; f++) {
     //The move in the root's own view when that view names it. Else in its pass's view, and then the child's history
-    //starts at the child: a move in a view of its own cannot replay from the history's start (the search's graph hash
-    //replays it). The game's position keeps what its inputs read of the earlier moves.
+    //starts at the child (restartHistory), as GTP's game after such a move.
     Candidate& c = candidates[order[f]];
     const bool own = c.own != Board::NULL_LOC;
     Board board = own ? rootBoard : boards[c.pass];
@@ -232,7 +238,7 @@ bool RootViews::search(
     if(hist.isGameFinished)
       continue;  //the pass's value is the result's
     if(!own)
-      hist.clear(board, hist.presumedNextMovePla, hist.rules, hist.encorePhase);
+      restartHistory(board, hist);
     json out;
     if(!runSearch(board, hist, hist.presumedNextMovePla, (1.0 - settings.passShare) / numFinalists, out))
       return false;
@@ -246,8 +252,7 @@ bool RootViews::search(
       c.info["pv"] = pv;
     }
   }
-  std::stable_sort(order.begin(), order.begin() + numFinalists,
-                   [&](size_t a, size_t b) { return candidates[a].value > candidates[b].value; });
+  std::stable_sort(order.begin(), order.begin() + numFinalists, byValue);
 
   //The response: the finalists by their checks' values, then the other candidates by their passes' values. A check's
   //values replace its candidate's, and the best candidate's are the root's.
@@ -275,8 +280,8 @@ bool RootViews::search(
     }
     moveInfos.push_back(std::move(info));
   }
-  const Candidate& picked = candidates[order[0]];
-  setPick(picked.loc, picked.own, views[picked.pass]);
+  const Candidate& top = candidates[order[0]];
+  setChoice(top.loc, top.own, views[top.pass]);
   const json& best = moveInfos[0];
   json rootInfo;
   rootInfo["visits"] = totalVisits;
