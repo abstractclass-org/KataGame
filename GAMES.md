@@ -47,6 +47,7 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, and the defaults of the optional members with a stub game. |
 | `cpp/tests/enclosure/testgameareas.cpp` | The look-ahead area and the komi area (optional members of the encoding part) through the front, for the build's game: the short-term value targets' lambdas and the komi draw's standard deviation, against each game's pinned areas, and the defaults with stub games. |
 | `cpp/tests/enclosure/testcheapsearch.cpp` | Self-play's full and cheap searches (`play.cpp`'s `GameRunner`), for the build's game: the share of full searches among the actions that draw one, and with `cheapSearchPerMove`, the search of an action that continues a move. |
+| `cpp/tests/enclosure/testdiversitysearch.cpp` | AZdb's diversity term in the search, for a build's game that gives AZdb's statistics (Blueprints): member 0's search against KataGo's, D on chains, a transposition, the member's choice by its reward, each member's evaluations, the refusals and the tree's clear. |
 | `cpp/tests/enclosure/testkomi.cpp` | Komi through the front, for the build's game: the result and the value targets at komis that decide a game, the global inputs at the history's komi, the even-komi search's bracket (an optional member of the encoding part) against KataGo's code and each game's pinned bracket, the two rules where the win-loss value keeps its sign up to the limit (no even komi, or KataGo's bracket end), each game's pinned lead step, and a self-play config's komi draws. |
 
 All members are static, and every file is a header. So the compiler sees the same code as in a build for one game, and
@@ -563,10 +564,11 @@ member `Diversity` (above). A game without it gives every member the reward 0.
   (`AZdb::State::phiOfMove`) when the search creates the node. Each node adds it once to its average, as KataGo adds a
   pattern bonus, so a node that two paths share has one value. The root has no reward. The win-loss and score values
   stay KataGo's. Every evaluation of the search reads member i's latent. Member 0, or λ = 1, gives w = 0: the search
-  is KataGo's, with no reward, no D and no read of the head. With w > 0 the search refuses to start without a model
-  with the head, a backend that computes it (`NeuralNet::computesIntrinsicHead`), the game's copy of the state
-  (`Search::setDiversityState`), or with the eval cache. A member of 1 to 4 needs a model of V14. The search clears
-  its tree when P changes, as for the pattern bonus, and when the state, the member or λ changes.
+  is KataGo's, with no reward, no D and no read of the head. With w > 0 the search refuses to start in four cases: a
+  model without the head, a backend that does not compute it (`NeuralNet::computesIntrinsicHead`), no copy of the
+  game's state (`Search::setDiversityState`), and the eval cache. A member of 1 to 4 needs a model of V14. The search
+  clears its tree when P changes, as for the pattern bonus, and when the state, the member or w changes.
+  `testdiversitysearch` checks the term ("The checks").
 
 **The training targets** are the slots of KataGo's spatial targets (`valueTargetsNCHW`) and the two that the fork
 added. `TARGETS` declares the slots that the game writes. The front computes C2-3 and C7 from `pieces`
@@ -807,6 +809,14 @@ the network's cache (`nnCacheSizePowerOfTwo`) changes the games once the cache i
 (`normalAsymmetricPlayoutProb`) need at least 5 visits in each search. In a game with them, a cheap search of fewer
 visits stops the test with an error ("asymmetric playout doubling resulted in fewer than 5 visits"). So with very few
 visits, set that probability to 0, or use a set of games that has no such game.
+
+**AZdb's search:** `testdiversitysearch MODEL MODEL_WITHOUT_HEAD` runs on a build of a game that gives AZdb's statistics
+(Blueprints), with two networks of the game of the inputs version 14: one with the intrinsic value head, one without
+it. Small random ones are enough (the test's header gives the commands). It checks that member 0 searches as KataGo's
+search, and D at each node of chains where each depth allows one move. It checks a node that two orders of P's moves
+share, a member's choice of the move with the larger reward, and each node's reward in a member's search with
+self-play's weightings. It also checks the members' evaluations in one cache, the refusals, and when the search keeps
+and clears its tree.
 
 **Connect-4's encoding part.** The conformance suite checks that its mirror maps the legal moves onto the image's. With
 a Connect-4 binary and network, the engine repository's `games/connect4/tests/test_network.py` checks two more things.

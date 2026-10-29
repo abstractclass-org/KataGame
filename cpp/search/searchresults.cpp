@@ -2319,9 +2319,6 @@ bool Search::getPrunedNodeValues(const SearchNode* nodePtr, ReportedSearchValues
     utilitySum += utility * weight;
     weightSum += weight;
   }
-  double utilityAvg = utilitySum / weightSum;
-  if(diversityWeight != 0.0)
-    utilityAvg += node.diversityReward;
   values = ReportedSearchValues(
     *this,
     winLossValueSum / weightSum,
@@ -2329,10 +2326,13 @@ bool Search::getPrunedNodeValues(const SearchNode* nodePtr, ReportedSearchValues
     scoreMeanSum / weightSum,
     scoreMeanSqSum / weightSum,
     leadSum / weightSum,
-    utilityAvg,
+    utilitySum / weightSum,
     node.stats.weightSum.load(std::memory_order_acquire),
     node.stats.visits.load(std::memory_order_acquire)
   );
+  //KataGame fork (2026-10-29): and the node's reward, a node constant that recomputeNodeStats adds to its average.
+  if(diversityWeight != 0.0)
+    values.utility += node.diversityReward;
   return true;
 }
 

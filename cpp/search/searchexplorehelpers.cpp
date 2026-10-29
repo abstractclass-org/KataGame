@@ -297,25 +297,18 @@ double Search::getFpuValueForChildrenAssumeVisited(
   parentUtilityStdevFactor = 1.0 + searchParams.cpuctUtilityStdevScale * (parentUtilityStdev / searchParams.cpuctUtilityStdevPrior - 1.0);
 
   //KataGame fork (2026-10-29): AZdb's diversity term. The node's own reward is in its value and in no child's value,
-  //so the children's first-play value leaves it out. The node's network utility gets the head's return after it, as
-  //its evaluation does in the search (recomputeNodeStats).
+  //so the children's first-play value leaves it out. The node's network utility (getUtilityFromNN) gets the head's
+  //return after it, as its evaluation does in the search (recomputeNodeStats).
   if(diversityWeight != 0.0)
     parentUtility -= node.diversityReward;
-  double nnUtilityForFPU = 0.0;
-  if(searchParams.fpuParentWeightByVisitedPolicy || searchParams.fpuParentWeight > 0.0) {
-    const NNOutput& nnOutput = *(node.getNNOutput());
-    nnUtilityForFPU = getUtilityFromNN(nnOutput);
-    if(diversityWeight != 0.0)
-      nnUtilityForFPU += getDiversityHeadUtility(nnOutput, node.nextPla);
-  }
 
   double parentUtilityForFPU = parentUtility;
   if(searchParams.fpuParentWeightByVisitedPolicy) {
     double avgWeight = std::min(1.0, pow(policyProbMassVisited, searchParams.fpuParentWeightByVisitedPolicyPow));
-    parentUtilityForFPU = avgWeight * parentUtility + (1.0 - avgWeight) * nnUtilityForFPU;
+    parentUtilityForFPU = avgWeight * parentUtility + (1.0 - avgWeight) * getUtilityFromNN(*(node.getNNOutput()), node.nextPla);
   }
   else if(searchParams.fpuParentWeight > 0.0) {
-    parentUtilityForFPU = searchParams.fpuParentWeight * nnUtilityForFPU + (1.0 - searchParams.fpuParentWeight) * parentUtility;
+    parentUtilityForFPU = searchParams.fpuParentWeight * getUtilityFromNN(*(node.getNNOutput()), node.nextPla) + (1.0 - searchParams.fpuParentWeight) * parentUtility;
   }
 
   double fpuValue;

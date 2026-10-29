@@ -337,9 +337,9 @@ void Search::setParams(const SearchParams& params) {
 }
 
 void Search::setParamsNoClearing(const SearchParams& params) {
-  //KataGame fork (2026-10-29): another member evaluates with another latent, and another member or λ gives other
-  //utilities (diversityWeight), so no search state is valid to keep.
-  if(params.diversityMember != searchParams.diversityMember || params.diversityLambda != searchParams.diversityLambda)
+  //KataGame fork (2026-10-29): another member evaluates with another latent, and another w gives other utilities
+  //(diversityWeight), so no search state is valid to keep. Member 0 has w = 0 for every λ.
+  if(params.diversityMember != searchParams.diversityMember || resolveDiversityWeight(params) != resolveDiversityWeight(searchParams))
     clearSearch();
   searchParams = params;
   //Deliberately overrides the "no clearing" if the resolved pass-alive mode actually changes,
@@ -375,7 +375,7 @@ void Search::setDiversityState(const std::shared_ptr<const AZdb::State<GameEncod
   diversityState = state;
 }
 
-double Search::getDiversityWeight(const SearchParams& params) {
+double Search::resolveDiversityWeight(const SearchParams& params) {
   return params.diversityMember == 0 ? 0.0 : (1.0 - params.diversityLambda) / params.diversityLambda;
 }
 
@@ -745,7 +745,7 @@ void Search::beginSearch(bool pondering) {
   rootBoard.checkConsistency();
 
   //KataGame fork (2026-10-29): AZdb's diversity term for this search.
-  diversityWeight = getDiversityWeight(searchParams);
+  diversityWeight = resolveDiversityWeight(searchParams);
   checkDiversitySetup();
 
   numSearchesBegun++;

@@ -16,6 +16,8 @@
 //   - on the game's last move, where every move ends the game, a member with w > 0 prefers the move with the larger
 //     reward to the move that the search without the term prefers, and with the reward's sign turned the other move;
 //   - a search of member 3 after a search of member 2 on the same evaluator reads member 3's evaluations only;
+//   - self-play's kind of search with the term (every weighting that reads the utilities): at each node of its graph,
+//     the node constant is w s_P times the reward of the move into it, and the values are finite;
 //   - the refusals (no state, a model without the head, the eval cache), and the tree's clear when P changes.
 //
 //   testdiversitysearch MODEL MODEL_WITHOUT_HEAD
@@ -41,6 +43,7 @@
 #include "../../core/logger.h"
 #include "../../core/rand.h"
 #include "../../core/test.h"
+#include "../../game/graphhash.h"
 #include "../../neuralnet/nneval.h"
 #include "../../program/azdb.h"
 #include "../../search/search.h"
@@ -119,6 +122,10 @@ static void normalization(const vector<Position>& game, vector<double>& mean, ve
 
 //The test's member, with w > 0.
 static const int MEMBER = 2;
+
+//w = (1 - λ) / λ, and w s_P: the weight of the term with the sign of P in White's frame.
+static double weightOf(double lambda) { return (1.0 - lambda) / lambda; }
+static double signedWeight(Player P, double lambda) { return P == P_WHITE ? weightOf(lambda) : -weightOf(lambda); }
 
 //A state where MEMBER's ψ is v and every other member's is 0, with ℓ0 = 2 |v|. MEMBER's nearest member is then
 //member 0 (the lowest of equal distances), so its reward is (1 - 1/8) / MOVES φ · v.
@@ -269,7 +276,7 @@ static void forEachNode(const Search& search, const function<void(const SearchNo
   set<const SearchNode*> seen;
   vector<pair<const SearchNode*, Position>> stack = {{search.rootNode, Position{search.rootBoard, search.rootHistory}}};
   while(!stack.empty()) {
-    pair<const SearchNode*, Position> top = stack.back();
+    pair<const SearchNode*, Position> top = std::move(stack.back());
     stack.pop_back();
     if(!seen.insert(top.first).second)
       continue;
@@ -284,8 +291,8 @@ static string where(const string& label, int depth) { return label + " depth " +
 //D on a chain: line[0] is the root and line[j] the position after j actions (chainBelow holds). Depth j allows only
 //action j, so that each node has one child, and the searches with and without the term (λ = 1, the same member, so
 //the same evaluations) have the same visits. At the chain's end, a node that does not end the game repeats its own
-//evaluation. Returns the utilities of the search with the term, by depth.
-static vector<double> chainTest(
+//evaluation.
+static void chainTest(
   NNEvaluator* nnEval, Logger& logger, const vector<Position>& line, int member, double lambda,
   const shared_ptr<const State>& state, int64_t visits, const string& label
 ) {
@@ -297,9 +304,8 @@ static vector<double> chainTest(
   unique_ptr<Search> without = runSearch(nnEval, logger, params(visits, member, 1.0), line[0], state, until);
 
   const Player P = line[0].pla();
-  const double w = (1.0 - lambda) / lambda;
-  const double wP = P == P_WHITE ? w : -w;
-  check(with->diversityWeight == w && without->diversityWeight == 0.0, label + ": the weights");
+  const double wP = signedWeight(P, lambda);
+  check(with->diversityWeight == weightOf(lambda) && without->diversityWeight == 0.0, label + ": the weights");
 
   //The nodes of the chains, the root first.
   vector<const SearchNode*> nodes = {with->rootNode}, nodes0 = {without->rootNode};
@@ -308,7 +314,7 @@ static vector<double> chainTest(
     if(c.size() != 1 || c0.size() != 1 || c[0].loc != allowed[j].first || c0[0].loc != allowed[j].first ||
        c[0].edgeVisits != visitsOf(*c[0].node)) {
       check(false, where(label + ": not a chain at", j));
-      return vector<double>();
+      return;
     }
     nodes.push_back(c[0].node);
     nodes0.push_back(c0[0].node);
@@ -352,15 +358,12 @@ static vector<double> chainTest(
     const double childWeight = child.stats.getChildWeight(visitsOf(child));
     expected[j] = wP * reward[j] + (wP * headOf(j) + childWeight * expected[j + 1]) / (1.0 + childWeight);
   }
-  vector<double> utilities(k + 1);
   for(int j = 0; j <= k; j++) {
     check(visitsOf(*nodes[j]) == visitsOf(*nodes0[j]), where(label + ": the same visits at", j));
-    utilities[j] = utilityOf(*nodes[j]);
-    const double measured = utilities[j] - utilityOf(*nodes0[j]);
+    const double measured = utilityOf(*nodes[j]) - utilityOf(*nodes0[j]);
     check(near(measured, expected[j]), where(label + ": D at", j) + " (" + Global::doubleToString(measured) + " vs " +
           Global::doubleToString(expected[j]) + ")");
   }
-  return utilities;
 }
 
 //The positions of a game from its action from to its end.
@@ -368,10 +371,10 @@ static vector<Position> lineOf(const vector<Position>& game, int from) {
   return vector<Position>(game.begin() + from, game.end());
 }
 
-//The key of the search's graph for a position (GraphHash: the position and what the network's inputs read of the
-//earlier turns).
+//The key of the search's graph for a position: the game's repetition bound is always exceeded
+//(Board::simpleRepetitionBoundGt), so GraphHash::getGraphHash keys each node by its state alone.
 static Hash128 graphKey(const Position& p) {
-  return BoardHistory::getSituationRulesAndKoHash(p.board, p.hist, p.pla(), 0.5);
+  return GraphHash::getStateHash(p.hist, p.pla(), SearchParams().drawEquivalentWinsForWhite);
 }
 
 //The moves at p that the search can play: those of the network's policy. A game's encoding can keep one of several
@@ -382,7 +385,7 @@ static vector<Loc> searchableMoves(NNEvaluator* nnEval, const Position& p) {
   vector<Loc> legal, out;
   p.board.getLegalMoveLocs(legal);
   for(Loc loc: legal)
-    if(buf.result->policy()[NNPos::locToPos(loc, p.board.x_size, nnEval->getNNXLen(), nnEval->getNNYLen())] >= 0.0f)
+    if(buf.result->policy()[buf.result->getPos(loc, p.board)] >= 0.0f)
       out.push_back(loc);
   return out;
 }
@@ -549,10 +552,10 @@ int main(int argc, char** argv) {
       vector<Child> c = childrenOf(*kataGo->rootNode), c0 = childrenOf(*member0->rootNode);
       check(c.size() == c0.size() && c.size() > 1, "member 0: the same children");
       for(size_t i = 0; i < c.size() && i < c0.size(); i++) {
-        const string at = " at child " + Global::intToString((int)i);
+        const string ofChild = " at child " + Global::intToString((int)i);
         check(c[i].loc == c0[i].loc && c[i].edgeVisits == c0[i].edgeVisits &&
-              visitsOf(*c[i].node) == visitsOf(*c0[i].node), "member 0: the same visits" + at);
-        check(utilityOf(*c[i].node) == utilityOf(*c0[i].node), "member 0: the same utility" + at);
+              visitsOf(*c[i].node) == visitsOf(*c0[i].node), "member 0: the same visits" + ofChild);
+        check(utilityOf(*c[i].node) == utilityOf(*c0[i].node), "member 0: the same utility" + ofChild);
       }
       check(utilityOf(*kataGo->rootNode) == utilityOf(*member0->rootNode), "member 0: the same root utility");
       check(kataGo->getChosenMoveLoc() == member0->getChosenMoveLoc(), "member 0: the same move");
@@ -610,19 +613,7 @@ int main(int argc, char** argv) {
     for(int j = 1; j < 4; j++)
       check(nodes1[j] != NULL && nodes2[j] != NULL && nodes1[j] != nodes2[j],
             where("transposition: other nodes at", j));
-    for(const vector<const SearchNode*>* nodes: {&nodes1, &nodes2}) {
-      const vector<Position>& line = nodes == &nodes1 ? one : two;
-      for(int j = 1; j < 4; j++)
-        if((*nodes)[j] != NULL && (*nodes)[j + 1] == NULL) {
-          const NNOutput* out = (*nodes)[j]->getNNOutput();
-          const int pos = NNPos::locToPos(line[j + 1].lastLoc(), line[j].board.x_size, S, S);
-          fprintf(stderr, "transposition: order %d stops after depth %d: visits %lld, children %d, the next move's "
-                  "prior %g, legal %d\n", nodes == &nodes1 ? 1 : 2, j, (long long)visitsOf(*(*nodes)[j]),
-                  (int)childrenOf(*(*nodes)[j]).size(), out != NULL ? out->policy()[pos] : -9.0,
-                  (int)line[j].legal(line[j + 1].lastLoc()));
-        }
-    }
-    const double wP = (P == P_WHITE ? 1.0 : -1.0) * (1.0 - lambda) / lambda;
+    const double wP = signedWeight(P, lambda);
     double sum1 = 0.0, sum2 = 0.0;
     for(int j = 1; j <= 4; j++) {
       const double r1 = rewardFor(*state, member, one[j], P), r2 = rewardFor(*state, member, two[j], P);
@@ -656,7 +647,7 @@ int main(int argc, char** argv) {
   {
     const Position& root = game[G - 1];
     const Player P = root.pla();
-    const double wP = (P == P_WHITE ? 1.0 : -1.0) * (1.0 - lambda) / lambda;
+    const double wP = signedWeight(P, lambda);
     vector<Loc> legal;
     root.board.getLegalMoveLocs(legal);
     vector<Loc> moves;
@@ -700,7 +691,7 @@ int main(int argc, char** argv) {
         norm2 += dir[s] * dir[s];
       }
       const double factor = (1.0 - 0.125) / GameInterface::diversityMoves<GameEncoding>();
-      const double scale = 20.0 / ((1.0 - lambda) / lambda * factor * norm2);
+      const double scale = 20.0 / (weightOf(lambda) * factor * norm2);
       vector<double> plus(State::N), minus(State::N);
       for(int s = 0; s < State::N; s++) {
         plus[s] = scale * dir[s];
@@ -710,7 +701,7 @@ int main(int argc, char** argv) {
         const shared_ptr<const State> towards = memberState(sign > 0 ? plus : minus, mean, sd);
         const double rp = rewardFor(*towards, member, root.after(moves[ip]), P);
         const double ro = rewardFor(*towards, member, root.after(moves[io]), P);
-        check(near((ro - rp) * (1.0 - lambda) / lambda, 20.0 * sign, 1e-6), "last move: the rewards differ as scaled");
+        check(near((ro - rp) * weightOf(lambda), 20.0 * sign, 1e-6), "last move: the rewards differ as scaled");
         unique_ptr<Search> diverse = runSearch(nnEval, logger, params(40, member, lambda), root, towards, until);
         const Loc chosen = diverse->getChosenMoveLoc();
         check(chosen == (sign > 0 ? moves[io] : moves[ip]),
@@ -734,10 +725,10 @@ int main(int argc, char** argv) {
   //The cache: a search of member 3 after a search of member 2 on the same evaluator reads member 3's evaluations.
   {
     const Position& root = game[G / 2];
-    unique_ptr<Search> two = runSearch(nnEval, logger, params(40, 2, lambda), root, state);
-    unique_ptr<Search> three = runSearch(nnEval, logger, params(40, 3, lambda), root, state);
+    unique_ptr<Search> search2 = runSearch(nnEval, logger, params(40, 2, lambda), root, state);
+    unique_ptr<Search> search3 = runSearch(nnEval, logger, params(40, 3, lambda), root, state);
     int nodes = 0;
-    forEachNode(*three, [&](const SearchNode& node, const Position& p) {
+    forEachNode(*search3, [&](const SearchNode& node, const Position& p) {
       const NNOutput* got = node.getNNOutput();
       if(got == NULL)
         return;
@@ -750,12 +741,36 @@ int main(int argc, char** argv) {
             got->intrinsicA == want.intrinsicA && got->intrinsicB == want.intrinsicB, "cache: member 3's evaluation");
       nodes++;
     });
-    const NNOutput& r2 = *two->rootNode->getNNOutput();
-    const NNOutput& r3 = *three->rootNode->getNNOutput();
+    const NNOutput& r2 = *search2->rootNode->getNNOutput();
+    const NNOutput& r3 = *search3->rootNode->getNNOutput();
     check(r2.intrinsicA != r3.intrinsicA && r2.whiteWinProb != r3.whiteWinProb,
           "cache: the members' evaluations differ");
     check(nodes >= 10, "cache: enough nodes");
     printf("cache: %d nodes of member 3's search hold member 3's evaluations\n", nodes);
+  }
+
+  //Self-play's kind of search with the term: at each node of its graph, of either player's moves, the node constant is
+  //w s_P times the reward of the move into it (none at the root), and the values are finite.
+  {
+    int nodes = 0, rewarded = 0;
+    for(int at: {G / 8, G / 2, G - 12}) {
+      const Position& root = game[at];
+      const Player P = root.pla();
+      unique_ptr<Search> search = runSearch(nnEval, logger, selfplayParams(200, MEMBER, lambda), root, state);
+      check(visitsOf(*search->rootNode) >= 200, "self-play's search: its visits");
+      forEachNode(*search, [&](const SearchNode& node, const Position& p) {
+        const bool isRoot = &node == search->rootNode;
+        const double want = isRoot ? 0.0 : signedWeight(P, lambda) * rewardFor(*state, MEMBER, p, P);
+        check(near(node.diversityReward, want), "self-play's search: a node's reward");
+        check(std::isfinite(utilityOf(node)), "self-play's search: a finite utility");
+        nodes++;
+        if(node.diversityReward != 0.0)
+          rewarded++;
+      });
+    }
+    check(rewarded > 0, "self-play's search: some node has a reward");
+    printf("self-play's search: %d nodes of 3 searches, %d with a reward, each the reward of its move\n", nodes,
+           rewarded);
   }
 
   //The refusals.

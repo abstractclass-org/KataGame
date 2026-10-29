@@ -193,10 +193,10 @@ struct Search {
   //plaThatSearchIsFor, adds w s_P D to each node's utility: D is member i's intrinsic return, the rewards of P's moves
   //from the root to the node (SearchNode::diversityReward), then the head's return of P after the node, output A where
   //P moves and output B where the opponent moves (0 at the game's end). The opponent minimizes the same utility.
-  //diversityWeight: w = (1 - λ) / λ, resolved from the params at the start of each search (getDiversityWeight). 0 for
-  //member 0, and then the search is KataGo's and computes no reward, no D and reads no head. diversityState: the
-  //game's copy of the members' state, from which the rewards come (setDiversityState). The win-loss and score values
-  //of the nodes stay KataGo's.
+  //diversityWeight: w = (1 - λ) / λ, resolved from the params at the start of each search (resolveDiversityWeight).
+  //0 for member 0, and then the search is KataGo's and computes no reward, no D and reads no head. diversityState:
+  //the game's copy of the members' state, from which the rewards come (setDiversityState). The win-loss and score
+  //values of the nodes stay KataGo's.
   double diversityWeight;
   std::shared_ptr<const AZdb::State<GameEncoding>> diversityState;
 
@@ -320,7 +320,7 @@ struct Search {
   //term needs. Clears the search unless the state is the same.
   void setDiversityState(const std::shared_ptr<const AZdb::State<GameEncoding>>& state);
   //w = (1 - λ) / λ for a member >= 1, else 0 (diversityWeight).
-  static double getDiversityWeight(const SearchParams& params);
+  static double resolveDiversityWeight(const SearchParams& params);
 
   //If the number of threads is reduced, this can free up some excess threads in the thread pool.
   //Calling this is never necessary, it may just reduce some resource use.
@@ -538,10 +538,12 @@ private:
   double getScoreUtilityDiff(double scoreMeanAvg, double scoreMeanSqAvg, double delta) const;
   double getApproxScoreUtilityDerivative(double scoreMean) const;
   double getUtilityFromNN(const NNOutput& nnOutput) const;
+  double getUtilityFromNN(const NNOutput& nnOutput, Player nextPla) const;  //KataGame fork: with AZdb's head term
   //KataGame fork (2026-10-29): AZdb's diversity term (diversityWeight), as utilities from White's side. The head's
   //return of P after a node whose player to move is nextPla: output A where P moves, output B where the opponent
   //moves. And the reward of the move that led to board and hist (the history's last move), the node constant of
-  //SearchNode::diversityReward: the reward of P's moves that end a move, 0 for the opponent's. Both 0 when w = 0.
+  //SearchNode::diversityReward: the reward of P's moves that end a move, 0 for the opponent's. Only for w != 0: each
+  //caller checks diversityWeight first, so that a search with w = 0 runs KataGo's lines only.
   double getDiversityHeadUtility(const NNOutput& nnOutput, Player nextPla) const;
   double computeDiversityReward(const Board& board, const BoardHistory& hist) const;
   //At the start of a search: refuses a member without the latent, and the term without its head or its state.

@@ -168,7 +168,7 @@ class NNEvaluator {
   bool hasIntrinsicHead() const { return modelHasIntrinsic; }
   //KataGame fork (2026-10-29): whether the model has that head and the backend computes it
   //(NeuralNet::computesIntrinsicHead). A search with AZdb's diversity term needs it (Search::diversityWeight).
-  bool computesIntrinsicHead() const { return modelHasIntrinsic && backendComputesIntrinsic; }
+  bool computesIntrinsicHead() const { return modelHasIntrinsic && NeuralNet::computesIntrinsicHead(computeContext); }
   // The build-time max batch size: backend buffers are allocated for this many rows, and
   // fixed-shape backends (NeuralNet::BatchPolicy::FixedShape) pad every inference up to exactly
   // this many rows, so it is also the one input shape their sessions get compiled for.
@@ -350,7 +350,6 @@ class NNEvaluator {
   void finishScoreBelief(NNOutput& output) const;
   bool modelHasRegret;
   bool modelHasIntrinsic;
-  bool backendComputesIntrinsic;
 
   ModelPostProcessParams postProcessParams;
 
