@@ -1,6 +1,7 @@
 // Blueprints' engine protocol: Enclosure's (command/enclosureprotocol.cpp, the engine repository's
-// docs/design/04-notation-and-protocol.md), version 0.6.1, with Blueprints' fields and strategyjam.org's moves. See
-// blueprintsprotocol.h. The engine repository's games/blueprints/README.md, "The browser build", gives the fields.
+// docs/design/04-notation-and-protocol.md), version 0.7.0 (Enclosure's engine stays 0.6.x), with Blueprints' fields and
+// strategyjam.org's moves. See blueprintsprotocol.h. The engine repository's games/blueprints/README.md, "The browser
+// build", gives the fields.
 //
 // Requests (each has an "id", echoed in its reply; an error reply is {"id", "error", "field"}):
 //   {"action": "query_version"}                       the protocol, the build, the search (the first build that
@@ -88,9 +89,10 @@ static_assert(std::is_same<GameRules, bp::GameRules>::value, "the protocol of Bl
 
 namespace {
 
-// The interface's version (design 04, "Versioning"): Enclosure's 0.6.1, the version of the site's engine package.
-// Enclosure's 0.6.2 adds its own maps only.
-const char* PROTOCOL = "0.6.1";
+// The interface's version (design 04, "Versioning"). Blueprints' build takes 0.7.0 for the search of the root's views
+// (rootViews on by default, no raw values in a reply of more views, a query with no candidate refused), which breaks a
+// 0.6 client. Enclosure's engine stays 0.6.x (0.6.2 adds its own maps).
+const char* PROTOCOL = "0.7.0";
 // The first build that searched as this one does (design 04, "The same search"), given as each reply's "search". A
 // change that can alter an analysis reply sets it to "", and the build then names itself. After that build's release,
 // it takes the released build's name.
