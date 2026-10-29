@@ -20,16 +20,18 @@
 // - Threats (6): P's stars that some placement of O captures, O's stars that some placement of P captures (as
 //   log(1 + n)), the points of P's best placement and of O's (squash), and P's and O's legal placements (as
 //   log(1 + n)). Each player's placements are those of its own view when it moves (player_view), on the board as it
-//   is, with no pick waiting: the placements that the engine may play. A capture counts every enemy star next to the
-//   stamped cells, outside the view too, and a placement's points are the stars it takes times the player's stars.
+//   is, with no pick waiting: the placements that the engine may play. A capture counts every opponent's star that
+//   touches the placed cells, outside the view too, and a placement's points are the stars it captures times the
+//   player's stars.
 // - Hands (30): for each of P's blueprints in the hand's canonical order (HandOrder), its cells, stars, walls, length
 //   and width, then the same for O. The length is the largest distance between the centres of two of its cells, + 1,
 //   and the width the least extent of the centres across any direction (the minimum width of their convex hull), + 1,
 //   each rounded to 4 decimals as the reference rounds them. An empty blueprint gives 0 for all five.
 //
 // The normalization (DiversityNormalizer): z = (x - mean) / max(sd, SIGMA_FLOOR), clipped to [-CLIP, CLIP], times
-// 1 / sqrt(the size of its group). The mean and the standard deviation are running estimates (Welford's method),
-// seeded from the statistics of a reference's positions (games/blueprints/runs/diversity_seed.json).
+// 1 / sqrt(the size of its group). The mean and the standard deviation are running estimates, exponential moving
+// averages over the finished sides as the design's estimate of ψ, seeded from the statistics of a reference's
+// positions (games/blueprints/runs/diversity_seed.json).
 
 #include <algorithm>
 #include <cmath>
@@ -52,26 +54,24 @@ struct Diversity {
   // The reach's bounds in hexes (the design's "The statistics"): touching, within the network's convolutions, and
   // beyond the view's radius.
   static constexpr int REACH_NEAR = 1, REACH_CONV = 13, REACH_FAR = VIEW_RADIUS + 1;
-  static constexpr double SIGMA_FLOOR = 0.1, CLIP = 3.0;
+  // ALPHA: the running estimates' decay at each finished side, ψ's (the design's "The estimate of ψ").
+  static constexpr double SIGMA_FLOOR = 0.1, CLIP = 3.0, ALPHA = 0.9995;
 
   // A point of the rules board.
   struct Point {
     int16_t x, y;
   };
 
-  // The cells of the board, by player: all of them and the stars, the counts of each type, and the box of the
-  // player's cells.
+  // The cells of the board, by player: all of them and the stars, and the counts of each type.
   struct Scan {
     int count[2][3];
     std::vector<Point> cells[2], stars[2];
-    Box own[2];
   };
   static void scan(const Position& p, Scan& s) {
     for(int player = 0; player < 2; player++) {
       std::fill(s.count[player], s.count[player] + 3, 0);
       s.cells[player].clear();
       s.stars[player].clear();
-      s.own[player] = Box();
     }
     const Box& used = p.cell.box();
     if(!used.any)
@@ -85,17 +85,17 @@ struct Diversity {
           s.cells[owner].push_back({int16_t(x), int16_t(y)});
           if(type == STAR)
             s.stars[owner].push_back({int16_t(x), int16_t(y)});
-          s.own[owner].add(x, y);
         }
     }
   }
 
-  // A point's centre in the plane, from the rules board's middle: (q + r / 2, r sqrt(3) / 2).
-  static void centre(const Point& c, double& u, double& v) {
-    const int q = c.x - RULES_RADIUS, r = c.y - RULES_RADIUS;
+  // The centre of the hex (q, r) in the plane: (q + r / 2, r sqrt(3) / 2).
+  static void plane(int q, int r, double& u, double& v) {
     u = q + r / 2.0;
     v = r * std::sqrt(3.0) / 2.0;
   }
+  // A point's centre, from the rules board's middle.
+  static void centre(const Point& c, double& u, double& v) { plane(c.x - RULES_RADIUS, c.y - RULES_RADIUS, u, v); }
   static void centroid(const std::vector<Point>& points, double& u, double& v) {
     u = v = 0.0;
     for(const Point& c : points) {
@@ -129,11 +129,14 @@ struct Diversity {
     std::vector<int> start;     // bucket b's cells: cells[start[b]] to cells[start[b + 1] - 1]
     std::vector<Point> points;  // the cells, bucket by bucket
 
-    void build(const std::vector<Point>& cells, const Box& box) {
+    void build(const std::vector<Point>& cells) {
       w = h = 0;
       points.clear();
       if(cells.empty())
         return;
+      Box box;
+      for(const Point& c : cells)
+        box.add(c.x, c.y);
       x0 = box.x0;
       y0 = box.y0;
       w = ((box.x1 - box.x0) >> SHIFT) + 1;
@@ -192,7 +195,7 @@ struct Diversity {
   // nearest cell of `other` (theirs: that player's cells in buckets).
   static void reach(const Position& p, const std::vector<Point>& stars, int other, const Buckets& theirs,
                     double* out) {
-    static_assert(REACH_NEAR == 1, "the stars at REACH_NEAR are those next to a cell (next_to_own)");
+    static_assert(REACH_NEAR == 1, "the stars at REACH_NEAR are those that touch a cell (next_to_own)");
     int near = 0, conv = 0, far = 0;
     for(const Point& s : stars) {
       if(next_to_own(p, s.x, s.y, other)) {
@@ -203,13 +206,12 @@ struct Diversity {
       conv += d <= REACH_CONV;
       far += d >= REACH_FAR;
     }
-    const double n = double(stars.size());
-    out[0] = stars.empty() ? 0.0 : near / n;
-    out[1] = stars.empty() ? 0.0 : conv / n;
-    out[2] = stars.empty() ? 0.0 : far / n;
+    const double n = std::max(double(stars.size()), 1.0);  // without stars, each count is 0
+    out[0] = near / n;
+    out[1] = conv / n;
+    out[2] = far / n;
   }
 
-  static bool has_bit(const ViewRow& row, int x) { return (x < 64 ? row.lo >> x : row.hi >> (x - 64)) & 1; }
   static int bits(const ViewRow& row) { return __builtin_popcountll(row.lo) + __builtin_popcountll(row.hi); }
 
   // A player's threats in the view where it places (player_view: its window, in p's orientation), as the reference
@@ -218,9 +220,9 @@ struct Diversity {
   // the view where it fits, equal blueprints each). The copy is the one-line position, whose board parse_position
   // moves to the rules board's middle, where every position's board already is (the start's, and after each
   // placement), so its windows are p's. theirStars: the other player's stars. A placement captures the other
-  // player's cells next to its cells (taken_by), so a star is captured by the anchors at the star less each offset of
-  // the points next to the blueprint's cells. Those anchors are in the view's frame, as are the blueprint (ViewHand's)
-  // and the star's point.
+  // player's cells that touch its cells (taken_by), so a star is captured by the anchors at the star less each offset
+  // of the points that touch the blueprint's cells. Those anchors are in the view's frame, as are the blueprint
+  // (ViewHand's) and the star's point.
   struct Threats {
     int captured, mostStars, placements;
   };
@@ -229,9 +231,9 @@ struct Diversity {
     Threats out{0, 0, 0};
     ViewRows rows;
     view_rows(p, view, rows);
-    // The other player's stars that can lie next to a cell of the view: their points of the view and one around it.
+    // The other player's stars that can touch a cell of the view: their points of the view and one around it.
     static thread_local std::vector<Point> stars;
-    static thread_local std::vector<uint8_t> taken;
+    static thread_local std::vector<uint8_t> captured;  // 1 for each star that some placement captures
     stars.clear();
     for(const Point& s : theirStars) {
       int x, y;
@@ -239,10 +241,10 @@ struct Diversity {
       if(x >= -1 && x <= VIEW && y >= -1 && y <= VIEW)
         stars.push_back({int16_t(x), int16_t(y)});
     }
-    taken.assign(stars.size(), 0);
-    // The stars that each anchor's placement captures, for the anchors that capture any (touched).
+    captured.assign(stars.size(), 0);
+    // The stars that each anchor's placement captures, for the anchors that capture any.
     static thread_local std::vector<uint8_t> count(VIEW_AREA, 0);
-    static thread_local std::vector<int> touched;
+    static thread_local std::vector<int> anchors;
     for(int k = 0; k < HAND; k++) {
       Blueprint b;
       int mq, mr, noQ = 0, noR = 0;
@@ -256,39 +258,39 @@ struct Diversity {
       }
       if(stars.empty())
         continue;
-      // The offsets of the points next to the blueprint's cells that are not its cells, each once.
-      int8_t nq[6 * MAX_CELLS], nr[6 * MAX_CELLS];
-      int nn = 0;
+      // The offsets of the points that touch the blueprint's cells and are not its cells, each once.
+      int8_t aroundQ[6 * MAX_CELLS], aroundR[6 * MAX_CELLS];
+      int around = 0;
       for(int i = 0; i < b.n; i++)
         for(const auto& d : DIRS) {
           const int q = b.q[i] + d[0], r = b.r[i] + d[1];
           if(b.find(q, r) >= 0)
             continue;
           int m = 0;
-          while(m < nn && !(nq[m] == q && nr[m] == r))
+          while(m < around && !(aroundQ[m] == q && aroundR[m] == r))
             m++;
-          if(m == nn) {
-            nq[nn] = int8_t(q);
-            nr[nn] = int8_t(r);
-            nn++;
+          if(m == around) {
+            aroundQ[around] = int8_t(q);
+            aroundR[around] = int8_t(r);
+            around++;
           }
         }
-      touched.clear();
+      anchors.clear();
       for(size_t s = 0; s < stars.size(); s++)
-        for(int m = 0; m < nn; m++) {
-          const int ax = stars[s].x - nq[m], ay = stars[s].y - nr[m];
-          if(!on_view(ax, ay) || !has_bit(fits[ay], ax))
+        for(int m = 0; m < around; m++) {
+          const int ax = stars[s].x - aroundQ[m], ay = stars[s].y - aroundR[m];
+          if(!on_view(ax, ay) || !(fits[ay] & ViewRow::bit(ax)))
             continue;
-          taken[s] = 1;
+          captured[s] = 1;
           uint8_t& c = count[ay * VIEW + ax];
           if(c++ == 0)
-            touched.push_back(ay * VIEW + ax);
+            anchors.push_back(ay * VIEW + ax);
           out.mostStars = std::max(out.mostStars, int(c));
         }
-      for(int i : touched)
+      for(int i : anchors)
         count[i] = 0;
     }
-    out.captured = int(std::count(taken.begin(), taken.end(), uint8_t(1)));
+    out.captured = int(std::count(captured.begin(), captured.end(), uint8_t(1)));
     return out;
   }
 
@@ -340,10 +342,8 @@ struct Diversity {
       half(n - 1, -1, -1);
     }
     double u[2 * MAX_CELLS], v[2 * MAX_CELLS];
-    for(int i = 0; i < corners; i++) {
-      u[i] = hull[i].q + hull[i].r / 2.0;
-      v[i] = hull[i].r * std::sqrt(3.0) / 2.0;
-    }
+    for(int i = 0; i < corners; i++)
+      plane(hull[i].q, hull[i].r, u[i], v[i]);
     // The squared distance of two corners: the square root of the largest is the largest distance.
     auto square = [&](int i, int j) { return (u[i] - u[j]) * (u[i] - u[j]) + (v[i] - v[j]) * (v[i] - v[j]); };
     auto dist = [&](int i, int j) { return std::sqrt(square(i, j)); };
@@ -370,27 +370,19 @@ struct Diversity {
   // The statistics of position p from the side of player P (the order above), each after its transform: out holds
   // NUM_STATISTICS numbers. p may be at the game's end. A pick waiting for its drop counts as the blueprints are.
   static void statistics(const Position& p, int player, double* out) {
-    const int opponent = 1 - player;
     static thread_local Scan s;
+    static thread_local Buckets others;
     scan(p, s);
-    for(int side = 0; side < 2; side++)
-      for(int type = 0; type < 3; type++)
-        out[CELLS + 3 * side + type] = std::log1p(double(s.count[side == 0 ? player : opponent][type]));
-
-    const std::vector<Point>&mine = s.cells[player], &theirs = s.cells[opponent];
-    double between = 0.0;
-    if(!s.stars[player].empty() && !theirs.empty()) {
-      double au, av, bu, bv;
-      centroid(s.stars[player], au, av);
-      centroid(theirs, bu, bv);
-      between = std::hypot(au - bu, av - bv);
-    }
-    const double spread[5] = {rms(mine), rms(s.stars[player]), rms(theirs), rms(s.stars[opponent]), between};
-    for(int i = 0; i < 5; i++)
-      out[SPREAD + i] = std::log1p(spread[i]);
-
+    const HandOrder order(p);
+    // Each group's statistics of P (side 0), then of O (side 1).
     for(int side = 0; side < 2; side++) {
-      const int who = side == 0 ? player : opponent;
+      const int who = side == 0 ? player : 1 - player, other = 1 - who;
+      for(int type = 0; type < 3; type++)
+        out[CELLS + 3 * side + type] = std::log1p(double(s.count[who][type]));
+
+      out[SPREAD + 2 * side] = std::log1p(rms(s.cells[who]));
+      out[SPREAD + 2 * side + 1] = std::log1p(rms(s.stars[who]));
+
       const int8_t star = cell_value(who, STAR);
       int hexes = 0, stars = 0;
       GameEncoding::for_each_closed(p, who, [&](int x, int y) {
@@ -399,26 +391,16 @@ struct Diversity {
       });
       out[CLOSED + 2 * side] = std::log1p(double(hexes));
       out[CLOSED + 2 * side + 1] = std::log1p(double(stars));
-    }
 
-    static thread_local Buckets buckets[2];
-    for(int who = 0; who < 2; who++)
-      buckets[who].build(s.cells[who], s.own[who]);
-    reach(p, s.stars[player], opponent, buckets[opponent], out + REACH);
-    reach(p, s.stars[opponent], player, buckets[player], out + REACH + 3);
+      others.build(s.cells[other]);
+      reach(p, s.stars[who], other, others, out + REACH + 3 * side);
 
-    const Threats my = threats(p, player, s.stars[opponent]);
-    const Threats their = threats(p, opponent, s.stars[player]);
-    out[THREATS + 0] = std::log1p(double(their.captured));
-    out[THREATS + 1] = std::log1p(double(my.captured));
-    out[THREATS + 2] = squash(double(my.mostStars) * p.stars[player]);
-    out[THREATS + 3] = squash(double(their.mostStars) * p.stars[opponent]);
-    out[THREATS + 4] = std::log1p(double(my.placements));
-    out[THREATS + 5] = std::log1p(double(their.placements));
+      // The captured stars come in the other order: P's stars that O captures first.
+      const Threats t = threats(p, who, s.stars[other]);
+      out[THREATS + 1 - side] = std::log1p(double(t.captured));
+      out[THREATS + 2 + side] = squash(double(t.mostStars) * p.stars[who]);
+      out[THREATS + 4 + side] = std::log1p(double(t.placements));
 
-    const HandOrder order(p);
-    for(int side = 0; side < 2; side++) {
-      const int who = side == 0 ? player : opponent;
       for(int k = 0; k < HAND; k++) {
         const Blueprint& b = p.hand[who][k];
         double* f = out + HANDS + 15 * side + 5 * order.slot[who][k];
@@ -432,6 +414,17 @@ struct Diversity {
         sizes(b, f[3], f[4]);
       }
     }
+
+    // The distance between the centroid of P's stars and the centroid of O's cells.
+    const std::vector<Point>&stars = s.stars[player], &cells = s.cells[1 - player];
+    double between = 0.0;
+    if(!stars.empty() && !cells.empty()) {
+      double au, av, bu, bv;
+      centroid(stars, au, av);
+      centroid(cells, bu, bv);
+      between = std::hypot(au - bu, av - bv);
+    }
+    out[SPREAD + 4] = std::log1p(between);
   }
 
   // Each statistic's weight, 1 / sqrt(the size of its group), so that each group adds the same variance.
@@ -443,36 +436,47 @@ struct Diversity {
   }
 };
 
-// The running standardization of the statistics (Diversity, "The normalization"): each statistic's mean and variance
-// over the positions so far, by Welford's method, from a seed of `count` positions with the given means and standard
-// deviations. The standard deviation is the population's (the variance divides by the count), as the reference's.
+// The running standardization of the statistics (Diversity, "The normalization"): each statistic's mean and standard
+// deviation over the positions of every member, as exponential moving averages of x and of x^2. At each finished side
+// (one player's positions in one game), m1 <- alpha m1 + (1 - alpha) (the side's mean of x), and the same for m2 with
+// x^2. Then sd = sqrt(max(0, m2 - m1^2)). The seed is each statistic's mean and standard deviation over a reference's
+// positions, the population's as the reference's.
 struct DiversityNormalizer {
   static constexpr int N = Diversity::NUM_STATISTICS;
-  double count = 0.0;
-  double mean[N] = {}, m2[N] = {};  // m2: the sum of the squared differences from the mean
+  double alpha;
+  double m1[N] = {}, m2[N] = {};  // the running averages of x and of x^2
   double weight[N] = {};
 
-  DiversityNormalizer(const double* seedMean, const double* seedSd, double seedCount) : count(seedCount) {
+  DiversityNormalizer(const double* seedMean, const double* seedSd, double alpha = Diversity::ALPHA) : alpha(alpha) {
     for(int i = 0; i < N; i++) {
-      mean[i] = seedMean[i];
-      m2[i] = seedSd[i] * seedSd[i] * seedCount;
+      m1[i] = seedMean[i];
+      m2[i] = seedSd[i] * seedSd[i] + seedMean[i] * seedMean[i];
       weight[i] = Diversity::weight(i);
     }
   }
-  // One more position's statistics.
-  void update(const double* x) {
-    count += 1.0;
+  // One finished side: the statistics of its positions, one position after another (positions x N numbers). A side
+  // without positions changes nothing.
+  void update(const double* x, int positions) {
+    if(positions <= 0)
+      return;
+    double sum[N] = {}, squares[N] = {};
+    for(int k = 0; k < positions; k++)
+      for(int i = 0; i < N; i++) {
+        const double v = x[size_t(k) * N + i];
+        sum[i] += v;
+        squares[i] += v * v;
+      }
     for(int i = 0; i < N; i++) {
-      const double delta = x[i] - mean[i];
-      mean[i] += delta / count;
-      m2[i] += delta * (x[i] - mean[i]);
+      m1[i] = alpha * m1[i] + (1.0 - alpha) * (sum[i] / positions);
+      m2[i] = alpha * m2[i] + (1.0 - alpha) * (squares[i] / positions);
     }
   }
-  double sd(int i) const { return count > 0.0 ? std::sqrt(m2[i] / count) : 0.0; }
+  double mean(int i) const { return m1[i]; }
+  double sd(int i) const { return std::sqrt(std::max(0.0, m2[i] - m1[i] * m1[i])); }
   // The normalized statistics: (x - mean) / max(sd, SIGMA_FLOOR), clipped to [-CLIP, CLIP], times the group's weight.
   void z(const double* x, double* out) const {
     for(int i = 0; i < N; i++) {
-      const double v = (x[i] - mean[i]) / std::max(sd(i), Diversity::SIGMA_FLOOR);
+      const double v = (x[i] - m1[i]) / std::max(sd(i), Diversity::SIGMA_FLOOR);
       out[i] = std::max(-Diversity::CLIP, std::min(Diversity::CLIP, v)) * weight[i];
     }
   }
