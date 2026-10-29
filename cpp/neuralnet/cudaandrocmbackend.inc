@@ -4188,6 +4188,7 @@ struct ValueHeadExtraBufs {
   float* auxScoringBuf;  //N x XY
   float* auxValueBuf;    //N x 12
   float* regretBuf;      //2 x N: the regret value's raw output, then the ranking's
+  float* intrinsicBuf;   //N x 2: AZdb's outputs A and B, raw (KataGame fork, 2026-10-29)
   //Export stage 2 (NULL without them; the policy head writes the first two too):
   float* policyAuxBuf;      //N x (4 x POLICY_CHANNELS) x XY, in the model's layout, as policyBuf
   float* policyPassAuxBuf;  //N x 4
@@ -4395,7 +4396,8 @@ struct PolicyHead {
 //------------------------------------------------------------------------------
 
 
-//Enclosure fork (owner, 2026-10-04): one of RGSC's heads, the value head's layers in miniature.
+//Enclosure fork (owner, 2026-10-04): one of RGSC's heads, the value head's layers in miniature. KataGame fork
+//(2026-10-29): AZdb's intrinsic value head too, with two outputs (ValueHeadDesc::intrinsicHead).
 struct RegretHeadLayers {
   const int c1;
   const int c2;
@@ -4485,6 +4487,8 @@ struct ValueHead {
     }
     for(const RegretHeadDesc& r: desc->regretHeads)
       regretHeads.push_back(std::make_unique<RegretHeadLayers>(cudaHandles,manager,&r,nnX,nnY,useFP16,useNHWC));
+    if(desc->intrinsicVersion >= 1)
+      intrinsicHead = std::make_unique<RegretHeadLayers>(cudaHandles,manager,&desc->intrinsicHead,nnX,nnY,useFP16,useNHWC);
     if(desc->auxVersion >= 2) {
       sbS2Mul = std::make_unique<MatMulLayer>(cudaHandles,&desc->sbS2Mul,false);
       sbS2Bias = std::make_unique<MatBiasLayer>(cudaHandles,&desc->sbS2Bias,false,ACTIVATION_IDENTITY);
@@ -4499,6 +4503,8 @@ struct ValueHead {
   std::unique_ptr<MatMulLayer> auxValueMul;
   std::unique_ptr<MatBiasLayer> auxValueBias;
   std::vector<std::unique_ptr<RegretHeadLayers>> regretHeads;
+  //KataGame fork (2026-10-29): AZdb's intrinsic value head, NULL without it.
+  std::unique_ptr<RegretHeadLayers> intrinsicHead;
   //Export stage 2: the score belief's layers that read the pooled v1 features (NULL without them); NNEvaluator
   //finishes the mixture.
   std::unique_ptr<MatMulLayer> sbS2Mul;
@@ -4547,6 +4553,13 @@ struct ValueHead {
       bytes = std::max(bytes,r->mul2.requiredWorkspaceBytes(cudaHandles));
       bytes = std::max(bytes,r->mul3.requiredWorkspaceBytes(cudaHandles));
       bytes = std::max(bytes,sizeof(float)*batchSize*r->c1*nnXLen*nnYLen);
+    }
+    if(intrinsicHead != nullptr) {
+      const RegretHeadLayers& r = *intrinsicHead;
+      bytes = std::max(bytes,r.conv1.requiredWorkspaceBytes(cudaHandles,batchSize));
+      bytes = std::max(bytes,r.mul2.requiredWorkspaceBytes(cudaHandles));
+      bytes = std::max(bytes,r.mul3.requiredWorkspaceBytes(cudaHandles));
+      bytes = std::max(bytes,sizeof(float)*batchSize*r.c1*nnXLen*nnYLen);
     }
 
     return bytes;
@@ -4640,9 +4653,10 @@ struct ValueHead {
     }
 
     //Enclosure fork (owner, 2026-10-04): RGSC's heads, at every evaluation (the search reads them), as the value
-    //head above: conv, norm and activation, pooling (in float), hidden layer, one output.
-    for(size_t h = 0; h < regretHeads.size(); h++) {
-      const RegretHeadLayers& r = *regretHeads[h];
+    //head above: conv, norm and activation, pooling (in float), hidden layer, one output. KataGame fork (2026-10-29):
+    //then AZdb's intrinsic value head the same way, whose two outputs go to intrinsicBuf, row by row.
+    for(size_t h = 0; h < regretHeads.size() + (intrinsicHead != nullptr ? 1 : 0); h++) {
+      const RegretHeadLayers& r = h < regretHeads.size() ? *regretHeads[h] : *intrinsicHead;
       SizedBuf<void*> r1Out(scratch->allocator, scratch->getBufSizeXY(r.c1));
       SizedBuf<void*> r1Out2(scratch->allocator, scratch->getBufSizeXY(r.c1));
       SizedBuf<void*> r1Mean(scratch->allocator, scratch->getBufSizeFloat(r.c1*3));
@@ -4662,7 +4676,7 @@ struct ValueHead {
       CUDA_ERR(name.c_str(),cudaPeekAtLastError());
       r.mul2.apply(cudaHandles,scratch,batchSize,r1Mean.buf,r2Out.buf,workspaceBuf,workspaceBytes);
       r.bias2.apply(cudaHandles,batchSize,r2Out.buf);
-      float* out = extra.regretBuf + h * batchSize;
+      float* out = h < regretHeads.size() ? extra.regretBuf + h * batchSize : extra.intrinsicBuf;
       r.mul3.apply(cudaHandles,scratch,batchSize,r2Out.buf,out,workspaceBuf,workspaceBytes);
       r.bias3.apply(cudaHandles,batchSize,out);
     }
@@ -4970,6 +4984,7 @@ struct Buffers {
   float* auxScoringBuf;
   float* auxValueBuf;
   float* regretBuf;
+  float* intrinsicBuf;  //KataGame fork: AZdb's intrinsic value head
   //Export stage 2 (NULL without them).
   float* policyAuxBuf;
   float* policyPassAuxBuf;
@@ -5057,6 +5072,9 @@ struct Buffers {
     }
     if(!m.valueHead->regretHeads.empty())
       CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&regretBuf), m.valueHead->regretHeads.size() * batchFloatBytes));
+    intrinsicBuf = NULL;
+    if(m.valueHead->intrinsicHead != nullptr)
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&intrinsicBuf), 2 * batchFloatBytes));
     policyAuxBuf = NULL;
     policyPassAuxBuf = NULL;
     sbS2Buf = NULL;
@@ -5112,6 +5130,8 @@ struct Buffers {
       (void)cudaFree(auxValueBuf);
     if(regretBuf != NULL)
       (void)cudaFree(regretBuf);
+    if(intrinsicBuf != NULL)
+      (void)cudaFree(intrinsicBuf);
     if(policyAuxBuf != NULL)
       (void)cudaFree(policyAuxBuf);
     if(policyPassAuxBuf != NULL)
@@ -5716,6 +5736,9 @@ struct InputBuffers {
   float* auxScoringResults; //Host pointer
   float* auxValueResults; //Host pointer
   float* regretResults; //Host pointer
+  //KataGame fork (2026-10-29): AZdb's outputs A and B, row by row (NULL without the head).
+  bool hasIntrinsic;
+  float* intrinsicResults; //Host pointer
   //Export stage 2: host copies (NULL without them).
   bool hasPolicyAux;
   int sbS2Channels;
@@ -5785,6 +5808,8 @@ struct InputBuffers {
     auxScoringResults = NULL;
     auxValueResults = NULL;
     regretResults = NULL;
+    hasIntrinsic = m.valueHead.intrinsicVersion >= 1;
+    intrinsicResults = NULL;
     hasPolicyAux = m.policyHead.auxVersion >= 1;
     sbS2Channels = m.valueHead.auxVersion >= 2 ? m.valueHead.sbS2Mul.outChannels : 0;
     sbMixChannels = m.valueHead.auxVersion >= 2 ? m.valueHead.sbMixMul.outChannels : 0;
@@ -5816,6 +5841,8 @@ struct InputBuffers {
       }
       if(numRegretHeads > 0)
         regretResults = mallocPinned((size_t)maxBatchSize * numRegretHeads);
+      if(hasIntrinsic)
+        intrinsicResults = mallocPinned((size_t)maxBatchSize * 2);
       if(hasPolicyAux) {
         policyAuxResults = mallocPinned((size_t)maxBatchSize * PolicyHeadDesc::NUM_AUX_POLICIES * NNPos::POLICY_CHANNELS * nnXLen * nnYLen);
         policyPassAuxResults = mallocPinned((size_t)maxBatchSize * PolicyHeadDesc::NUM_AUX_POLICIES);
@@ -6053,6 +6080,7 @@ void NeuralNet::getOutput(
   extra.auxScoringBuf = buffers->auxScoringBuf;
   extra.auxValueBuf = buffers->auxValueBuf;
   extra.regretBuf = buffers->regretBuf;
+  extra.intrinsicBuf = buffers->intrinsicBuf;
   extra.policyAuxBuf = buffers->policyAuxBuf;
   extra.policyPassAuxBuf = buffers->policyPassAuxBuf;
   extra.sbS2Buf = buffers->sbS2Buf;
@@ -6099,6 +6127,8 @@ void NeuralNet::getOutput(
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->ownershipResults, buffers->ownershipBuf, inputBuffers->singleOwnershipResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
   if(inputBuffers->numRegretHeads > 0)
     CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->regretResults, buffers->regretBuf, sizeof(float)*inputBuffers->numRegretHeads*batchSize, cudaMemcpyDeviceToHost, stream));
+  if(inputBuffers->hasIntrinsic)
+    CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->intrinsicResults, buffers->intrinsicBuf, sizeof(float)*2*batchSize, cudaMemcpyDeviceToHost, stream));
   if(extra.wantAux) {
     CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->auxTrunkResults, buffers->auxTrunkBuf, sizeof(float)*8*nnXLen*nnYLen*batchSize, cudaMemcpyDeviceToHost, stream));
     CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->auxScoringResults, buffers->auxScoringBuf, sizeof(float)*nnXLen*nnYLen*batchSize, cudaMemcpyDeviceToHost, stream));
@@ -6180,6 +6210,12 @@ void NeuralNet::getOutput(
       output->hasSwing = true;
       output->swingValue = inputBuffers->regretResults[2 * batchSize + row];
       output->swingRanking = inputBuffers->regretResults[3 * batchSize + row];
+    }
+    //KataGame fork (2026-10-29): AZdb's outputs A and B (raw; NNEvaluator applies the output scale).
+    if(inputBuffers->hasIntrinsic) {
+      output->hasIntrinsic = true;
+      output->intrinsicA = inputBuffers->intrinsicResults[2 * row];
+      output->intrinsicB = inputBuffers->intrinsicResults[2 * row + 1];
     }
     if(output->auxMap != NULL && extra.wantAux) {
       const float* trunkAux = inputBuffers->auxTrunkResults + (size_t)row * 8 * xy;

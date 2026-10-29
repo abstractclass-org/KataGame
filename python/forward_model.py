@@ -113,6 +113,7 @@ def main(args):
             pred_ranking,       # N
             pred_swing,         # N
             pred_swing_ranking, # N
+            pred_intrinsic,     # N, {A, B}
         ) = results
 
         for batch_idx in range(batch["binaryInputNCHW"].shape[0]):

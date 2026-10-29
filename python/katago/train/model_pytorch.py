@@ -2850,7 +2850,7 @@ class PolicyHead(torch.nn.Module):
 
 class ValueHead(torch.nn.Module):
     def __init__(self, c_in, c_v1, c_v2, c_sv2, num_scorebeliefs, config, activation, pos_len, regret_heads=False,
-                 swing_heads=False):
+                 swing_heads=False, intrinsic_head=False):
         super(ValueHead, self).__init__()
         self.activation = activation
         # Enclosure fork (owner, 2026-10-04): RGSC's regret value and regret ranking heads, when the config has
@@ -2867,6 +2867,14 @@ class ValueHead(torch.nn.Module):
         if swing_heads:
             self.swing_value = RegretHead(c_in, c_v1, c_v2, config, activation)
             self.swing_ranking = RegretHead(c_in, c_v1, c_v2, config, activation)
+        # KataGame fork (2026-10-29): AZdb's intrinsic value head (the engine repository's
+        # games/blueprints/docs/research/diversity-players.md, "The intrinsic value head and its targets"), when the
+        # config has intrinsic_head: RGSC's head shape with two outputs, A (the intrinsic return of the player to move,
+        # as the member of the latent) and B (that of the other player, as the same member). add_diversity_members.py
+        # adds it to a checkpoint.
+        self.intrinsic_head = intrinsic_head
+        if intrinsic_head:
+            self.intrinsic_value = RegretHead(c_in, c_v1, c_v2, config, activation, num_outputs=2)
         self.conv1 = torch.nn.Conv2d(c_in, c_v1, kernel_size=1, padding="same", bias=False)
         self.bias1 = BiasMask(
             c_v1,
@@ -2961,6 +2969,8 @@ class ValueHead(torch.nn.Module):
         if self.swing_heads:
             self.swing_value.initialize()
             self.swing_ranking.initialize()
+        if self.intrinsic_head:
+            self.intrinsic_value.initialize()
 
     def add_reg_dict(self, reg_dict:Dict[str,List]):
         reg_dict["output"].append(self.conv1.weight)
@@ -2991,6 +3001,8 @@ class ValueHead(torch.nn.Module):
         if self.swing_heads:
             self.swing_value.add_reg_dict(reg_dict)
             self.swing_ranking.add_reg_dict(reg_dict)
+        if self.intrinsic_head:
+            self.intrinsic_value.add_reg_dict(reg_dict)
 
     def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
         pass
@@ -3036,9 +3048,11 @@ class ValueHead(torch.nn.Module):
         # Take the mixture distribution weighted by outsmix_weights
         out_scorebelief_logprobs = torch.logsumexp(out_scorebelief_logprobs + outsmix_logweights.view(-1, 1, self.num_scorebeliefs), dim=2)
 
-        # RGSC: on the detached trunk, as the authors' heads (they never train the trunk). Raw outputs: the regret
-        # value before its sigmoid x 4, then the ranking score; then the same for the swing regret. Zeros for heads
-        # that the model does not have, so the outputs keep one shape.
+        # The extra heads' raw outputs, 6 columns. RGSC's 4: on the detached trunk, as the authors' heads (they never
+        # train the trunk): the regret value before its sigmoid x 4, then the ranking score; then the same for the
+        # swing regret. KataGame fork (2026-10-29): then AZdb's intrinsic A and B, on the shared trunk, as the
+        # paper's three heads share the torso and train it. Zeros for heads that the model does not have, so the
+        # outputs keep one shape.
         heads = []
         if self.regret_heads:
             heads += [self.regret_value, self.regret_ranking]
@@ -3048,7 +3062,11 @@ class ValueHead(torch.nn.Module):
         outs = [h(xd, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum) for h in heads]
         if len(outs) < 4:
             outs.append(torch.zeros((x.shape[0], 4 - len(outs)), dtype=x.dtype, device=x.device))
-        out_regret = torch.cat(outs, dim=1)
+        if self.intrinsic_head:
+            outs.append(self.intrinsic_value(x, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum))
+        else:
+            outs.append(torch.zeros((x.shape[0], 2), dtype=x.dtype, device=x.device))
+        out_extra = torch.cat(outs, dim=1)
 
         return (
             out_value,
@@ -3059,15 +3077,16 @@ class ValueHead(torch.nn.Module):
             out_futurepos,
             out_seki,
             out_scorebelief_logprobs,
-            out_regret,
+            out_extra,
         )
 
 class RegretHead(torch.nn.Module):
     """Enclosure fork (owner, 2026-10-04): one of RGSC's two heads (Tsai et al., ICLR 2026: regret value, regret
     ranking) in KataGo's value-head shape: 1x1 conv, bias, activation, KataGo's value-head pooling (the mean and two
     board-size scalings of it; no max), a hidden layer, one output. The paper does not describe its heads; the authors' code copies its own value
-    head class for them, so V2 copies KataGo's (games/enclosure/docs/decisions/rgsc.md, "RGSC: the authors' code read again")."""
-    def __init__(self, c_in, c_v1, c_v2, config, activation):
+    head class for them, so V2 copies KataGo's (games/enclosure/docs/decisions/rgsc.md, "RGSC: the authors' code read again").
+    KataGame fork (2026-10-29): AZdb's intrinsic value head is this shape with num_outputs 2."""
+    def __init__(self, c_in, c_v1, c_v2, config, activation, num_outputs=1):
         super(RegretHead, self).__init__()
         self.activation = activation
         self.conv1 = torch.nn.Conv2d(c_in, c_v1, kernel_size=1, padding="same", bias=False)
@@ -3076,7 +3095,7 @@ class RegretHead(torch.nn.Module):
         self.gpool = KataValueHeadGPool()
         self.linear2 = torch.nn.Linear(3 * c_v1, c_v2, bias=True)
         self.act2 = act(activation)
-        self.linear_out = torch.nn.Linear(c_v2, 1, bias=True)
+        self.linear_out = torch.nn.Linear(c_v2, num_outputs, bias=True)
 
     def initialize(self):
         bias_scale = 0.2
@@ -3098,7 +3117,7 @@ class RegretHead(torch.nn.Module):
         out = self.act1(self.bias1(self.conv1(x), mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum))
         out = self.gpool(out, mask=mask, mask_sum_hw=mask_sum_hw).squeeze(-1).squeeze(-1)
         out = self.act2(self.linear2(out))
-        return self.linear_out(out)  # N, 1
+        return self.linear_out(out)  # N, num_outputs
 
 
 class MetadataEncoder(torch.nn.Module):
@@ -3758,6 +3777,7 @@ class Model(torch.nn.Module):
             self.pos_len,
             regret_heads=bool(self.config.get("regret_heads", False)),
             swing_heads=bool(self.config.get("swing_heads", False)),
+            intrinsic_head=bool(self.config.get("intrinsic_head", False)),
         )
         if self.has_intermediate_head:
             self.norm_intermediate_trunkfinal = NormMask(self.c_trunk, self.config, fixup_use_gamma=False, is_last_batchnorm=True)
@@ -4149,7 +4169,7 @@ class Model(torch.nn.Module):
                     iout_futurepos,
                     iout_seki,
                     iout_scorebelief_logprobs,
-                    iout_regret,
+                    iout_extra,
                 ) = self.intermediate_value_head(
                     iout_fp32,
                     mask=mask_fp32,
@@ -4262,7 +4282,7 @@ class Model(torch.nn.Module):
                 out_futurepos,
                 out_seki,
                 out_scorebelief_logprobs,
-                out_regret,
+                out_extra,
             ) = self.value_head(
                 out,
                 mask=mask_fp32,
@@ -4284,7 +4304,7 @@ class Model(torch.nn.Module):
                     out_futurepos,
                     out_seki,
                     out_scorebelief_logprobs,
-                    out_regret,
+                    out_extra,
                 ),
                 (
                     iout_policy,
@@ -4296,7 +4316,7 @@ class Model(torch.nn.Module):
                     iout_futurepos,
                     iout_seki,
                     iout_scorebelief_logprobs,
-                    iout_regret,
+                    iout_extra,
                 ),
             )
         else:
@@ -4310,7 +4330,7 @@ class Model(torch.nn.Module):
                 out_futurepos,
                 out_seki,
                 out_scorebelief_logprobs,
-                out_regret,
+                out_extra,
             ),)
 
     # ---- Per-block compiled trunk (see compile_per_block_trunk) ---------------------------------
@@ -4425,7 +4445,7 @@ class Model(torch.nn.Module):
                 out_futurepos,
                 out_seki,
                 out_scorebelief_logprobs,
-                out_regret,
+                out_extra,
             ) = self.value_head(
                 out, mask=mask_fp32, mask_sum_hw=mask_sum_hw_fp32, mask_sum=mask_sum_fp32,
                 input_global=input_global_fp32, extra_outputs=None,
@@ -4440,7 +4460,7 @@ class Model(torch.nn.Module):
             out_futurepos,
             out_seki,
             out_scorebelief_logprobs,
-            out_regret,
+            out_extra,
         ),)
 
     def float32ify_output(self, outputs_byheads):
@@ -4457,7 +4477,7 @@ class Model(torch.nn.Module):
             out_futurepos,
             out_seki,
             out_scorebelief_logprobs,
-            out_regret,
+            out_extra,
         ) = outputs
         return (
             out_policy.to(torch.float32),
@@ -4469,7 +4489,7 @@ class Model(torch.nn.Module):
             out_futurepos.to(torch.float32),
             out_seki.to(torch.float32),
             out_scorebelief_logprobs.to(torch.float32),
-            out_regret.to(torch.float32),
+            out_extra.to(torch.float32),
         )
 
     def postprocess_output(self, outputs_byheads):
@@ -4486,7 +4506,7 @@ class Model(torch.nn.Module):
             out_futurepos,
             out_seki,
             out_scorebelief_logprobs,
-            out_regret,
+            out_extra,
         ) = outputs
 
         policy_logits = out_policy
@@ -4510,10 +4530,12 @@ class Model(torch.nn.Module):
         scorebelief_logits = out_scorebelief_logprobs
         # RGSC: the regret value in [0, 4] (the authors' sigmoid x 4), the ranking score as is; the same for the swing
         # regret.
-        pred_regret = torch.sigmoid(out_regret[:, 0]) * 4.0
-        pred_ranking = out_regret[:, 1]
-        pred_swing = torch.sigmoid(out_regret[:, 2]) * 4.0
-        pred_swing_ranking = out_regret[:, 3]
+        pred_regret = torch.sigmoid(out_extra[:, 0]) * 4.0
+        pred_ranking = out_extra[:, 1]
+        pred_swing = torch.sigmoid(out_extra[:, 2]) * 4.0
+        pred_swing_ranking = out_extra[:, 3]
+        # KataGame fork (2026-10-29): AZdb's intrinsic returns A and B, raw (returns, not probabilities).
+        pred_intrinsic = out_extra[:, 4:6]
 
         return (
             policy_logits,      # N, num_policy_outputs, move
@@ -4535,4 +4557,5 @@ class Model(torch.nn.Module):
             pred_ranking,       # N
             pred_swing,         # N (2.0 without swing_heads)
             pred_swing_ranking, # N
+            pred_intrinsic,     # N, {A, B} (0 without intrinsic_head)
         )

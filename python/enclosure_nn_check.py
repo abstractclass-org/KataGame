@@ -1,9 +1,10 @@
 #!/usr/bin/python3
 """Enclosure fork: the C++ network evaluation against a PyTorch forward pass (plan step 5), for any game.
 
-    python enclosure_nn_check.py make CHECKPOINT [-config b6c96] [-seed 0] [-game enclosure]
+    python enclosure_nn_check.py make CHECKPOINT [-config b6c96] [-seed 0] [-game enclosure] [-inputs-version V]
+                                       [-intrinsic-head]
     python export_model_pytorch.py -checkpoint CHECKPOINT -export-dir DIR -model-name NAME -filename-prefix NAME
-    testnnoutputs DIR/NAME.bin ../cpp/tests/data/enclosure_inputs.txt DUMP FP16 NHWC search,ownership
+    testnnoutputs DIR/NAME.bin ../cpp/tests/data/enclosure_inputs.txt DUMP FP16 NHWC search,ownership [MEMBER]
     python enclosure_nn_check.py compare CHECKPOINT DUMP [-tolerance 1e-3]
 
 KataGame fork: -game names the test network's game (katago/train/games). The checkpoint's config keeps it, so
@@ -15,7 +16,9 @@ perturbed, so no layer is an identity (fixup initialises some to zero). `testnno
 katagame/cpp/tests/enclosure/build.sh) evaluates the exported model and writes each position's input rows
 with the outputs. `compare` runs the checkpoint on those same rows and compares the outputs: the policy
 over the legal moves, the win/loss/no-result probabilities, the score mean and lead, and the ownership on the
-board's points (the on-board input plane).
+board's points (the on-board input plane). KataGame fork (2026-10-29): with AZdb's intrinsic value head (make
+-intrinsic-head, with -inputs-version 14), also its outputs A and B; the dump's rows hold the latent of
+testnnoutputs' MEMBER.
 So it checks the network alone. testnninputs checks the rows against the inputs fixture. Exit code 0 when
 all agree within the tolerance.
 """
@@ -37,6 +40,8 @@ def make(args):
     config = modelconfigs.with_game(modelconfigs.config_of_name[args.config], args.game)
     if args.inputs_version is not None:
         config = dict(config, inputs_version=args.inputs_version)
+    if args.intrinsic_head:
+        config = dict(config, intrinsic_head=True)
     model = Model(config, modelconfigs.get_game(config).MAX_BOARD_LEN)
     model.initialize()
     with torch.no_grad():
@@ -60,6 +65,9 @@ def compare(args):
     c_in = modelconfigs.get_num_bin_input_features(model.config)
     positions = read_dump(args.dump)
     worst = dict(policy=0.0, value=0.0, score=0.0, own=0.0)
+    intrinsic = bool(model.config.get("intrinsic_head"))
+    if intrinsic:
+        worst["intrinsic"] = 0.0
     failures = 0
     with torch.no_grad():
         for start in range(0, len(positions), 32):
@@ -75,6 +83,7 @@ def compare(args):
             outputs = model.postprocess_output(model(spatial.view(-1, c_in, size, size), glob))[0]
             policy_logits, value_logits = outputs[0], outputs[1]
             ownership_pretanh, scoremean, lead = outputs[4], outputs[8], outputs[10]
+            pred_intrinsic = outputs[19]
             for i, p in enumerate(batch):
                 # The dump's policy is at the legal actions and pass, -1 at a pass that is not legal.
                 actions = np.array(sorted(a for a, v in p["policy"].items() if v >= 0))
@@ -100,6 +109,11 @@ def compare(args):
                               abs(sign * float(lead[i]) - p["score"][2])) / model.scoremean_multiplier,
                     own=np.abs(own - sign * p["owner"]).max(),
                 )
+                # AZdb's returns of the member: no view, relative to their size (at least 1).
+                if intrinsic:
+                    torch_intrinsic = pred_intrinsic[i].double().numpy()
+                    diffs["intrinsic"] = (np.abs(torch_intrinsic - p["intrinsic"]).max()
+                                          / max(1.0, np.abs(torch_intrinsic).max()))
                 for k, d in diffs.items():
                     worst[k] = max(worst[k], d)
                 if max(diffs.values()) > args.tolerance:
@@ -122,6 +136,8 @@ def main():
     m.add_argument("-inputs-version", dest="inputs_version", type=int, choices=modelconfigs.INPUTS_VERSIONS,
                    default=None, help="the test network's inputs (modelconfigs.get_inputs_version; default the "
                    "model kind's, 8): 10 gives the game's extended inputs weights of their own")
+    m.add_argument("-intrinsic-head", dest="intrinsic_head", action="store_true",
+                   help="the test network has AZdb's intrinsic value head (with -inputs-version 14)")
     c = sub.add_parser("compare")
     c.add_argument("checkpoint")
     c.add_argument("dump", help="testnnoutputs' output, with OUTPUTS search,ownership")

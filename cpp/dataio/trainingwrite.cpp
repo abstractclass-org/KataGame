@@ -275,19 +275,29 @@ void FinishedGameData::printDebug(ostream& out) const {
 //And update the python code
 static const int POLICY_TARGET_NUM_CHANNELS = 2;
 static const int GLOBAL_TARGET_NUM_CHANNELS = 80;
+//KataGame fork (2026-10-29): the rows of the inputs version 14 add AZdb's 4 targets of the intrinsic value head after
+//those (C80-83, setLastRowIntrinsic).
+static const int GLOBAL_TARGET_NUM_CHANNELS_V14 = GLOBAL_TARGET_NUM_CHANNELS + 4;
+static_assert(AZdb::NUM_MEMBERS == NNInputs::NUM_DIVERSITY_MEMBERS, "AZdb's members are the latent's");
+
+static int numGlobalTargetChannelsOf(int inputsVersion) {
+  return inputsVersion >= 14 ? GLOBAL_TARGET_NUM_CHANNELS_V14 : GLOBAL_TARGET_NUM_CHANNELS;
+}
 //Enclosure fork: KataGo's 5, the territory income (C5-6), the next mover's nodes (C7). KataGame fork: the slots of
 //GameInterface::TargetValues.
 static const int VALUE_SPATIAL_TARGET_NUM_CHANNELS = GameInterface::TargetValues::NUM_CHANNELS;
 static const int QVALUE_SPATIAL_TARGET_NUM_CHANNELS = 3;
-//KataGame fork: a game's global targets (GameInterface::TargetValues) are the row's last ones.
+//KataGame fork: a game's global targets (GameInterface::TargetValues) are the last ones of the rows before the inputs
+//version 14, whose AZdb targets follow them.
 static_assert(GameInterface::TargetValues::FIRST_GLOBAL + GameInterface::TargetValues::NUM_GLOBALS ==
-              GLOBAL_TARGET_NUM_CHANNELS, "a game's global targets are the row's last ones, C76-79");
+              GLOBAL_TARGET_NUM_CHANNELS, "a game's global targets are C76-79, the last before AZdb's");
 
 TrainingWriteBuffers::TrainingWriteBuffers(int iVersion, int maxRws, int numBChannels, int numFChannels, int xLen, int yLen, bool includeMetadata)
   :inputsVersion(iVersion),
    maxRows(maxRws),
    numBinaryChannels(numBChannels),
    numGlobalChannels(numFChannels),
+   numGlobalTargetChannels(numGlobalTargetChannelsOf(iVersion)),
    dataXLen(xLen),
    dataYLen(yLen),
    packedBoardArea((xLen*yLen + 7)/8),
@@ -297,7 +307,7 @@ TrainingWriteBuffers::TrainingWriteBuffers(int iVersion, int maxRws, int numBCha
    binaryInputNCHWPacked({maxRws, numBChannels, packedBoardArea}),
    globalInputNC({maxRws, numFChannels}),
    policyTargetsNCMove({maxRws, POLICY_TARGET_NUM_CHANNELS, NNPos::getPolicySize(xLen,yLen)}),
-   globalTargetsNC({maxRws, GLOBAL_TARGET_NUM_CHANNELS}),
+   globalTargetsNC({maxRws, numGlobalTargetChannelsOf(iVersion)}),
    scoreDistrN({maxRws, xLen*yLen*2+NNPos::EXTRA_SCORE_DISTR_RADIUS*2}),
    valueTargetsNCHW({maxRws, VALUE_SPATIAL_TARGET_NUM_CHANNELS, yLen, xLen}),
    qValueTargetsNCMove({maxRws, QVALUE_SPATIAL_TARGET_NUM_CHANNELS, NNPos::getPolicySize(xLen,yLen)}),
@@ -476,22 +486,31 @@ static void fillValueTDTargets(const vector<ValueTargets>& whiteValueTargetsByTu
 
 void TrainingWriteBuffers::setLastRowRegret(float regret) {
   testAssert(curRows > 0);
-  float* rowGlobal = globalTargetsNC.data + (curRows - 1) * GLOBAL_TARGET_NUM_CHANNELS;
+  float* rowGlobal = globalTargetsNC.data + (curRows - 1) * numGlobalTargetChannels;
   rowGlobal[70] = regret;
   rowGlobal[71] = 1.0f;
 }
 
 void TrainingWriteBuffers::setLastRowSwing(float swing) {
   testAssert(curRows > 0);
-  float* rowGlobal = globalTargetsNC.data + (curRows - 1) * GLOBAL_TARGET_NUM_CHANNELS;
+  float* rowGlobal = globalTargetsNC.data + (curRows - 1) * numGlobalTargetChannels;
   rowGlobal[72] = swing;
   rowGlobal[73] = 1.0f;
 }
 
 void TrainingWriteBuffers::setLastRowRgscSource(int source) {
   testAssert(curRows > 0);
-  float* rowGlobal = globalTargetsNC.data + (curRows - 1) * GLOBAL_TARGET_NUM_CHANNELS;
+  float* rowGlobal = globalTargetsNC.data + (curRows - 1) * numGlobalTargetChannels;
   rowGlobal[74] = (float)source;
+}
+
+void TrainingWriteBuffers::setLastRowIntrinsic(float aTarget, float aWeight, float bTarget, float bWeight) {
+  testAssert(curRows > 0 && numGlobalTargetChannels == GLOBAL_TARGET_NUM_CHANNELS_V14);
+  float* rowGlobal = globalTargetsNC.data + (curRows - 1) * numGlobalTargetChannels;
+  rowGlobal[80] = aTarget;
+  rowGlobal[81] = aWeight;
+  rowGlobal[82] = bTarget;
+  rowGlobal[83] = bWeight;
 }
 
 void TrainingWriteBuffers::addRow(
@@ -530,10 +549,11 @@ void TrainingWriteBuffers::addRow(
   int mode,
   SGFMetadata* sgfMeta,
   Rand& rand,
-  const ReanalysisData& reanalysisData
+  const ReanalysisData& reanalysisData,
+  int diversityMember
 ) {
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 13, "");
-  if(inputsVersion < 3 || inputsVersion > 13)
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 14, "");
+  if(inputsVersion < 3 || inputsVersion > 14)
     throw StringError("Training write buffers: Does not support input version: " + Global::intToString(inputsVersion));
 
   int posArea = dataXLen*dataYLen;
@@ -549,12 +569,21 @@ void TrainingWriteBuffers::addRow(
       testAssert(playoutDoublingAdvantagePla == C_EMPTY);
       testAssert(playoutDoublingAdvantage == 0.0);
     }
+    //KataGame fork (2026-10-29): the latent of the row's player's member, from the inputs version 14.
+    testAssert(diversityMember >= 0 && diversityMember < NNInputs::NUM_DIVERSITY_MEMBERS);
+    testAssert(diversityMember == 0 || inputsVersion >= 14);
+    nnInputParams.diversityMember = diversityMember;
 
     bool inputsUseNHWC = false;
     float* rowBin = binaryInputNCHWUnpacked;
     float* rowGlobal = globalInputNC.data + curRows * numGlobalChannels;
-    static_assert(NNModelVersion::latestInputsVersionImplemented == 13, "");
-    if(inputsVersion == 13) {
+    static_assert(NNModelVersion::latestInputsVersionImplemented == 14, "");
+    if(inputsVersion == 14) {
+      testAssert(NNInputs::NUM_FEATURES_SPATIAL_V14 == numBinaryChannels);
+      testAssert(NNInputs::NUM_FEATURES_GLOBAL_V14 == numGlobalChannels);
+      NNInputs::fillRowV14(board, hist, nextPlayer, nnInputParams, dataXLen, dataYLen, inputsUseNHWC, rowBin, rowGlobal);
+    }
+    else if(inputsVersion == 13) {
       testAssert(NNInputs::NUM_FEATURES_SPATIAL_V13 == numBinaryChannels);
       testAssert(NNInputs::NUM_FEATURES_GLOBAL_V13 == numGlobalChannels);
       NNInputs::fillRowV13(board, hist, nextPlayer, nnInputParams, dataXLen, dataYLen, inputsUseNHWC, rowBin, rowGlobal);
@@ -619,7 +648,7 @@ void TrainingWriteBuffers::addRow(
   }
 
   //Vector for global targets and metadata
-  float* rowGlobal = globalTargetsNC.data + curRows * GLOBAL_TARGET_NUM_CHANNELS;
+  float* rowGlobal = globalTargetsNC.data + curRows * numGlobalTargetChannels;
 
   //Target weight for the whole row
   rowGlobal[25] = targetWeight;
@@ -802,8 +831,9 @@ void TrainingWriteBuffers::addRow(
   rowGlobal[69] = hist.modes.excludeTerritoryAdjacentToAtari ? 1.0f : 0.0f;
 
   //RGSC's targets and restart source (C70-74, set after the row by setLastRowRegret, setLastRowSwing and
-  //setLastRowRgscSource), and the unused rest
-  for(int i = 70; i<80; i++)
+  //setLastRowRgscSource), and the unused rest, then from the inputs version 14 AZdb's targets (C80-83, set after the
+  //row by setLastRowIntrinsic)
+  for(int i = 70; i<numGlobalTargetChannels; i++)
     rowGlobal[i] = 0.0f;
 
   testAssert(80 == GLOBAL_TARGET_NUM_CHANNELS);
@@ -1112,8 +1142,12 @@ TrainingDataWriter::TrainingDataWriter(const string& outDir, ostream* dbgOut, in
   int numGlobalChannels;
   //Note that this inputsVersion is for data writing, it might be different than the inputsVersion used
   //to feed into a model during selfplay
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 13, "");
-  if(inputsVersion == 13) {
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 14, "");
+  if(inputsVersion == 14) {
+    numBinaryChannels = NNInputs::NUM_FEATURES_SPATIAL_V14;
+    numGlobalChannels = NNInputs::NUM_FEATURES_GLOBAL_V14;
+  }
+  else if(inputsVersion == 13) {
     numBinaryChannels = NNInputs::NUM_FEATURES_SPATIAL_V13;
     numGlobalChannels = NNInputs::NUM_FEATURES_GLOBAL_V13;
   }
@@ -1293,6 +1327,22 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
 
   testAssert(data.hasFullData);
 
+  //KataGame fork (2026-10-29): AZdb's rows (program/azdb.h), from the inputs version 14: each row's latent is its
+  //player's member, and its targets of the intrinsic value head come from the game's positions, members, state and
+  //root outputs. Without a state, every row of the game has those targets at weight 0.
+  const bool diversityRows = inputsVersion >= 14;
+  AZdb::Targets intrinsicTargets;
+  if(diversityRows && data.diversityState != nullptr) {
+    testAssert(data.intrinsicAByTurn.size() == data.intrinsicBByTurn.size());
+    testAssert(data.intrinsicAByTurn.empty() || (int)data.intrinsicAByTurn.size() == numMoves);
+    AZdb::rowTargets<GameEncoding>(
+      [&](int j) -> const GameRules::Position& { return posHistForFutureBoards[j].pos; }, numMoves,
+      data.endHist.isGameFinished, data.diversityMembers, *data.diversityState,
+      data.intrinsicAByTurn.empty() ? NULL : data.intrinsicAByTurn.data(),
+      data.intrinsicBByTurn.empty() ? NULL : data.intrinsicBByTurn.data(), intrinsicTargets);
+  }
+  auto memberOf = [&](Player pla) { return diversityRows ? data.diversityMembers[Board::indexOfPlayer(pla)] : 0; };
+
   Board board(data.startBoard);
   BoardHistory hist(data.startHist);
   Player nextPlayer = data.startPla;
@@ -1376,8 +1426,14 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
             data.mode,
             NULL,
             rand,
-            reanalysisData
+            reanalysisData,
+            memberOf(nextPlayer)
           );
+          //KataGame fork (2026-10-29): AZdb's targets of the intrinsic value head (0 without a state).
+          if(diversityRows && !intrinsicTargets.aTarget.empty())
+            writeBuffers->setLastRowIntrinsic(
+              intrinsicTargets.aTarget[turnAfterStart], intrinsicTargets.aWeight[turnAfterStart],
+              intrinsicTargets.bTarget[turnAfterStart], intrinsicTargets.bWeight[turnAfterStart]);
           //Enclosure fork (owner, 2026-10-04): RGSC's regret target, set by the self-play loop after the game.
           if(turnAfterStart < (int)data.regretByTurn.size())
             writeBuffers->setLastRowRegret(data.regretByTurn[turnAfterStart]);
@@ -1456,7 +1512,9 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
             data.numExtraBlack,
             data.mode,
             NULL,
-            rand
+            rand,
+            ReanalysisData(),
+            memberOf(sp->pla)  //KataGame fork: the side position's player's latent, and no intrinsic targets
           );
           //Enclosure fork (2026-10-11): the game's RGSC restart source, as on its other rows.
           writeBuffers->setLastRowRgscSource(data.rgscSource);

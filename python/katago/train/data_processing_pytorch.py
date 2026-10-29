@@ -13,8 +13,11 @@ from ..train import modelconfigs
 
 # Needs to be kept in sync with GLOBAL_TARGET_NUM_CHANNELS in trainingwrite.cpp C++ code among other places.
 # Data format version 2 files (recorded in channel 63 of each row) had only 64 channels; they are zero-padded
-# up to this width when loading, which correctly encodes "not reanalyzed" for the version 3 channels.
-GLOBAL_TARGETS_NC_CHANNELS = 80
+# up to this width when loading, which correctly encodes "not reanalyzed" for the version 3 channels. KataGame fork
+# (2026-10-29): the rows of the inputs version 14 add AZdb's 4 targets of the intrinsic value head (C80-83, C++
+# GLOBAL_TARGET_NUM_CHANNELS_V14). The rows of earlier versions have 80 channels, zero-padded here: their weights C81
+# and C83 are 0.
+GLOBAL_TARGETS_NC_CHANNELS = 84
 
 def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     """Zero-pad older-format globalTargetsNC rows up to the current channel count."""
@@ -371,7 +374,8 @@ def apply_history_dropout(game, batch_binaryInputNCHW, batch_globalInputNC, inpu
     assert start + num_history <= 1 + game.NUM_SPATIAL_INPUTS
     n = batch_binaryInputNCHW.shape[0]
     # The history's items: each plane, or under the inputs version 11 (the model's, as the reader fits the rows' global
-    # inputs to it) each turn with its planes and its turn inputs, the last global inputs.
+    # inputs to it) each turn with its planes and its turn inputs, which follow the game's extended global inputs: the
+    # last global inputs, but for version 14's latent after them.
     turns = games.turn_global_inputs(game) if inputs_version >= 11 else 0
     items = game.NUM_HISTORY_TURNS if turns else num_history
     should_stop_history = torch.rand((n, items), device=batch_binaryInputNCHW.device) >= 0.98
@@ -382,7 +386,8 @@ def apply_history_dropout(game, batch_binaryInputNCHW, batch_globalInputNC, inpu
     if not turns:
         return out, batch_globalInputNC
     out_global = batch_globalInputNC.clone()
-    out_global[:, -turns:] *= include_history.repeat_interleave(turns // items, dim=1).to(batch_globalInputNC.dtype)
+    first = game.NUM_GLOBAL_INPUTS + games.ROW_PLAYOUT_INPUTS + games.extended_global_inputs(game)
+    out_global[:, first:first + turns] *= include_history.repeat_interleave(turns // items, dim=1).to(batch_globalInputNC.dtype)
     return out, out_global
 
 def apply_history_matrices(model_config, batch_binaryInputNCHW, batch_globalInputNC, batch_globalTargetsNC, h_base, h_builder):

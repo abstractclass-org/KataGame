@@ -2338,7 +2338,7 @@ void PolicyHeadDesc::releaseWeights() {
 
 RegretHeadDesc::RegretHeadDesc() {}
 
-RegretHeadDesc::RegretHeadDesc(istream& in, int vrsn, bool binaryFloats) {
+RegretHeadDesc::RegretHeadDesc(istream& in, int vrsn, bool binaryFloats, int numOutputs) {
   in >> name;
   if(in.fail())
     throw StringError(name + ": regret head failed to parse name");
@@ -2358,8 +2358,8 @@ RegretHeadDesc::RegretHeadDesc(istream& in, int vrsn, bool binaryFloats) {
     throw StringError(name + ": mul2.inChannels != bn1.numChannels * 3");
   if(mul2.outChannels != bias2.numChannels || mul2.outChannels != mul3.inChannels)
     throw StringError(name + ": mul2.outChannels does not match bias2 and mul3");
-  if(mul3.outChannels != 1 || bias3.numChannels != 1)
-    throw StringError(name + ": a regret head has one output");
+  if(mul3.outChannels != numOutputs || bias3.numChannels != numOutputs)
+    throw StringError(name + Global::strprintf(": this head has %d output(s)", numOutputs));
 }
 
 RegretHeadDesc::~RegretHeadDesc() {}
@@ -2403,7 +2403,8 @@ void RegretHeadDesc::releaseWeights() {
   bias3.releaseWeights();
 }
 
-ValueHeadDesc::ValueHeadDesc() : modelVersion(-1), auxVersion(0), scoreBeliefLen(0), scoreBinWidth(0.0f), scoreOffsetScale(0.0f) {}
+ValueHeadDesc::ValueHeadDesc()
+  : modelVersion(-1), auxVersion(0), scoreBeliefLen(0), scoreBinWidth(0.0f), scoreOffsetScale(0.0f), intrinsicVersion(0) {}
 
 ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
   in >> name;
@@ -2413,14 +2414,18 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
     throw StringError(name + ": value head failed to parse name");
 
   auxVersion = 0;
+  intrinsicVersion = 0;
   if(modelVersion >= 17) {
     int unused = 0;
     //Enclosure fork: option A is the aux version (the exported training-only outputs; 0: none).
     in >> auxVersion;
     if(auxVersion < 0 || auxVersion > 2)
       throw StringError(name + ": unknown/unsupported value option A (aux version): " + Global::intToString(auxVersion));
-    in >> unused;
-    if(unused != 0) throw StringError(name + ": unknown/unsupported value option B: " + Global::intToString(unused));
+    //KataGame fork (2026-10-29): option B is the version of AZdb's intrinsic value head (0: none).
+    in >> intrinsicVersion;
+    if(intrinsicVersion < 0 || intrinsicVersion > 1)
+      throw StringError(name + ": unknown/unsupported value option B (intrinsic head version): " +
+                        Global::intToString(intrinsicVersion));
     in >> unused;
     if(unused != 0) throw StringError(name + ": unknown/unsupported value option C: " + Global::intToString(unused));
     if(in.fail())
@@ -2478,6 +2483,9 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
     sbMixMul = MatMulLayerDesc(in,binaryFloats);
     sbMixBias = MatBiasLayerDesc(in,binaryFloats);
   }
+  //KataGame fork (2026-10-29): AZdb's intrinsic value head, outputs A and B.
+  if(intrinsicVersion >= 1)
+    intrinsicHead = RegretHeadDesc(in,modelVersion,binaryFloats,2);
 
   if(in.fail())
     throw StringError(name + ": value head istream fail after parsing layers");
@@ -2567,6 +2575,8 @@ ValueHeadDesc::ValueHeadDesc(istream& in, int vrsn, bool binaryFloats) {
     if(sbMixMul.inChannels != v2Mul.inChannels || sbMixMul.outChannels != k || sbMixBias.numChannels != k)
       throw StringError(name + ": sbMixMul must map the pooled v1 features to the components");
   }
+  if(intrinsicVersion >= 1 && intrinsicHead.conv1.inChannels != v1Conv.inChannels)
+    throw StringError(name + ": " + intrinsicHead.name + " must read the trunk's channels");
 }
 
 ValueHeadDesc::~ValueHeadDesc() {}
@@ -2605,6 +2615,8 @@ ValueHeadDesc& ValueHeadDesc::operator=(ValueHeadDesc&& other) {
   sbS3Bias = std::move(other.sbS3Bias);
   sbMixMul = std::move(other.sbMixMul);
   sbMixBias = std::move(other.sbMixBias);
+  intrinsicVersion = other.intrinsicVersion;
+  intrinsicHead = std::move(other.intrinsicHead);
   return *this;
 }
 
@@ -2617,6 +2629,8 @@ void ValueHeadDesc::iterConvLayers(const std::function<void(const ConvLayerDesc&
     for(const RegretHeadDesc& r: regretHeads)
       f(r.conv1);
   }
+  if(intrinsicVersion >= 1)
+    f(intrinsicHead.conv1);
 }
 
 static int64_t regretHeadsNumParameters(const std::vector<RegretHeadDesc>& heads) {
@@ -2641,6 +2655,7 @@ int64_t ValueHeadDesc::getNumParameters() const {
      auxTrunkConv.getNumParameters() + auxScoringConv.getNumParameters() +
      auxValueMul.getNumParameters() + auxValueBias.getNumParameters() : 0) +
     regretHeadsNumParameters(regretHeads) +
+    (intrinsicVersion >= 1 ? intrinsicHead.getNumParameters() : 0) +
     (auxVersion >= 2 ?
      sbS2Mul.getNumParameters() + sbS2Bias.getNumParameters() + sbS2OffMul.getNumParameters() +
      sbS3Mul.getNumParameters() + sbS3Bias.getNumParameters() + sbMixMul.getNumParameters() + sbMixBias.getNumParameters() : 0);
@@ -2667,6 +2682,8 @@ void ValueHeadDesc::applyScale8ToReduceActivations() {
     auxValueBias.applyScale8ToReduceActivations();
   for(RegretHeadDesc& r: regretHeads)
     r.applyScale8ToReduceActivations();
+  if(intrinsicVersion >= 1)
+    intrinsicHead.applyScale8ToReduceActivations();
   //Export stage 2: the backend's part of the score belief (s2 and the mixture logits) reads the pooled v1 features,
   //scaled like the rest, so its biases scale too; NNEvaluator multiplies them back (outputScaleMultiplier) and does
   //the rest with the unscaled weights it copied at load.
@@ -2694,6 +2711,8 @@ void ValueHeadDesc::releaseWeights() {
   }
   for(RegretHeadDesc& r: regretHeads)
     r.releaseWeights();
+  if(intrinsicVersion >= 1)
+    intrinsicHead.releaseWeights();
   if(auxVersion >= 2) {
     sbS2Mul.releaseWeights();
     sbS2Bias.releaseWeights();

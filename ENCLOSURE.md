@@ -200,6 +200,8 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
   is its V11.
 - **V13** (model version 22, 2026-10-29) reads a game's labels in a canonical order (GAMES.md, `CanonicalActionMap`).
   Enclosure's position holds no label that its rules leave unread, so its V13 is its V12.
+- **V14** (model version 23, 2026-10-29) adds AZdb's latent after V13's global inputs, for every game (GAMES.md,
+  "AZdb's members"). Enclosure gives no statistics of a position (`Diversity`), so every member's reward is 0 there.
 - **Absolute colours,** as in the Enclosure network: plane k is Blue's for k = 0. The player to move is a global
   input. (KataGo's Go inputs are relative to the mover. The choice was "our feature planes, as KataGo uses its Go
   features".)

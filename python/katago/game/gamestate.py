@@ -151,6 +151,7 @@ class GameState:
                 pred_ranking,       # N
                 pred_swing,         # N
                 pred_swing_ranking, # N
+                pred_intrinsic,     # N, {A, B}
             ) = (x[0] for x in outputs[0]) # N = 0
 
             policy0 = torch.nn.functional.softmax(policy_logits[0,:],dim=0).cpu().numpy()

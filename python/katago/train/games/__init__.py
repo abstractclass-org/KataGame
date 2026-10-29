@@ -115,6 +115,10 @@ ROW_EXTRA_SCORE_RADIUS = 60      # scoreDistrN, int8: 2 * (points + 60) bins (NN
 ROW_VALUE_TARGETS = 8            # valueTargetsNCHW, int8 a point (GameInterface::TargetValues::NUM_CHANNELS)
 ROW_QVALUE_TARGETS = 3           # qValueTargetsNCMove, int16 a move (QVALUE_SPATIAL_TARGET_NUM_CHANNELS)
 ROW_PLAYOUT_INPUTS = 2           # the global inputs that the inputs version 9 adds (modelconfigs.PLAYOUT_GLOBAL_INPUTS)
+# The inputs version 14: AZdb's latent after version 13's global inputs (modelconfigs.DIVERSITY_MEMBERS), and its 4
+# targets of the intrinsic value head after the row's global targets (C++ GLOBAL_TARGET_NUM_CHANNELS_V14).
+ROW_DIVERSITY_INPUTS = 5
+ROW_DIVERSITY_TARGETS = 4
 # KataGo's row of Go on 19 x 19, as its shuffle.py measures it (UNCOMPRESSED_BYTES_PER_ROW_REQUIRED_19 and
 # UNCOMPRESSED_BYTES_PER_ROW_QVALUES_19): the size that upstream's row counts are for.
 GO_ROW_BYTES = 7675
@@ -150,7 +154,7 @@ def row_bytes(game, inputs_version=9):
     """The bytes of one training row of the game, uncompressed: the row writer's arrays (ROW_ above) on the game's
     largest board, without the metadata inputs, which the shuffle leaves out. Self-play writes rows of the inputs
     version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads, and of version 10, 11,
-    12 or 13 with its config's inputsVersion."""
+    12, 13 or 14 with its config's inputsVersion."""
     points = game.MAX_BOARD_LEN ** 2
     moves = points * game.POLICY_CHANNELS + 1  # the policy: every point's channels, then pass
     global_inputs = game.NUM_GLOBAL_INPUTS + (ROW_PLAYOUT_INPUTS if inputs_version >= 9 else 0)
@@ -162,12 +166,16 @@ def row_bytes(game, inputs_version=9):
         global_inputs += turn_global_inputs(game)
     if inputs_version >= 12:
         planes += area_spatial_inputs(game)
+    global_targets = ROW_GLOBAL_TARGETS
+    if inputs_version >= 14:
+        global_inputs += ROW_DIVERSITY_INPUTS
+        global_targets += ROW_DIVERSITY_TARGETS
     return (
         # binaryInputNCHWPacked: KataGo's on-board plane, then the game's planes, a bit a point
         planes * ((points + 7) // 8)
         + 4 * global_inputs                                # globalInputNC
         + 2 * ROW_POLICY_TARGETS * moves
-        + 4 * ROW_GLOBAL_TARGETS
+        + 4 * global_targets
         + 2 * (points + ROW_EXTRA_SCORE_RADIUS)
         + ROW_VALUE_TARGETS * points
         + 2 * ROW_QVALUE_TARGETS * moves
@@ -221,15 +229,18 @@ def mask_targets(game, binary_inputs, global_inputs, value_targets, global_targe
 
 
 def apply_symmetry_global_inputs(game, global_inputs, symmetry):
-    """The rows' global inputs (N, C) at the symmetry: in the rows of the inputs versions 10 and 11, the game's extended
+    """The rows' global inputs (N, C) at the symmetry: in the rows of the inputs versions 10 to 14, the game's extended
     global inputs (after version 9's) through its apply_symmetry_extended_global_inputs. The other global inputs name no
-    point, so they stay, as do the rows of the older versions and of a game without the member."""
+    point, so they stay (version 14's latent too), as do the rows of the older versions and of a game without the
+    member."""
     mapping = getattr(game, "apply_symmetry_extended_global_inputs", None)
     extended = extended_global_inputs(game)
     if mapping is None or symmetry == 0 or extended == 0:
         return global_inputs
     start = game.NUM_GLOBAL_INPUTS + ROW_PLAYOUT_INPUTS
-    if global_inputs.shape[1] not in (start + extended, start + extended + turn_global_inputs(game)):
+    turns = turn_global_inputs(game)
+    if global_inputs.shape[1] not in (start + extended, start + extended + turns,
+                                      start + extended + turns + ROW_DIVERSITY_INPUTS):
         return global_inputs
     out = global_inputs.clone()
     out[:, start:start + extended] = mapping(global_inputs[:, start:start + extended], symmetry)

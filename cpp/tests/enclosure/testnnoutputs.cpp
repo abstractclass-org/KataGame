@@ -5,7 +5,7 @@
 //   - one build against another (backends, precisions, the WebAssembly bot against the CUDA build), on the outputs
 //     that both compute: games/enclosure/wasm/compare_dumps.py compares two dumps (OUTPUTS search,ownership).
 //
-//   testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC OUTPUTS
+//   testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC OUTPUTS [MEMBER]
 //
 // KataGame fork: it names no game, so it builds against any game's build (tests/enclosure/build.sh BUILD_DIR, with
 // TESTS=testnnoutputs). A position is the game's actions from the start of its standard board.
@@ -24,6 +24,10 @@
 //                                          (white's view where it has one, as NNEvaluator reports them; the lead
 //                                          and the time-left variance are only reported)
 //   policy <count> <action>:<probability> ...   (the move policy at the legal actions and pass)
+//   intrinsic <A> <B>                      (KataGame fork, 2026-10-29: AZdb's intrinsic value head, for a model that
+//                                          has it, returns of the member that need no view)
+// KataGame fork (2026-10-29): MEMBER (default 0) is AZdb's member of the evaluations (MiscNNInputParams::diversityMember),
+// the latent of a model of the inputs version 14; the other models read none.
 // ownership: computed at the search's root, reported, and not used to choose a move:
 //   owner <x * y values>                   (white's view, after tanh)
 // training: the training-only outputs (the Eigen backend computes them too, except RGSC's heads, which only self-play
@@ -37,6 +41,7 @@
 //   scorebelief <len> <bin width> <len probabilities>            (export stage 2)
 
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -49,8 +54,13 @@
 using namespace std;
 
 int main(int argc, char** argv) {
-  if(argc != 7) {
-    fprintf(stderr, "usage: testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC OUTPUTS (search,ownership,training)\n");
+  if(argc != 7 && argc != 8) {
+    fprintf(stderr, "usage: testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC OUTPUTS (search,ownership,training) [MEMBER]\n");
+    return 2;
+  }
+  const int member = argc == 8 ? atoi(argv[7]) : 0;
+  if(member < 0 || member >= NNInputs::NUM_DIVERSITY_MEMBERS) {
+    fprintf(stderr, "MEMBER is from 0 to %d\n", NNInputs::NUM_DIVERSITY_MEMBERS - 1);
     return 2;
   }
   const string modelFile = argv[1];
@@ -133,6 +143,7 @@ int main(int argc, char** argv) {
     const Player pla = hist.presumedNextMovePla;
     MiscNNInputParams params;
     params.symmetry = 0;
+    params.diversityMember = member;
     buf.includeAuxOutputs = training;
     nnEval->evaluate(board, hist, pla, params, buf, true, ownership);
     const NNOutput& o = *buf.result;
@@ -171,6 +182,8 @@ int main(int argc, char** argv) {
       for(int i : actions)
         out << " " << i << ":" << policy[i];
       out << "\n";
+      if(o.hasIntrinsic)
+        out << "intrinsic " << o.intrinsicA << " " << o.intrinsicB << "\n";
     }
     if(ownership) {
       out << "owner";
@@ -206,8 +219,9 @@ int main(int argc, char** argv) {
     }
     positions++;
   }
-  fprintf(stderr, "wrote %d positions (fp16 %d, nhwc %d, fp16 used %d, outputs %s, stage 2 %d)\n", positions,
-          (int)fp16, (int)nhwc, (int)nnEval->isAnyThreadUsingFP16(), argv[6], (int)stage2);
+  fprintf(stderr, "wrote %d positions (fp16 %d, nhwc %d, fp16 used %d, outputs %s, stage 2 %d, member %d, intrinsic %d)\n",
+          positions, (int)fp16, (int)nhwc, (int)nnEval->isAnyThreadUsingFP16(), argv[6], (int)stage2, member,
+          (int)nnEval->hasIntrinsicHead());
   nnEval->killServerThreads();
   delete nnEval;
   NeuralNet::globalCleanup();

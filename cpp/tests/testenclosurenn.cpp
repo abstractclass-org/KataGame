@@ -100,6 +100,10 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
 // Plays one self-play game with the no-network evaluator (random policy and values, exact results at the end),
 // writes every row through TrainingDataWriter's text output, and appends the game's moves ("moves <n> <action>
 // ..."). The Enclosure repository's games/enclosure/tools/check_katago_rows.py replays the game in its engine and checks every row.
+// KataGame fork (2026-10-29): from the inputs version 14, both players are AZdb's member 2, with a fixed state
+// (AZDB_TEST_PSI below, each statistic's mean 0 and standard deviation 1, l0 1). The evaluator has no intrinsic head,
+// so the rows hold targets of the intrinsic value head only where their span reaches the game's end (program/azdb.h),
+// and their latent is member 2's.
 void Tests::runEnclosureRowTests(const string& outFile, const string& seed, const string& npzDir, int inputsVersion) {
   NeuralNet::globalInitialize();
   Logger logger(nullptr, false, false, false);
@@ -146,6 +150,16 @@ void Tests::runEnclosureRowTests(const string& outFile, const string& seed, cons
     nullptr
   );
   testAssert(gameData->endHist.isGameFinished);
+  if(inputsVersion >= 14) {
+    //AZDB_TEST_PSI: member i's psi at statistic s is 0.1 i ((s mod 7) - 3).
+    const int n = GameInterface::diversityStatistics<GameEncoding>();
+    vector<double> psi((size_t)AZdb::NUM_MEMBERS * n), mean(n, 0.0), sd(n, 1.0);
+    for(int i = 0; i < AZdb::NUM_MEMBERS; i++)
+      for(int s = 0; s < n; s++)
+        psi[(size_t)i * n + s] = 0.1 * i * ((s % 7) - 3);
+    gameData->diversityMembers[0] = gameData->diversityMembers[1] = 2;
+    gameData->diversityState = std::make_shared<AZdb::State<GameEncoding>>(psi.data(), mean.data(), sd.data(), 1.0);
+  }
   dataWriter.writeGame(*gameData);
   dataWriter.flushIfNonempty();
   if(npzDir != "") {

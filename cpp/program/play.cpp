@@ -1931,6 +1931,11 @@ FinishedGameData* Play::runGame(
         //Enclosure fork (2026-10-11): the swing source's ranking, the same way.
         gameData->swingRankingByTurn.push_back(
           rootOutput != NULL && rootOutput->hasSwing ? rootOutput->swingRanking : std::numeric_limits<float>::quiet_NaN());
+        //KataGame fork (2026-10-29): AZdb's outputs A and B at the root, which the targets of the intrinsic value head
+        //read where their span ends (TrainingDataWriter::writeGame, the rows of the inputs version 14).
+        const bool intrinsic = rootOutput != NULL && rootOutput->hasIntrinsic;
+        gameData->intrinsicAByTurn.push_back(intrinsic ? rootOutput->intrinsicA : std::numeric_limits<float>::quiet_NaN());
+        gameData->intrinsicBByTurn.push_back(intrinsic ? rootOutput->intrinsicB : std::numeric_limits<float>::quiet_NaN());
       }
 
       //Occasionally fork off some positions to evaluate

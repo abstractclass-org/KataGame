@@ -27,8 +27,12 @@ EXPECTED_Q_VALUE_TARGETS_NCMOVE_CHANNELS = 3
 
 # Needs to be kept in sync with GLOBAL_TARGET_NUM_CHANNELS in trainingwrite.cpp C++ code among other places.
 # Data format version 2 files (recorded in channel 63 of each row) had only 64 channels; they are zero-padded
-# up to this width when shuffling, which correctly encodes "not reanalyzed" for the version 3 channels.
+# up to this width when shuffling, which correctly encodes "not reanalyzed" for the version 3 channels. KataGame fork
+# (2026-10-29): the rows of the inputs version 14 have 84, with AZdb's 4 targets of the intrinsic value head after the
+# 80 (C++ GLOBAL_TARGET_NUM_CHANNELS_V14). Files of 80 and 84 merge at 84 (pad_inputs_to_widest), the rows of 80 with
+# those targets' weights at 0, and files of 80 alone stay 80.
 GLOBAL_TARGETS_NC_CHANNELS = 80
+GLOBAL_TARGETS_NC_CHANNELS_V14 = 84
 
 # Empirically measured per-row sizes for 19x19 data, used only for the rough resource-cost
 # estimates printed by -dry-run-print-resource-cost (and informationally on normal runs).
@@ -176,7 +180,7 @@ def pad_planes_to_widest(binaryInputNCHWPackedList: list[np.ndarray], globalInpu
 def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     """Zero-pad older-format globalTargetsNC rows up to the current channel count."""
     num_channels = globalTargetsNC.shape[1]
-    if num_channels == GLOBAL_TARGETS_NC_CHANNELS:
+    if num_channels in (GLOBAL_TARGETS_NC_CHANNELS, GLOBAL_TARGETS_NC_CHANNELS_V14):
         return globalTargetsNC
     assert num_channels < GLOBAL_TARGETS_NC_CHANNELS, f"globalTargetsNC has {num_channels} channels, more than the expected {GLOBAL_TARGETS_NC_CHANNELS}"
     padded = np.zeros((globalTargetsNC.shape[0], GLOBAL_TARGETS_NC_CHANNELS), dtype=globalTargetsNC.dtype)
@@ -279,6 +283,7 @@ def shardify(
 
     pad_planes_to_widest(binaryInputNCHWPackedList, globalInputNCList)
     pad_inputs_to_widest(globalInputNCList)
+    pad_inputs_to_widest(globalTargetsNCList)
     concatenated_arrs = (
         joint_concatenate(
             [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList]
@@ -386,6 +391,7 @@ def merge_bucket(
 
     pad_planes_to_widest(binaryInputNCHWPackedList, globalInputNCList)
     pad_inputs_to_widest(globalInputNCList)
+    pad_inputs_to_widest(globalTargetsNCList)
     concatenated_arrs = (
         joint_concatenate(
             [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList]

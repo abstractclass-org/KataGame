@@ -338,8 +338,9 @@ def main(args):
     # (2026-10-26): with the V10 inputs (V9's and the game's extended inputs), version 19, NNInputs V10. With the V11
     # inputs (V10's with the game's turns, 2026-10-27), version 20, NNInputs V11. With the V12 inputs (V11's with the
     # game's planes of closed areas, 2026-10-27), version 21, NNInputs V12. With the V13 inputs (V12's with the game's
-    # labels in their canonical order, 2026-10-29), version 22, NNInputs V13.
-    inputs_model_version = {9: 18, 10: 19, 11: 20, 12: 21, 13: 22}.get(modelconfigs.get_inputs_version(model_config))
+    # labels in their canonical order, 2026-10-29), version 22, NNInputs V13. With the V14 inputs (V13's with AZdb's
+    # latent, 2026-10-29), version 23, NNInputs V14.
+    inputs_model_version = {9: 18, 10: 19, 11: 20, 12: 21, 13: 22, 14: 23}.get(modelconfigs.get_inputs_version(model_config))
     if inputs_model_version is not None:
         assert version == 17, version
         version = inputs_model_version
@@ -845,10 +846,12 @@ def main(args):
         writeln(name)
         if version >= 17:
             # Enclosure fork (owner, 2026-10-04): the first option is the aux version (1: the training-only outputs
-            # and RGSC's heads follow the ownership conv; 2, export stage 2: then the score belief); the other two
-            # stay placeholders.
+            # and RGSC's heads follow the ownership conv; 2, export stage 2: then the score belief). KataGame fork
+            # (2026-10-29): the second is the version of AZdb's intrinsic value head (1: it follows the score belief;
+            # ValueHeadDesc::intrinsicVersion), so a model without it writes the file as before. The third stays a
+            # placeholder.
             writeln(2)
-            writeln(0)
+            writeln(1 if valuehead.intrinsic_head else 0)
             writeln(0)
         write_conv(name+".conv1", valuehead.conv1)
         write_biasmask(name+".bias1", valuehead.bias1)
@@ -915,6 +918,19 @@ def main(args):
             write_matbias(name+".bias_s3", valuehead.linear_s3.bias)
             write_matmul(name+".linear_smix", valuehead.linear_smix.weight)
             write_matbias(name+".bias_smix", valuehead.linear_smix.bias)
+            # KataGame fork (2026-10-29): AZdb's intrinsic value head (model_pytorch.RegretHead with two outputs, A
+            # then B), as RGSC's heads are written.
+            if valuehead.intrinsic_head:
+                head_name, head = "intrinsic_value", valuehead.intrinsic_value
+                writeln(name+"."+head_name)
+                write_conv(name+"."+head_name+".conv1", head.conv1)
+                write_biasmask(name+"."+head_name+".bias1", head.bias1)
+                write_activation(name+"."+head_name+".act1", head.act1)
+                write_matmul(name+"."+head_name+".linear2", head.linear2.weight)
+                write_matbias(name+"."+head_name+".bias2", head.linear2.bias)
+                write_activation(name+"."+head_name+".act2", head.act2)
+                write_matmul(name+"."+head_name+".linear_out", head.linear_out.weight)
+                write_matbias(name+"."+head_name+".bias_out", head.linear_out.bias)
 
     def write_model(model):
         write_trunk("model",model)

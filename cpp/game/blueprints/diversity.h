@@ -2,8 +2,9 @@
 // Blueprints' statistics of a position for AZdb's diversity reward (the engine repository's
 // games/blueprints/docs/research/diversity-players.md, "The features of a position"), and their running
 // normalization. The reference is the engine repository's games/blueprints/tools/diversity_stats.py: the same
-// statistics in the same order, the same transforms, and the same side. Only the Python binding calls this code so far
-// (games/blueprints/binding/extras.h): no row, input or search reads it.
+// statistics in the same order, the same transforms, and the same side. GameEncoding gives them to KataGame's front
+// (GameInterface: Diversity), whose training rows read them for the members' rewards (program/azdb.h), and the Python
+// binding gives them to the tests (games/blueprints/binding/extras.h). No input or search reads them yet.
 //
 // The statistics are from the side of a player P (AZdb takes the player who made the move), against its opponent O.
 // Distances are in the plane of the hex grid, where the centres of two touching hexes are 1 apart. A hex distance
@@ -42,8 +43,14 @@
 
 namespace blueprints {
 
+struct DiversityNormalizer;
+
 struct Diversity {
   static constexpr int NUM_STATISTICS = 57;
+  // Each player's moves in a game: the divisor of a member's reward (GameInterface: Diversity), so that the return of
+  // a whole game is a mean reward for each move.
+  static constexpr int MOVES = PLIES / 2;
+  using Normalizer = DiversityNormalizer;
   // The groups in the order of the statistics: cells, spread, closed areas, reach, threats, hands.
   static constexpr int NUM_GROUPS = 6;
   static constexpr int GROUP_SIZE[NUM_GROUPS] = {6, 5, 4, 6, 6, 30};

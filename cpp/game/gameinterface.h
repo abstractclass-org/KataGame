@@ -266,6 +266,15 @@
  *                           next mover's labels must be the row's. Blueprints: each hand in the order of its
  *                           blueprints' cells, and of equal blueprints the lowest-numbered one listed. Default: none,
  *                           every action listed at its own index, and V13 is V12 (CanonicalActions).
+ *   Diversity               a type, for AZdb's diversity reward (program/azdb.h): the statistics of a position that
+ *                           the members' rewards read, φ before its normalization. Diversity::NUM_STATISTICS (int)
+ *                           counts them. Diversity::statistics(p, player, out) (void) writes them from player's side,
+ *                           for the position p after a move of player. Diversity::MOVES (int) is each player's moves
+ *                           in a game, the reward's divisor. Diversity::Normalizer (a type) is their running
+ *                           normalization: Normalizer(mean, sd) from each statistic's mean and standard deviation,
+ *                           and z(x, out) const writes the normalized statistics of x. Blueprints' 57 statistics
+ *                           (game/blueprints/diversity.h) and 60 moves. Default: none, 0 statistics, and every
+ *                           member's reward is 0 (diversityStatistics, diversityStatisticsOf, DiversityNormalizer).
  */
 
 #include <algorithm>
@@ -801,6 +810,14 @@ namespace encoding {
     decltype(std::declval<const typename G::CanonicalActionMap&>()(0)), int>::value &&
     std::is_convertible<decltype(std::declval<const typename G::CanonicalActionMap&>().listed(0)), bool>::value &&
     std::is_constructible<typename G::CanonicalActionMap, const P<G>&>::value>> : std::true_type {};
+  template<class G, class = void> struct HasDiversity : std::false_type {};
+  template<class G> struct HasDiversity<G, std::enable_if_t<
+    std::is_convertible<decltype(std::integral_constant<int, G::Diversity::NUM_STATISTICS>::value), int>::value &&
+    std::is_convertible<decltype(std::integral_constant<int, G::Diversity::MOVES>::value), int>::value &&
+    std::is_void<decltype(G::Diversity::statistics(std::declval<const P<G>&>(), 0, (double*)nullptr))>::value &&
+    std::is_constructible<typename G::Diversity::Normalizer, const double*, const double*>::value &&
+    std::is_void<decltype(std::declval<const typename G::Diversity::Normalizer&>().z(
+      (const double*)nullptr, (double*)nullptr))>::value>> : std::true_type {};
 }
 
 //The game's extended inputs (NUM_EXTENDED_SPATIAL_INPUTS, NUM_EXTENDED_GLOBAL_INPUTS): the game's, else none.
@@ -842,6 +859,37 @@ template<class E, bool = encoding::HasCanonicalActionMap<E>::value> struct Canon
 };
 template<class E> struct CanonicalActions<E, true> : E::CanonicalActionMap {
   explicit CanonicalActions(const encoding::P<E>& p) : E::CanonicalActionMap(p) {}
+};
+
+//AZdb's statistics of a position (Diversity): the game's count, else none.
+template<class E> constexpr int diversityStatistics() {
+  if constexpr(encoding::HasDiversity<E>::value)
+    return E::Diversity::NUM_STATISTICS;
+  else
+    return 0;
+}
+//Each player's moves in a game, the divisor of AZdb's reward (Diversity): the game's, else 1.
+template<class E> constexpr int diversityMoves() {
+  if constexpr(encoding::HasDiversity<E>::value)
+    return E::Diversity::MOVES;
+  else
+    return 1;
+}
+//p's statistics from player's side (Diversity), diversityStatistics<E>() numbers: the game's, else none.
+template<class E> void diversityStatisticsOf(const encoding::P<E>& p, int player, double* out) {
+  if constexpr(encoding::HasDiversity<E>::value)
+    E::Diversity::statistics(p, player, out);
+  else {
+    (void)p; (void)player; (void)out;
+  }
+}
+//The statistics' normalization (Diversity::Normalizer): the game's, else none.
+template<class E, bool = encoding::HasDiversity<E>::value> struct DiversityNormalizer {
+  DiversityNormalizer(const double*, const double*) {}
+  void z(const double*, double*) const {}
+};
+template<class E> struct DiversityNormalizer<E, true> : E::Diversity::Normalizer {
+  DiversityNormalizer(const double* mean, const double* sd) : E::Diversity::Normalizer(mean, sd) {}
 };
 
 //The slots of TARGETS that the game computes itself (training_targets): the game's, else all but the FRONT_TARGETS.

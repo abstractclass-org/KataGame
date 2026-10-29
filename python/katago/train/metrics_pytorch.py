@@ -225,6 +225,11 @@ class Metrics:
         # authors' code: mse_loss against the label, in [0, 4]).
         return global_weight * weight * torch.square(pred_regret - target_regret)
 
+    def loss_intrinsic_samplewise(self, pred, target, weight, global_weight):
+        # KataGame fork (2026-10-29): AZdb's intrinsic value head, the paper's squared error against the N-step return
+        # (the rows' C80-83), weighted as the value's loss: its 1.20 here, and value_loss_scale in the sum.
+        return 1.20 * global_weight * weight * torch.square(pred - target)
+
     def loss_regret_ranking(self, pred_ranking, target_regret, weight, global_weight, group_size: int = 32):
         # Enclosure fork (owner, 2026-10-04): RGSC's ranking loss as the authors' code computes it
         # (minizero/learner/train.py): rows sorted by regret, dealt by stride into groups, each group's loss
@@ -677,6 +682,7 @@ class Metrics:
             pred_ranking,
             pred_swing,
             pred_swing_ranking,
+            pred_intrinsic,
         ) = model_output_postprocessed
 
         input_binary_nchw = batch["binaryInputNCHW"]
@@ -967,6 +973,19 @@ class Metrics:
             pred_swing, target_swing, target_weight_swing, global_weight,
         ).sum()
         loss_swing_ranking = self.loss_regret_ranking(pred_swing_ranking, target_swing, target_weight_swing, global_weight)
+        # KataGame fork (2026-10-29): AZdb's intrinsic value head, on the rows that carry its targets (the rows of the
+        # inputs version 14, C80-83: output A's target and weight, then output B's; the reader pads older rows with
+        # zeros). A model without the head outputs zeros there, so these losses train nothing in it.
+        target_intrinsic_a = target_global_nc[:, 80]
+        target_weight_intrinsic_a = target_global_nc[:, 81]
+        target_intrinsic_b = target_global_nc[:, 82]
+        target_weight_intrinsic_b = target_global_nc[:, 83]
+        loss_intrinsic_a = self.loss_intrinsic_samplewise(
+            pred_intrinsic[:, 0], target_intrinsic_a, target_weight_intrinsic_a, global_weight,
+        ).sum()
+        loss_intrinsic_b = self.loss_intrinsic_samplewise(
+            pred_intrinsic[:, 1], target_intrinsic_b, target_weight_intrinsic_b, global_weight,
+        ).sum()
         loss_income = self.loss_income_samplewise(
             income_logits,
             target_income,
@@ -1064,6 +1083,7 @@ class Metrics:
             + loss_regret_ranking
             + loss_swing_value
             + loss_swing_ranking
+            + (loss_intrinsic_a + loss_intrinsic_b) * value_loss_scale
             + loss_seki * seki_loss_scale
             + loss_scoremean
             + loss_scorebelief_cdf
@@ -1109,6 +1129,10 @@ class Metrics:
             "swloss_sum": loss_swing_value,
             "swkloss_sum": loss_swing_ranking,
             "swrows_sum": (target_weight_swing * global_weight).sum(),
+            "intaloss_sum": loss_intrinsic_a,
+            "intbloss_sum": loss_intrinsic_b,
+            "intarows_sum": (target_weight_intrinsic_a * global_weight).sum(),
+            "intbrows_sum": (target_weight_intrinsic_b * global_weight).sum(),
             # Enclosure fork (2026-10-04): the share of rows carrying each Enclosure spatial target (logged as the
             # mean over rows, like the losses), so a loss divided by its share reads per row that carries the target
             # (these targets started on rows written from 2026-10-03, so the plain losses rose as such rows filled

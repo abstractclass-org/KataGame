@@ -163,6 +163,9 @@ class NNEvaluator {
   bool hasScoreBelief() const { return scoreBeliefParams.len > 0; }
   double getScoreBinWidth() const { return scoreBeliefParams.binWidth; }
   bool hasRegretHeads() const { return modelHasRegret; }
+  //KataGame fork (2026-10-29): whether the model has AZdb's intrinsic value head (NNOutput::hasIntrinsic, where the
+  //backend computes it).
+  bool hasIntrinsicHead() const { return modelHasIntrinsic; }
   // The build-time max batch size: backend buffers are allocated for this many rows, and
   // fixed-shape backends (NeuralNet::BatchPolicy::FixedShape) pad every inference up to exactly
   // this many rows, so it is also the one input shape their sessions get compiled for.
@@ -343,6 +346,7 @@ class NNEvaluator {
   ScoreBeliefParams scoreBeliefParams;
   void finishScoreBelief(NNOutput& output) const;
   bool modelHasRegret;
+  bool modelHasIntrinsic;
 
   ModelPostProcessParams postProcessParams;
 

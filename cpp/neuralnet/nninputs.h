@@ -81,6 +81,9 @@ struct MiscNNInputParams {
   bool conservativePassAndIsRoot = false;
   bool enablePassingHacks = false;
   double playoutDoublingAdvantage = 0.0;
+  //KataGame fork (2026-10-29): AZdb's member, 0 to NNInputs::NUM_DIVERSITY_MEMBERS - 1, which the inputs version 14
+  //gives the network as its latent (program/azdb.h). Member 0 by default, and in every earlier version.
+  int diversityMember = 0;
   float nnPolicyTemperature = 1.0f;
   bool avoidMYTDaggerHack = false;
   // If no symmetry is specified, it will use default or random based on config, unless node is already cached.
@@ -115,6 +118,7 @@ struct MiscNNInputParams {
   static const Hash128 ZOBRIST_AVOID_MYTDAGGER_HACK;
   static const Hash128 ZOBRIST_POLICY_OPTIMISM;
   static const Hash128 ZOBRIST_ZERO_HISTORY;
+  static const Hash128 ZOBRIST_DIVERSITY_MEMBER;
 };
 
 namespace NNInputs {
@@ -167,6 +171,13 @@ namespace NNInputs {
   //hand in an order of its blueprints' cells. A game without the order has V13 equal to its V12. Model version 22.
   const int NUM_FEATURES_SPATIAL_V13 = NUM_FEATURES_SPATIAL_V12;
   const int NUM_FEATURES_GLOBAL_V13 = NUM_FEATURES_GLOBAL_V12;
+  //KataGame fork (2026-10-29): V14, V13's inputs with AZdb's latent after V13's global inputs: NUM_DIVERSITY_MEMBERS
+  //inputs, 1 at the member's (MiscNNInputParams::diversityMember) and 0 elsewhere (the engine repository's
+  //games/blueprints/docs/research/diversity-players.md, "The latent and the members"). For every game. Model version
+  //23.
+  const int NUM_DIVERSITY_MEMBERS = 5;
+  const int NUM_FEATURES_SPATIAL_V14 = NUM_FEATURES_SPATIAL_V13;
+  const int NUM_FEATURES_GLOBAL_V14 = NUM_FEATURES_GLOBAL_V13 + NUM_DIVERSITY_MEMBERS;
 
   Hash128 getHash(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
@@ -278,7 +289,18 @@ namespace NNInputs {
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
     int symmetry = 0
   );
-  //The planes of the inputs versions 8 to 13 (NUM_FEATURES_SPATIAL_V8, V10 or V12) and the words of a packed row.
+  //V14: V13's rows (NUM_SPATIAL_WORDS_V12 words packed), with rowGlobal holding NUM_FEATURES_GLOBAL_V14 values.
+  void fillRowV14(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal,
+    std::vector<int>* setEntries = NULL
+  );
+  void fillRowV14Packed(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
+    int symmetry = 0
+  );
+  //The planes of the inputs versions 8 to 14 (NUM_FEATURES_SPATIAL_V8, V10 or V12) and the words of a packed row.
   int gameSpatialFeatures(int inputsVersion);
   int gameSpatialWords(int inputsVersion);
   //The packed row's first n entries as floats (0 or 1) into out.
@@ -386,6 +408,14 @@ struct NNOutput {
   bool hasSwing;
   float swingValue;
   float swingRanking;
+  //KataGame fork (2026-10-29): AZdb's intrinsic value head (ValueHeadDesc::intrinsicHead), for the member of the
+  //evaluation's latent (MiscNNInputParams::diversityMember): intrinsicA, the intrinsic return of the player to move,
+  //and intrinsicB, that of the other player, both as that member (program/azdb.h). Returns, not values from White's
+  //side: no sign changes with the player. hasIntrinsic is false when the model has no such head, or the backend does
+  //not compute it (the CUDA and Eigen backends do).
+  bool hasIntrinsic;
+  float intrinsicA;
+  float intrinsicB;
 
   //Enclosure fork (owner, 2026-10-04): the exported training-only outputs (ValueHeadDesc::auxVersion), when requested
   //(NNResultBuf::includeAuxOutputs) and the model has them, else NULL. Raw outputs (before any tanh, softmax or

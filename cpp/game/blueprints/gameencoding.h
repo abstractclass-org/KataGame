@@ -270,9 +270,13 @@ inline void view_box(const Position& p, int reach, int& x0, int& x1, int& y0, in
   y1 = std::min(RULES_LEN, view.wy + r1 + 1);
 }
 
+struct Diversity;  // diversity.h, which this file includes after GameEncoding
+
 struct GameEncoding {
   using Rules = GameRules;
   using Position = GameRules::Position;
+  // AZdb's statistics of a position (GameInterface: Diversity): diversity.h's, which reads this encoding's inputs.
+  using Diversity = blueprints::Diversity;
 
   // The planes. Each pair of bases names the mover's planes first, then the opponent's.
   static constexpr int MINE = 0, THEIRS = 3;                 // + type
@@ -1334,3 +1338,6 @@ struct GameEncoding {
 static_assert(GameInterface::checkEncoding<GameEncoding>(), "Blueprints' network encoding part");
 
 }  // namespace blueprints
+
+// GameEncoding::Diversity, complete for whoever includes this file.
+#include "diversity.h"

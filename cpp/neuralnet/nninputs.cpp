@@ -24,6 +24,9 @@ const Hash128 MiscNNInputParams::ZOBRIST_POLICY_OPTIMISM =
   Hash128(0x88415c85c2801955ULL, 0x39bdf76b2aaa5eb1ULL);
 const Hash128 MiscNNInputParams::ZOBRIST_ZERO_HISTORY =
   Hash128(0x78f02afdd1aa4910ULL, 0xda78d550486fe978ULL);
+//KataGame fork (2026-10-29): AZdb's member (NNInputs::getHash).
+const Hash128 MiscNNInputParams::ZOBRIST_DIVERSITY_MEMBER =
+  Hash128(0x3f5bf3cd67464059ULL, 0x7276f99a5043a0bdULL);
 
 //-----------------------------------------------------------------------------------------------------------
 //-----------------------------------------------------------------------------------------------------------
@@ -293,8 +296,8 @@ void NNInputs::fillScoring(
 
 NNOutput::NNOutput()
   :policyPassSlot(-1),policyDense(NULL),whiteOwnerMap(NULL),noisedPolicyProbs(NULL),hasRegret(false),regretValue(0.0f),
-   regretRanking(0.0f),hasSwing(false),swingValue(0.0f),swingRanking(0.0f),auxMap(NULL),auxValues(NULL),auxPolicy(NULL),
-   scoreBeliefLen(0),scoreBelief(NULL),scoreBeliefRaw(NULL)
+   regretRanking(0.0f),hasSwing(false),swingValue(0.0f),swingRanking(0.0f),hasIntrinsic(false),intrinsicA(0.0f),
+   intrinsicB(0.0f),auxMap(NULL),auxValues(NULL),auxPolicy(NULL),scoreBeliefLen(0),scoreBelief(NULL),scoreBeliefRaw(NULL)
 {
   std::fill(policyMask, policyMask + NNPos::MAX_BOARD_AREA, uint64_t(0));
 }
@@ -432,6 +435,9 @@ NNOutput::NNOutput(const NNOutput& other) {
   hasSwing = other.hasSwing;
   swingValue = other.swingValue;
   swingRanking = other.swingRanking;
+  hasIntrinsic = other.hasIntrinsic;
+  intrinsicA = other.intrinsicA;
+  intrinsicB = other.intrinsicB;
   auxMap = copyOrNull(other.auxMap, (size_t)NUM_AUX_MAP_CHANNELS * nnXLen * nnYLen);
   auxValues = copyOrNull(other.auxValues, NUM_AUX_VALUES);
   auxPolicy = copyOrNull(other.auxPolicy, (size_t)NUM_AUX_POLICIES * NNPos::MAX_NN_POLICY_SIZE);
@@ -516,11 +522,16 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
   hasSwing = others[0]->hasSwing;
   swingValue = 0.0f;
   swingRanking = 0.0f;
+  hasIntrinsic = others[0]->hasIntrinsic;
+  intrinsicA = 0.0f;
+  intrinsicB = 0.0f;
   for(int i = 0; i<len; i++) {
     regretValue += others[i]->regretValue / floatLen;
     regretRanking += others[i]->regretRanking / floatLen;
     swingValue += others[i]->swingValue / floatLen;
     swingRanking += others[i]->swingRanking / floatLen;
+    intrinsicA += others[i]->intrinsicA / floatLen;
+    intrinsicB += others[i]->intrinsicB / floatLen;
   }
   auto averageOf = [&](float* NNOutput::* field, size_t n) {
     float* avg = NULL;
@@ -640,6 +651,9 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
   hasSwing = other.hasSwing;
   swingValue = other.swingValue;
   swingRanking = other.swingRanking;
+  hasIntrinsic = other.hasIntrinsic;
+  intrinsicA = other.intrinsicA;
+  intrinsicB = other.intrinsicB;
   delete[] auxMap;
   auxMap = copyOrNull(other.auxMap, (size_t)NUM_AUX_MAP_CHANNELS * nnXLen * nnYLen);
   delete[] auxValues;
@@ -1088,6 +1102,14 @@ Hash128 NNInputs::getHash(
   if(nnInputParams.maxHistory <= 0) {
     hash.hash0 += MiscNNInputParams::ZOBRIST_ZERO_HISTORY.hash0;
     hash.hash1 += MiscNNInputParams::ZOBRIST_ZERO_HISTORY.hash1;
+  }
+
+  //KataGame fork (2026-10-29): fold in AZdb's member as the playout doubling advantage is folded: member 0 keeps the
+  //hash of an evaluation without a member, and each other member gets its own.
+  if(nnInputParams.diversityMember != 0) {
+    hash.hash0 += Hash::splitMix64((uint64_t)nnInputParams.diversityMember);
+    hash.hash1 += Hash::basicLCong((uint64_t)nnInputParams.diversityMember);
+    hash ^= MiscNNInputParams::ZOBRIST_DIVERSITY_MEMBER;
   }
 
   //Fold in asymmetric playout indicator
@@ -2928,14 +2950,14 @@ void NNInputs::fillRowV7(
 //INPUTSVERSION 8 (Enclosure fork)
 //===========================================================================================
 
-//The spatial planes of the inputs versions 8 to 13: V9 has V8's, V10 the game's extended planes too, V11 V10's, V12
-//the game's planes of closed areas too, V13 V12's.
+//The spatial planes of the inputs versions 8 to 14: V9 has V8's, V10 the game's extended planes too, V11 V10's, V12
+//the game's planes of closed areas too, V13 and V14 V12's.
 int NNInputs::gameSpatialFeatures(int inputsVersion) {
   return inputsVersion >= 12 ? NNInputs::NUM_FEATURES_SPATIAL_V12
     : inputsVersion >= 10 ? NNInputs::NUM_FEATURES_SPATIAL_V10 : NNInputs::NUM_FEATURES_SPATIAL_V8;
 }
 
-//The words of a packed row of the inputs versions 8 to 13 (gameSpatialFeatures).
+//The words of a packed row of the inputs versions 8 to 14 (gameSpatialFeatures).
 int NNInputs::gameSpatialWords(int inputsVersion) {
   return inputsVersion >= 12 ? NNInputs::NUM_SPATIAL_WORDS_V12
     : inputsVersion >= 10 ? NNInputs::NUM_SPATIAL_WORDS_V10 : NNInputs::NUM_SPATIAL_WORDS_V8;
@@ -2951,7 +2973,9 @@ int NNInputs::gameSpatialWords(int inputsVersion) {
 //planes after the game's planes and its global inputs after V9's (NUM_FEATURES_SPATIAL_V10). 11 (2026-10-27): the
 //history of the game's turns, and its turn inputs after V10's global inputs (NUM_FEATURES_GLOBAL_V11). 12
 //(2026-10-27): the game's planes of closed areas too, after V11's planes (NUM_FEATURES_SPATIAL_V12). 13 (2026-10-29):
-//V12's inputs with the game's labels in their canonical order (InputOptions::canonical).
+//V12's inputs with the game's labels in their canonical order (InputOptions::canonical). 14 (2026-10-29): V13's with
+//AZdb's latent after its global inputs, a one-hot of the member (MiscNNInputParams::diversityMember,
+//NUM_FEATURES_GLOBAL_V14).
 template<typename SetEntry>
 static void fillRowV8Entries(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
@@ -2963,7 +2987,7 @@ static void fillRowV8Entries(
   assert(board.x_size <= nnXLen && board.y_size <= nnYLen);
   assert(SymmetryHelpers::isAllowed(symmetry));
   assert(!SymmetryHelpers::isTranspose(symmetry) || board.x_size == board.y_size);
-  assert(inputsVersion >= 8 && inputsVersion <= 13);
+  assert(inputsVersion >= 8 && inputsVersion <= 14);
   //The inputs are the position's, which gives the player to move.
   assert(nextPlayer == board.nextPla());
   (void)nextPlayer;
@@ -2974,10 +2998,13 @@ static void fillRowV8Entries(
   const bool turnHistory = inputsVersion >= 11;
   const bool areas = inputsVersion >= 12;
   const bool canonical = inputsVersion >= 13;
+  const bool latent = inputsVersion >= 14;
   static_assert(NNInputs::NUM_FEATURES_GLOBAL_V12 == NNInputs::NUM_FEATURES_GLOBAL_V11, "V12 adds planes only");
   static_assert(NNInputs::NUM_FEATURES_SPATIAL_V13 == NNInputs::NUM_FEATURES_SPATIAL_V12 &&
                 NNInputs::NUM_FEATURES_GLOBAL_V13 == NNInputs::NUM_FEATURES_GLOBAL_V12, "V13 adds no input");
+  static_assert(NNInputs::NUM_FEATURES_SPATIAL_V14 == NNInputs::NUM_FEATURES_SPATIAL_V13, "V14 adds no plane");
   const int numGlobal =
+    latent ? NNInputs::NUM_FEATURES_GLOBAL_V14 :
     turnHistory ? NNInputs::NUM_FEATURES_GLOBAL_V11 :
     extended ? NNInputs::NUM_FEATURES_GLOBAL_V10 : playoutInputs ? NNInputs::NUM_FEATURES_GLOBAL_V9 : NUM_FEATURES_GLOBAL_V8;
   std::fill(rowGlobal, rowGlobal + numGlobal, 0.0f);
@@ -3035,6 +3062,11 @@ static void fillRowV8Entries(
   if(playoutInputs && nnInputParams.playoutDoublingAdvantage != 0) {
     rowGlobal[NUM_FEATURES_GLOBAL_V8] = 1.0f;
     rowGlobal[NUM_FEATURES_GLOBAL_V8 + 1] = (float)(0.5 * nnInputParams.playoutDoublingAdvantage);
+  }
+  //V14: AZdb's latent, the member's one-hot after V13's global inputs. Member 0 has its own input, as every member.
+  if(latent) {
+    assert(nnInputParams.diversityMember >= 0 && nnInputParams.diversityMember < NNInputs::NUM_DIVERSITY_MEMBERS);
+    rowGlobal[NNInputs::NUM_FEATURES_GLOBAL_V13 + nnInputParams.diversityMember] = 1.0f;
   }
 }
 
@@ -3165,6 +3197,22 @@ void NNInputs::fillRowV13Packed(
   int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry
 ) {
   fillRowV8Bits(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBits, rowGlobal, symmetry, 13);
+}
+
+void NNInputs::fillRowV14(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries
+) {
+  fillRowV8Floats(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBin, rowGlobal, setEntries, 14);
+}
+
+void NNInputs::fillRowV14Packed(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry
+) {
+  fillRowV8Bits(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBits, rowGlobal, symmetry, 14);
 }
 
 void NNInputs::unpackSpatialBits(const uint32_t* rowBits, float* out, int n) {

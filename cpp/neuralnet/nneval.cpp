@@ -165,6 +165,7 @@ NNEvaluator::NNEvaluator(
     numInputMetaChannels = desc.numInputMetaChannels;
     modelHasAux = desc.valueHead.auxVersion >= 1;
     modelHasRegret = !desc.valueHead.regretHeads.empty();
+    modelHasIntrinsic = desc.valueHead.intrinsicVersion >= 1;
     //Export stage 2: copied before createComputeContext, which may scale the model's weights for its backend.
     modelHasPolicyAux = modelHasAux && desc.policyHead.auxVersion >= 1;
     if(modelHasAux && desc.valueHead.auxVersion >= 2) {
@@ -200,6 +201,7 @@ NNEvaluator::NNEvaluator(
     modelHasAux = false;
     modelHasPolicyAux = false;
     modelHasRegret = false;
+    modelHasIntrinsic = false;
     inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
   }
 
@@ -571,12 +573,13 @@ void NNEvaluator::fillRowBufs(
   int symmetry
 ) const {
   const int rowSpatialLen = NNModelVersion::getNumSpatialFeatures(modelVersion) * nnXLen * nnYLen;
-  //Enclosure fork (owner, 2026-10-06): symmetry, the image's row written from board, for V8 to V13 only. KataGame
-  //fork: V8 to V13 are the game's inputs (NNInputs::NUM_FEATURES_SPATIAL_V8, V10 with its extended inputs, V11 with
-  //its turns too, V12 with its planes of closed areas too, V13 with its labels in their canonical order).
-  const bool gameInputs = inputsVersion >= 8 && inputsVersion <= 13;
+  //Enclosure fork (owner, 2026-10-06): symmetry, the image's row written from board, for V8 to V14 only. KataGame
+  //fork: V8 to V14 are the game's inputs (NNInputs::NUM_FEATURES_SPATIAL_V8, V10 with its extended inputs, V11 with
+  //its turns too, V12 with its planes of closed areas too, V13 with its labels in their canonical order, V14 with
+  //AZdb's latent too).
+  const bool gameInputs = inputsVersion >= 8 && inputsVersion <= 14;
   testAssert(symmetry == 0 || gameInputs);
-  //V8 to V13 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
+  //V8 to V14 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
   if(!gameInputs && buf.rowSpatialBuf.size() < rowSpatialLen)
     buf.rowSpatialBuf.resize(rowSpatialLen);
   const int rowGlobalLen = NNModelVersion::getNumGlobalFeatures(modelVersion);
@@ -586,19 +589,22 @@ void NNEvaluator::fillRowBufs(
   if(buf.rowMetaBuf.size() < rowMetaLen)
     buf.rowMetaBuf.resize(rowMetaLen);
 
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 13, "");
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 14, "");
   //Enclosure fork (owner, 2026-10-06): V8 rows packed, one bit per entry (NNResultBuf::rowSpatialBits). This replaces
   //the float row cleared by its last entries (2026-10-05): the packed row is 9.7 KB, cleared whole. V9 rows are V8's
   //with two more global inputs (2026-10-13), V10 rows V9's with the game's extended inputs (2026-10-26), V11 rows
   //V10's planes with the game's turns (2026-10-27), V12 rows V11's with the game's planes of closed areas
-  //(2026-10-27), and V13 rows V12's with the game's labels in their canonical order (2026-10-29).
+  //(2026-10-27), V13 rows V12's with the game's labels in their canonical order (2026-10-29), and V14 rows V13's with
+  //AZdb's latent after their global inputs (2026-10-29).
   buf.rowSpatialPacked = gameInputs;
   if(gameInputs) {
     testAssert(rowSpatialLen == NNInputs::gameSpatialFeatures(inputsVersion) * NNPos::MAX_BOARD_AREA);
     const size_t words = NNInputs::gameSpatialWords(inputsVersion);
     if(buf.rowSpatialBits.size() < words)
       buf.rowSpatialBits.resize(words);
-    if(inputsVersion == 13)
+    if(inputsVersion == 14)
+      NNInputs::fillRowV14Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
+    else if(inputsVersion == 13)
       NNInputs::fillRowV13Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
     else if(inputsVersion == 12)
       NNInputs::fillRowV12Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
@@ -1603,6 +1609,9 @@ void NNEvaluator::evaluate(
     buf.result->hasSwing = resultWithoutOwnerMap->hasSwing;
     buf.result->swingValue = resultWithoutOwnerMap->swingValue;
     buf.result->swingRanking = resultWithoutOwnerMap->swingRanking;
+    buf.result->hasIntrinsic = resultWithoutOwnerMap->hasIntrinsic;
+    buf.result->intrinsicA = resultWithoutOwnerMap->intrinsicA;
+    buf.result->intrinsicB = resultWithoutOwnerMap->intrinsicB;
     testAssert(!includeOwnerMap || buf.result->whiteOwnerMap != NULL);
   }
   else {
@@ -1986,6 +1995,12 @@ void NNEvaluator::evaluate(
     double rawSwing = buf.result->swingValue * postProcessParams.outputScaleMultiplier;
     buf.result->swingValue = (float)(4.0 / (1.0 + exp(-rawSwing)));
     buf.result->swingRanking = (float)(buf.result->swingRanking * postProcessParams.outputScaleMultiplier);
+  }
+  //KataGame fork (2026-10-29): AZdb's intrinsic returns, raw outputs (model_pytorch's IntrinsicHead) with the output
+  //scale. They are returns of the member, so they keep their sign for either player.
+  if(buf.result->hasIntrinsic && !hadResultWithoutOwnerMap) {
+    buf.result->intrinsicA = (float)(buf.result->intrinsicA * postProcessParams.outputScaleMultiplier);
+    buf.result->intrinsicB = (float)(buf.result->intrinsicB * postProcessParams.outputScaleMultiplier);
   }
   if(buf.result->auxMap != NULL) {
     for(int c = 0; c<NNOutput::NUM_AUX_MAP_CHANNELS; c++)

@@ -5,6 +5,7 @@
 
 #include "../dataio/numpywrite.h"
 #include "../neuralnet/nninputs.h"
+#include "../program/azdb.h"
 #include "../neuralnet/sgfmetadata.h"
 #include "../neuralnet/nninterface.h"
 
@@ -148,6 +149,16 @@ struct FinishedGameData {
   std::vector<float> swingRankingByTurn;
   std::vector<float> swingByTurn;
   int rgscSource = 0;
+  //KataGame fork (2026-10-29): AZdb (program/azdb.h), for the rows of the inputs version 14. diversityMembers: the
+  //member of each player, by the rules' player (Board::indexOfPlayer), whose latent the player's rows get.
+  //diversityState: the game's copy of the members' state, taken at its start, from which the rows' rewards and the
+  //targets of the intrinsic value head come (NULL: none, and those targets have weight 0). intrinsicAByTurn and
+  //intrinsicBByTurn: per turn, the outputs A and B of the network's evaluation at the root of the search (NaN without
+  //the head), which the targets read where their span ends.
+  int diversityMembers[2] = {0, 0};
+  std::shared_ptr<const AZdb::State<GameEncoding>> diversityState;
+  std::vector<float> intrinsicAByTurn;
+  std::vector<float> intrinsicBByTurn;
 
   Color* finalFullArea;
   Color* finalOwnership;
@@ -185,6 +196,7 @@ struct TrainingWriteBuffers {
   int maxRows;
   int numBinaryChannels;
   int numGlobalChannels;
+  int numGlobalTargetChannels;  //80, or 84 from the inputs version 14 (globalTargetsNC's C80-83)
   int dataXLen;
   int dataYLen;
   int packedBoardArea;
@@ -298,6 +310,9 @@ struct TrainingWriteBuffers {
   //move, and in rows written before it, which the shuffle pads to 8 channels).
   //C76-79: KataGame fork: the game's own global targets (GameInterface::TargetValues), 0 where the game writes none.
   //Blueprints: C76 who makes the next move (+1 the mover, -1 the opponent, 0 none), C77 the version of its targets.
+  //C80-83: KataGame fork (2026-10-29), in the rows of the inputs version 14 only (numGlobalTargetChannels): AZdb's
+  //targets of the intrinsic value head (program/azdb.h, rowTargets): output A's target, its weight, output B's target,
+  //its weight. The rows of earlier versions end at C79, as before.
 
   NumpyBuffer<float> globalTargetsNC;
 
@@ -361,6 +376,9 @@ struct TrainingWriteBuffers {
   //source (C74).
   void setLastRowSwing(float swing);
   void setLastRowRgscSource(int source);
+  //KataGame fork (2026-10-29): AZdb's targets of the intrinsic value head of the row just added (C80-83), in the rows
+  //of the inputs version 14.
+  void setLastRowIntrinsic(float aTarget, float aWeight, float bTarget, float bWeight);
 
   void addRow(
     const Board& board, const BoardHistory& hist, Player nextPlayer,
@@ -398,7 +416,8 @@ struct TrainingWriteBuffers {
     int mode,
     SGFMetadata* sgfMeta,
     Rand& rand,
-    const ReanalysisData& reanalysisData = ReanalysisData()
+    const ReanalysisData& reanalysisData = ReanalysisData(),
+    int diversityMember = 0  //KataGame fork: the member of the row's player, its latent from the inputs version 14
   );
 
   void writeToZipFile(const std::string& fileName);

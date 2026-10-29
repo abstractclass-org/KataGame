@@ -31,6 +31,7 @@
 //(2026-10-27).
 //21 = version 17's format with the V12 inputs: V11 and the game's planes of closed areas (2026-10-27).
 //22 = version 17's format with the V13 inputs: V12 with the game's labels in their canonical order (2026-10-29).
+//23 = version 17's format with the V14 inputs: V13 and AZdb's latent, the member's one-hot (2026-10-29).
 
 static void fail(int modelVersion) {
   throw StringError("NNModelVersion: Model version not currently implemented or supported: " + Global::intToString(modelVersion));
@@ -38,8 +39,8 @@ static void fail(int modelVersion) {
 
 static_assert(NNModelVersion::oldestModelVersionImplemented == 8, "");
 static_assert(NNModelVersion::oldestInputsVersionImplemented == 8, "");
-static_assert(NNModelVersion::latestModelVersionImplemented == 22, "");
-static_assert(NNModelVersion::latestInputsVersionImplemented == 13, "");
+static_assert(NNModelVersion::latestModelVersionImplemented == 23, "");
+static_assert(NNModelVersion::latestInputsVersionImplemented == 14, "");
 
 int NNModelVersion::getInputsVersion(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 17)
@@ -54,6 +55,8 @@ int NNModelVersion::getInputsVersion(int modelVersion) {
     return 12;
   if(modelVersion == 22)
     return 13;
+  if(modelVersion == 23)
+    return 14;
 
   fail(modelVersion);
   return -1;
@@ -72,6 +75,8 @@ int NNModelVersion::getNumSpatialFeatures(int modelVersion) {
     return NNInputs::NUM_FEATURES_SPATIAL_V12;
   if(modelVersion == 22)
     return NNInputs::NUM_FEATURES_SPATIAL_V13;
+  if(modelVersion == 23)
+    return NNInputs::NUM_FEATURES_SPATIAL_V14;
 
   fail(modelVersion);
   return -1;
@@ -90,6 +95,8 @@ int NNModelVersion::getNumGlobalFeatures(int modelVersion) {
     return NNInputs::NUM_FEATURES_GLOBAL_V12;
   if(modelVersion == 22)
     return NNInputs::NUM_FEATURES_GLOBAL_V13;
+  if(modelVersion == 23)
+    return NNInputs::NUM_FEATURES_GLOBAL_V14;
 
   fail(modelVersion);
   return -1;

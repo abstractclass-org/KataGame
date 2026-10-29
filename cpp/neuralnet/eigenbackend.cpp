@@ -2263,6 +2263,58 @@ struct PolicyHead {
   }
 };
 
+//KataGame fork (2026-10-29): AZdb's intrinsic value head (ValueHeadDesc::intrinsicHead), RGSC's head shape with two
+//outputs, as the CUDA backend computes it: conv, norm and activation, the value head's pooling, a hidden layer, then
+//the outputs A and B.
+struct IntrinsicHead {
+  const ConvLayer conv1;
+  const BatchNormLayer bn1;
+  const MatMulLayer mul2;
+  const MatBiasLayer bias2;
+  const ActivationLayer act2;
+  const MatMulLayer mul3;
+  const MatBiasLayer bias3;
+
+  IntrinsicHead(const RegretHeadDesc& desc, int nnX, int nnY)
+    : conv1(desc.conv1,nnX,nnY),
+      bn1(desc.bn1,desc.act1),
+      mul2(desc.mul2),
+      bias2(desc.bias2),
+      act2(desc.act2),
+      mul3(desc.mul3),
+      bias3(desc.bias3)
+  {}
+
+  void apply(
+    ComputeHandleInternal* handle,
+    ScratchBuffers* scratch,
+    CONSTTENSORMAP4* trunk,
+    TENSORMAP2* out,
+    CONSTTENSORMAP3* mask,
+    const float* maskSum,
+    float* convWorkspace
+  ) const {
+    int batchSize = trunk->dimension(3);
+    SizedBuf<float*> h1OutBuf(scratch->allocator, scratch->getBufSizeXY(conv1.outChannels));
+    SizedBuf<float*> h1Out2Buf(scratch->allocator, scratch->getBufSizeXY(conv1.outChannels));
+    SizedBuf<float*> h1MeanBuf(scratch->allocator, scratch->getBufSize(conv1.outChannels*3));
+    SizedBuf<float*> h2OutBuf(scratch->allocator, scratch->getBufSize(mul2.outChannels));
+    TENSORMAP4 h1Out(h1OutBuf.buf, conv1.outChannels, handle->nnXLen, handle->nnYLen, batchSize);
+    TENSORMAP4 h1Out2(h1Out2Buf.buf, conv1.outChannels, handle->nnXLen, handle->nnYLen, batchSize);
+    TENSORMAP2 h1Mean(h1MeanBuf.buf, conv1.outChannels*3, batchSize);
+    TENSORMAP2 h2Out(h2OutBuf.buf, mul2.outChannels, batchSize);
+
+    conv1.apply(handle, trunk, &h1Out, convWorkspace, false);
+    bn1.apply(&h1Out, &h1Out2, mask);
+    poolRowsValueHead(&h1Out2, &h1Mean, maskSum);
+    mul2.apply(&h1Mean, &h2Out);
+    bias2.apply(&h2Out);
+    act2.apply(&h2Out, &h2Out);
+    mul3.apply(&h2Out, out);
+    bias3.apply(out);
+  }
+};
+
 struct ValueHead {
   const string name;
   const int modelVersion;
@@ -2286,6 +2338,8 @@ struct ValueHead {
   std::unique_ptr<MatBiasLayer> sbS2Bias;
   std::unique_ptr<MatMulLayer> sbMixMul;
   std::unique_ptr<MatBiasLayer> sbMixBias;
+  //KataGame fork: AZdb's intrinsic value head, when the model has it.
+  std::unique_ptr<IntrinsicHead> intrinsicHead;
 
   ValueHead() = delete;
   ValueHead(const ValueHead&) = delete;
@@ -2317,6 +2371,8 @@ struct ValueHead {
       sbMixMul = std::make_unique<MatMulLayer>(desc.sbMixMul);
       sbMixBias = std::make_unique<MatBiasLayer>(desc.sbMixBias);
     }
+    if(desc.intrinsicVersion >= 1)
+      intrinsicHead = std::make_unique<IntrinsicHead>(desc.intrinsicHead,nnX,nnY);
   }
 
   size_t requiredConvWorkspaceElts(size_t maxBatchSize) const {
@@ -2327,6 +2383,8 @@ struct ValueHead {
       maxElts = std::max(maxElts,auxTrunkConv->requiredConvWorkspaceElts(maxBatchSize));
       maxElts = std::max(maxElts,auxScoringConv->requiredConvWorkspaceElts(maxBatchSize));
     }
+    if(intrinsicHead != nullptr)
+      maxElts = std::max(maxElts,intrinsicHead->conv1.requiredConvWorkspaceElts(maxBatchSize));
     return maxElts;
   }
 
@@ -2338,6 +2396,7 @@ struct ValueHead {
     TENSORMAP2* scoreValue,
     TENSORMAP4* ownership,
     const AuxOutputs* aux,
+    TENSORMAP2* intrinsic,  //KataGame fork: AZdb's outputs A and B, NULL unless the model has the head
     CONSTTENSORMAP3* mask,
     const float* maskSum,
     float* convWorkspace
@@ -2381,6 +2440,9 @@ struct ValueHead {
       sbMixMul->apply(&v1Mean, aux->sbMix);
       sbMixBias->apply(aux->sbMix);
     }
+    //KataGame fork: AZdb's intrinsic value head, at every evaluation (the search and the training rows read it).
+    if(intrinsic != NULL)
+      intrinsicHead->apply(handle, scratch, trunk, intrinsic, mask, maskSum, convWorkspace);
   }
 };
 
@@ -2444,6 +2506,7 @@ struct Model {
     TENSORMAP2* scoreValue,
     TENSORMAP4* ownership,
     const AuxOutputs* aux,  //Enclosure fork: the training-only outputs, NULL unless a row asks and the model has them
+    TENSORMAP2* intrinsic,  //KataGame fork: AZdb's outputs A and B, NULL unless the model has the head
 
     TENSORMAP3* mask,
     float* maskSum,
@@ -2482,6 +2545,7 @@ struct Model {
       scoreValue,
       ownership,
       aux,
+      intrinsic,
       mask,
       maskSum,
       convWorkspace
@@ -2500,6 +2564,7 @@ struct Buffers {
   TENSOR2 value;
   TENSOR2 scoreValue;
   TENSOR4 ownership;
+  TENSOR2 intrinsic;  //KataGame fork: AZdb's outputs A and B, 0 channels without the head
 
   TENSOR3 mask;
   vector<float> maskSum;
@@ -2520,6 +2585,7 @@ struct Buffers {
     value(desc.numValueChannels, maxBatchSize),
     scoreValue(desc.numScoreValueChannels, maxBatchSize),
     ownership(desc.numOwnershipChannels, nnXLen, nnYLen, maxBatchSize),
+    intrinsic(desc.valueHead.intrinsicVersion >= 1 ? desc.valueHead.intrinsicHead.mul3.outChannels : 0, maxBatchSize),
 
     mask(nnXLen, nnYLen, maxBatchSize),
     maskSum(maxBatchSize),
@@ -2782,6 +2848,7 @@ void NeuralNet::getOutput(
   MAP2(value);
   MAP2(scoreValue);
   MAP4(ownership);
+  MAP2(intrinsic);
   MAP3(mask);
   vector<float>& maskSum = buffers.maskSum;
   computeMaskSum(&mask,maskSum.data());
@@ -2832,6 +2899,7 @@ void NeuralNet::getOutput(
     &scoreValue,
     &ownership,
     wantAux ? &aux : NULL,
+    valueHead.intrinsicHead != nullptr ? &intrinsic : NULL,
     &mask,
     maskSum.data(),
     convWorkspace.data()
@@ -2925,6 +2993,12 @@ void NeuralNet::getOutput(
                 output->scoreBeliefRaw);
       std::copy(sbMixData.begin() + (size_t)row * numSbMix, sbMixData.begin() + (size_t)(row + 1) * numSbMix,
                 output->scoreBeliefRaw + numSbS2);
+    }
+    //KataGame fork: AZdb's outputs A and B, raw (NNEvaluator scales them).
+    output->hasIntrinsic = valueHead.intrinsicHead != nullptr;
+    if(output->hasIntrinsic) {
+      output->intrinsicA = intrinsic.data()[row * 2];
+      output->intrinsicB = intrinsic.data()[row * 2 + 1];
     }
 
     if(modelVersion >= 9) {
@@ -3213,7 +3287,7 @@ void enclosureEigenRawOutput(
   vector<float>& convWorkspace = buffers.convWorkspace;
   computeHandle->model->apply(
     &computeHandle->handleInternal, computeHandle->scratch.get(), &input, &inputGlobal, NULL, &trunk, &policyPass,
-    &policy, &value, &scoreValue, &ownership, NULL, &mask, maskSum.data(), convWorkspace.data()
+    &policy, &value, &scoreValue, &ownership, NULL, NULL, &mask, maskSum.data(), convWorkspace.data()
   );
 
   std::copy(policyPass.data(), policyPass.data() + size_t(rows) * P, policyPassOut);

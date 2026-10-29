@@ -471,8 +471,12 @@ they are. Input version 11 (model version 20) is V10's with the game's history o
 below): the history planes show the last turns in place of the last actions, and the game's turn inputs follow V10's
 global inputs. Input version 12 (model version 21) is V11's with the game's planes of closed areas
 (`NUM_AREA_SPATIAL_INPUTS`, below) after its planes. Input version 13 (model version 22) has V12's inputs with the
-game's labels in their canonical order (`CanonicalActionMap`, below), and the policy in that order too. Self-play
-writes its rows in V9 unless its config sets `inputsVersion` (10, 11, 12 or 13).
+game's labels in their canonical order (`CanonicalActionMap`, below), and the policy in that order too. Input version
+14 (model version 23) is V13's with AZdb's latent after its global inputs, for every game: 5 inputs, 1 at the member's
+(`MiscNNInputParams::diversityMember`, 0 by default) and 0 elsewhere. The network's cache folds the member into its
+key (`NNInputs::getHash`), as KataGo folds the playout doubling advantage: member 0 keeps the key of an evaluation
+without a member ("AZdb's members", below). Self-play writes its rows in V9 unless its config sets `inputsVersion` (10,
+11, 12, 13 or 14).
 
 | Member | Meaning | Enclosure |
 |---|---|---|
@@ -514,6 +518,7 @@ KataGo's code (`testgameareas` and `testkomi` pin them), and the front computes 
 | `NUM_TURN_GLOBAL_INPUTS` | The game's turn inputs, which input version 11 adds to version 10's, for a game whose history planes count actions, not turns. With `options.turnHistory`, the history planes show the game's last turns in place of its last actions, and `global_inputs` writes the turn inputs after its extended global inputs: what the planes do not show of those turns. The front puts them after V10's global inputs. Without `options.history` they are 0, as the history planes. | 0: V11 is V10 (`turnGlobalInputs`), as its history planes already count turns | 8: for each of the 4 turns of the history planes (the turn in progress, then the 3 whole turns before it) and each of its 2 moves, 1 when the move was an edit, a pick and its drop (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `NUM_AREA_SPATIAL_INPUTS` | The game's planes of closed areas, which input version 12 adds to version 11's: areas that the rules close to a player for the rest of the game. Whether a point is closed depends on cells beyond the convolutions' reach, so the game computes it, as KataGo gives Go's pass-alive areas as input planes. With `options.areas`, `spatial_inputs` also sets the planes after the extended ones, and the front puts them after V11's planes. They are points of the board: the symmetries move them as pixels. | 0: V12 is V11 (`areaSpatialInputs`) | 2: the hexes of the areas closed by the mover's walls and by the opponent's walls, which the other player can never fill (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `CanonicalActionMap` | A type, for a game whose position holds labels that no rule reads: input version 13 reads the labels in an order that depends only on what they label, so that two positions that differ only in their labels give the same inputs. With `options.canonical`, `spatial_inputs` and `global_inputs` write each label's inputs at its place in that order. `CanonicalActionMap(p)` gives the network's frame of p's actions: `operator()` maps each legal action and pass to its policy index in that order, and `listed(action)` says whether the search lists the action. An action that gives the same position as a listed action, up to the labels, is not listed, and it maps to that action's index: the two are one edge of the search, with one prior. The order must not depend on the symmetries, so the front maps an action through `SymActionMap`, then through this (`NNInputs`' `NetActionMap`), and the network's evaluation lists the listed actions only. The training rows of V13 write the policy targets at these indices, the next move's in the next position's frame. The trainer reads that target with the row's inputs, so wherever it weighs that target (the game's `mask_targets`), the next position's order of the next mover's labels must be the row's. The rules keep every action legal. | None: every action listed at its own index, and V13 is V12 (`CanonicalActions`) | Each hand in the order of its blueprints' cells: more cells first, then more stars, then more walls, then the lesser shape up to the hex grid's 12 symmetries, then the lowest number of the blueprint's equal blueprints, then the blueprint with the pick, then the lower number. Of equal blueprints, the lowest-numbered one's actions are listed (the engine repository's `games/blueprints/README.md`, "The network"). |
+| `Diversity` | A type, for AZdb's reward ("AZdb's members", above): the statistics of a position, φ before its normalization. `NUM_STATISTICS` counts them, `statistics(p, player, out)` writes them from the player's side for the position after a move of that player, `MOVES` is each player's moves in a game (the reward's divisor), and `Normalizer`, built from each statistic's mean and standard deviation, gives the normalized statistics (`z(x, out)`). | None: 0 statistics, and every reward is 0 (`diversityStatistics`, `diversityStatisticsOf`, `DiversityNormalizer`) | Its 57 statistics, standardized with a floor of 0.1 on the standard deviation, clipped to [-3, 3] and weighted by group (`game/blueprints/diversity.h`), and 60 moves |
 
 `InputOptions` holds what the front gives the input members:
 
@@ -526,6 +531,29 @@ KataGo's code (`testgameareas` and `testkomi` pin them), and the front computes 
 | `turnHistory` | True: the history of the game's last turns in place of its last actions, and the game's turn inputs (input version 11). |
 | `areas` | True: the game's planes of closed areas too (input version 12). |
 | `canonical` | True: the game's labels in their canonical order (`CanonicalActionMap`, input version 13). |
+
+**AZdb's members** (Zahavy et al., arXiv 2308.09175; the engine repository's
+`games/blueprints/docs/research/diversity-players.md`): a team of 5 policies in one network, which reads the member as
+V14's latent. The front holds what does not depend on the game (`program/azdb.h`): a game's copy of the members'
+state (each member's estimate of ψ, the statistics' mean and standard deviation, and ℓ0), the reward of a move of
+member i ≥ 1, (1 − (ℓᵢ / ℓ0)³) φ · (ψⁱ − ψʲ*) / `MOVES` with j* its nearest other member, and the targets of the
+intrinsic value head. Member 0's reward is 0. The game gives only φ before its normalization, through the optional
+member `Diversity` (below). A game without it gives every member the reward 0.
+
+- **The intrinsic value head** (`ValueHeadDesc::intrinsicHead`, the model file's second value-head option) has RGSC's
+  head shape with 2 outputs on the trunk: A, the intrinsic return of the player to move, and B, that of the other
+  player, both as the member of the latent. They are returns, not values from White's side: `NNOutput::intrinsicA`
+  and `intrinsicB` keep their sign for either player. The CUDA and Eigen backends compute the head. The other backends
+  leave it out (`hasIntrinsic` false).
+- **The rows of V14** keep each row's latent (the member of the row's player, `FinishedGameData::diversityMembers`)
+  and 4 more global targets after the 80 (C80-83): A's target and its weight, then B's. The rows of earlier versions
+  keep their 80. A move's reward is from the side of the player who made it, at the position after the action that
+  ends the move. A turn is a run of actions of one player. A's target at a row of player P is the rewards of P's moves
+  from the row up to the start of P's 5th turn after the row's turn (`AZdb::RETURN_TURNS`), then output A of the
+  search's root evaluation there (`FinishedGameData::intrinsicAByTurn`), or 0 when the game ends before. B's is the
+  rewards of the other player's moves in the same span, as P's member, then output B there. A trains on the rows of
+  members 1 to 4, B only where both players are the same member, and neither where the root has no output or the
+  record stops before the span's end. Without a state (`FinishedGameData::diversityState`), every weight is 0.
 
 **The training targets** are the slots of KataGo's spatial targets (`valueTargetsNCHW`) and the two that the fork
 added. `TARGETS` declares the slots that the game writes. The front computes C2-3 and C7 from `pieces`
@@ -578,9 +606,11 @@ row's player to move.
 The trainer reads a game's facts from the game's module, `python/katago/train/games/<game>.py`, which mirrors the
 encoding part. `python/katago/train/games/__init__.py` lists the members, and `games.get(name)` refuses a module that
 lacks one. A model config names its game (`"game"`, Enclosure's without it), and `modelconfigs.get_game(config)` gives
-its module. The config's `"inputs_version"` (8 without it, 9, 10, 11, 12 or 13) gives the game's global inputs, V9
-adds KataGo's two playout inputs, V10 the game's extended inputs, V11 its turn inputs, V12 its planes of closed areas,
-and V13 the canonical order of its labels.
+its module. The config's `"inputs_version"` (8 without it, 9, 10, 11, 12, 13 or 14) gives the game's global inputs,
+V9 adds KataGo's two playout inputs, V10 the game's extended inputs, V11 its turn inputs, V12 its planes of closed
+areas, V13 the canonical order of its labels, and V14 AZdb's latent after V13's global inputs. The config's
+`"intrinsic_head"` gives the model AZdb's intrinsic value head, whose loss is the squared error on the rows' C80-83,
+weighted as the value's loss.
 `train.py -inputs-version 9` gives a new model V9's inputs (Connect-4's run). A checkpoint keeps its version.
 `python/add_extended_inputs.py CHECKPOINT OUT -inputs-version 10` gives a checkpoint of V9 the extended inputs as zero
 input channels of the first convolution and zero columns of `linear_global`, in the model, the SWA model and the
@@ -595,7 +625,12 @@ versions stay apart: the shuffle refuses files whose planes and global inputs bo
 V12's), and the reader refuses any other count of planes. `-inputs-version 13` gives a checkpoint of V12 the version
 13 and changes no weight: V13 adds no input. The network then reads each label at its place in the canonical order,
 and it computes what it did wherever that order is the labels' own. Rows of V12 and V13 have the same shapes, so the
-shuffle and the reader cannot tell them apart: a run that switches to V13 trains on its rows of V13 only. For a new
+shuffle and the reader cannot tell them apart: a run that switches to V13 trains on its rows of V13 only.
+`python/add_diversity_members.py CHECKPOINT OUT` gives a checkpoint of V13 V14's latent and the intrinsic value head:
+member 0's column of `linear_global` is 0, so that member 0 computes what the network did, and the other members'
+columns are KataGo's initialization of that layer times 0.1, so that they differ a little. The head is new, with
+KataGo's initialization. The shuffle merges rows of 80 and 84 global targets at 84, and the reader pads rows of 80
+with zeros. For a new
 `SCORE_SCALE`, `-old-score-scale S`, run with the new code, multiplies by S over the new `SCORE_SCALE` the outputs that
 a plain multiplier puts in points: the score mean, the lead and the TD scores. These outputs keep their values in
 points. Training moves the score's standard deviation and the score belief.

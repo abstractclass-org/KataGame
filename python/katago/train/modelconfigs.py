@@ -70,9 +70,12 @@ def with_game(config: ModelConfig, game_name: Union[str,None]) -> ModelConfig:
 # NNInputs V11, exported as model version 20; games.turn_global_inputs). 12 (2026-10-27) adds the game's planes of
 # closed areas after V11's planes (C++ NNInputs V12, exported as model version 21; games.area_spatial_inputs). 13
 # (2026-10-29) has V12's inputs with the game's labels in their canonical order, and the policy in that order too (C++
-# NNInputs V13, exported as model version 22; games.canonical_labels).
+# NNInputs V13, exported as model version 22; games.canonical_labels). 14 (2026-10-29) adds AZdb's latent after V13's
+# global inputs, for every game: DIVERSITY_MEMBERS inputs, 1 at the member's and 0 elsewhere (C++ NNInputs V14,
+# exported as model version 23; the engine repository's games/blueprints/docs/research/diversity-players.md).
 PLAYOUT_GLOBAL_INPUTS = 2
-INPUTS_VERSIONS = (8, 9, 10, 11, 12, 13)
+DIVERSITY_MEMBERS = 5
+INPUTS_VERSIONS = (8, 9, 10, 11, 12, 13, 14)
 
 def get_inputs_version(config: ModelConfig):
     return config.get("inputs_version", 8)
@@ -96,7 +99,8 @@ def get_num_global_input_features(config: ModelConfig):
         playout_inputs = PLAYOUT_GLOBAL_INPUTS if get_inputs_version(config) >= 9 else 0
         extended = games.extended_global_inputs(game) if get_inputs_version(config) >= 10 else 0
         turns = games.turn_global_inputs(game) if get_inputs_version(config) >= 11 else 0
-        return game.NUM_GLOBAL_INPUTS + playout_inputs + extended + turns
+        latent = DIVERSITY_MEMBERS if get_inputs_version(config) >= 14 else 0
+        return game.NUM_GLOBAL_INPUTS + playout_inputs + extended + turns + latent
     else:
         assert(False)
 
