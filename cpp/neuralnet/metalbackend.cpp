@@ -541,6 +541,12 @@ bool NeuralNet::computesAuxOutputs(const ComputeContext* computeContext) {
   return false;
 }
 
+//KataGame fork (2026-10-29): this backend does not compute AZdb's intrinsic value head.
+bool NeuralNet::computesIntrinsicHead(const ComputeContext* computeContext) {
+  (void)computeContext;
+  return false;
+}
+
 //------------------------------------------------------------------------------
 // ComputeHandle implementation
 //------------------------------------------------------------------------------

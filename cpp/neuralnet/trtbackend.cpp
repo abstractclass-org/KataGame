@@ -192,6 +192,12 @@ bool NeuralNet::computesAuxOutputs(const ComputeContext* computeContext) {
   return computeContext->includeAuxOutputs;
 }
 
+//KataGame fork (2026-10-29): this backend does not compute AZdb's intrinsic value head.
+bool NeuralNet::computesIntrinsicHead(const ComputeContext* computeContext) {
+  (void)computeContext;
+  return false;
+}
+
 LoadedModel* NeuralNet::loadModelFile(const string& file, const string& expectedSha256) {
   LoadedModel* loadedModel = new LoadedModel(file, expectedSha256);
   return loadedModel;

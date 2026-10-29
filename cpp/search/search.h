@@ -25,6 +25,7 @@
 #include "../external/nlohmann_json/json.hpp"
 
 namespace Rgsc { class TreeTracker; }
+namespace AZdb { template<class E> struct State; }  //program/azdb.h
 
 typedef int SearchNodeState; // See SearchNode::STATE_*
 
@@ -187,6 +188,18 @@ struct Search {
 
   std::shared_ptr<EvalCacheTable> evalCache;
 
+  //KataGame fork (2026-10-29): AZdb's diversity term (the engine repository's
+  //games/blueprints/docs/research/diversity-players.md, "The search"). A search of member i >= 1, whose player P is
+  //plaThatSearchIsFor, adds w s_P D to each node's utility: D is member i's intrinsic return, the rewards of P's moves
+  //from the root to the node (SearchNode::diversityReward), then the head's return of P after the node, output A where
+  //P moves and output B where the opponent moves (0 at the game's end). The opponent minimizes the same utility.
+  //diversityWeight: w = (1 - λ) / λ, resolved from the params at the start of each search (getDiversityWeight). 0 for
+  //member 0, and then the search is KataGo's and computes no reward, no D and reads no head. diversityState: the
+  //game's copy of the members' state, from which the rewards come (setDiversityState). The win-loss and score values
+  //of the nodes stay KataGo's.
+  double diversityWeight;
+  std::shared_ptr<const AZdb::State<GameEncoding>> diversityState;
+
   Rand nonSearchRand; //only for use not in search, since rand isn't threadsafe
 
   //================================================================================================================
@@ -303,6 +316,11 @@ struct Search {
   void setCopyOfExternalPatternBonusTable(const std::unique_ptr<PatternBonusTable>& table);
   void setExternalEvalCache(const std::shared_ptr<EvalCacheTable>& cache);
   void setNNEval(NNEvaluator* nnEval);
+  //KataGame fork (2026-10-29): the game's copy of AZdb's state (diversityState), which a search with the diversity
+  //term needs. Clears the search unless the state is the same.
+  void setDiversityState(const std::shared_ptr<const AZdb::State<GameEncoding>>& state);
+  //w = (1 - λ) / λ for a member >= 1, else 0 (diversityWeight).
+  static double getDiversityWeight(const SearchParams& params);
 
   //If the number of threads is reduced, this can free up some excess threads in the thread pool.
   //Calling this is never necessary, it may just reduce some resource use.
@@ -520,6 +538,14 @@ private:
   double getScoreUtilityDiff(double scoreMeanAvg, double scoreMeanSqAvg, double delta) const;
   double getApproxScoreUtilityDerivative(double scoreMean) const;
   double getUtilityFromNN(const NNOutput& nnOutput) const;
+  //KataGame fork (2026-10-29): AZdb's diversity term (diversityWeight), as utilities from White's side. The head's
+  //return of P after a node whose player to move is nextPla: output A where P moves, output B where the opponent
+  //moves. And the reward of the move that led to board and hist (the history's last move), the node constant of
+  //SearchNode::diversityReward: the reward of P's moves that end a move, 0 for the opponent's. Both 0 when w = 0.
+  double getDiversityHeadUtility(const NNOutput& nnOutput, Player nextPla) const;
+  double computeDiversityReward(const Board& board, const BoardHistory& hist) const;
+  //At the start of a search: refuses a member without the latent, and the term without its head or its state.
+  void checkDiversitySetup() const;
 
   //----------------------------------------------------------------------------------------
   // Miscellaneous search biasing helpers, root move selection, etc.

@@ -2306,6 +2306,9 @@ bool Search::getPrunedNodeValues(const SearchNode* nodePtr, ReportedSearchValues
     double utility =
       getResultUtility(winProb-lossProb, noResultProb)
       + getScoreUtility(scoreMean, scoreMeanSq);
+    //KataGame fork (2026-10-29): AZdb's diversity term, as recomputeNodeStats counts it.
+    if(diversityWeight != 0.0)
+      utility += getDiversityHeadUtility(*nnOutput, node.nextPla);
 
     double weight = computeWeightFromNNOutput(nnOutput);
     winLossValueSum += (winProb - lossProb) * weight;
@@ -2316,6 +2319,9 @@ bool Search::getPrunedNodeValues(const SearchNode* nodePtr, ReportedSearchValues
     utilitySum += utility * weight;
     weightSum += weight;
   }
+  double utilityAvg = utilitySum / weightSum;
+  if(diversityWeight != 0.0)
+    utilityAvg += node.diversityReward;
   values = ReportedSearchValues(
     *this,
     winLossValueSum / weightSum,
@@ -2323,7 +2329,7 @@ bool Search::getPrunedNodeValues(const SearchNode* nodePtr, ReportedSearchValues
     scoreMeanSum / weightSum,
     scoreMeanSqSum / weightSum,
     leadSum / weightSum,
-    utilitySum / weightSum,
+    utilityAvg,
     node.stats.weightSum.load(std::memory_order_acquire),
     node.stats.visits.load(std::memory_order_acquire)
   );

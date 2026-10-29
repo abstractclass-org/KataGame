@@ -21894,6 +21894,8 @@ playoutDoublingAdvantagePla: 0
 visitCapContempt: 0
 visitCapContemptPla: 0
 avoidRepeatedPatternUtility: 0
+diversityMember: 0
+diversityLambda: 0.9
 nnPolicyTemperature: 1
 antiMirror: 0
 ignorePreRootHistory: 0
@@ -22007,6 +22009,8 @@ playoutDoublingAdvantagePla: 0
 visitCapContempt: 0
 visitCapContemptPla: 0
 avoidRepeatedPatternUtility: 0
+diversityMember: 0
+diversityLambda: 0.9
 nnPolicyTemperature: 1
 antiMirror: 0
 ignorePreRootHistory: 0
@@ -22120,6 +22124,8 @@ playoutDoublingAdvantagePla: 0
 visitCapContempt: 0
 visitCapContemptPla: 0
 avoidRepeatedPatternUtility: 0
+diversityMember: 0
+diversityLambda: 0.9
 nnPolicyTemperature: 1
 antiMirror: 0
 ignorePreRootHistory: 0
@@ -22233,6 +22239,8 @@ playoutDoublingAdvantagePla: 0
 visitCapContempt: 0
 visitCapContemptPla: 0
 avoidRepeatedPatternUtility: 0
+diversityMember: 0
+diversityLambda: 0.9
 nnPolicyTemperature: 1
 antiMirror: 0
 ignorePreRootHistory: 1
@@ -22346,6 +22354,8 @@ playoutDoublingAdvantagePla: 0
 visitCapContempt: 0
 visitCapContemptPla: 0
 avoidRepeatedPatternUtility: 0
+diversityMember: 0
+diversityLambda: 0.9
 nnPolicyTemperature: 1
 antiMirror: 0
 ignorePreRootHistory: 0
@@ -22459,6 +22469,8 @@ playoutDoublingAdvantagePla: 0
 visitCapContempt: 0
 visitCapContemptPla: 0
 avoidRepeatedPatternUtility: 0
+diversityMember: 0
+diversityLambda: 0.9
 nnPolicyTemperature: 1
 antiMirror: 0
 ignorePreRootHistory: 0
@@ -22572,6 +22584,8 @@ playoutDoublingAdvantagePla: 0
 visitCapContempt: 0
 visitCapContemptPla: 0
 avoidRepeatedPatternUtility: 0
+diversityMember: 0
+diversityLambda: 0.9
 nnPolicyTemperature: 1
 antiMirror: 0
 ignorePreRootHistory: 0
@@ -22685,6 +22699,8 @@ playoutDoublingAdvantagePla: 0
 visitCapContempt: 0
 visitCapContemptPla: 0
 avoidRepeatedPatternUtility: 0
+diversityMember: 0
+diversityLambda: 0.9
 nnPolicyTemperature: 1
 antiMirror: 0
 ignorePreRootHistory: 0

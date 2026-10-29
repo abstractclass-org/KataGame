@@ -118,6 +118,13 @@ struct SearchParams {
 
   double avoidRepeatedPatternUtility; //Have the root player avoid repeating similar shapes, penalizing this much utility per instance.
 
+  //KataGame fork (2026-10-29): AZdb's member (program/azdb.h), 0 to NNInputs::NUM_DIVERSITY_MEMBERS - 1, whose latent
+  //every evaluation of the search reads, and its λ. A search of member i >= 1 adds the diversity term w s_P D to each
+  //node's utility, with w = (1 - λ) / λ (Search::diversityWeight). Member 0 keeps KataGo's search (w = 0), whatever
+  //λ is. The engine repository's games/blueprints/docs/research/diversity-players.md, "The search".
+  int diversityMember;
+  double diversityLambda;
+
   float nnPolicyTemperature; //Scale neural net policy probabilities by this temperature, applies everywhere in the tree
   bool antiMirror; //Enable anti-mirroring logic
 

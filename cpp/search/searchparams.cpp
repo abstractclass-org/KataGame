@@ -78,6 +78,8 @@ SearchParams::SearchParams()
    visitCapContempt(0),
    visitCapContemptPla(C_EMPTY),
    avoidRepeatedPatternUtility(0.0),
+   diversityMember(0),
+   diversityLambda(0.9),
    nnPolicyTemperature(1.0f),
    antiMirror(false),
    ignorePreRootHistory(false),
@@ -213,6 +215,9 @@ bool SearchParams::operator==(const SearchParams& other) const {
     visitCapContemptPla == other.visitCapContemptPla &&
 
     avoidRepeatedPatternUtility == other.avoidRepeatedPatternUtility &&
+
+    diversityMember == other.diversityMember &&
+    diversityLambda == other.diversityLambda &&
 
     nnPolicyTemperature == other.nnPolicyTemperature &&
     antiMirror == other.antiMirror &&
@@ -476,6 +481,9 @@ json SearchParams::changeableParametersToJson() const {
   // Special handling in GTP
   // ret["avoidRepeatedPatternUtility"] = avoidRepeatedPatternUtility;
 
+  ret["diversityMember"] = diversityMember;
+  ret["diversityLambda"] = diversityLambda;
+
   ret["nnPolicyTemperature"] = nnPolicyTemperature;
   // Special handling in GTP
   // ret["antiMirror"] = antiMirror;
@@ -661,6 +669,9 @@ void SearchParams::printParams(std::ostream& out) const {
   out << "visitCapContemptPla" << ": " << (int)visitCapContemptPla << std::endl;
 
   PRINTPARAM(avoidRepeatedPatternUtility);
+
+  PRINTPARAM(diversityMember);
+  PRINTPARAM(diversityLambda);
 
   PRINTPARAM(nnPolicyTemperature);
   PRINTPARAM(antiMirror);

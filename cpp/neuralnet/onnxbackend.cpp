@@ -347,6 +347,12 @@ bool NeuralNet::computesAuxOutputs(const ComputeContext* computeContext) {
   return false;
 }
 
+//KataGame fork (2026-10-29): this backend does not compute AZdb's intrinsic value head.
+bool NeuralNet::computesIntrinsicHead(const ComputeContext* computeContext) {
+  (void)computeContext;
+  return false;
+}
+
 //--------------------------------------------------------------
 // Helper: list the short device names an OpenVINO device_type string can run on, dropping
 // device index suffixes and the qualifier of a composite (AUTO/MULTI/HETERO) string.

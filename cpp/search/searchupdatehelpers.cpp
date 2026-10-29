@@ -22,6 +22,10 @@ void Search::addLeafValue(
   double utility =
     getResultUtility(winLossValue, noResultValue)
     + getScoreUtility(scoreMean, scoreMeanSq);
+  //KataGame fork (2026-10-29): AZdb's diversity term of a leaf that is not terminal, which is the node's network
+  //evaluation (addCurrentNNOutputAsLeafValue): the head's return after it. At the game's end it is 0.
+  if(diversityWeight != 0.0 && !isTerminal)
+    utility += getDiversityHeadUtility(*node.getNNOutput(), node.nextPla);
 
   if(searchParams.subtreeValueBiasFactor != 0 && !isTerminal && node.subtreeValueBiasTableEntry != nullptr) {
     SubtreeValueBiasEntry& entry = *(node.subtreeValueBiasTableEntry);
@@ -36,6 +40,9 @@ void Search::addLeafValue(
   }
 
   utility += getPatternBonus(node.patternBonusHash,getOpp(node.nextPla));
+  //KataGame fork (2026-10-29): and the node's reward, a node constant like the pattern bonus.
+  if(diversityWeight != 0.0)
+    utility += node.diversityReward;
 
   double utilitySq = utility * utility;
   double weightSq = weight * weight;
@@ -288,6 +295,10 @@ void Search::recomputeNodeStats(SearchNode& node, SearchThread& thread, int numV
     double utility =
       getResultUtility(winProb-lossProb, noResultProb)
       + getScoreUtility(scoreMean, scoreMeanSq);
+    //KataGame fork (2026-10-29): AZdb's diversity term of the node's own evaluation: the head's return after it. The
+    //children's utilities already hold theirs, so the subtree value bias compares like with like.
+    if(diversityWeight != 0.0)
+      utility += getDiversityHeadUtility(*nnOutput, node.nextPla);
 
     if(searchParams.subtreeValueBiasFactor != 0 && node.subtreeValueBiasTableEntry != nullptr) {
       SubtreeValueBiasEntry& entry = *(node.subtreeValueBiasTableEntry);
@@ -348,6 +359,11 @@ void Search::recomputeNodeStats(SearchNode& node, SearchThread& thread, int numV
 
   double oldUtilityAvg = utilityAvg;
   utilityAvg += getPatternBonus(node.patternBonusHash,getOpp(node.nextPla));
+  //KataGame fork (2026-10-29): AZdb's reward of the move into the node, a node constant like the pattern bonus: the
+  //node adds it once to its average, and each parent reads that value. So the sum from the root to a leaf is the
+  //rewards along the path that the playout took, also through a node that two paths share.
+  if(diversityWeight != 0.0)
+    utilityAvg += node.diversityReward;
   //Note that root node does not use eval cache for its aggregate values
   if(searchParams.useEvalCache && searchParams.useGraphSearch && node.evalCacheEntry != nullptr && mirroringPla == C_EMPTY && (&node != rootNode) && !node.forceNonTerminal) {
     adjustEvalsFromCacheHelper(

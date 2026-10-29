@@ -1,7 +1,11 @@
 #include "../search/search.h"
 
+#include <array>
+
 #include "../core/fancymath.h"
 #include "../core/test.h"
+#include "../neuralnet/modelversion.h"
+#include "../program/azdb.h"
 #include "../search/searchnode.h"
 #include "../search/patternbonustable.h"
 
@@ -304,6 +308,55 @@ double Search::getApproxScoreUtilityDerivative(double scoreMean) const {
 double Search::getUtilityFromNN(const NNOutput& nnOutput) const {
   double resultUtility = getResultUtilityFromNN(nnOutput);
   return resultUtility + getScoreUtility(nnOutput.whiteScoreMean, nnOutput.whiteScoreMeanSq);
+}
+
+//KataGame fork (2026-10-29): AZdb's diversity term. The head's outputs are returns of the root's member (its latent
+//conditions every evaluation of the search): A of the player to move, B of the other player (NNOutput::intrinsicA).
+//So output A is P's return where P moves, and output B where the opponent moves.
+double Search::getDiversityHeadUtility(const NNOutput& nnOutput, Player nextPla) const {
+  if(diversityWeight == 0.0)
+    return 0.0;
+  assert(nnOutput.hasIntrinsic);
+  const double headReturn = nextPla == plaThatSearchIsFor ? nnOutput.intrinsicA : nnOutput.intrinsicB;
+  return (plaThatSearchIsFor == P_WHITE ? diversityWeight : -diversityWeight) * headReturn;
+}
+
+//The rows' reward of the same move (AZdb::State::phiOfMove, as rowTargets), from P's side as the search's member.
+//The opponent's moves have no reward.
+double Search::computeDiversityReward(const Board& board, const BoardHistory& hist) const {
+  if(diversityWeight == 0.0 || hist.moveHistory.empty() || hist.moveHistory.back().pla != plaThatSearchIsFor)
+    return 0.0;
+  using State = AZdb::State<GameEncoding>;
+  std::array<double, State::N> x, phi;
+  if(!diversityState->phiOfMove(board.pos, Board::indexOfPlayer(plaThatSearchIsFor), x.data(), phi.data()))
+    return 0.0;
+  const double reward = diversityState->reward(searchParams.diversityMember, phi.data());
+  return (plaThatSearchIsFor == P_WHITE ? diversityWeight : -diversityWeight) * reward;
+}
+
+void Search::checkDiversitySetup() const {
+  const int member = searchParams.diversityMember;
+  if(member < 0 || member >= NNInputs::NUM_DIVERSITY_MEMBERS)
+    throw StringError("diversityMember must be from 0 to " + Global::intToString(NNInputs::NUM_DIVERSITY_MEMBERS - 1));
+  if(!(searchParams.diversityLambda > 0.0 && searchParams.diversityLambda <= 1.0))
+    throw StringError("diversityLambda must be above 0 and at most 1");
+  if(member == 0)
+    return;
+  const string what = "diversityMember " + Global::intToString(member);
+  if(NNModelVersion::getInputsVersion(nnEvaluator->getModelVersion()) < 14)
+    throw StringError(what + " needs a model of the inputs version 14 or later, which reads AZdb's members");
+  if(diversityWeight == 0.0)
+    return;
+  const string term = what + " with diversityLambda " + Global::doubleToString(searchParams.diversityLambda) +
+    " adds AZdb's diversity term to the search, which";
+  if(!nnEvaluator->hasIntrinsicHead())
+    throw StringError(term + " needs a model with the intrinsic value head");
+  if(!nnEvaluator->computesIntrinsicHead())
+    throw StringError(term + " needs a backend that computes the intrinsic value head (CUDA or Eigen)");
+  if(diversityState == nullptr)
+    throw StringError(term + " needs the members' state of the game (Search::setDiversityState)");
+  if(searchParams.useEvalCache)
+    throw StringError(term + " cannot run with useEvalCache, whose cached utilities leave the term out");
 }
 
 

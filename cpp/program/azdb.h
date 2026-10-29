@@ -8,10 +8,11 @@
 //games/blueprints/docs/research/diversity-players.md ("The latent and the members", "The intrinsic value head and its
 //targets").
 //
-//This file holds what the training rows read, for every game: a game's copy of the members' state (State), the reward
-//of a move, and the targets of the network's intrinsic value head (rowTargets). The game gives the statistics of a
-//position (GameInterface: Diversity). A game without them gives every member the reward 0. The file reads the game's
-//interface only, so that a game's Python binding tests it too.
+//This file holds what the training rows and the search read, for every game: a game's copy of the members' state
+//(State), the reward of a move, and the targets of the network's intrinsic value head (rowTargets). The search's
+//diversity term reads the same rewards ("The search": Search::computeDiversityReward). The game gives the statistics
+//of a position (GameInterface: Diversity). A game without them gives every member the reward 0. The file reads the
+//game's interface only, so that a game's Python binding tests it too.
 
 #include <cmath>
 #include <vector>
@@ -65,6 +66,18 @@ template<class E> struct State {
 
   //φ: the normalized statistics x (N numbers each).
   void phi(const double* x, double* out) const { normalizer.z(x, out); }
+
+  //φ of the position after an action of the player mover, from the mover's side, into out (x: scratch), when the
+  //action ends a move. False for an action that does not end a move (a pick that waits for its drop): a move's reward
+  //is at the action that ends it. The rows' rewards (rowTargets) and the search's (Search::computeDiversityReward)
+  //both come from here, so that they cannot differ.
+  template<class Position> bool phiOfMove(const Position& after, int mover, double* x, double* out) const {
+    if(GameInterface::continuesMove<typename E::Rules>(after))
+      return false;
+    GameInterface::diversityStatisticsOf<E>(after, mover, x);
+    phi(x, out);
+    return true;
+  }
 
   //Member i's reward of a move whose position after it has the normalized statistics phi, from the side of the
   //player who moved: (1 - (ℓ_i / ℓ0)^3) φ · (ψ^i - ψ^j*) / MOVES, and 0 for member 0.
@@ -125,10 +138,8 @@ void rowTargets(const Positions& positions, int numActions, bool finished, const
   std::vector<double> x(State<E>::N), phi(State<E>::N);
   for(int j = 0; j < n; j++) {
     const int p = mover[j];
-    if((members[p] == 0 && members[1 - p] == 0) || GameInterface::continuesMove<R>(positions(j + 1)))
+    if((members[p] == 0 && members[1 - p] == 0) || !state.phiOfMove(positions(j + 1), p, x.data(), phi.data()))
       continue;
-    GameInterface::diversityStatisticsOf<E>(positions(j + 1), p, x.data());
-    state.phi(x.data(), phi.data());
     out.ownReward[j] = (float)state.reward(members[p], phi.data());
     out.otherReward[j] = (float)state.reward(members[1 - p], phi.data());
   }

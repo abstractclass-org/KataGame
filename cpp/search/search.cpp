@@ -100,6 +100,8 @@ Search::Search(const SearchParams& params, NNEvaluator* nnEval, NNEvaluator* hum
    patternBonusTable(NULL),
    externalPatternBonusTable(nullptr),
    evalCache(nullptr),
+   diversityWeight(0.0),
+   diversityState(nullptr),
    nonSearchRand(rSeed + string("$nonSearchRand")),
    logger(lg),
    nnEvaluator(nnEval),
@@ -335,6 +337,10 @@ void Search::setParams(const SearchParams& params) {
 }
 
 void Search::setParamsNoClearing(const SearchParams& params) {
+  //KataGame fork (2026-10-29): another member evaluates with another latent, and another member or λ gives other
+  //utilities (diversityWeight), so no search state is valid to keep.
+  if(params.diversityMember != searchParams.diversityMember || params.diversityLambda != searchParams.diversityLambda)
+    clearSearch();
   searchParams = params;
   //Deliberately overrides the "no clearing" if the resolved pass-alive mode actually changes,
   //since in that case no search state is valid to keep.
@@ -359,6 +365,18 @@ void Search::setExternalEvalCache(const std::shared_ptr<EvalCacheTable>& cache) 
     return;
   clearSearch();
   evalCache = cache;
+}
+
+void Search::setDiversityState(const std::shared_ptr<const AZdb::State<GameEncoding>>& state) {
+  if(state == diversityState)
+    return;
+  //The nodes' rewards come from the state.
+  clearSearch();
+  diversityState = state;
+}
+
+double Search::getDiversityWeight(const SearchParams& params) {
+  return params.diversityMember == 0 ? 0.0 : (1.0 - params.diversityLambda) / params.diversityLambda;
 }
 
 void Search::setNNEval(NNEvaluator* nnEval) {
@@ -726,6 +744,10 @@ void Search::beginSearch(bool pondering) {
 
   rootBoard.checkConsistency();
 
+  //KataGame fork (2026-10-29): AZdb's diversity term for this search.
+  diversityWeight = getDiversityWeight(searchParams);
+  checkDiversitySetup();
+
   numSearchesBegun++;
 
   //Avoid any issues in principle from rolling over
@@ -747,6 +769,11 @@ void Search::beginSearch(bool pondering) {
     //recursively *would* fix all our utilities, but the problem is the playout distribution will still be matching the
     //old probabilities without a lot of new search, so clearing ensures a better distribution.
     if(searchParams.avoidRepeatedPatternUtility != 0 || externalPatternBonusTable != nullptr)
+      clearSearch();
+    //KataGame fork (2026-10-29): AZdb's diversity term counts the rewards and the head's returns of the player that
+    //the search is for. A tree of the other player's term has other node constants and values: clear it, as for the
+    //pattern bonus.
+    if(diversityWeight != 0.0)
       clearSearch();
     //If we have a human SL net and the parameters are different for the different sides, clear the search.
     if(humanEvaluator != NULL) {
@@ -792,6 +819,12 @@ void Search::beginSearch(bool pondering) {
     if(rootNode != NULL)
       rootNode->patternBonusHash = Hash128();
   }
+
+  //KataGame fork (2026-10-29): D counts P's moves from the root, so the root has no reward of its own. A root
+  //promoted from a child (makeMove) still has the child's reward, and the recomputation below takes it out of its
+  //stats.
+  if(rootNode != NULL)
+    rootNode->diversityReward = 0.0;
 
   if(searchParams.rootSymmetryPruning) {
     const std::vector<int>& avoidMoveUntilByLoc = rootPla == P_BLACK ? avoidMoveUntilByLocBlack : avoidMoveUntilByLocWhite;
@@ -911,7 +944,8 @@ void Search::beginSearch(bool pondering) {
 
     //Recursively update all stats in the tree if we have dynamic score values
     //And also to clear out lastResponseBiasDeltaSum and lastResponseBiasWeight
-    if(searchParams.dynamicScoreUtilityFactor != 0 || searchParams.subtreeValueBiasFactor != 0 || patternBonusTable != NULL) {
+    if(searchParams.dynamicScoreUtilityFactor != 0 || searchParams.subtreeValueBiasFactor != 0 || patternBonusTable != NULL ||
+       diversityWeight != 0.0) {
       recursivelyRecomputeStats(node);
       if(anyFiltered) {
         //Recursive stats recomputation resulted in us marking all nodes we have. Anything filtered is old now, delete it.
@@ -1000,6 +1034,11 @@ SearchNode* Search::allocateOrFindNode(SearchThread& thread, Player nextPla, Loc
 
       if(patternBonusTable != NULL)
         child->patternBonusHash = patternBonusTable->getHash(getOpp(thread.pla), bestChildMoveLoc, thread.history.getRecentBoard(1));
+
+      //KataGame fork (2026-10-29): AZdb's reward of the move into the node. It depends on the position alone (its φ,
+      //and its last mover), so a transposed path finds the same constant.
+      if(diversityWeight != 0.0)
+        child->diversityReward = computeDiversityReward(thread.board, thread.history);
 
       //Insert into map! Use insertLoc as hint.
       nodeMap.insert(insertLoc, std::make_pair(childHash,child));
@@ -1145,6 +1184,14 @@ void Search::recursivelyRecomputeStats(SearchNode& n) {
         double scoreUtility = getScoreUtility(scoreMeanAvg, scoreMeanSqAvg);
         double newUtilityAvg = resultUtility + scoreUtility;
         newUtilityAvg += getPatternBonus(node->patternBonusHash,getOpp(node->nextPla));
+        //KataGame fork (2026-10-29): AZdb's diversity term of a leaf: its reward, and the head's return after it
+        //unless the leaf ends the game (no evaluation).
+        if(diversityWeight != 0.0) {
+          newUtilityAvg += node->diversityReward;
+          const NNOutput* leafOutput = node->getNNOutput();
+          if(leafOutput != NULL)
+            newUtilityAvg += getDiversityHeadUtility(*leafOutput, node->nextPla);
+        }
         double newUtilitySqAvg = newUtilityAvg * newUtilityAvg;
 
         while(node->statsLock.test_and_set(std::memory_order_acquire));

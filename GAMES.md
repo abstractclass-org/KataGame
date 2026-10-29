@@ -554,6 +554,19 @@ member `Diversity` (above). A game without it gives every member the reward 0.
   rewards of the other player's moves in the same span, as P's member, then output B there. A trains on the rows of
   members 1 to 4, B only where both players are the same member, and neither where the root has no output or the
   record stops before the span's end. Without a state (`FinishedGameData::diversityState`), every weight is 0.
+  Self-play gives each row the member of its player's search.
+- **The search** of member i ≥ 1 (the settings `diversityMember` and `diversityLambda`, λ, 0.9 by default) adds
+  w s_P D to each node's utility, with w = (1 − λ) / λ (`Search::diversityWeight`) and P the player that the search is
+  for. D is member i's intrinsic return: the rewards of P's moves from the root to the node, then output A where P
+  moves at the node and output B where the opponent moves, 0 at the game's end. The opponent minimizes the same
+  utility. A move's reward is a node constant (`SearchNode::diversityReward`), from the rows' code
+  (`AZdb::State::phiOfMove`) when the search creates the node. Each node adds it once to its average, as KataGo adds a
+  pattern bonus, so a node that two paths share has one value. The root has no reward. The win-loss and score values
+  stay KataGo's. Every evaluation of the search reads member i's latent. Member 0, or λ = 1, gives w = 0: the search
+  is KataGo's, with no reward, no D and no read of the head. With w > 0 the search refuses to start without a model
+  with the head, a backend that computes it (`NeuralNet::computesIntrinsicHead`), the game's copy of the state
+  (`Search::setDiversityState`), or with the eval cache. A member of 1 to 4 needs a model of V14. The search clears
+  its tree when P changes, as for the pattern bonus, and when the state, the member or λ changes.
 
 **The training targets** are the slots of KataGo's spatial targets (`valueTargetsNCHW`) and the two that the fork
 added. `TARGETS` declares the slots that the game writes. The front computes C2-3 and C7 from `pieces`

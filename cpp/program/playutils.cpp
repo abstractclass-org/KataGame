@@ -192,6 +192,7 @@ Loc PlayUtils::getGameInitializationMove(
     Search::resolveAlwaysComputePassAliveUnderSuicideRules(searcher->searchParams, nnEval) ? 1 : 0;
   nnInputParams.excludeTerritoryAdjAtariOverride =
     Search::resolveExcludeTerritoryAdjacentToAtari(searcher->searchParams, nnEval) ? 1 : 0;
+  nnInputParams.diversityMember = searcher->searchParams.diversityMember;  //KataGame fork: AZdb's latent
   nnEval->evaluate(board,hist,pla,nnInputParams,buf,false,false);
   std::shared_ptr<NNOutput> nnOutput = std::move(buf.result);
 
@@ -293,6 +294,7 @@ void PlayUtils::playExtraBlack(
       //Featurize the way this bot's own searches would, even if the passed history differs.
       nnInputParams.passAliveSuicideRulesOverride = botPassAliveMode ? 1 : 0;
       nnInputParams.excludeTerritoryAdjAtariOverride = botExcludeTerritoryAdjAtari ? 1 : 0;
+      nnInputParams.diversityMember = bot->searchParams.diversityMember;  //KataGame fork: AZdb's latent
       bot->nnEvaluator->evaluate(board,hist,pla,nnInputParams,buf,false,false);
       std::shared_ptr<NNOutput> nnOutput = std::move(buf.result);
 

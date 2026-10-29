@@ -788,6 +788,15 @@ vector<SearchParams> Setup::loadParams(
     else if(cfg.contains("avoidRepeatedPatternUtility"))   params.avoidRepeatedPatternUtility = cfg.getDouble("avoidRepeatedPatternUtility", -3.0, 3.0);
     else                                                   params.avoidRepeatedPatternUtility = 0.0;
 
+    //KataGame fork (2026-10-29): AZdb's member and its λ (SearchParams::diversityMember), as search parameters for
+    //now. Self-play's matchmaker will set them for each game.
+    if(cfg.contains("diversityMember"+idxStr)) params.diversityMember = cfg.getInt("diversityMember"+idxStr, 0, NNInputs::NUM_DIVERSITY_MEMBERS - 1);
+    else if(cfg.contains("diversityMember"))   params.diversityMember = cfg.getInt("diversityMember", 0, NNInputs::NUM_DIVERSITY_MEMBERS - 1);
+    else                                       params.diversityMember = 0;
+    if(cfg.contains("diversityLambda"+idxStr)) params.diversityLambda = cfg.getDouble("diversityLambda"+idxStr, 0.01, 1.0);
+    else if(cfg.contains("diversityLambda"))   params.diversityLambda = cfg.getDouble("diversityLambda", 0.01, 1.0);
+    else                                       params.diversityLambda = 0.9;
+
     if(cfg.contains("nnPolicyTemperature"+idxStr))
       params.nnPolicyTemperature = cfg.getFloat("nnPolicyTemperature"+idxStr,0.01f,5.0f);
     else if(cfg.contains("nnPolicyTemperature"))

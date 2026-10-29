@@ -938,6 +938,7 @@ static NNRawStats computeNNRawStats(const Search* bot, const Board& board, const
     Search::resolveAlwaysComputePassAliveUnderSuicideRules(bot->searchParams, bot->nnEvaluator) ? 1 : 0;
   nnInputParams.excludeTerritoryAdjAtariOverride =
     Search::resolveExcludeTerritoryAdjacentToAtari(bot->searchParams, bot->nnEvaluator) ? 1 : 0;
+  nnInputParams.diversityMember = bot->searchParams.diversityMember;  //KataGame fork: AZdb's latent, the bot's member
   bot->nnEvaluator->evaluate(board,hist,pla,nnInputParams,buf,false,false);
   NNOutput& nnOutput = *(buf.result);
 
@@ -1679,6 +1680,10 @@ FinishedGameData* Play::runGame(
   gameData->wName = botSpecW.botName;
   gameData->bIdx = botSpecB.botIdx;
   gameData->wIdx = botSpecW.botIdx;
+  //KataGame fork (2026-10-29): AZdb's member of each player, its search's (SearchParams::diversityMember), so that a
+  //row's latent is the member whose search made its policy target. The rows' state stays the caller's.
+  gameData->diversityMembers[Board::indexOfPlayer(P_BLACK)] = botSpecB.baseParams.diversityMember;
+  gameData->diversityMembers[Board::indexOfPlayer(P_WHITE)] = botSpecW.baseParams.diversityMember;
 
   gameData->gameHash.hash0 = gameRand.nextUInt64();
   gameData->gameHash.hash1 = gameRand.nextUInt64();
@@ -2333,6 +2338,7 @@ FinishedGameData* Play::runGame(
             Search::resolveAlwaysComputePassAliveUnderSuicideRules(toMoveBot2->searchParams, toMoveBot2->nnEvaluator) ? 1 : 0;
           nnInputParams.excludeTerritoryAdjAtariOverride =
             Search::resolveExcludeTerritoryAdjacentToAtari(toMoveBot2->searchParams, toMoveBot2->nnEvaluator) ? 1 : 0;
+          nnInputParams.diversityMember = toMoveBot2->searchParams.diversityMember;  //KataGame fork: AZdb's latent
           toMoveBot2->nnEvaluator->evaluate(
             sp2->board,sp2->hist,sp2->pla,nnInputParams,
             nnResultBuf,false,false
@@ -2599,6 +2605,7 @@ void Play::maybeForkGame(
       Search::resolveAlwaysComputePassAliveUnderSuicideRules(bot->searchParams, bot->nnEvaluator) ? 1 : 0;
     nnInputParams.excludeTerritoryAdjAtariOverride =
       Search::resolveExcludeTerritoryAdjacentToAtari(bot->searchParams, bot->nnEvaluator) ? 1 : 0;
+    nnInputParams.diversityMember = bot->searchParams.diversityMember;  //KataGame fork: AZdb's latent
     bot->nnEvaluator->evaluate(copy,copyHist,copyHist.presumedNextMovePla,nnInputParams,buf,false,false);
     std::shared_ptr<NNOutput> nnOutput = std::move(buf.result);
     double whiteScore = nnOutput->whiteScoreMean;

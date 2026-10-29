@@ -44,6 +44,12 @@ bool NeuralNet::computesAuxOutputs(const ComputeContext* computeContext) {
   return false;
 }
 
+//KataGame fork (2026-10-29)
+bool NeuralNet::computesIntrinsicHead(const ComputeContext* computeContext) {
+  (void)computeContext;
+  return false;
+}
+
 LoadedModel* NeuralNet::loadModelFile(const string& file, const string& expectedSha256) {
   (void)file;
   (void)expectedSha256;

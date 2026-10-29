@@ -26,6 +26,7 @@ void Search::computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwner
       getOpp(pla) == playoutDoublingAdvantagePla ? -searchParams.playoutDoublingAdvantage : searchParams.playoutDoublingAdvantage
     );
   }
+  nnInputParams.diversityMember = searchParams.diversityMember;  //KataGame fork: AZdb's latent, the search's member
   if(searchParams.ignorePreRootHistory || searchParams.ignoreAllHistory)
     nnInputParams.maxHistory = 0;
   nnEvaluator->evaluate(
@@ -87,6 +88,9 @@ bool Search::initNodeNNOutput(
       getOpp(thread.pla) == playoutDoublingAdvantagePla ? -searchParams.playoutDoublingAdvantage : searchParams.playoutDoublingAdvantage
     );
   }
+  //KataGame fork (2026-10-29): AZdb's latent. The root's member conditions every evaluation of the search, the
+  //opponent's too, and the cache keys each member apart (NNInputs::getHash).
+  nnInputParams.diversityMember = searchParams.diversityMember;
   if(searchParams.ignoreAllHistory)
     nnInputParams.maxHistory = 0;
   else if(searchParams.ignorePreRootHistory) {

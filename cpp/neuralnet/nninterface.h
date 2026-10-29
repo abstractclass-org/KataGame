@@ -104,6 +104,9 @@ namespace NeuralNet {
   //Enclosure fork (2026-10-21): whether the backend computes a model's exported training-only outputs
   //(NNResultBuf::includeAuxOutputs) in this context. NNEvaluator::hasAuxOutputs needs this and a model that has them.
   bool computesAuxOutputs(const ComputeContext* computeContext);
+  //KataGame fork (2026-10-29): whether the backend computes AZdb's intrinsic value head of a model that has it
+  //(NNOutput::hasIntrinsic). NNEvaluator::computesIntrinsicHead needs this and a model that has the head.
+  bool computesIntrinsicHead(const ComputeContext* computeContext);
 
   // Compute Handle -----------------------------------------------------------------
 

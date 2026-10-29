@@ -2704,6 +2704,12 @@ bool NeuralNet::computesAuxOutputs(const ComputeContext* computeContext) {
   return true;
 }
 
+//KataGame fork (2026-10-29): the heads compute AZdb's intrinsic value head at every evaluation.
+bool NeuralNet::computesIntrinsicHead(const ComputeContext* computeContext) {
+  (void)computeContext;
+  return true;
+}
+
 //------------------------------------------------------------------------------
 
 struct ComputeHandle {

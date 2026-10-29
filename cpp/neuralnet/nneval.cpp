@@ -190,6 +190,7 @@ NNEvaluator::NNEvaluator(
     //Enclosure fork (2026-10-21): the training-only outputs only from a backend that computes them.
     modelHasAux = modelHasAux && NeuralNet::computesAuxOutputs(computeContext);
     modelHasPolicyAux = modelHasPolicyAux && modelHasAux;
+    backendComputesIntrinsic = NeuralNet::computesIntrinsicHead(computeContext);
     // Snapshot postProcessParams only after createComputeContext: backends may apply
     // config-dependent transforms to the model desc there (e.g. the ONNX backend's
     // scale8 workaround multiplies outputScaleMultiplier by 8).
@@ -202,6 +203,7 @@ NNEvaluator::NNEvaluator(
     modelHasPolicyAux = false;
     modelHasRegret = false;
     modelHasIntrinsic = false;
+    backendComputesIntrinsic = false;
     inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
   }
 
