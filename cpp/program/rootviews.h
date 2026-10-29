@@ -2,6 +2,7 @@
 #define PROGRAM_ROOTVIEWS_H_
 
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -9,7 +10,7 @@
 #include "../search/asyncbot.h"
 #include "../external/nlohmann_json/json.hpp"
 
-//KataGame fork (abscls-il4e.3, abscls-il4e.4): the root views, for a game whose network sees a part of a larger board
+//KataGame fork (abscls-il4e.3, abscls-il4e.4, abscls-il4e.9): the root views, for a game whose network sees a part of a larger board
 //(Blueprints: a view of 67 x 67 points of its rules board). The game gives views that hold every legal move of the root
 //between them (GameInterface::viewCover). With one view, the search is the one of that view: the usual search when the
 //rules' view holds every move. With more, each view gets a search of the root in that view (a pass) with a share of the
@@ -17,7 +18,8 @@
 //position). The candidates with the best child values from the root mover's side then get a search of their child
 //position each (a check), with the rest of the visits, and the move is the check with the best value. The passes and
 //the checks take the first pass's score centre, so that their utilities have one scale. Their visits are not compared.
-//The analysis engine's rootViews (command/analysis.cpp) and GTP's genmove (command/gtp.cpp) both search so.
+//The analysis engine's rootViews (command/analysis.cpp), GTP's genmove (command/gtp.cpp) and Blueprints' engine
+//protocol (command/blueprintsprotocol.cpp, abscls-il4e.9) all search so.
 namespace RootViews {
   struct Settings {
     double passShare = 0.5;  //rootViewsPassShare: the passes' share of the visits, the playouts and the time
@@ -58,6 +60,80 @@ namespace RootViews {
   struct Choice {
     Loc loc = Board::NULL_LOC;
     std::string view;
+  };
+
+  //The searches of the root's views (above), one at a time, for a caller that runs each search: search() below runs
+  //them on an AsyncBot, and Blueprints' engine protocol (command/blueprintsprotocol.cpp) runs them in slices. next()
+  //gives each search's root and its share of the limits, done() takes the search at its end, and result() gives the
+  //response at any time. It holds boards of the game's whole board: keep it on the heap.
+  class Searches {
+  public:
+    Searches(
+      const Board& rootBoard, const BoardHistory& rootHist, Player rootPla, const std::vector<std::string>& views,
+      const Settings& settings, const Report& report
+    );
+    //The next search, or false when every search is done: its root is then board(), hist() and pla(), and its share
+    //of the limits share() (genMoveSynchronous's searchFactor). The passes come first, then the checks.
+    bool next();
+    const Board& board() const { return board_; }
+    const BoardHistory& hist() const { return hist_; }
+    Player pla() const { return pla_; }
+    double share() const { return share_; }
+    //The search that next() gave, at its end: its analysis, and chosen, the move that it chose (genMoveSynchronous),
+    //which a cover of one view gives as the choice. After the first pass of more views, every later search keeps its
+    //score centre (Search::fixedScoreCenter): the caller sets it back to NAN after the last. False when the search
+    //gave no analysis.
+    bool done(Search& search, Loc chosen);
+    //The response, the analysis engine's, and the chosen move, from the searches done and from running, the search
+    //that next() gave, as it is now (nullptr: none): a reply during the search, or the best check or pass so far when
+    //it stops. False when no search gave a candidate yet.
+    bool result(nlohmann::json& ret, Choice& choice, const Search* running = nullptr) const;
+
+  private:
+    struct Candidate {
+      int pass;
+      Loc loc;
+      Loc own;  //the move in the root's own view, or NULL_LOC
+      nlohmann::json info;  //the moveInfo of the pass where it has the most visits
+      double value;  //its utility from the root mover's side, the mean of its passes' weighted by their visits
+      int64_t visits;  //its visits in the passes
+      nlohmann::json check;  //the rootInfo of its check, or null
+    };
+    //What the searches gave.
+    struct Results {
+      std::vector<Candidate> candidates;
+      std::map<Hash128, size_t> byChild;
+      nlohmann::json passes = nlohmann::json::array();
+      nlohmann::json single;  //the analysis of a cover of one view
+      Loc chosen = Board::NULL_LOC;  //and its chosen move
+      int numSearches = 0;
+      int64_t totalVisits = 0;
+    };
+    bool analysis(const Search& search, nlohmann::json& out) const;
+    void record(Results& results, nlohmann::json& out, Loc chosen) const;
+    bool respond(const Results& results, nlohmann::json& ret, Choice& choice) const;
+    Loc ownMove(const Hash128& child) const;
+    void nameMove(nlohmann::json& info, Loc own, const std::string& view) const;
+
+    Board rootBoard_;
+    BoardHistory rootHist_;
+    Player rootPla_;
+    std::vector<std::string> views_;
+    Settings settings_;
+    Report report_;
+    Player perspective_;  //every search reports its values from this side
+    double moverSign_;  //+1 when it is the root mover's, else -1
+    std::map<Hash128, Loc> ownMoves_;  //each move of the root's own view by its child position
+    std::vector<Board> boards_;  //the root in each view
+    std::vector<size_t> order_;  //the candidates by their passes' values, once the passes are done
+    size_t numFinalists_ = 0;  //the first ones of order_ get a check
+    int nextSearch_ = 0;  //the passes 0 to views_.size() - 1, then views_.size() + each finalist
+    int current_ = -1;  //the search that next() gave and done() did not take yet, or -1
+    Board board_;
+    BoardHistory hist_;
+    Player pla_ = C_EMPTY;
+    double share_ = 1.0;
+    Results results_;
   };
 
   //The search of the root's views (above), of the position's cover views: writes the analysis engine's response in

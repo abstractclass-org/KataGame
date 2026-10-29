@@ -100,7 +100,7 @@ Blueprints' own files:
 
 | File | What it is |
 |---|---|
-| `command/blueprintsprotocol.cpp`, `.h` | Blueprints' engine protocol (the engine repository's `games/blueprints/README.md`, "The browser build"): Enclosure's requests in strategyjam.org's moves, with a placement outside the view played through `place_at_site`, the cells and the hands in the site's form, each move's footprint, captured cells and points, an edit's values, and the ownership with its view's place. The WebAssembly module builds it too. |
+| `command/blueprintsprotocol.cpp`, `.h` | Blueprints' engine protocol (the engine repository's `games/blueprints/README.md`, "The browser build"): Enclosure's requests in strategyjam.org's moves, with a placement outside the view played through `place_at_site`, the cells and the hands in the site's form, each move's footprint, captured cells and points, an edit's values, and the ownership with its view's place. An analysis searches the root's views (`rootViews`, `program/rootviews.cpp`) in slices, and `describe` gives the cover. The WebAssembly module builds it too. |
 | `command/blueprintsengine.cpp` | The protocol's native command, `katago blueprints-engine` (a `GameCommand`). |
 
 **The check** (`cpp/tests/checkgamelayer.py`, Python's standard library only) fails when a file outside the game layer:
@@ -375,13 +375,21 @@ For an engine protocol (design 04 of the engine repository), two additions that 
 
 ### The search of the root's views
 
-For a game whose network sees a part of a larger board (the views of "Optional members"), the analysis engine and GTP's
-genmove add `rootViews` (`program/rootviews.cpp`, the fields and the commands in `docs/Analysis_Engine.md` and
-`docs/GTP_Extensions.md`). It is off when a config leaves it out, and Blueprints' config turns it on. It searches the
-root in each view of a cover (a pass), then the child positions of the best candidates (a check). In GTP, each search
-takes its share of the clock's time for the move, and a move that the position's own view cannot name is `MOVE/VIEW`.
+For a game whose network sees a part of a larger board (the views of "Optional members"), the analysis engine, GTP's
+genmove and Blueprints' engine protocol add `rootViews` (`program/rootviews.cpp`, the fields and the commands in
+`docs/Analysis_Engine.md` and `docs/GTP_Extensions.md`, the protocol's in the engine repository's
+`games/blueprints/README.md`). It is off when a config leaves it out, and Blueprints' config turns it on. It searches
+the root in each view of a cover (a pass), then the child positions of the best candidates (a check). In GTP, each
+search takes its share of the clock's time for the move, and a move that the position's own view cannot name is
+`MOVE/VIEW`.
 `Search::fixedScoreCenter` gives these searches one centre of the score utility in place of each root's centre
 (`computeRootValues`). Outside them it is `NAN`, and each search takes its root's centre, as in KataGo.
+
+`RootViews::Searches` holds the passes and the checks one at a time, for a caller that runs each search: next() gives
+each search's root and its share of the limits, done() takes the search at its end, and result() gives the response
+at any time, with a search that has not ended. `RootViews::search` runs them on an `AsyncBot` (the analysis engine and
+GTP). Blueprints' engine protocol (`command/blueprintsprotocol.cpp`) runs them in its slices, with the manual
+interface of `Search`, so a reply during the search gives the candidates so far.
 
 ## The rules part
 

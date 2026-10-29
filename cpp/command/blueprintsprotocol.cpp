@@ -9,13 +9,15 @@
 //                                                     a network: the file at "path" (the native engine), else the
 //                                                     model buffer; settings override the base settings
 //   {"action": "describe", "position", "moves"}      the position for a board (its cells, hands, scores, mover, moves
-//                                                     left, move count, outcome, view) and every legal move
+//                                                     left, move count, outcome, view, the views of its cover) and
+//                                                     every legal move
 //   {"action": "describe_game", "position", "moves", "from"?}
 //                                                     every position of the game from "from" on, with the moves played
 //                                                     once: the board's fields, and what the move to each position did
 //                                                     (its footprint, the cells that it captured, its points)
 //   {"action": "play", "position", "moves", "move"}  whether the move is legal, what it did, the new position
-//   {"position", "moves", "maxVisits", ...}          an analysis (no action), as KataGo's analysis engine; with
+//   {"position", "moves", "maxVisits", "rootViews"?, ...}
+//                                                     an analysis (no action), as KataGo's analysis engine; with
 //                                                     "slice": {"visits": N} or {"ms": T}, one slice of it at a time
 //   {"action": "continue"}                           the next slice of the search with this id
 //   {"action": "terminate", "terminateId"}           ends that search; its last results, "terminated": true
@@ -25,8 +27,9 @@
 //
 // The site's moves meet the engine's actions here only (games/blueprints/README.md, "The port"):
 // - A placement whose cells all lie in the mover's view is one action of the view. Any other placement that the site's
-//   rule allows plays through place_at_site on the rules board: the search never gives it, and the replies name the
-//   moves sent that played so ("movesOutsideView", describe_game's "outsideView").
+//   rule allows plays through place_at_site on the rules board, and the replies name the moves sent that played so
+//   ("movesOutsideView", describe_game's "outsideView"). The search of the root's views gives such a placement as a
+//   candidate: an action of another view, named by the site's string as every move is.
 // - An edit is two actions of the mover, the pick "I:q,r" and the drop "J:q,r". A candidate edit has the values of its
 //   pick's node, and its move joins the pick with its best drop: the next move of its line, or the drop of the highest
 //   prior at the pick's node when the line stops at the pick. A line joins each pick with its drop.
@@ -36,6 +39,14 @@
 // over the search's tree would add the maps of nodes whose views lie elsewhere (each mover's view follows its play).
 // Results are reproducible, as Enclosure's: each evaluation's symmetry comes from its cache key, and the search's
 // random numbers from the query's "seed" and the position.
+//
+// The root's views (program/rootviews.h; games/blueprints/README.md, "The browser build"): an analysis's "rootViews"
+// (by default the settings' rootViews, true in analysis_blueprints.cfg) searches the cover of the root's views. When the
+// rule's view holds every legal placement, the search and the reply are those without it. One other view that holds
+// them: the search of that view. More views: their passes and checks (RootViews::Searches), run one after another in
+// the slices, each with its share of the visits. The reply then has the candidates of every view by the site's
+// strings, and the root's values are the best candidate's, with no raw values. rootInfo gives the cover ("views") and
+// the searches. The policy and the ownership of such a search are the network's at the root in the rule's view.
 #include "../command/blueprintsprotocol.h"
 
 #include "../core/global.h"
@@ -48,15 +59,18 @@
 #include "../game/boardhistory.h"
 #include "../game/blueprints/gamerules.h"
 #include "../neuralnet/nneval.h"
+#include "../program/rootviews.h"
 #include "../program/setup.h"
 #include "../search/search.h"
 #include "../search/searchnode.h"
 #include "../external/nlohmann_json/json.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -98,6 +112,9 @@ struct Engine {
   NNEvaluator* nnEval = nullptr;
   Search* search = nullptr;
   SearchParams params;
+  // The settings' rootViews (false when absent), each analysis's default, and the passes' and checks' settings.
+  bool rootViews = false;
+  RootViews::Settings rootViewSettings;
 };
 Engine E;
 
@@ -476,6 +493,19 @@ json viewJson(const Pos& p) {
   return {{"q", siteQ(p, v.wx)}, {"r", siteR(p, v.wy)}, {"orientation", v.o}, {"radius", bp::VIEW_RADIUS}};
 }
 
+// The views of p's cover (RootViews::cover), each in viewJson's form: "" is p's own view.
+json viewsJson(const Pos& p, const vector<string>& views) {
+  json out = json::array();
+  for(const string& view : views) {
+    Pos& v = scratch(2);
+    v = p;
+    string why;
+    GameRules::set_view(v, view, why);
+    out.push_back(viewJson(v));
+  }
+  return out;
+}
+
 // The fields of a position that a board shows: describe's, without the legal moves and the view.
 json boardFields(const Pos& p) {
   return {
@@ -561,6 +591,7 @@ json describe(const json& q) {
   legalMoves(p, legal, outside);
   reply["id"] = q["id"];
   reply["view"] = viewJson(p);
+  reply["views"] = viewsJson(p, GameRules::terminal(p) ? vector<string>{""} : RootViews::cover(g->board));
   reply["legal"] = legal;
   reply["legalOutsideView"] = outside;
   reply["movesOutsideView"] = g->outside;
@@ -720,6 +751,8 @@ json loadModel(const json& q) {
   const json* name = field(q, "name");
   E.modelName = name != nullptr && name->is_string() ? name->get<string>() : (path != nullptr ? file : "");
   E.params = Setup::loadSingleParams(*E.cfg, Setup::SETUP_FOR_ANALYSIS);
+  E.rootViews = E.cfg->contains("rootViews") && E.cfg->getBool("rootViews");
+  E.rootViewSettings = RootViews::loadSettings(*E.cfg);
   // As many evaluations at once as search threads; a batch size named in the settings is taken as it is.
   const Setup::MaxBatchSizeRequest batch = E.cfg->contains("nnMaxBatchSize")
     ? Setup::MaxBatchSizeRequest::explicitSize(E.cfg->getInt("nnMaxBatchSize", 1, 65536))
@@ -759,14 +792,16 @@ string seedText(const json& q) {
   return s == nullptr ? "0" : s->is_string() ? s->get<string>() : std::to_string(s->get<uint64_t>());
 }
 
-// The drop of the highest prior after the root's pick: from the policy of the pick's node, or, for a pick that the
-// search did not expand (a symmetric twin's), from one evaluation of the position after it.
-int bestDrop(const Game& g, int pick) {
+// The drop of the highest prior after the pick, a root action of a search whose root is g in `view` ("" its own): from
+// the policy of the pick's node in `tree`, the search's root node, or, for a pick that the search did not expand (a
+// symmetric twin's) or with no tree (the root's views: each search's tree goes with the next search), from one
+// evaluation of the position after it.
+int bestDrop(const Game& g, const string& view, const SearchNode* tree, int pick) {
   const Loc loc = Board::moveLocOfAction(pick);
   const NNOutput* out = nullptr;
   std::shared_ptr<NNOutput> evaluated;
-  if(E.search->rootNode != nullptr) {
-    ConstSearchNodeChildrenReference children = static_cast<const SearchNode*>(E.search->rootNode)->getChildren();
+  if(tree != nullptr) {
+    ConstSearchNodeChildrenReference children = tree->getChildren();
     for(int i = 0; i < children.getCapacity(); i++) {
       const SearchNode* child = children[i].getIfAllocated();
       if(child == nullptr)
@@ -777,6 +812,8 @@ int bestDrop(const Game& g, int pick) {
   }
   if(out == nullptr) {
     std::unique_ptr<Game> after(new Game(g));
+    string why;
+    RootViews::setBoardView(after->board, view, why);
     playAction(*after, pick);
     NNResultBuf buf;
     buf.symmetryFromHash = true;
@@ -795,23 +832,29 @@ int bestDrop(const Game& g, int pick) {
   return best;
 }
 
-// A candidate's line of the engine's actions from the root (its first action the candidate), as at most maxMoves of the
-// site's moves: each pick joined with the drop after it. A pick that ends the line takes the best drop (bestDrop) when
-// it is the candidate, and the line stops before it otherwise. ends: the index of each site move's last action, for
-// KataGo's numbers by action (pvVisits).
-void siteLine(const Game& g, const vector<int>& actions, size_t maxMoves, vector<string>& moves, vector<size_t>& ends) {
+// A candidate's line of the engine's actions from the root, g in `view` ("" its own), with its first action the
+// candidate, as the site's moves: each pick joined with the drop after it. A pick that ends the line takes the best
+// drop (bestDrop, with the search's tree) when it is the candidate, and the line stops before it otherwise. ends: the
+// index of each site move's last action, for KataGo's numbers by action (pvVisits). The callers cut the line. Give it
+// no bound: GCC 15.2 at -O3 took one caller's max(pvLen, 1) as another caller's constant 1.
+void siteLine(const Game& g, const string& view, const SearchNode* tree, const vector<int>& actions,
+              vector<string>& moves, vector<size_t>& ends) {
   moves.clear();
   ends.clear();
   Pos& cur = scratch(2);
   cur = g.board.pos;
-  for(size_t i = 0; i < actions.size() && moves.size() < maxMoves; i++) {
+  if(!view.empty()) {
+    string why;
+    GameRules::set_view(cur, view, why);
+  }
+  for(size_t i = 0; i < actions.size(); i++) {
     const int a = actions[i];
     if(a < 0 || a == GameRules::PASS_ACTION)
       break;
     string text = siteText(cur, a);
     if(isPick(cur, a)) {
       const bool inLine = i + 1 < actions.size() && actions[i + 1] >= 0;
-      const int drop = inLine ? actions[i + 1] : i == 0 ? bestDrop(g, a) : -1;
+      const int drop = inLine ? actions[i + 1] : i == 0 ? bestDrop(g, view, tree, a) : -1;
       if(drop < 0)
         break;
       GameRules::play(cur, a);
@@ -827,12 +870,108 @@ void siteLine(const Game& g, const vector<int>& actions, size_t maxMoves, vector
   }
 }
 
-// The analysis reply from the search's tree as it is now (during a search in slices, or after it).
-json analysisReply(const json& q, const Game& g, bool during) {
+// An analysis: its query, its game, the root's views, and its search in slices (design 04, "Search in slices"): where
+// it is. The playouts are run as runWholeSearch runs them (search.cpp), only paused between slices, so the slices of a
+// search add up to one whole search of the same visits. With more views, the slices run the passes and the checks
+// (RootViews::Searches) one after another, each with its share of the query's visits.
+struct Running {
+  json query;
+  std::unique_ptr<Game> game;
+  // The cover of the root's views (RootViews::cover) when the query searches them, else the rule's view alone, {""}.
+  // One view: one search, in that view. More: their passes and checks, in searches.
+  vector<string> views;
+  std::unique_ptr<RootViews::Searches> searches;
+  // The network's evaluation of the root in the rule's view, for the policy and the ownership of a search in another
+  // view or in more views (with includePolicy or includeOwnership).
+  std::shared_ptr<NNOutput> ruleEval;
+  int64_t visits = 0;  // the query's
+  SearchThread* thread = nullptr;  // the search in slices, or none between two searches of the root's views
+  int64_t maxVisits = 0, nonPlayoutVisits = 0, playouts = 0;  // its visits
+  bool more = false;  // the next search of the root's views waits to begin
+  int64_t sliceVisits = 0;  // 0: by time
+  double sliceSeconds = 0;
+};
+Running* RUN = nullptr;
+
+// The query's analysisPVLen (default 15): the site's moves of a line.
+int analysisPVLen(const json& q) {
   int pvLen = 15;
   if(const json* l = field(q, "analysisPVLen"))
     if(l->is_number_integer())
       pvLen = std::max(0, l->get<int>());
+  return pvLen;
+}
+
+// A moveInfo of a search whose root is g in `view` ("" its own), in the site's moves: its move and its line (siteLine,
+// with the search's tree), and KataGo's numbers by action (pvVisits, pvEdgeVisits) by site move. Its first action, or
+// -1 when it names no site move.
+int siteMoveInfo(const Game& g, const string& view, const SearchNode* tree, int pvLen, json& mi) {
+  vector<int> actions;
+  for(const json& m : mi["pv"])
+    actions.push_back(actionOf(m));
+  if(actions.empty())
+    actions.push_back(actionOf(mi["move"]));
+  vector<string> moves;
+  vector<size_t> ends;
+  siteLine(g, view, tree, actions, moves, ends);
+  if(moves.empty())
+    return -1;
+  mi["move"] = moves[0];
+  const size_t n = std::min(moves.size(), size_t(pvLen));
+  mi["pv"] = vector<string>(moves.begin(), moves.begin() + n);
+  for(const char* key : {"pvVisits", "pvEdgeVisits"})
+    if(mi.contains(key)) {
+      json byMove = json::array();
+      for(size_t i = 0; i < n; i++)
+        byMove.push_back(mi[key][ends[i]]);
+      mi[key] = std::move(byMove);
+    }
+  dropGoFields(mi);
+  return actions[0];
+}
+
+// The policy and the ownership of the reply (includePolicy, includeOwnership) from root, the network's evaluation of
+// g's root in its own view (the reply's "view").
+void rootMaps(const json& q, const Game& g, const NNOutput* root, json& reply) {
+  if(flag(q, "includePolicy") && root != nullptr) {
+    // The root's network policy over every legal action, highest first: a placement by its site string, and a pick by
+    // its own string "I:q,r", the first half of an edit, with the pick's prior (the network gives an edit's prior in
+    // two steps, the pick's and then the drop's at the pick's node). A network of the inputs version 13 gives no prior
+    // to an action of a blueprint equal to a lower-numbered one, which its search does not list: the lower one's
+    // action has that prior (NNInputs' NetActionMap), and the policy leaves the other out.
+    static float probs[NNPos::MAX_NN_POLICY_SIZE];
+    root->policy().toDense(probs);
+    vector<int> legal;
+    GameRules::legal_actions(g.board.pos, legal);
+    vector<std::pair<double, string>> rows;
+    for(int a : legal)
+      if(probs[a] >= 0)
+        rows.push_back({probs[a], siteText(g.board.pos, a)});
+    std::stable_sort(rows.begin(), rows.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+    json policy = json::array();
+    for(const auto& [prob, name] : rows)
+      policy.push_back({name, Global::roundDynamic(prob, 8)});
+    reply["policy"] = std::move(policy);
+  }
+  if(flag(q, "includeOwnership") && root != nullptr && root->whiteOwnerMap != nullptr) {
+    // The network's ownership at the root, over the view's hexes (index y * 67 + x, "view"), Blue's side: +1 where a
+    // cell of Blue's ends the game, -1 for Red's. Rounded as KataGo rounds the ownership, and never -0.
+    json ownership = json::array();
+    for(int y = 0; y < bp::VIEW; y++)
+      for(int x = 0; x < bp::VIEW; x++)
+        ownership.push_back(Global::roundStatic(-root->whiteOwnerMap[NNPos::xyToPos(x, y, root->nnXLen)], 1000000.0) + 0.0);
+    reply["ownership"] = std::move(ownership);
+  }
+}
+
+// The analysis reply of one search from its tree as it is now (during a search in slices, or after it): the search of
+// the rule's view, or of the one view of the root's views (r.views) that holds every legal placement.
+json searchReply(const Running& r, bool during) {
+  const json& q = r.query;
+  const Game& g = *r.game;
+  const string& view = r.views[0];
+  const SearchNode* tree = E.search->rootNode;
+  const int pvLen = analysisPVLen(q);
   const bool pvVisits = flag(q, "includePVVisits");
   json out;
   // Two actions for each site move of the line, and one more for its first edit's drop.
@@ -840,29 +979,11 @@ json analysisReply(const json& q, const Game& g, bool during) {
     return errorReply(q["id"], {"", "the search gave no analysis"});
   json moveInfos = json::array();
   std::map<int, string> named;  // each candidate's action -> its site move
-  vector<string> moves;
-  vector<size_t> ends;
   for(json& mi : out["moveInfos"]) {
-    vector<int> actions;
-    for(const json& m : mi["pv"])
-      actions.push_back(actionOf(m));
-    if(actions.empty())
-      actions.push_back(actionOf(mi["move"]));
-    siteLine(g, actions, std::max(pvLen, 1), moves, ends);
-    if(moves.empty())
+    const int a = siteMoveInfo(g, view, tree, pvLen, mi);
+    if(a < 0)
       continue;
-    named[actions[0]] = moves[0];
-    mi["move"] = moves[0];
-    const size_t n = std::min(moves.size(), size_t(pvLen));
-    mi["pv"] = vector<string>(moves.begin(), moves.begin() + n);
-    for(const char* key : {"pvVisits", "pvEdgeVisits"})
-      if(mi.contains(key)) {
-        json byMove = json::array();
-        for(size_t i = 0; i < n; i++)
-          byMove.push_back(mi[key][ends[i]]);
-        mi[key] = std::move(byMove);
-      }
-    dropGoFields(mi);
+    named[a] = mi["move"].get<string>();
     moveInfos.push_back(std::move(mi));
   }
   // The site's move of a root action, as its candidate names it: a pick joined with its best drop.
@@ -870,7 +991,9 @@ json analysisReply(const json& q, const Game& g, bool during) {
     auto it = named.find(a);
     if(it != named.end())
       return it->second;
-    siteLine(g, {a}, 1, moves, ends);
+    vector<string> moves;
+    vector<size_t> ends;
+    siteLine(g, view, tree, {a}, moves, ends);
     return moves.empty() ? json(nullptr) : json(moves[0]);
   };
   // A symmetric twin names the candidate that was searched (design 04, "Symmetric twins").
@@ -880,6 +1003,10 @@ json analysisReply(const json& q, const Game& g, bool during) {
   json rootInfo = std::move(out["rootInfo"]);
   dropGoFields(rootInfo);
   rootInfo["currentPlayer"] = playerName(g.pla() == P_BLACK ? 0 : 1);
+  if(!view.empty()) {
+    rootInfo["views"] = viewsJson(g.board.pos, r.views);
+    rootInfo["searches"] = 1;
+  }
   json reply = {
     {"id", q["id"]}, {"isDuringSearch", during}, {"turnNumber", g.moves}, {"engine", engineTag()},
     {"rootInfo", std::move(rootInfo)}, {"moveInfos", std::move(moveInfos)}, {"movesOutsideView", g.outside},
@@ -892,81 +1019,127 @@ json analysisReply(const json& q, const Game& g, bool during) {
     const Loc loc = E.search->getChosenMoveLoc(rand);
     reply["chosenMove"] = loc == Board::NULL_LOC ? json(nullptr) : siteMove(Board::actionOfMoveLoc(loc));
   }
-  if(flag(q, "includePolicy")) {
-    // The root's network policy over every legal action, highest first: a placement by its site string, and a pick by
-    // its own string "I:q,r", the first half of an edit, with the pick's prior (the network gives an edit's prior in
-    // two steps, the pick's and then the drop's at the pick's node). A network of the inputs version 13 gives no prior
-    // to an action of a blueprint equal to a lower-numbered one, which its search does not list: the lower one's
-    // action has that prior (NNInputs' NetActionMap), and the policy leaves the other out.
-    static float probs[NNPos::MAX_NN_POLICY_SIZE];
-    if(E.search->getPolicy(probs)) {
-      vector<int> legal;
-      GameRules::legal_actions(g.board.pos, legal);
-      vector<std::pair<double, string>> rows;
-      for(int a : legal)
-        if(probs[a] >= 0)
-          rows.push_back({probs[a], siteText(g.board.pos, a)});
-      std::stable_sort(rows.begin(), rows.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
-      json policy = json::array();
-      for(const auto& [prob, name] : rows)
-        policy.push_back({name, Global::roundDynamic(prob, 8)});
-      reply["policy"] = std::move(policy);
-    }
-  }
-  if(flag(q, "includeOwnership")) {
-    // The network's ownership at the root, over the view's hexes (index y * 67 + x, "view"), Blue's side: +1 where a
-    // cell of Blue's ends the game, -1 for Red's. Rounded as KataGo rounds the ownership, and never -0.
-    const NNOutput* root = E.search->rootNode != nullptr ? E.search->rootNode->getNNOutput() : nullptr;
-    if(root != nullptr && root->whiteOwnerMap != nullptr) {
-      json ownership = json::array();
-      for(int y = 0; y < bp::VIEW; y++)
-        for(int x = 0; x < bp::VIEW; x++)
-          ownership.push_back(Global::roundStatic(-root->whiteOwnerMap[NNPos::xyToPos(x, y, root->nnXLen)], 1000000.0) + 0.0);
-      reply["ownership"] = std::move(ownership);
-    }
-  }
+  // The rule's view's search has the root's evaluation at its root; a search in another view takes the rule's view's.
+  const NNOutput* root = !view.empty() ? r.ruleEval.get() : tree != nullptr ? tree->getNNOutput() : nullptr;
+  rootMaps(q, g, root, reply);
   reply["view"] = viewJson(g.board.pos);
   return reply;
 }
 
-// A search in slices (design 04, "Search in slices"): the query that started it, its game, and where it is. The
-// playouts are run as runWholeSearch runs them (search.cpp), only paused between slices, so the slices of a search
-// add up to one whole search of the same visits.
-struct Running {
-  json query;
-  std::unique_ptr<Game> game;
-  SearchThread* thread = nullptr;
-  int64_t maxVisits = 0, nonPlayoutVisits = 0, playouts = 0;
-  int64_t sliceVisits = 0;  // 0: by time
-  double sliceSeconds = 0;
-};
-Running* RUN = nullptr;
+// The analysis reply of the root's views (RootViews::Searches) from the searches done and the one in slices that has
+// played: the candidates of every view, by their checks' values and then their passes', and the root's values, the
+// best candidate's. The rootInfo has no raw values of the network: each search has its own root.
+json viewsReply(const Running& r, bool during) {
+  const json& q = r.query;
+  const Game& g = *r.game;
+  json res;
+  RootViews::Choice choice;
+  if(!r.searches->result(res, choice, r.thread != nullptr && r.playouts > 0 ? E.search : nullptr))
+    return errorReply(q["id"], {"", "the search gave no analysis"});
+  const int pvLen = analysisPVLen(q);
+  // Each candidate's line from the root in the view that names its move ("view", else the root's own). No tree: each
+  // search's tree went with the next search.
+  json moveInfos = json::array();
+  for(json& mi : res["moveInfos"]) {
+    const string view = mi.contains("view") ? mi["view"].get<string>() : string();
+    if(siteMoveInfo(g, view, nullptr, pvLen, mi) < 0)
+      continue;
+    mi.erase("view");
+    moveInfos.push_back(std::move(mi));
+  }
+  json rootInfo = std::move(res["rootInfo"]);
+  dropGoFields(rootInfo);
+  rootInfo["currentPlayer"] = playerName(g.pla() == P_BLACK ? 0 : 1);
+  rootInfo["views"] = viewsJson(g.board.pos, r.views);
+  json reply = {
+    {"id", q["id"]}, {"isDuringSearch", during}, {"turnNumber", g.moves}, {"engine", engineTag()},
+    {"rootInfo", std::move(rootInfo)}, {"moveInfos", std::move(moveInfos)}, {"movesOutsideView", g.outside},
+  };
+  // The best check or pass: the search's choice, with no temperature (RootViews::search, as GTP's genmove).
+  if(flag(q, "chooseMove") && !during)
+    reply["chosenMove"] = reply["moveInfos"].empty() ? json(nullptr) : reply["moveInfos"][0]["move"];
+  rootMaps(q, g, r.ruleEval.get(), reply);
+  reply["view"] = viewJson(g.board.pos);
+  return reply;
+}
+
+json analysisReply(const Running& r, bool during) {
+  return r.searches != nullptr ? viewsReply(r, during) : searchReply(r, during);
+}
 
 void endRunning() {
   if(RUN == nullptr)
     return;
-  E.search->endManualSearch(*RUN->thread);
-  delete RUN->thread;
+  if(RUN->thread != nullptr) {
+    E.search->endManualSearch(*RUN->thread);
+    delete RUN->thread;
+  }
+  E.search->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN();  // the root's views' (RootViews::Searches)
   delete RUN;
   RUN = nullptr;
 }
 
-// One slice of the running search; its reply. When the search reaches its visits, it ends.
+// The visits of a search of the root's views with its share of the query's: runWholeSearch's with that searchFactor.
+int64_t shareOfVisits(int64_t visits, double share) {
+  return (int64_t)std::ceil(std::min((double)((int64_t)1 << 62), visits * share));
+}
+
+// Begins the next search of the root's views (searches->next()), in slices.
+void beginViewSearch(Running& r) {
+  E.search->setPosition(r.searches->pla(), r.searches->board(), r.searches->hist());
+  r.maxVisits = shareOfVisits(r.visits, r.searches->share());
+  r.playouts = 0;
+  r.more = false;
+  E.search->beginSearch(false);
+  r.nonPlayoutVisits = E.search->getRootVisits();
+  r.thread = new SearchThread(0, *E.search);
+}
+
+// Ends the search of the root's views that runs in slices, gives it to searches, and readies the next one, if any.
+// False when the search gave no analysis.
+bool endViewSearch(Running& r) {
+  E.search->endManualSearch(*r.thread);
+  delete r.thread;
+  r.thread = nullptr;
+  if(!r.searches->done(*E.search, Board::NULL_LOC))
+    return false;
+  r.more = r.searches->next();
+  return true;
+}
+
+// One slice of the running search; its reply. When the search reaches its visits, it ends: with the root's views, the
+// slice goes on into the next search, and the last search's end ends the analysis.
 json runSlice() {
   Running& r = *RUN;
   ClockTimer timer;
   int64_t done = 0;
-  while(r.playouts + r.nonPlayoutVisits < r.maxVisits) {
+  while(true) {
+    if(r.thread != nullptr && r.playouts + r.nonPlayoutVisits >= r.maxVisits) {
+      if(r.searches == nullptr)
+        break;
+      if(!endViewSearch(r)) {
+        const json reply = errorReply(r.query["id"], {"", "the search gave no analysis"});
+        endRunning();
+        return reply;
+      }
+    }
     if(r.sliceVisits > 0 ? done >= r.sliceVisits : (done >= 1 && timer.getSeconds() >= r.sliceSeconds))
       break;
+    if(r.thread == nullptr) {
+      if(!r.more)
+        break;
+      beginViewSearch(r);
+      continue;  // a search can reach its visits with its root's
+    }
     const double left = double(r.maxVisits - r.playouts - r.nonPlayoutVisits);
     if(E.search->runSinglePlayout(*r.thread, left)) {
       r.playouts++;
       done++;
     }
   }
-  const bool during = r.playouts + r.nonPlayoutVisits < r.maxVisits;
-  const json reply = analysisReply(r.query, *r.game, during);
+  const bool during =
+    r.searches == nullptr ? r.playouts + r.nonPlayoutVisits < r.maxVisits : r.thread != nullptr || r.more;
+  const json reply = analysisReply(r, during);
   if(!during)
     endRunning();
   return reply;
@@ -1029,6 +1202,13 @@ json analyze(const json& q) {
   const json* seed = field(q, "seed");
   if(seed != nullptr && !seed->is_string() && !seed->is_number_unsigned())
     return errorReply(q["id"], {"seed", "seed is a string or a non-negative integer"});
+  // The search of the root's views (RootViews): the query's field, by default the settings' rootViews.
+  bool rootViews = E.rootViews;
+  if(const json* v = field(q, "rootViews")) {
+    if(!v->is_boolean())
+      return errorReply(q["id"], {"rootViews", "rootViews is true or false: whether the search covers the root's views"});
+    rootViews = v->get<bool>();
+  }
   int64_t sliceVisits = 0;
   double sliceSeconds = 0;
   const json* slice = field(q, "slice");
@@ -1045,23 +1225,75 @@ json analyze(const json& q) {
       return errorReply(q["id"], {"overrideSettings", "a search in slices has no maxTime: stop it by terminate"});
   }
   endRunning();  // one search at a time: a new query ends the one before
+  std::unique_ptr<Running> r(new Running());
+  r->query = q;
+  r->views = rootViews ? RootViews::cover(g->board) : vector<string>{""};
+  r->visits = visits;
+  r->sliceVisits = sliceVisits;
+  r->sliceSeconds = sliceSeconds;
+  const bool ruleView = r->views.size() == 1 && r->views[0].empty();
   p.maxVisits = visits;
   p.maxPlayouts = (int64_t)1 << 50;
   p.maxTime = maxTime;
   E.search->setParams(p);
-  // The root's ownership needs its evaluation with the ownership head's map.
-  E.search->setAlwaysIncludeOwnerMap(flag(q, "includeOwnership"));
-  E.search->setPosition(g->pla(), g->board, g->hist);
+  // The root's ownership needs its evaluation with the ownership head's map. A search in another view or in more
+  // views takes the policy and the ownership from the root's evaluation in the rule's view, as the search of the
+  // rule's view has it at its root (Search::computeRootNNEvaluation).
+  E.search->setAlwaysIncludeOwnerMap(ruleView && flag(q, "includeOwnership"));
+  if(!ruleView && (flag(q, "includeOwnership") || flag(q, "includePolicy"))) {
+    E.search->setPosition(g->pla(), g->board, g->hist);
+    NNResultBuf buf;
+    E.search->computeRootNNEvaluation(buf, flag(q, "includeOwnership"));
+    r->ruleEval = buf.result;
+  }
+  if(r->views.size() == 1) {
+    // One search: in the rule's view, or in the one view that holds every legal placement.
+    const Board* board = &g->board;
+    std::unique_ptr<Board> viewed;
+    if(!ruleView) {
+      viewed.reset(new Board(g->board));
+      string why;
+      RootViews::setBoardView(*viewed, r->views[0], why);
+      board = viewed.get();
+    }
+    E.search->setPosition(g->pla(), *board, g->hist);
+  }
   // Root noise draws from the search thread's random numbers, seeded with the query's "seed" in place of the engine's
   // and the count of searches reset, so the same request draws the same noise whatever came before (design 04,
-  // "Reproducible analysis").
+  // "Reproducible analysis"). Each search of the root's views counts one more search, and so has its own seed.
   E.search->randSeed = "analysis:" + seedText(q);
   E.search->numSearchesBegun = 0;
-  if(slice == nullptr) {
-    E.search->runWholeSearch(g->pla());
-    return analysisReply(q, *g, false);
+  r->game = std::move(g);
+  if(r->views.size() > 1) {
+    // The passes and the checks (RootViews::Searches), each with its share of the visits and of maxTime.
+    RootViews::Report report;
+    report.perspective = P_BLACK;
+    report.analysisPVLen = 2 * analysisPVLen(q) + 1;  // as searchReply's
+    report.preventEncore = false;
+    report.includePVVisits = flag(q, "includePVVisits");
+    r->searches.reset(new RootViews::Searches(
+      r->game->board, r->game->hist, r->game->pla(), r->views, E.rootViewSettings, report));
+    r->more = r->searches->next();
+    if(slice == nullptr) {
+      bool suc = true;
+      while(suc && r->more) {
+        E.search->setPosition(r->searches->pla(), r->searches->board(), r->searches->hist());
+        E.search->runWholeSearch(nullptr, nullptr, false, TimeControls(), r->searches->share());
+        suc = r->searches->done(*E.search, Board::NULL_LOC);
+        r->more = suc && r->searches->next();
+      }
+      E.search->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN();
+      return suc ? analysisReply(*r, false) : errorReply(q["id"], {"", "the search gave no analysis"});
+    }
+    RUN = r.release();
+    return runSlice();
   }
-  RUN = new Running{q, std::move(g), nullptr, visits, 0, 0, sliceVisits, sliceSeconds};
+  if(slice == nullptr) {
+    E.search->runWholeSearch(r->game->pla());
+    return analysisReply(*r, false);
+  }
+  r->maxVisits = visits;
+  RUN = r.release();
   E.search->beginSearch(false);
   RUN->nonPlayoutVisits = E.search->getRootVisits();
   RUN->thread = new SearchThread(0, *E.search);
@@ -1081,7 +1313,7 @@ json terminateQuery(const json& q) {
   const json id = q.contains("terminateId") ? q["terminateId"] : q["id"];
   if(!isRunning(id))
     return errorReply(q["id"], {"terminateId", "no search in slices runs with this id"});
-  json reply = analysisReply(RUN->query, *RUN->game, false);
+  json reply = analysisReply(*RUN, false);
   reply["terminated"] = true;
   endRunning();
   return reply;
