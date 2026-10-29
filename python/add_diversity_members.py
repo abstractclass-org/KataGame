@@ -38,7 +38,7 @@ import sys
 
 import torch
 
-from add_extended_inputs import key_of, network
+from add_extended_inputs import key_of, network, widen
 from enclosure_add_regret_heads import group_names
 from katago.train import modelconfigs
 
@@ -76,7 +76,8 @@ def convert(ckpt, seed=0, latent_scale=LATENT_SCALE):
     fresh = new_model.state_dict()
     latent = fresh[GLOBAL][:, old_n:].clone() * latent_scale
     latent[:, 0] = 0.0
-    added = [k for k in fresh if k not in old_model.state_dict()]
+    old_keys = set(old_model.state_dict())
+    added = [k for k in fresh if k not in old_keys]
     assert added and all(k.startswith(HEAD) for k in added), added
 
     touched = []
@@ -120,8 +121,7 @@ def rebuild_optimizer(ckpt, old_model, new_model, old_n, new_n):
                 if n == GLOBAL:
                     for k, v in state.items():
                         if torch.is_tensor(v) and v.dim() >= 2:
-                            assert v.shape[1] == old_n, (k, tuple(v.shape), old_n)
-                            state[k] = torch.cat([v, v.new_zeros((v.shape[0], new_n - old_n))], dim=1)
+                            state[k] = widen(v, old_n, new_n)
                             widened.append(k)
                 new_state[i] = state
             group["params"].append(i)

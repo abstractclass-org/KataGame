@@ -29,10 +29,10 @@ EXPECTED_Q_VALUE_TARGETS_NCMOVE_CHANNELS = 3
 # Data format version 2 files (recorded in channel 63 of each row) had only 64 channels; they are zero-padded
 # up to this width when shuffling, which correctly encodes "not reanalyzed" for the version 3 channels. KataGame fork
 # (2026-10-29): the rows of the inputs version 14 have 84, with AZdb's 4 targets of the intrinsic value head after the
-# 80 (C++ GLOBAL_TARGET_NUM_CHANNELS_V14). Files of 80 and 84 merge at 84 (pad_inputs_to_widest), the rows of 80 with
-# those targets' weights at 0, and files of 80 alone stay 80.
+# 80 (C++ GLOBAL_TARGET_NUM_CHANNELS_V14). Each width stays as it is, and files of 80 and 84 do not merge
+# (refuse_mixed_global_targets).
 GLOBAL_TARGETS_NC_CHANNELS = 80
-GLOBAL_TARGETS_NC_CHANNELS_V14 = 84
+GLOBAL_TARGETS_NC_CHANNELS_V14 = GLOBAL_TARGETS_NC_CHANNELS + 4
 
 # Empirically measured per-row sizes for 19x19 data, used only for the rough resource-cost
 # estimates printed by -dry-run-print-resource-cost (and informationally on normal runs).
@@ -187,6 +187,17 @@ def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     padded[:, :num_channels] = globalTargetsNC
     return padded
 
+# KataGame fork (2026-10-29): the rows of the inputs version 14 (84 global targets) do not merge with the rows of
+# earlier versions (80). AZdb's run trains on its own rows only (the engine repository's
+# games/blueprints/docs/research/diversity-players.md, "The matchmaker and one trainer"): a row of an earlier version
+# holds no member's latent, and pad_inputs_to_widest would give it a latent of zeros, which is no member's.
+def refuse_mixed_global_targets(globalTargetsNCList: list[np.ndarray]) -> None:
+    widths = sorted({arr.shape[1] for arr in globalTargetsNCList})
+    if len(widths) > 1:
+        raise ValueError(f"files of {widths} global targets: the rows of the inputs version 14 "
+                         f"({GLOBAL_TARGETS_NC_CHANNELS_V14}) merge only with each other (AZdb's run trains on its "
+                         "own rows only)")
+
 # Enclosure fork (owner, 2026-10-03): valueTargetsNCHW gained C5-6 (the territory income), and C7 (2026-10-14: the
 # next mover's nodes, for the symmetries of policy channel 1, not a target); rows written before have 5 or 7
 # channels and are zero-padded (their C69 and C75 flags are 0, so the padding is never read).
@@ -281,9 +292,9 @@ def shardify(
     if len(binaryInputNCHWPackedList) <= 0:
         return num_files_not_found # Early quit since we don't know shapes
 
+    refuse_mixed_global_targets(globalTargetsNCList)
     pad_planes_to_widest(binaryInputNCHWPackedList, globalInputNCList)
     pad_inputs_to_widest(globalInputNCList)
-    pad_inputs_to_widest(globalTargetsNCList)
     concatenated_arrs = (
         joint_concatenate(
             [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList]
@@ -389,9 +400,9 @@ def merge_bucket(
         print("WARNING: empty merge bucket: ", out_tmp_dir)
         return []
 
+    refuse_mixed_global_targets(globalTargetsNCList)
     pad_planes_to_widest(binaryInputNCHWPackedList, globalInputNCList)
     pad_inputs_to_widest(globalInputNCList)
-    pad_inputs_to_widest(globalTargetsNCList)
     concatenated_arrs = (
         joint_concatenate(
             [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList]

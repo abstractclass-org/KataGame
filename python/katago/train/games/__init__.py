@@ -150,6 +150,23 @@ def canonical_labels(game):
     return getattr(game, "CANONICAL_LABELS", False)
 
 
+def num_global_inputs(game, inputs_version):
+    """The global inputs of a row of the game at the inputs version, in their order: the game's, version 9's playout
+    inputs, version 10's extended inputs, version 11's turn inputs, version 14's latent (versions 12 and 13 add none).
+    A group starts where the version before the one that adds it ends: the turn inputs at num_global_inputs(game, 10),
+    the latent at num_global_inputs(game, 13)."""
+    n = game.NUM_GLOBAL_INPUTS
+    if inputs_version >= 9:
+        n += ROW_PLAYOUT_INPUTS
+    if inputs_version >= 10:
+        n += extended_global_inputs(game)
+    if inputs_version >= 11:
+        n += turn_global_inputs(game)
+    if inputs_version >= 14:
+        n += ROW_DIVERSITY_INPUTS
+    return n
+
+
 def row_bytes(game, inputs_version=9):
     """The bytes of one training row of the game, uncompressed: the row writer's arrays (ROW_ above) on the game's
     largest board, without the metadata inputs, which the shuffle leaves out. Self-play writes rows of the inputs
@@ -157,19 +174,13 @@ def row_bytes(game, inputs_version=9):
     12, 13 or 14 with its config's inputsVersion."""
     points = game.MAX_BOARD_LEN ** 2
     moves = points * game.POLICY_CHANNELS + 1  # the policy: every point's channels, then pass
-    global_inputs = game.NUM_GLOBAL_INPUTS + (ROW_PLAYOUT_INPUTS if inputs_version >= 9 else 0)
+    global_inputs = num_global_inputs(game, inputs_version)
     planes = 1 + game.NUM_SPATIAL_INPUTS
     if inputs_version >= 10:
-        global_inputs += extended_global_inputs(game)
         planes += extended_spatial_inputs(game)
-    if inputs_version >= 11:
-        global_inputs += turn_global_inputs(game)
     if inputs_version >= 12:
         planes += area_spatial_inputs(game)
-    global_targets = ROW_GLOBAL_TARGETS
-    if inputs_version >= 14:
-        global_inputs += ROW_DIVERSITY_INPUTS
-        global_targets += ROW_DIVERSITY_TARGETS
+    global_targets = ROW_GLOBAL_TARGETS + (ROW_DIVERSITY_TARGETS if inputs_version >= 14 else 0)
     return (
         # binaryInputNCHWPacked: KataGo's on-board plane, then the game's planes, a bit a point
         planes * ((points + 7) // 8)
@@ -229,18 +240,16 @@ def mask_targets(game, binary_inputs, global_inputs, value_targets, global_targe
 
 
 def apply_symmetry_global_inputs(game, global_inputs, symmetry):
-    """The rows' global inputs (N, C) at the symmetry: in the rows of the inputs versions 10 to 14, the game's extended
-    global inputs (after version 9's) through its apply_symmetry_extended_global_inputs. The other global inputs name no
-    point, so they stay (version 14's latent too), as do the rows of the older versions and of a game without the
-    member."""
+    """The rows' global inputs (N, C) at the symmetry: in the rows of the inputs version 10 and later, the game's
+    extended global inputs (after version 9's) through its apply_symmetry_extended_global_inputs. The other global
+    inputs name no point, so they stay (version 14's latent too), as do the rows of the older versions, which are
+    narrower than version 10's, and of a game without the member."""
     mapping = getattr(game, "apply_symmetry_extended_global_inputs", None)
     extended = extended_global_inputs(game)
     if mapping is None or symmetry == 0 or extended == 0:
         return global_inputs
-    start = game.NUM_GLOBAL_INPUTS + ROW_PLAYOUT_INPUTS
-    turns = turn_global_inputs(game)
-    if global_inputs.shape[1] not in (start + extended, start + extended + turns,
-                                      start + extended + turns + ROW_DIVERSITY_INPUTS):
+    start = num_global_inputs(game, 9)
+    if global_inputs.shape[1] < num_global_inputs(game, 10):
         return global_inputs
     out = global_inputs.clone()
     out[:, start:start + extended] = mapping(global_inputs[:, start:start + extended], symmetry)

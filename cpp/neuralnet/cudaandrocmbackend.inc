@@ -4548,19 +4548,17 @@ struct ValueHead {
       bytes = std::max(bytes,sbS2Mul->requiredWorkspaceBytes(cudaHandles));
       bytes = std::max(bytes,sbMixMul->requiredWorkspaceBytes(cudaHandles));
     }
-    for(const std::unique_ptr<RegretHeadLayers>& r: regretHeads) {
-      bytes = std::max(bytes,r->conv1.requiredWorkspaceBytes(cudaHandles,batchSize));
-      bytes = std::max(bytes,r->mul2.requiredWorkspaceBytes(cudaHandles));
-      bytes = std::max(bytes,r->mul3.requiredWorkspaceBytes(cudaHandles));
-      bytes = std::max(bytes,sizeof(float)*batchSize*r->c1*nnXLen*nnYLen);
-    }
-    if(intrinsicHead != nullptr) {
-      const RegretHeadLayers& r = *intrinsicHead;
+    //RGSC's heads, then AZdb's intrinsic value head (KataGame fork, 2026-10-29), with the same layers.
+    auto headBytes = [&](const RegretHeadLayers& r) {
       bytes = std::max(bytes,r.conv1.requiredWorkspaceBytes(cudaHandles,batchSize));
       bytes = std::max(bytes,r.mul2.requiredWorkspaceBytes(cudaHandles));
       bytes = std::max(bytes,r.mul3.requiredWorkspaceBytes(cudaHandles));
       bytes = std::max(bytes,sizeof(float)*batchSize*r.c1*nnXLen*nnYLen);
-    }
+    };
+    for(const std::unique_ptr<RegretHeadLayers>& r: regretHeads)
+      headBytes(*r);
+    if(intrinsicHead != nullptr)
+      headBytes(*intrinsicHead);
 
     return bytes;
   }
@@ -4655,8 +4653,7 @@ struct ValueHead {
     //Enclosure fork (owner, 2026-10-04): RGSC's heads, at every evaluation (the search reads them), as the value
     //head above: conv, norm and activation, pooling (in float), hidden layer, one output. KataGame fork (2026-10-29):
     //then AZdb's intrinsic value head the same way, whose two outputs go to intrinsicBuf, row by row.
-    for(size_t h = 0; h < regretHeads.size() + (intrinsicHead != nullptr ? 1 : 0); h++) {
-      const RegretHeadLayers& r = h < regretHeads.size() ? *regretHeads[h] : *intrinsicHead;
+    auto applyHead = [&](const RegretHeadLayers& r, float* out) {
       SizedBuf<void*> r1Out(scratch->allocator, scratch->getBufSizeXY(r.c1));
       SizedBuf<void*> r1Out2(scratch->allocator, scratch->getBufSizeXY(r.c1));
       SizedBuf<void*> r1Mean(scratch->allocator, scratch->getBufSizeFloat(r.c1*3));
@@ -4676,10 +4673,13 @@ struct ValueHead {
       CUDA_ERR(name.c_str(),cudaPeekAtLastError());
       r.mul2.apply(cudaHandles,scratch,batchSize,r1Mean.buf,r2Out.buf,workspaceBuf,workspaceBytes);
       r.bias2.apply(cudaHandles,batchSize,r2Out.buf);
-      float* out = h < regretHeads.size() ? extra.regretBuf + h * batchSize : extra.intrinsicBuf;
       r.mul3.apply(cudaHandles,scratch,batchSize,r2Out.buf,out,workspaceBuf,workspaceBytes);
       r.bias3.apply(cudaHandles,batchSize,out);
-    }
+    };
+    for(size_t h = 0; h < regretHeads.size(); h++)
+      applyHead(*regretHeads[h], extra.regretBuf + h * batchSize);
+    if(intrinsicHead != nullptr)
+      applyHead(*intrinsicHead, extra.intrinsicBuf);
   }
 
 };

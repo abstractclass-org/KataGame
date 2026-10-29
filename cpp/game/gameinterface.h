@@ -273,8 +273,9 @@
  *                           in a game, the reward's divisor. Diversity::Normalizer (a type) is their running
  *                           normalization: Normalizer(mean, sd) from each statistic's mean and standard deviation,
  *                           and z(x, out) const writes the normalized statistics of x. Blueprints' 57 statistics
- *                           (game/blueprints/diversity.h) and 60 moves. Default: none, 0 statistics, and every
- *                           member's reward is 0 (diversityStatistics, diversityStatisticsOf, DiversityNormalizer).
+ *                           (game/blueprints/diversity.h) and 60 moves. Default: none, 0 statistics, 1 move, and
+ *                           every member's reward is 0 (diversityStatistics, diversityMoves, diversityStatisticsOf,
+ *                           DiversityNormalizer).
  */
 
 #include <algorithm>

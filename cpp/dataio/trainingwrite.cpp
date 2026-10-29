@@ -276,7 +276,8 @@ void FinishedGameData::printDebug(ostream& out) const {
 static const int POLICY_TARGET_NUM_CHANNELS = 2;
 static const int GLOBAL_TARGET_NUM_CHANNELS = 80;
 //KataGame fork (2026-10-29): the rows of the inputs version 14 add AZdb's 4 targets of the intrinsic value head after
-//those (C80-83, setLastRowIntrinsic).
+//those (C80-83, setLastRowIntrinsic). Only those rows: the rows of earlier versions keep their 80, so that a run's rows
+//and the trainers that read them do not change.
 static const int GLOBAL_TARGET_NUM_CHANNELS_V14 = GLOBAL_TARGET_NUM_CHANNELS + 4;
 static_assert(AZdb::NUM_MEMBERS == NNInputs::NUM_DIVERSITY_MEMBERS, "AZdb's members are the latent's");
 
@@ -307,7 +308,7 @@ TrainingWriteBuffers::TrainingWriteBuffers(int iVersion, int maxRws, int numBCha
    binaryInputNCHWPacked({maxRws, numBChannels, packedBoardArea}),
    globalInputNC({maxRws, numFChannels}),
    policyTargetsNCMove({maxRws, POLICY_TARGET_NUM_CHANNELS, NNPos::getPolicySize(xLen,yLen)}),
-   globalTargetsNC({maxRws, numGlobalTargetChannelsOf(iVersion)}),
+   globalTargetsNC({maxRws, numGlobalTargetChannels}),
    scoreDistrN({maxRws, xLen*yLen*2+NNPos::EXTRA_SCORE_DISTR_RADIUS*2}),
    valueTargetsNCHW({maxRws, VALUE_SPATIAL_TARGET_NUM_CHANNELS, yLen, xLen}),
    qValueTargetsNCMove({maxRws, QVALUE_SPATIAL_TARGET_NUM_CHANNELS, NNPos::getPolicySize(xLen,yLen)}),
@@ -1430,7 +1431,7 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
             memberOf(nextPlayer)
           );
           //KataGame fork (2026-10-29): AZdb's targets of the intrinsic value head (0 without a state).
-          if(diversityRows && !intrinsicTargets.aTarget.empty())
+          if(!intrinsicTargets.aTarget.empty())
             writeBuffers->setLastRowIntrinsic(
               intrinsicTargets.aTarget[turnAfterStart], intrinsicTargets.aWeight[turnAfterStart],
               intrinsicTargets.bTarget[turnAfterStart], intrinsicTargets.bWeight[turnAfterStart]);

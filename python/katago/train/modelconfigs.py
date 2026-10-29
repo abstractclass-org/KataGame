@@ -74,7 +74,7 @@ def with_game(config: ModelConfig, game_name: Union[str,None]) -> ModelConfig:
 # global inputs, for every game: DIVERSITY_MEMBERS inputs, 1 at the member's and 0 elsewhere (C++ NNInputs V14,
 # exported as model version 23; the engine repository's games/blueprints/docs/research/diversity-players.md).
 PLAYOUT_GLOBAL_INPUTS = 2
-DIVERSITY_MEMBERS = 5
+DIVERSITY_MEMBERS = games.ROW_DIVERSITY_INPUTS
 INPUTS_VERSIONS = (8, 9, 10, 11, 12, 13, 14)
 
 def get_inputs_version(config: ModelConfig):
@@ -95,12 +95,7 @@ def get_num_global_input_features(config: ModelConfig):
     version = get_version(config)
     if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16 or version == 17:
         assert get_inputs_version(config) in INPUTS_VERSIONS
-        game = get_game(config)
-        playout_inputs = PLAYOUT_GLOBAL_INPUTS if get_inputs_version(config) >= 9 else 0
-        extended = games.extended_global_inputs(game) if get_inputs_version(config) >= 10 else 0
-        turns = games.turn_global_inputs(game) if get_inputs_version(config) >= 11 else 0
-        latent = DIVERSITY_MEMBERS if get_inputs_version(config) >= 14 else 0
-        return game.NUM_GLOBAL_INPUTS + playout_inputs + extended + turns + latent
+        return games.num_global_inputs(get_game(config), get_inputs_version(config))
     else:
         assert(False)
 

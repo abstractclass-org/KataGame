@@ -893,8 +893,7 @@ def main(args):
             if args["regret_heads"] is not None:
                 assert args["regret_heads"] <= len(regret_heads), f"the model has {len(regret_heads)} RGSC heads"
                 regret_heads = regret_heads[:args["regret_heads"]]
-            writeln(len(regret_heads))
-            for head_name, head in regret_heads:
+            def write_regret_head(head_name, head):
                 writeln(name+"."+head_name)
                 write_conv(name+"."+head_name+".conv1", head.conv1)
                 write_biasmask(name+"."+head_name+".bias1", head.bias1)
@@ -904,6 +903,9 @@ def main(args):
                 write_activation(name+"."+head_name+".act2", head.act2)
                 write_matmul(name+"."+head_name+".linear_out", head.linear_out.weight)
                 write_matbias(name+"."+head_name+".bias_out", head.linear_out.bias)
+            writeln(len(regret_heads))
+            for head_name, head in regret_heads:
+                write_regret_head(head_name, head)
             # Export stage 2 (aux version 2): the score belief (model_pytorch.ValueHead.forward): its length in
             # bins, the bin width in points, the offset feature's scale (0.05 per bin from the middle), then the
             # layers. The parity term is left out: its vector is zero in the Enclosure fork (no score parity).
@@ -921,16 +923,7 @@ def main(args):
             # KataGame fork (2026-10-29): AZdb's intrinsic value head (model_pytorch.RegretHead with two outputs, A
             # then B), as RGSC's heads are written.
             if valuehead.intrinsic_head:
-                head_name, head = "intrinsic_value", valuehead.intrinsic_value
-                writeln(name+"."+head_name)
-                write_conv(name+"."+head_name+".conv1", head.conv1)
-                write_biasmask(name+"."+head_name+".bias1", head.bias1)
-                write_activation(name+"."+head_name+".act1", head.act1)
-                write_matmul(name+"."+head_name+".linear2", head.linear2.weight)
-                write_matbias(name+"."+head_name+".bias2", head.linear2.bias)
-                write_activation(name+"."+head_name+".act2", head.act2)
-                write_matmul(name+"."+head_name+".linear_out", head.linear_out.weight)
-                write_matbias(name+"."+head_name+".bias_out", head.linear_out.bias)
+                write_regret_head("intrinsic_value", valuehead.intrinsic_value)
 
     def write_model(model):
         write_trunk("model",model)

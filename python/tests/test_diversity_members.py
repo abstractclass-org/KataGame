@@ -23,6 +23,7 @@ from katago.train import data_processing_pytorch, games, modelconfigs  # noqa: E
 from katago.train.games import blueprints  # noqa: E402
 from katago.train.metrics_pytorch import Metrics  # noqa: E402
 from katago.train.model_pytorch import Model  # noqa: E402
+from test_area_inputs import AREAS, V11_PLANES, read, write_rows  # noqa: E402
 from test_extended_inputs import checkpoint, config, flat, inputs, networks, sgd  # noqa: E402
 from test_game_module import random_batch  # noqa: E402
 
@@ -78,15 +79,29 @@ def test_the_reader_and_the_shuffle_take_rows_of_80_and_84_global_targets():
     padded = data_processing_pytorch.pad_global_targets_nc(old)
     assert padded.shape == (2, 84) and not padded[:, 80:].any() and padded[:, :80].all()
     assert data_processing_pytorch.pad_global_targets_nc(new) is new
-    # The shuffle keeps each width, and files of both merge at 84; files of 80 alone stay 80.
+    # The shuffle keeps each width, and refuses to merge files of 80 with files of 84: the run of version 14 trains on
+    # its own rows only.
     assert shuffle.pad_global_targets_nc(old) is old and shuffle.pad_global_targets_nc(new) is new
     assert shuffle.pad_global_targets_nc(np.ones((1, 64), dtype=np.float32)).shape == (1, 80)
-    merged = [old, new]
-    shuffle.pad_inputs_to_widest(merged)
-    assert [a.shape for a in merged] == [(2, 84), (3, 84)] and not merged[0][:, 80:].any()
-    alone = [old, old.copy()]
-    shuffle.pad_inputs_to_widest(alone)
-    assert [a.shape for a in alone] == [(2, 80), (2, 80)]
+    shuffle.refuse_mixed_global_targets([old, old.copy()])
+    shuffle.refuse_mixed_global_targets([new, new.copy()])
+    with pytest.raises(ValueError, match=r"\[80, 84\] global targets"):
+        shuffle.refuse_mixed_global_targets([old, new])
+
+
+def test_a_model_of_version_14_reads_the_rows_of_its_version_only(tmp_path):
+    write_rows(tmp_path / "v13.npz", V11_PLANES + AREAS, 0)
+    with np.load(tmp_path / "v13.npz") as z:
+        arrays = dict(z)
+    arrays["globalInputNC"] = np.concatenate([arrays["globalInputNC"], latent(4, 3).numpy()], axis=1)
+    np.savez_compressed(tmp_path / "v14.npz", **arrays)
+    (rows,) = read([tmp_path / "v14.npz"], 14)
+    assert torch.equal(rows["globalInputNC"][:, V13_GLOBALS:], latent(4, 3))
+    # A row of version 13 holds no member's latent, and a model of version 13 still reads it.
+    with pytest.raises(ValueError, match="without the latent"):
+        read([tmp_path / "v13.npz"], 14)
+    (rows,) = read([tmp_path / "v13.npz"], 13)
+    assert rows["globalInputNC"].shape[1] == V13_GLOBALS
 
 
 def intrinsic_model(seed=1, kind="b6c96"):

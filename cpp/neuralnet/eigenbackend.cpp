@@ -2440,7 +2440,8 @@ struct ValueHead {
       sbMixMul->apply(&v1Mean, aux->sbMix);
       sbMixBias->apply(aux->sbMix);
     }
-    //KataGame fork: AZdb's intrinsic value head, at every evaluation (the search and the training rows read it).
+    //KataGame fork: AZdb's intrinsic value head, at every evaluation (self-play records it at the roots for the
+    //training rows, and the search will read it at its leaves).
     if(intrinsic != NULL)
       intrinsicHead->apply(handle, scratch, trunk, intrinsic, mask, maskSum, convWorkspace);
   }

@@ -98,7 +98,6 @@ def test_a_row_has_the_bytes_of_the_row_writers_arrays():
     assert GLOBAL_TARGETS_NC_CHANNELS == games.ROW_GLOBAL_TARGETS + games.ROW_DIVERSITY_TARGETS
     assert shuffle.GLOBAL_TARGETS_NC_CHANNELS == games.ROW_GLOBAL_TARGETS
     assert modelconfigs.PLAYOUT_GLOBAL_INPUTS == games.ROW_PLAYOUT_INPUTS
-    assert modelconfigs.DIVERSITY_MEMBERS == games.ROW_DIVERSITY_INPUTS
     # Connect-4's V9 rows of its first run's check: 1,470 bytes (games/connect4/docs/decisions/training.md).
     assert games.row_bytes(games.get("connect4")) == 1470
     # Enclosure's rows, 186,167 bytes when measured (2026-10-02: V8, 5 value-target planes), with the 3 planes and the

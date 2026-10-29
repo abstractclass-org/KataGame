@@ -121,7 +121,14 @@ def read_npz_training_data(
                 return arr.reshape(num_whole_steps * batch_size, *rest)
 
             binaryInputNCHWPacked = fit_binary_input_nchw(select_rank_rows(npz["binaryInputNCHWPacked"]), num_bin_features, game)
-            globalInputNC = fit_global_input_nc(select_rank_rows(npz["globalInputNC"]), num_global_features)
+            globalInputNC = select_rank_rows(npz["globalInputNC"])
+            # KataGame fork (2026-10-29): a model of the inputs version 14 reads the rows of its version only. A row of
+            # an earlier version holds no member's latent, which fit_global_input_nc would leave at 0, no member's:
+            # AZdb's run trains on its own rows only (shuffle.refuse_mixed_global_targets).
+            if inputs_version >= 14 and globalInputNC.shape[1] < num_global_features:
+                raise ValueError(f"{npz_file}: rows of {globalInputNC.shape[1]} global inputs, without the latent of "
+                                 f"the inputs version 14 ({num_global_features})")
+            globalInputNC = fit_global_input_nc(globalInputNC, num_global_features)
             policyTargetsNCMove = select_rank_rows(npz["policyTargetsNCMove"]).astype(np.float32)
             globalTargetsNC = pad_global_targets_nc(select_rank_rows(npz["globalTargetsNC"]))
             scoreDistrN = select_rank_rows(npz["scoreDistrN"]).astype(np.float32)
@@ -386,7 +393,7 @@ def apply_history_dropout(game, batch_binaryInputNCHW, batch_globalInputNC, inpu
     if not turns:
         return out, batch_globalInputNC
     out_global = batch_globalInputNC.clone()
-    first = game.NUM_GLOBAL_INPUTS + games.ROW_PLAYOUT_INPUTS + games.extended_global_inputs(game)
+    first = games.num_global_inputs(game, 10)
     out_global[:, first:first + turns] *= include_history.repeat_interleave(turns // items, dim=1).to(batch_globalInputNC.dtype)
     return out, out_global
 

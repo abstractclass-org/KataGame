@@ -1996,7 +1996,7 @@ void NNEvaluator::evaluate(
     buf.result->swingValue = (float)(4.0 / (1.0 + exp(-rawSwing)));
     buf.result->swingRanking = (float)(buf.result->swingRanking * postProcessParams.outputScaleMultiplier);
   }
-  //KataGame fork (2026-10-29): AZdb's intrinsic returns, raw outputs (model_pytorch's IntrinsicHead) with the output
+  //KataGame fork (2026-10-29): AZdb's intrinsic returns, raw outputs (model_pytorch's intrinsic_value) with the output
   //scale. They are returns of the member, so they keep their sign for either player.
   if(buf.result->hasIntrinsic && !hadResultWithoutOwnerMap) {
     buf.result->intrinsicA = (float)(buf.result->intrinsicA * postProcessParams.outputScaleMultiplier);

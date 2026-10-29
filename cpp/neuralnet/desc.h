@@ -469,7 +469,7 @@ struct PolicyHeadDesc {
 //Enclosure fork (owner, 2026-10-04): one of RGSC's two heads (regret value, regret ranking; Tsai et al., ICLR
 //2026), in the value head's shape: conv, norm and activation, the value head's pooling, a hidden layer, one output
 //(model_pytorch.RegretHead). KataGame fork (2026-10-29): AZdb's intrinsic value head has the same shape with two
-//outputs (model_pytorch.IntrinsicHead), numOutputs at its parse.
+//outputs (model_pytorch.ValueHead.intrinsic_value, a RegretHead of 2 outputs), numOutputs at its parse.
 struct RegretHeadDesc {
   std::string name;
   ConvLayerDesc conv1;
@@ -534,9 +534,9 @@ struct ValueHeadDesc {
   MatBiasLayerDesc sbS3Bias;
   MatMulLayerDesc sbMixMul;        //pooled v1 -> the components' log weights
   MatBiasLayerDesc sbMixBias;
-  //KataGame fork (2026-10-29): AZdb's intrinsic value head (model_pytorch.IntrinsicHead), on the trunk, after the
-  //score belief. Version 17's second value-head option holds its version (0: none, 1: the head). Two raw outputs, A
-  //then B (NNOutput::intrinsicA, intrinsicB), scaled like the other outputs.
+  //KataGame fork (2026-10-29): AZdb's intrinsic value head (model_pytorch.ValueHead.intrinsic_value), on the trunk,
+  //after the score belief. Version 17's second value-head option holds its version (0: none, 1: the head). Two raw
+  //outputs, A then B (NNOutput::intrinsicA, intrinsicB), scaled like the other outputs.
   int intrinsicVersion;
   RegretHeadDesc intrinsicHead;
 
