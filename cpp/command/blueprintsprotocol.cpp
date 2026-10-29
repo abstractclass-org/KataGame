@@ -98,7 +98,6 @@ const char* PROTOCOL = "0.7.0";
 // change that can alter an analysis reply sets it to "", and the build then names itself. After that build's release,
 // it takes the released build's name.
 const char* SEARCH_SINCE = "";
-const char* RULES = "strategyjam-v3";  // version 3 of strategyjam.org's rules module (games/blueprints/README.md)
 const int DEFAULT_VISITS = 500;
 const char* KINDS[3] = {"plain", "star", "wall"};  // the site's names of a cell's kinds, bp::PLAIN to bp::WALL
 
@@ -161,8 +160,7 @@ struct Game {
   Player pla() const { return board.nextPla(); }  // the player to move, as the history takes it
 };
 
-// The site's moves and the engine's actions: siteQ, rulesX, siteText, isPick, siteFits, spanWith, limitText,
-// parseSiteMove, handAction and placementAction (command/blueprintssite.h, which the practice bot shares).
+// The site's rules, its moves and the engine's actions (command/blueprintssite.h, which the practice bot shares).
 using namespace BlueprintsSite;
 
 string playerName(int player) { return player == 0 ? "b" : "r"; }
@@ -210,69 +208,33 @@ void playAction(Game& g, int action) {
   g.hist.makeBoardMoveTolerant(g.board, Board::moveLocOfAction(action), g.pla(), false);
 }
 
-// Plays the site's move `text` in g: a placement as one action of the view, or through place_at_site outside it (then
-// *outsideView); an edit as its pick and its drop; a pass. ILLEGAL or LIMIT (the rules board), with the reason in why.
+// Plays the site's move `text` in g (readSiteMove): a placement as one action of the view, or through place_at_site
+// outside it (then *outsideView); an edit as its pick and its drop; a pass. ILLEGAL or LIMIT (the rules board), with
+// the reason in why, and g as it was.
 Played playSiteMove(Game& g, const string& text, bool& outsideView, string& why) {
   outsideView = false;
-  const Pos& p = g.board.pos;
-  if(GameRules::terminal(p)) {
-    why = "the game is over";
-    return Played::ILLEGAL;
+  const SiteMove m = readSiteMove(g.board.pos, text, scratch(0));
+  if(m.kind == SiteMove::ILLEGAL || m.kind == SiteMove::LIMIT) {
+    why = m.why;
+    return m.kind == SiteMove::ILLEGAL ? Played::ILLEGAL : Played::LIMIT;
   }
-  if(text == "pass") {  // a clock's timeout (GameRules::replay_tolerates)
-    playAction(g, GameRules::PASS_ACTION);
-    return Played::OK;
-  }
-  int k, q, r;
-  if(parseSiteMove(text, '@', k, q, r)) {
-    const int action = placementAction(p, k, q, r, text);
-    if(action >= 0) {
+  if(m.kind == SiteMove::ACTIONS) {
+    for(int action : m.actions)
       playAction(g, action);
-      return Played::OK;
-    }
-    const int x = rulesX(p, q), y = rulesY(p, r);
-    if(!siteFits(p, k, x, y)) {
-      why = text + " is not legal here";
-      return Played::ILLEGAL;
-    }
-    const int span = spanWith(bp::cells_box(p), p.hand[bp::turn_of(p.ply)][k], x, y);
-    if(span > bp::RULES_LEN) {
-      why = text + ": " + limitText(span);
-      return Played::LIMIT;
-    }
-    // Outside the view: on the rules board, and the front's history starts again from the position after it. The
-    // position keeps its own record of the last actions (the network's history planes), and the turn number goes on.
-    Pos& next = scratch(0);
-    next = p;
-    bp::place_at_site(next, k, q, r);
-    const int64_t turn = g.hist.getCurrentTurnNumber();
-    const Rules rules = g.hist.rules;
-    g.board.setPosition(next);
-    g.hist.clear(g.board, g.pla(), rules, 0);
-    g.hist.setInitialTurnNumber(turn + 1);
-    outsideView = true;
     return Played::OK;
   }
-  const size_t gt = text.find('>');
-  if(gt != string::npos) {
-    const string pick = text.substr(0, gt), drop = text.substr(gt + 1);
-    const int pickAction = handAction(p, pick);
-    if(pickAction < 0 || !isPick(p, pickAction)) {
-      why = text + " is not legal here: the pick " + pick + " is not";
-      return Played::ILLEGAL;
-    }
-    playAction(g, pickAction);
-    const int dropAction = handAction(g.board.pos, drop);
-    if(dropAction < 0) {
-      why = text + " is not legal here: no drop " + drop + " after the pick";
-      return Played::ILLEGAL;
-    }
-    playAction(g, dropAction);
-    return Played::OK;
-  }
-  why = "not a move: \"" + text + "\" (K@q,r places blueprint K's anchor cell on the hex q,r, I:q,r>J:q,r moves a "
-        "cell of blueprint I to blueprint J, and pass)";
-  return Played::ILLEGAL;
+  // Outside the view: on the rules board, and the front's history starts again from the position after it. The
+  // position keeps its own record of the last actions (the network's history planes), and the turn number goes on.
+  Pos& next = scratch(0);
+  next = g.board.pos;
+  bp::place_at_site(next, m.k, m.q, m.r);
+  const int64_t turn = g.hist.getCurrentTurnNumber();
+  const Rules rules = g.hist.rules;
+  g.board.setPosition(next);
+  g.hist.clear(g.board, g.pla(), rules, 0);
+  g.hist.setInitialTurnNumber(turn + 1);
+  outsideView = true;
+  return Played::OK;
 }
 
 // The rules and size fields are optional; anything but the site's rules is refused, and the board has no size.

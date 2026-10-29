@@ -8,10 +8,14 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include "../game/blueprints/gamerules.h"
 
 namespace BlueprintsSite {
+  // The site's rules: version 3 of strategyjam.org's rules module (the engine repository's games/blueprints/README.md).
+  constexpr const char* RULES = "strategyjam-v3";
+
   // The site's hex of the rules board's point (x, y).
   inline int siteQ(const blueprints::Position& p, int x) { return x - blueprints::RULES_RADIUS + p.offsetQ; }
   inline int siteR(const blueprints::Position& p, int y) { return y - blueprints::RULES_RADIUS + p.offsetR; }
@@ -123,6 +127,77 @@ namespace BlueprintsSite {
       return -1;
     const int action = bp::action_at(vx, vy, bp::PLACE + k);
     return bp::GameRules::is_legal(p, action) && siteText(p, action) == text ? action : -1;
+  }
+
+  // The site's move at a position, as the engine reads it (readSiteMove).
+  struct SiteMove {
+    // ACTIONS: the actions of the position's view that play it, one for a pass or a placement, the pick and the drop
+    // for an edit. OUTSIDE: a placement that the site's rule allows and the rules board holds, with a cell outside the
+    // view: blueprint k with its anchor cell on the site's hex (q, r). ILLEGAL, and LIMIT for the rules board's limit:
+    // the move is refused, for the reason in why.
+    enum Kind { ACTIONS, OUTSIDE, ILLEGAL, LIMIT } kind = ILLEGAL;
+    std::vector<int> actions;
+    int k = 0, q = 0, r = 0;
+    std::string why;
+  };
+
+  // The site's move `text` at p, for the player to move: the protocol's playSiteMove and the practice bot play what it
+  // gives, each in its own way for OUTSIDE. `work` is a position for the work (an edit's position after its pick).
+  inline SiteMove readSiteMove(const blueprints::Position& p, const std::string& text, blueprints::Position& work) {
+    namespace bp = blueprints;
+    SiteMove m;
+    if(bp::GameRules::terminal(p)) {
+      m.why = "the game is over";
+      return m;
+    }
+    if(text == "pass") {  // a clock's timeout (GameRules::replay_tolerates)
+      m.kind = SiteMove::ACTIONS;
+      m.actions = {bp::GameRules::PASS_ACTION};
+      return m;
+    }
+    if(parseSiteMove(text, '@', m.k, m.q, m.r)) {
+      const int action = placementAction(p, m.k, m.q, m.r, text);
+      if(action >= 0) {
+        m.kind = SiteMove::ACTIONS;
+        m.actions = {action};
+        return m;
+      }
+      const int x = rulesX(p, m.q), y = rulesY(p, m.r);
+      if(!siteFits(p, m.k, x, y)) {
+        m.why = text + " is not legal here";
+        return m;
+      }
+      const int span = spanWith(bp::cells_box(p), p.hand[bp::turn_of(p.ply)][m.k], x, y);
+      if(span > bp::RULES_LEN) {
+        m.kind = SiteMove::LIMIT;
+        m.why = text + ": " + limitText(span);
+        return m;
+      }
+      m.kind = SiteMove::OUTSIDE;
+      return m;
+    }
+    const size_t gt = text.find('>');
+    if(gt != std::string::npos) {
+      const std::string pick = text.substr(0, gt), drop = text.substr(gt + 1);
+      const int pickAction = handAction(p, pick);
+      if(pickAction < 0 || !isPick(p, pickAction)) {
+        m.why = text + " is not legal here: the pick " + pick + " is not";
+        return m;
+      }
+      work = p;
+      bp::GameRules::play(work, pickAction);
+      const int dropAction = handAction(work, drop);
+      if(dropAction < 0) {
+        m.why = text + " is not legal here: no drop " + drop + " after the pick";
+        return m;
+      }
+      m.kind = SiteMove::ACTIONS;
+      m.actions = {pickAction, dropAction};
+      return m;
+    }
+    m.why = "not a move: \"" + text + "\" (K@q,r places blueprint K's anchor cell on the hex q,r, I:q,r>J:q,r moves a "
+            "cell of blueprint I to blueprint J, and pass)";
+    return m;
   }
 }
 
