@@ -22,7 +22,7 @@
 // the states back with their contexts, turn numbers, origins, and AZdb members and sides; a line of version 1 (before
 // the members) loads with its member and side unknown; a load rejects a line of another version, of another game, a
 // state whose key does not match, a garbled state and a line of moves, and keeps the good lines. The tracker's
-// candidate keeps the member and the side of the search whose evaluation ranks highest.
+// candidate keeps the side of the search whose evaluation ranks highest.
 // With --buffer FILE (a self-play's buffer, rgscBufferFile): every entry of the file restores (the load checks its
 // key), and the entries that the draws reach restore with their texts as they were, or with texts that extend them
 // (a buffer of an older text: Blueprints' from before the inputs version 11 lacks the turns). With --write FILE: a
@@ -472,8 +472,8 @@ int main(int argc, char** argv) {
       e.regret = 1.0 + 0.01 * i;  //close, so that the draws (R^10) reach each one
       e.origin = i == 0 ? Rgsc::ORIGIN_TREE : Rgsc::ORIGIN_PLAYED;
       //KataGame fork (2026-10-29): the AZdb member and side of the search that produced it; the third's unknown.
-      e.member = i == 2 ? -1 : 3 + i;
-      e.side = i == 2 ? -1 : 1 - i;
+      e.member = i == 2 ? Rgsc::PRODUCER_UNKNOWN : 3 + i;
+      e.side = i == 2 ? Rgsc::PRODUCER_UNKNOWN : 1 - i;
       entries.push_back(e);
       buffer.offer(e);
     }
@@ -489,19 +489,18 @@ int main(int argc, char** argv) {
     check(buffer.countFinishedGame() == 0, "finished games count up");
     buffer.save();
     // The good lines: a state of version 1, saved before the members (2026-10-29), loads with its member and side
-    // unknown. Then lines that a load rejects (each a version 1 line, but for the version).
+    // unknown. Then lines that a load rejects (each a version 1 line, but for the version). A line's regret is 1, as
+    // the others', so that the draws reach the good one.
     FILE* f = fopen(settings.bufferFile.c_str(), "a");
-    Rgsc::Entry old = Rgsc::stateEntry(boards[25], Rgsc::Context::of(-0.5f, C_EMPTY, 0.0), 10);
-    old.regret = 1.0;
-    old.origin = Rgsc::ORIGIN_TREE;
-    fprintf(f, "state 1 %s %s 1.0 0 1 10 -0.5 0 0 %s\n", GameRules::NAME,
-            Global::uint64ToHexString(old.key).c_str(), old.state.c_str());
-    entries.push_back(old);
-    const Rgsc::Entry& e = entries[0];
     auto line = [&](int version, const string& game, uint64_t key, const string& state) {
-      fprintf(f, "state %d %s %s 0.5 0 1 10 -0.5 0 0 %s\n", version, game.c_str(),
+      fprintf(f, "state %d %s %s 1.0 0 1 10 -0.5 0 0 %s\n", version, game.c_str(),
               Global::uint64ToHexString(key).c_str(), state.c_str());
     };
+    Rgsc::Entry old = Rgsc::stateEntry(boards[25], Rgsc::Context::of(-0.5f, C_EMPTY, 0.0), 10);
+    old.origin = Rgsc::ORIGIN_TREE;
+    line(1, GameRules::NAME, old.key, old.state);
+    entries.push_back(old);
+    const Rgsc::Entry& e = entries[0];
     line(Rgsc::STATE_RECORD_VERSION + 1, GameRules::NAME, e.key, e.state);
     line(1, "another", e.key, e.state);
     line(1, GameRules::NAME, e.key ^ 2, e.state);
@@ -551,7 +550,8 @@ int main(int argc, char** argv) {
   }
 
   // KataGame fork (2026-10-29): the tracker's candidate is the evaluation of the highest ranking, from either search,
-  // with that search's AZdb member and side (Rgsc::Entry::member, side).
+  // with that search's side (Rgsc::Entry::side). Its AZdb member is the caller's (self-play's, the game's member of
+  // that side).
   {
     vector<Board> trackBoards;
     vector<Move> trackMoves;
@@ -566,15 +566,16 @@ int main(int argc, char** argv) {
     output.hasRegret = true;
     output.regretValue = 1.0f;
     const float rankings[3] = {0.3f, 0.7f, 0.5f};
-    const int members[3] = {2, 4, 1}, sides[3] = {0, 1, 0};
+    const int sides[3] = {0, 1, 0};
     for(int k = 0; k < 3; k++) {
       hist.makeBoardMoveAssumeLegal(board, trackMoves[k].loc, trackMoves[k].pla, NULL);
       output.regretRanking = rankings[k];
-      tracker.offer(output, board, hist, context, members[k], sides[k]);
+      tracker.offer(output, board, hist, context, sides[k]);
     }
     const Rgsc::Entry e = tracker.candidate();
-    check(tracker.found() && e.key == Rgsc::stateKey(trackBoards[2], context) && e.member == 4 && e.side == 1,
-          "the tracker's candidate keeps the member and the side of its evaluation");
+    check(tracker.found() && e.key == Rgsc::stateKey(trackBoards[2], context) && e.side == 1 &&
+            e.member == Rgsc::PRODUCER_UNKNOWN,
+          "the tracker's candidate keeps the side of its evaluation, and leaves the member to the caller");
   }
 
   // A self-play's buffer: every entry restores, with its text.

@@ -218,12 +218,11 @@ void Rgsc::Buffer::load() {
       //The state's origin, an optional token (files saved before 2026-10-11 have none), then its member and side
       //(KataGame fork, 2026-10-29: files saved before have none).
       int origin, member, side;
-      if(row >> origin) {
+      if(row >> origin)
         e.origin = origin;
-        if(row >> member >> side) {
-          e.member = member;
-          e.side = side;
-        }
+      if(row >> member >> side) {
+        e.member = member;
+        e.side = side;
       }
       e.key = keyOf(e.moves, e.moves.size());
       if(keys.insert(e.key).second)
@@ -274,7 +273,8 @@ void Rgsc::Buffer::save() const {
     out << "gamesFinished " << gamesFinished << "\n";
     for(const Entry& e : entries) {
       if(!e.state.empty()) {
-        //A state (keepsStates), its advantage with every digit, so that its key comes back.
+        //A state (keepsStates), its advantage with every digit, so that its key comes back. KataGame fork (2026-10-29):
+        //version 2, with the member and the side after the origin.
         ostringstream advantage;
         advantage.precision(17);
         advantage << e.context.advantage;
@@ -287,7 +287,7 @@ void Rgsc::Buffer::save() const {
       out << "entry " << e.regret << " " << e.sampleCount << " " << e.moves.size();
       for(const Move& m : e.moves)
         out << " " << (int)m.loc << " " << (int)m.pla;
-      out << " " << e.origin << " " << e.member << " " << e.side << "\n";
+      out << " " << e.origin << " " << e.member << " " << e.side << "\n";  //KataGame fork (2026-10-29): member, side
     }
   }
   if(std::rename(tmp.c_str(), settings.bufferFile.c_str()) != 0)
@@ -474,7 +474,7 @@ string Rgsc::Buffer::summary() const {
     out << ", regret min " << r.front() << " median " << r[r.size() / 2] << " max " << r.back()
         << ", from search trees " << fromTree << ", played " << fromPlayed << ", by member";
     for(const auto& [member, count] : byMember)
-      out << " " << (member < 0 ? string("unknown") : Global::intToString(member)) << ":" << count;
+      out << " " << (member == PRODUCER_UNKNOWN ? string("unknown") : Global::intToString(member)) << ":" << count;
   }
   out << "; games finished " << gamesFinished << "; this run: restarts drawn " << restartsDrawn
       << ", written after their state left " << restartsStateGone << ", dropped " << restartsDropped
@@ -499,7 +499,7 @@ Rgsc::TreeTracker::TreeTracker(const Buffer* b, Source s)
 {}
 
 void Rgsc::TreeTracker::offer(const NNOutput& nnOutput, const Board& board, const BoardHistory& hist,
-                              const Context& context, int member, int side) {
+                              const Context& context, int side) {
   //As the authors' actor: every evaluated, non-terminal state but the initial one. The swing tracker reads the
   //swing heads.
   const bool swing = source == SOURCE_SWING;
@@ -517,8 +517,7 @@ void Rgsc::TreeTracker::offer(const NNOutput& nnOutput, const Board& board, cons
   hasCandidate = true;
   candidateRegretValue = swing ? nnOutput.swingValue : nnOutput.regretValue;
   candidateEntry.key = key;
-  candidateEntry.member = member;
-  candidateEntry.side = side;
+  candidateEntry.side = side;  //KataGame fork (2026-10-29)
   if(keepsStates()) {
     candidateBoard = board;
     candidateEntry.context = context;

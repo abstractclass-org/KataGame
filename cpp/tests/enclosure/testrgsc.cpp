@@ -168,7 +168,8 @@ int main(int argc, char** argv) {
     check(oldBuffer.size() == 1 && oldBuffer.contains(keyOfI(1)), "an old file loads");
     check(oldBuffer.maybeSample(rand, e) && e.origin == Rgsc::ORIGIN_UNKNOWN && e.moves.size() == 2,
           "an old entry's origin is unknown and its moves intact");
-    check(e.member == -1 && e.side == -1, "an old entry's member and side are unknown");
+    check(e.member == Rgsc::PRODUCER_UNKNOWN && e.side == Rgsc::PRODUCER_UNKNOWN,
+          "an old entry's member and side are unknown");
   }
 
   // KataGame fork (2026-10-29): each state's AZdb member and side (Entry::member, Entry::side: the search that produced
@@ -176,8 +177,8 @@ int main(int argc, char** argv) {
   {
     Rgsc::Settings tagged = settings;
     tagged.bufferFile = string(argv[1]) + "/rgsc_buffer_members.txt";
-    Rgsc::Buffer members(tagged);
-    const int memberOf[3] = {2, 4, -1}, sideOf[3] = {0, 1, -1};
+    Rgsc::Buffer taggedBuffer(tagged);
+    const int memberOf[3] = {2, 4, Rgsc::PRODUCER_UNKNOWN}, sideOf[3] = {0, 1, Rgsc::PRODUCER_UNKNOWN};
     for(int i = 1; i <= 3; i++) {
       Rgsc::Entry entry;
       entry.key = keyOfI(i);
@@ -186,9 +187,9 @@ int main(int argc, char** argv) {
       entry.origin = i == 1 ? Rgsc::ORIGIN_TREE : Rgsc::ORIGIN_PLAYED;
       entry.member = memberOf[i - 1];
       entry.side = sideOf[i - 1];
-      members.offer(entry);
+      taggedBuffer.offer(entry);
     }
-    members.save();
+    taggedBuffer.save();
     Rgsc::Buffer loaded(tagged);
     loaded.load();
     Rand rand("testrgsc members");
@@ -211,8 +212,9 @@ int main(int argc, char** argv) {
     fclose(f);
     Rgsc::Buffer oldBuffer(old);
     oldBuffer.load();
-    check(oldBuffer.size() == 1 && oldBuffer.sample(rand, e) && e.origin == Rgsc::ORIGIN_PLAYED && e.member == -1 &&
-          e.side == -1, "an entry with its origin and no member loads, with the member and side unknown");
+    check(oldBuffer.size() == 1 && oldBuffer.sample(rand, e) && e.origin == Rgsc::ORIGIN_PLAYED &&
+            e.member == Rgsc::PRODUCER_UNKNOWN && e.side == Rgsc::PRODUCER_UNKNOWN,
+          "an entry with its origin and no member loads, with the member and side unknown");
   }
 
   printf("%s (%d failures)\n", failures == 0 ? "all RGSC checks passed" : "RGSC checks FAILED", failures);

@@ -59,6 +59,8 @@ namespace Rgsc {
   //Where a buffer state came from: a state that a search evaluated (the tracker's candidate), or a played position.
   //Unknown for states saved before 2026-10-11.
   enum Origin { ORIGIN_UNKNOWN = 0, ORIGIN_TREE = 1, ORIGIN_PLAYED = 2 };
+  //KataGame fork (2026-10-29): the member and the side (Entry) of a state saved before them.
+  constexpr int PRODUCER_UNKNOWN = -1;
 
   struct Settings {
     bool enabled = false;
@@ -108,10 +110,11 @@ namespace Rgsc {
     int origin = ORIGIN_UNKNOWN;
     //KataGame fork (2026-10-29): the AZdb member (SearchParams::diversityMember, 0 without AZdb) and the side (the
     //rules' player, Board::indexOfPlayer) of the search that produced the state: the search that evaluated a tree
-    //state, or the search of the player to move at a played position. For the analysis only: no draw reads them.
-    //-1 for unknown (states saved before 2026-10-29).
-    int member = -1;
-    int side = -1;
+    //state, or the search of the player to move at a played position. The member is the game's member of that side
+    //(FinishedGameData::diversityMembers). For the analysis only: no draw reads them. PRODUCER_UNKNOWN (-1) for
+    //states saved before 2026-10-29.
+    int member = PRODUCER_UNKNOWN;
+    int side = PRODUCER_UNKNOWN;
     std::vector<Move> moves;  //from the empty board, in a game that keeps moves
     //In a game that keeps states: the state's text (GameInterface::stateText), its context, and its turn number in
     //its game (the actions since the start, which the search's schedules read, such as the move's temperature).
@@ -209,14 +212,14 @@ namespace Rgsc {
   class TreeTracker {
    public:
     TreeTracker(const Buffer* buffer, Source source = SOURCE_VANILLA);
-    //context: the evaluation's, which a game that keeps states keys and keeps with the state. member and side: the
-    //evaluating search's (Entry::member, Entry::side), which the candidate keeps.
+    //context: the evaluation's, which a game that keeps states keys and keeps with the state. side: the evaluating
+    //search's player (Entry::side), which the candidate keeps.
     void offer(const NNOutput& nnOutput, const Board& board, const BoardHistory& hist, const Context& context,
-               int member, int side);
+               int side);
     bool found() const { return hasCandidate; }
     float ranking() const { return bestRanking.load(std::memory_order_acquire); }
     float regretValue() const { return candidateRegretValue; }
-    //The candidate as an entry, its moves or its state, with its member and side: its regret and origin are the
+    //The candidate as an entry, its moves or its state, with its side: its regret, origin and member are the
     //caller's.
     Entry candidate() const;
 

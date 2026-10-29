@@ -380,8 +380,8 @@ struct Match {
 
 //The match of a game that starts from a state of RGSC's buffer, either buffer (a departure from both papers: the
 //engine repository's games/blueprints/docs/research/diversity-players.md, "The matchmaker and one trainer"): member 0
-//against itself, whatever the matchmaker would draw. Member 0 is the chooser at both sides, so its rows train at both.
-//The league takes nothing from it (League::finishGame).
+//against itself, with no draw (self-play takes it in place of League::draw). Member 0 is the chooser at both sides, so
+//its rows train at both. The league takes nothing from it (League::finishGame).
 inline Match restartMatch() {
   Match match;
   match.restart = true;
@@ -487,11 +487,9 @@ template<class E> class League {
     return std::make_shared<const State<E>>(rows.data(), mean.data(), sd.data(), l0);
   }
 
-  //A game's members: by PSRO-NASH (drawMatch) on the table as it is, or member 0 against itself in a game that starts
-  //from a state of RGSC's buffer (restart: restartMatch), with no draw.
-  Match draw(Rand& rand, bool restart) const {
-    if(restart)
-      return restartMatch();
+  //A game's members, by PSRO-NASH (drawMatch) on the table as it is. A game that starts from a state of RGSC's buffer
+  //takes restartMatch instead.
+  Match draw(Rand& rand) const {
     Payoff table;
     {
       std::lock_guard<std::mutex> lock(mutex);

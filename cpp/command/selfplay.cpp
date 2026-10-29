@@ -72,14 +72,20 @@ static void rgscOfferCandidate(
   }
   if(!found)
     return;
-  Rgsc::Entry entry = played == 0 ? tracker->candidate() : Rgsc::playedEntry(hist, played, context);
-  entry.regret = regret;
-  entry.origin = played == 0 ? Rgsc::ORIGIN_TREE : Rgsc::ORIGIN_PLAYED;
-  //KataGame fork (2026-10-29): a played position's member and side are its mover's search's (AZdb's member).
-  if(played > 0) {
-    entry.side = Board::indexOfPlayer(hist.moveHistory[played].pla);
-    entry.member = gameData.diversityMembers[entry.side];
+  //KataGame fork (2026-10-29): the side of the search that produced the state (the tracker's, or a played position's
+  //mover), and that search's AZdb member, the game's member of that side.
+  Rgsc::Entry entry;
+  if(played == 0) {
+    entry = tracker->candidate();
+    entry.origin = Rgsc::ORIGIN_TREE;
   }
+  else {
+    entry = Rgsc::playedEntry(hist, played, context);
+    entry.origin = Rgsc::ORIGIN_PLAYED;
+    entry.side = Board::indexOfPlayer(hist.moveHistory[played].pla);
+  }
+  entry.regret = regret;
+  entry.member = gameData.diversityMembers[entry.side];
   buffer.offer(std::move(entry));
 }
 
@@ -246,11 +252,11 @@ struct AZdbGamesLog {
 };
 
 //AZdb after a written game: the league takes the game's sides and result (nothing from a restart), the game's line
-//goes to the log of games with its start (rgscSource, and the restart's entry rgscStart), and every 50 games the
+//goes to the log of games with its start (the rows' rgscSource, and a restart's restartEntry), and every 50 games the
 //league is saved.
 static void azdbAfterGame(
   AZdb::League<GameEncoding>& league, const AZdbSettings& settings, AZdbGamesLog& gamesLog, const AZdb::Match& match,
-  const FinishedGameData& gameData, Rgsc::Source rgscSource, const Rgsc::Entry& rgscStart, Logger& logger
+  const FinishedGameData& gameData, const Rgsc::Entry& restartEntry, Logger& logger
 ) {
   //The game's positions, one action apart from its start.
   vector<Board> boards;
@@ -273,10 +279,10 @@ static void azdbAfterGame(
   const int64_t games = league.finishGame(match, side, *gameData.diversityState, firstScore);
   {
     nlohmann::json record = AZdb::gameRecord<GameEncoding>(match, end.rules.komi, firstScore, side);
-    record["rgsc_source"] = (int)rgscSource;
-    if(rgscSource != Rgsc::SOURCE_NONE) {
-      record["start_member"] = rgscStart.member;
-      record["start_side"] = rgscStart.side;
+    record["rgsc_source"] = gameData.rgscSource;
+    if(match.restart) {
+      record["start_member"] = restartEntry.member;
+      record["start_side"] = restartEntry.side;
     }
     const string line = record.dump();
     std::lock_guard<std::mutex> lock(gamesLog.mutex);
@@ -668,7 +674,7 @@ int MainCmds::selfplay(const vector<string>& args) {
         std::shared_ptr<const AZdb::State<GameEncoding>> azdbState;
         std::function<void(const MatchPairer::BotSpec&, Search*)> attach = rgscAttach;
         if(azdbLeague != NULL) {
-          azdbMatch = azdbLeague->draw(thisLoopSeedRand, rgscRestarted);
+          azdbMatch = rgscRestarted ? AZdb::restartMatch() : azdbLeague->draw(thisLoopSeedRand);
           azdbState = azdbLeague->snapshot();
           botSpecB.botIdx = azdbMatch.members[Board::indexOfPlayer(P_BLACK)];
           botSpecW.botIdx = azdbMatch.members[Board::indexOfPlayer(P_WHITE)];
@@ -709,7 +715,7 @@ int MainCmds::selfplay(const vector<string>& args) {
         }
         //KataGame fork (2026-10-29): AZdb's league takes the written games only: their positions are those of rows.
         if(gameData != NULL && azdbLeague != NULL)
-          azdbAfterGame(*azdbLeague, azdbSettings, azdbGamesLog, azdbMatch, *gameData, rgscSource, rgscEntry, logger);
+          azdbAfterGame(*azdbLeague, azdbSettings, azdbGamesLog, azdbMatch, *gameData, rgscEntry, logger);
       }
 
       //NULL gamedata will happen when the game is interrupted by shouldStop, which means we should also stop.
