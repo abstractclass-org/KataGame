@@ -75,6 +75,11 @@ static void rgscOfferCandidate(
   Rgsc::Entry entry = played == 0 ? tracker->candidate() : Rgsc::playedEntry(hist, played, context);
   entry.regret = regret;
   entry.origin = played == 0 ? Rgsc::ORIGIN_TREE : Rgsc::ORIGIN_PLAYED;
+  //KataGame fork (2026-10-29): a played position's member and side are its mover's search's (AZdb's member).
+  if(played > 0) {
+    entry.side = Board::indexOfPlayer(hist.moveHistory[played].pla);
+    entry.member = gameData.diversityMembers[entry.side];
+  }
   buffer.offer(std::move(entry));
 }
 
@@ -158,15 +163,17 @@ static bool rgscAfterGame(
 
 //KataGame fork (2026-10-29): AZdb in self-play (program/azdbleague.h; the engine repository's
 //games/blueprints/docs/research/diversity-players.md, "The matchmaker and one trainer"). With diversityMembers =
-//AZdb::NUM_MEMBERS, each game's members come from PSRO-NASH, each player's search plays its member (Play's seam with
-//the search), only the chooser's rows train, and the league (the table of results, ψ, μ and σ) lives in
-//diversityStateFile, which a restart reads again. Without it (diversityMembers = 1, the default), member 0 plays
-//alone, as before.
+//AZdb::NUM_MEMBERS, each game's members come from PSRO-NASH, each player's search plays its member
+//(SearchParams::diversityMember), only the chooser's rows train, and the league (the table of results, ψ, μ and σ)
+//lives in diversityStateFile, which a restart reads again. A game that starts from a state of RGSC's buffer, either
+//buffer, is member 0 against itself, and the league takes nothing from it (AZdb::restartMatch). Without it
+//(diversityMembers = 1, the default), member 0 plays alone, as before.
 //- diversityStateFile: the league's file. diversitySeedFile: the seed of μ and σ (games/blueprints/runs/
 //  diversity_seed.json), needed while the league's file does not exist.
 //- diversityL0: ℓ0, the distance at which a member's reward is 0.
-//- diversityGamesFile: a line for each written game, for the analysis (AZdb::gameRecord). Default:
-//  OUTPUT_DIR/azdb-games.jsonl.
+//- diversityGamesFile: a line for each written game, for the analysis (AZdb::gameRecord, and the game's start:
+//  rgsc_source as the rows' C74, and after a restart the member and side that produced its state, Rgsc::Entry).
+//  Default: OUTPUT_DIR/azdb-games.jsonl.
 //- The search's λ of members 1 to 4 is the search parameter diversityLambda.
 struct AZdbSettings {
   bool enabled = false;
@@ -186,9 +193,6 @@ struct AZdbSettings {
       throw StringError("AZdb: diversityMembers is 1 (member 0 alone) or " + Global::intToString(AZdb::NUM_MEMBERS) +
                         " (every member of the latent)");
     s.enabled = true;
-    if(!Play::searchPlaysDiversityMembers())
-      throw StringError("AZdb: this build's search does not play the members (SearchParams::diversityMember, "
-                        "Search::setDiversityState and NNEvaluator::computesIntrinsicHead, the search's build step)");
     if(inputsVersion < 14)
       throw StringError("AZdb: the rows of the members hold their latent from the inputs version 14, not " +
                         Global::intToString(inputsVersion) + " (inputsVersion)");
@@ -229,7 +233,7 @@ static void checkAZdbModel(const NNEvaluator* nnEval) {
                       ", without the members' latent (version 14: add_diversity_members.py)");
   if(!nnEval->hasIntrinsicHead())
     throw StringError("AZdb: the model " + name + " has no intrinsic value head (add_diversity_members.py)");
-  if(!Play::computesIntrinsicHead(nnEval))
+  if(!nnEval->computesIntrinsicHead())
     throw StringError("AZdb: this backend does not compute the intrinsic value head of the model " + name +
                       " (TensorRT, ONNX, OpenCL and Metal write NaN there): play AZdb's members with the CUDA or "
                       "Eigen backend");
@@ -241,11 +245,12 @@ struct AZdbGamesLog {
   ofstream out;
 };
 
-//AZdb after a written game: the league takes the game's sides and result, the game's line goes to the log of games,
-//and every 50 games the league is saved.
+//AZdb after a written game: the league takes the game's sides and result (nothing from a restart), the game's line
+//goes to the log of games with its start (rgscSource, and the restart's entry rgscStart), and every 50 games the
+//league is saved.
 static void azdbAfterGame(
   AZdb::League<GameEncoding>& league, const AZdbSettings& settings, AZdbGamesLog& gamesLog, const AZdb::Match& match,
-  const FinishedGameData& gameData, Logger& logger
+  const FinishedGameData& gameData, Rgsc::Source rgscSource, const Rgsc::Entry& rgscStart, Logger& logger
 ) {
   //The game's positions, one action apart from its start.
   vector<Board> boards;
@@ -267,7 +272,13 @@ static void azdbAfterGame(
     : end.winner == P_BLACK ? 1.0 : end.winner == P_WHITE ? 0.0 : 0.5;
   const int64_t games = league.finishGame(match, side, *gameData.diversityState, firstScore);
   {
-    const string line = AZdb::gameRecord<GameEncoding>(match, end.rules.komi, firstScore, side).dump();
+    nlohmann::json record = AZdb::gameRecord<GameEncoding>(match, end.rules.komi, firstScore, side);
+    record["rgsc_source"] = (int)rgscSource;
+    if(rgscSource != Rgsc::SOURCE_NONE) {
+      record["start_member"] = rgscStart.member;
+      record["start_side"] = rgscStart.side;
+    }
+    const string line = record.dump();
     std::lock_guard<std::mutex> lock(gamesLog.mutex);
     gamesLog.out << line << "\n";
     gamesLog.out.flush();
@@ -651,24 +662,25 @@ int MainCmds::selfplay(const vector<string>& args) {
         }
         //KataGame fork (2026-10-29): AZdb. The matchmaker draws the game's members, and the game takes its copy of the
         //league's state. Two members play with two bots, one search each, and each search gets its member and the
-        //copy (Play's seam with the search). Without AZdb nothing here draws or changes.
+        //copy. A game that starts from a state of RGSC's buffer is member 0 against itself (AZdb::restartMatch).
+        //Without AZdb nothing here draws or changes.
         AZdb::Match azdbMatch;
         std::shared_ptr<const AZdb::State<GameEncoding>> azdbState;
         std::function<void(const MatchPairer::BotSpec&, Search*)> attach = rgscAttach;
         if(azdbLeague != NULL) {
-          azdbMatch = azdbLeague->draw(thisLoopSeedRand);
+          azdbMatch = azdbLeague->draw(thisLoopSeedRand, rgscRestarted);
           azdbState = azdbLeague->snapshot();
           botSpecB.botIdx = azdbMatch.members[Board::indexOfPlayer(P_BLACK)];
           botSpecW.botIdx = azdbMatch.members[Board::indexOfPlayer(P_WHITE)];
           //Only the chooser's rows train (both players' in a game of the chooser against itself).
           botSpecB.trains = botSpecB.botIdx == azdbMatch.chooser;
           botSpecW.trains = botSpecW.botIdx == azdbMatch.chooser;
-          Play::setDiversityMember(botSpecB.baseParams, botSpecB.botIdx);
-          Play::setDiversityMember(botSpecW.baseParams, botSpecW.botIdx);
+          botSpecB.baseParams.diversityMember = botSpecB.botIdx;
+          botSpecW.baseParams.diversityMember = botSpecW.botIdx;
           attach = [&rgscAttach, azdbState](const MatchPairer::BotSpec& spec, Search* search) {
             if(rgscAttach != nullptr)
               rgscAttach(spec, search);
-            Play::setDiversityState(search, azdbState);
+            search->setDiversityState(azdbState);
           };
         }
         gameData = gameRunner->runGame(
@@ -679,13 +691,10 @@ int MainCmds::selfplay(const vector<string>& args) {
           attach,
           nullptr
         );
-        //The rows: each player's latent is its member, and their rewards and targets come from the game's copy of the
-        //state. Which rows train came with the bots (MatchPairer::BotSpec::trains).
-        if(gameData != NULL && azdbLeague != NULL) {
-          for(int p = 0; p < 2; p++)
-            gameData->diversityMembers[p] = azdbMatch.members[p];
+        //The rows' rewards and targets come from the game's copy of the state. Their members (each player's latent)
+        //and which of them train came with the bots (Play::runGame).
+        if(gameData != NULL && azdbLeague != NULL)
           gameData->diversityState = azdbState;
-        }
         if(gameData != NULL && rgscBuffer != NULL) {
           bool keep = rgscAfterGame(
             *rgscBuffer, rgscSwingBuffer, rgscSettings, gameData, rgscSource, rgscEntry.key, rgscTracker.get(),
@@ -700,7 +709,7 @@ int MainCmds::selfplay(const vector<string>& args) {
         }
         //KataGame fork (2026-10-29): AZdb's league takes the written games only: their positions are those of rows.
         if(gameData != NULL && azdbLeague != NULL)
-          azdbAfterGame(*azdbLeague, azdbSettings, azdbGamesLog, azdbMatch, *gameData, logger);
+          azdbAfterGame(*azdbLeague, azdbSettings, azdbGamesLog, azdbMatch, *gameData, rgscSource, rgscEntry, logger);
       }
 
       //NULL gamedata will happen when the game is interrupted by shouldStop, which means we should also stop.

@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <sstream>
 
 #include "../core/global.h"
@@ -214,29 +215,39 @@ void Rgsc::Buffer::load() {
       }
       if(row.fail())
         throw StringError("RGSC buffer file " + settings.bufferFile + ": unreadable entry");
-      //The state's origin, an optional last token (files saved before 2026-10-11 have none).
-      int origin;
-      if(row >> origin)
+      //The state's origin, an optional token (files saved before 2026-10-11 have none), then its member and side
+      //(KataGame fork, 2026-10-29: files saved before have none).
+      int origin, member, side;
+      if(row >> origin) {
         e.origin = origin;
+        if(row >> member >> side) {
+          e.member = member;
+          e.side = side;
+        }
+      }
       e.key = keyOf(e.moves, e.moves.size());
       if(keys.insert(e.key).second)
         entries.push_back(std::move(e));
     }
     else if(word == "state") {
-      //KataGame fork (2026-10-27): "state VERSION GAME KEY REGRET SAMPLES ORIGIN TURN KOMI ADVANTAGEPLA ADVANTAGE"
-      //and the state's text (save). An entry of another version or game, or whose state does not come back with its
-      //key, is rejected.
+      //KataGame fork (2026-10-27): "state VERSION GAME KEY REGRET SAMPLES ORIGIN MEMBER SIDE TURN KOMI ADVANTAGEPLA
+      //ADVANTAGE" and the state's text (save). Version 1 has no MEMBER SIDE (2026-10-29), and its states load with
+      //both unknown. An entry of another version or game, or whose state does not come back with its key, is
+      //rejected.
       Entry e;
       int version = 0, advantagePla = 0;
       string game, key, text;
       float komi = 0.0f;
       double advantage = 0.0;
-      row >> version >> game >> key >> e.regret >> e.sampleCount >> e.origin >> e.turnNumber >> komi >> advantagePla >>
-        advantage;
+      row >> version >> game >> key >> e.regret >> e.sampleCount >> e.origin;
+      if(version == STATE_RECORD_VERSION)
+        row >> e.member >> e.side;
+      row >> e.turnNumber >> komi >> advantagePla >> advantage;
       getline(row, text);
       string why;
-      bool ok = keepsStates() && !row.fail() && version == STATE_RECORD_VERSION && game == GameRules::NAME &&
-                text.size() > 1 && text[0] == ' ' && Global::tryHexStringToUInt64(key, e.key);
+      bool ok = keepsStates() && !row.fail() && (version == 1 || version == STATE_RECORD_VERSION) &&
+                game == GameRules::NAME && text.size() > 1 && text[0] == ' ' &&
+                Global::tryHexStringToUInt64(key, e.key);
       if(ok) {
         e.state = text.substr(1);
         e.context = Context::of(komi, (Player)advantagePla, advantage);
@@ -268,14 +279,15 @@ void Rgsc::Buffer::save() const {
         advantage.precision(17);
         advantage << e.context.advantage;
         out << "state " << STATE_RECORD_VERSION << " " << GameRules::NAME << " " << Global::uint64ToHexString(e.key)
-            << " " << e.regret << " " << e.sampleCount << " " << e.origin << " " << e.turnNumber << " "
-            << e.context.komi << " " << (int)e.context.advantagePla << " " << advantage.str() << " " << e.state << "\n";
+            << " " << e.regret << " " << e.sampleCount << " " << e.origin << " " << e.member << " " << e.side << " "
+            << e.turnNumber << " " << e.context.komi << " " << (int)e.context.advantagePla << " " << advantage.str()
+            << " " << e.state << "\n";
         continue;
       }
       out << "entry " << e.regret << " " << e.sampleCount << " " << e.moves.size();
       for(const Move& m : e.moves)
         out << " " << (int)m.loc << " " << (int)m.pla;
-      out << " " << e.origin << "\n";
+      out << " " << e.origin << " " << e.member << " " << e.side << "\n";
     }
   }
   if(std::rename(tmp.c_str(), settings.bufferFile.c_str()) != 0)
@@ -448,17 +460,22 @@ string Rgsc::Buffer::summary() const {
   lock_guard<std::mutex> lock(mutex);
   vector<double> r;
   int64_t fromTree = 0, fromPlayed = 0;
+  std::map<int, int64_t> byMember;  //KataGame fork (2026-10-29): the states of each producing member (Entry::member)
   for(const Entry& e : entries) {
     r.push_back(e.regret);
     fromTree += e.origin == ORIGIN_TREE;
     fromPlayed += e.origin == ORIGIN_PLAYED;
+    byMember[e.member]++;
   }
   std::sort(r.begin(), r.end());
   ostringstream out;
   out << name << ": " << entries.size() << " states";
-  if(!r.empty())
+  if(!r.empty()) {
     out << ", regret min " << r.front() << " median " << r[r.size() / 2] << " max " << r.back()
-        << ", from search trees " << fromTree << ", played " << fromPlayed;
+        << ", from search trees " << fromTree << ", played " << fromPlayed << ", by member";
+    for(const auto& [member, count] : byMember)
+      out << " " << (member < 0 ? string("unknown") : Global::intToString(member)) << ":" << count;
+  }
   out << "; games finished " << gamesFinished << "; this run: restarts drawn " << restartsDrawn
       << ", written after their state left " << restartsStateGone << ", dropped " << restartsDropped
       << "; candidates offered " << candidatesOffered << ", taken " << candidatesTaken
@@ -482,7 +499,7 @@ Rgsc::TreeTracker::TreeTracker(const Buffer* b, Source s)
 {}
 
 void Rgsc::TreeTracker::offer(const NNOutput& nnOutput, const Board& board, const BoardHistory& hist,
-                              const Context& context) {
+                              const Context& context, int member, int side) {
   //As the authors' actor: every evaluated, non-terminal state but the initial one. The swing tracker reads the
   //swing heads.
   const bool swing = source == SOURCE_SWING;
@@ -500,6 +517,8 @@ void Rgsc::TreeTracker::offer(const NNOutput& nnOutput, const Board& board, cons
   hasCandidate = true;
   candidateRegretValue = swing ? nnOutput.swingValue : nnOutput.regretValue;
   candidateEntry.key = key;
+  candidateEntry.member = member;
+  candidateEntry.side = side;
   if(keepsStates()) {
     candidateBoard = board;
     candidateEntry.context = context;

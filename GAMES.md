@@ -558,13 +558,15 @@ member `Diversity` (above). A game without it gives every member the reward 0.
   The matchmaker is PSRO-NASH (the paper's Appendix B): each game draws its chooser i and the chooser's player
   uniformly, and its opponent from the other player's maximum-entropy Nash mixture over the members 0 to i of a
   table of results, kept as AlphaStar's league keeps its own (decayed counts, 0.99 a game of a pair). Two
-  members play with two searches of the same network (`Play::setDiversityMember`, the seam with the search), and
+  members play with two searches of the same network (each with its `SearchParams::diversityMember`), and
   only the chooser's rows train (`MatchPairer::BotSpec::trains`, `FinishedGameData::diversityTrains`): the other
   player's turns have the weight 0 before KataGo spreads the game's weight by surprise, and the row writer leaves out
   their rows and side positions. The league holds the table, each member's
   estimate of ψ and the statistics' normalization: the game threads share it, each game takes a copy at its start
-  (`diversityState`), and `diversityStateFile` keeps it across restarts. Without `diversityMembers`, member 0
-  plays alone, as before.
+  (`diversityState`), and `diversityStateFile` keeps it across restarts. A game from a state of RGSC's buffer, either
+  buffer, is member 0 against itself, and the league takes nothing from it but its count (`AZdb::restartMatch`).
+  Each of RGSC's states keeps the member and the side of the search that produced it (`Rgsc::Entry::member`,
+  `side`), for the analysis. Without `diversityMembers`, member 0 plays alone, as before.
 - **The rows of V14** keep each row's latent (the member of the row's player, `FinishedGameData::diversityMembers`)
   and 4 more global targets after the 80 (C80-83): A's target and its weight, then B's. The rows of earlier versions
   keep their 80. A move's reward is from the side of the player who made it, at the position after the action that

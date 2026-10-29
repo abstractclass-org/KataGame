@@ -50,8 +50,9 @@ namespace Rgsc {
 
   //Whether the buffer keeps states (the game gives its state's text) or moves.
   constexpr bool keepsStates() { return GameInterface::hasStateText<GameRules>(); }
-  //The version of a state's line in the buffer's file.
-  constexpr int STATE_RECORD_VERSION = 1;
+  //The version of a state's line in the buffer's file. Version 2 (2026-10-29) adds the state's member and side
+  //(Entry), and a line of version 1 still loads, with both unknown.
+  constexpr int STATE_RECORD_VERSION = 2;
 
   //The buffer a game restarted from (C74 of its rows).
   enum Source { SOURCE_NONE = 0, SOURCE_VANILLA = 1, SOURCE_SWING = 2 };
@@ -105,6 +106,12 @@ namespace Rgsc {
     double regret = 0.0;
     int64_t sampleCount = 0;
     int origin = ORIGIN_UNKNOWN;
+    //KataGame fork (2026-10-29): the AZdb member (SearchParams::diversityMember, 0 without AZdb) and the side (the
+    //rules' player, Board::indexOfPlayer) of the search that produced the state: the search that evaluated a tree
+    //state, or the search of the player to move at a played position. For the analysis only: no draw reads them.
+    //-1 for unknown (states saved before 2026-10-29).
+    int member = -1;
+    int side = -1;
     std::vector<Move> moves;  //from the empty board, in a game that keeps moves
     //In a game that keeps states: the state's text (GameInterface::stateText), its context, and its turn number in
     //its game (the actions since the start, which the search's schedules read, such as the move's temperature).
@@ -112,7 +119,8 @@ namespace Rgsc {
     Context context;
     int64_t turnNumber = 0;
   };
-  //The entry of a state (a game that keeps states), with its key. Its regret and origin are the caller's.
+  //The entry of a state (a game that keeps states), with its key. Its regret, origin, member and side are the
+  //caller's.
   Entry stateEntry(const Board& board, const Context& context, int64_t turnNumber);
   //Sets board to an entry's state (a game that keeps states). False, with the reason, when the text gives no state or
   //the state's key is not the entry's.
@@ -121,8 +129,8 @@ namespace Rgsc {
   //count - 1. The moves' key (keyOf), or in a game that keeps states the state's key with the context.
   std::vector<uint64_t> playedKeys(const BoardHistory& hist, size_t start, size_t count, const Context& context);
   //The entry of the position after `length` of hist's moves, with its key: the moves, or in a game that keeps states
-  //the state (replayed from hist's first position), the context and the turn number. Its regret and origin are the
-  //caller's.
+  //the state (replayed from hist's first position), the context and the turn number. Its regret, origin, member and
+  //side are the caller's.
   Entry playedEntry(const BoardHistory& hist, size_t length, const Context& context);
   //Sets start to a game's exact start from an entry: its moves from an empty board of xSize x ySize, or in a game that
   //keeps states the state itself, with its turn number and its context frozen (Sgf::PositionSample::frozenContext).
@@ -201,12 +209,15 @@ namespace Rgsc {
   class TreeTracker {
    public:
     TreeTracker(const Buffer* buffer, Source source = SOURCE_VANILLA);
-    //context: the evaluation's, which a game that keeps states keys and keeps with the state.
-    void offer(const NNOutput& nnOutput, const Board& board, const BoardHistory& hist, const Context& context);
+    //context: the evaluation's, which a game that keeps states keys and keeps with the state. member and side: the
+    //evaluating search's (Entry::member, Entry::side), which the candidate keeps.
+    void offer(const NNOutput& nnOutput, const Board& board, const BoardHistory& hist, const Context& context,
+               int member, int side);
     bool found() const { return hasCandidate; }
     float ranking() const { return bestRanking.load(std::memory_order_acquire); }
     float regretValue() const { return candidateRegretValue; }
-    //The candidate as an entry, its moves or its state: its regret and origin are the caller's.
+    //The candidate as an entry, its moves or its state, with its member and side: its regret and origin are the
+    //caller's.
     Entry candidate() const;
 
    private:

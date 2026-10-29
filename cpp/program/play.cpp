@@ -868,64 +868,6 @@ void Play::extractPolicyTarget(
   }
 }
 
-//KataGame fork (2026-10-29): AZdb's seam with the search (play.h). The search's build step (abscls-hqyw.4) adds
-//SearchParams::diversityMember, Search::setDiversityState and NNEvaluator::computesIntrinsicHead. These templates use
-//them where they exist, so that the matchmaker builds before and after that step. Without them, member 0 plays as
-//before and another member is refused.
-namespace {
-  template<class P, class = void> struct HasDiversityMember : std::false_type {};
-  template<class P> struct HasDiversityMember<P, std::void_t<decltype(std::declval<P&>().diversityMember)>>
-    : std::true_type {};
-  template<class S, class = void> struct HasDiversityState : std::false_type {};
-  template<class S> struct HasDiversityState<S, std::void_t<decltype(std::declval<S&>().setDiversityState(
-    std::declval<const std::shared_ptr<const AZdb::State<GameEncoding>>&>()))>> : std::true_type {};
-  template<class N, class = void> struct HasComputesIntrinsic : std::false_type {};
-  template<class N> struct HasComputesIntrinsic<N, std::void_t<decltype(std::declval<const N&>().computesIntrinsicHead())>>
-    : std::true_type {};
-
-  template<class P> void setMemberOf(P& params, int member) {
-    if constexpr(HasDiversityMember<P>::value)
-      params.diversityMember = member;
-    else if(member != 0)
-      throw StringError("AZdb: this build's search plays member 0 only (SearchParams::diversityMember is missing)");
-  }
-  template<class P> int memberOf(const P& params) {
-    if constexpr(HasDiversityMember<P>::value)
-      return params.diversityMember;
-    else
-      return 0;
-  }
-  template<class S> void setStateOf(S* search, const std::shared_ptr<const AZdb::State<GameEncoding>>& state) {
-    if constexpr(HasDiversityState<S>::value)
-      search->setDiversityState(state);
-    else
-      (void)search, (void)state;
-  }
-  template<class N> bool computesIntrinsicOf(const N* nnEval) {
-    if constexpr(HasComputesIntrinsic<N>::value)
-      return nnEval->computesIntrinsicHead();
-    else
-      return nnEval->hasIntrinsicHead();
-  }
-}
-
-bool Play::searchPlaysDiversityMembers() {
-  return HasDiversityMember<SearchParams>::value && HasDiversityState<Search>::value &&
-    HasComputesIntrinsic<NNEvaluator>::value;
-}
-void Play::setDiversityMember(SearchParams& params, int member) {
-  setMemberOf(params, member);
-}
-int Play::diversityMemberOf(const SearchParams& params) {
-  return memberOf(params);
-}
-void Play::setDiversityState(Search* search, const std::shared_ptr<const AZdb::State<GameEncoding>>& state) {
-  setStateOf(search, state);
-}
-bool Play::computesIntrinsicHead(const NNEvaluator* nnEval) {
-  return computesIntrinsicOf(nnEval);
-}
-
 //Enclosure fork (owner, 2026-10-04): RGSC's V_selected (program/rgsc.h): the search value of the move played, its
 //child's mean (white's win minus loss, as the search keeps it); the root's if that child has no visits.
 static float selectedChildWhiteWinLoss(const Search* bot, Loc loc) {
@@ -2871,15 +2813,15 @@ FinishedGameData* GameRunner::runGame(
     //KataGame fork (2026-10-29): AZdb's matchmaker can give the two players two members. Then the game has two bots
     //(two botIdx, two searches with the same network), and each bot keeps its member. The game's settings
     //(createGame) are both bots'.
-    const int memberB = Play::diversityMemberOf(botSpecB.baseParams);
-    const int memberW = Play::diversityMemberOf(botSpecW.baseParams);
+    const int memberB = botSpecB.baseParams.diversityMember;
+    const int memberW = botSpecW.baseParams.diversityMember;
     testAssert((botSpecB.botIdx == botSpecW.botIdx) == (memberB == memberW));
     SearchParams params = botSpecB.baseParams;
     gameInit->createGame(board,pla,hist,extraBlackAndKomi,params,initialPosition,playSettings,otherGameProps,startPosSample,gameHistoryModes);
     botSpecB.baseParams = params;
     botSpecW.baseParams = params;
-    Play::setDiversityMember(botSpecB.baseParams, memberB);
-    Play::setDiversityMember(botSpecW.baseParams, memberW);
+    botSpecB.baseParams.diversityMember = memberB;
+    botSpecW.baseParams.diversityMember = memberW;
   }
   else {
     gameInit->createGame(board,pla,hist,extraBlackAndKomi,initialPosition,playSettings,otherGameProps,startPosSample,gameHistoryModes);

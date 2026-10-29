@@ -4,7 +4,8 @@
 //
 // Eq. 2 on a short game; the position key's order independence; the buffer's fill, replace-the-lowest, skip-known
 // and EMA rules; the floor for tree candidates; sampling frequencies against the paper's R^(1/tau) / sum; the
-// start probability; and the save/load round trip (SCRATCH_DIR/rgsc_buffer.txt).
+// start probability; and the save/load round trip (SCRATCH_DIR/rgsc_buffer.txt), with each state's origin and AZdb
+// member and side, and older files without them.
 
 #include <cmath>
 #include <cstdio>
@@ -167,6 +168,51 @@ int main(int argc, char** argv) {
     check(oldBuffer.size() == 1 && oldBuffer.contains(keyOfI(1)), "an old file loads");
     check(oldBuffer.maybeSample(rand, e) && e.origin == Rgsc::ORIGIN_UNKNOWN && e.moves.size() == 2,
           "an old entry's origin is unknown and its moves intact");
+    check(e.member == -1 && e.side == -1, "an old entry's member and side are unknown");
+  }
+
+  // KataGame fork (2026-10-29): each state's AZdb member and side (Entry::member, Entry::side: the search that produced
+  // it) through a save and a load; a file saved before them, with origins, loads with both unknown.
+  {
+    Rgsc::Settings tagged = settings;
+    tagged.bufferFile = string(argv[1]) + "/rgsc_buffer_members.txt";
+    Rgsc::Buffer members(tagged);
+    const int memberOf[3] = {2, 4, -1}, sideOf[3] = {0, 1, -1};
+    for(int i = 1; i <= 3; i++) {
+      Rgsc::Entry entry;
+      entry.key = keyOfI(i);
+      entry.regret = 0.5;
+      entry.moves = movesOf(i);
+      entry.origin = i == 1 ? Rgsc::ORIGIN_TREE : Rgsc::ORIGIN_PLAYED;
+      entry.member = memberOf[i - 1];
+      entry.side = sideOf[i - 1];
+      members.offer(entry);
+    }
+    members.save();
+    Rgsc::Buffer loaded(tagged);
+    loaded.load();
+    Rand rand("testrgsc members");
+    map<uint64_t, pair<int, int>> tags;
+    Rgsc::Entry e;
+    for(int i = 0; i < 2000; i++) {
+      check(loaded.sample(rand, e), "a loaded buffer of tagged states draws");
+      tags[e.key] = {e.member, e.side};
+    }
+    bool same = tags.size() == 3;
+    for(int i = 1; i <= 3; i++)
+      same = same && tags[keyOfI(i)] == make_pair(memberOf[i - 1], sideOf[i - 1]);
+    check(same, "the members and sides survive a save and a load");
+    check(loaded.summary().find("by member unknown:1 2:1 4:1") != string::npos, "the summary counts the members");
+
+    Rgsc::Settings old = settings;
+    old.bufferFile = string(argv[1]) + "/rgsc_buffer_old_origins.txt";
+    FILE* f = fopen(old.bufferFile.c_str(), "w");
+    fprintf(f, "gamesFinished 7\nentry 0.5 3 2 101 1 201 1 2\n");
+    fclose(f);
+    Rgsc::Buffer oldBuffer(old);
+    oldBuffer.load();
+    check(oldBuffer.size() == 1 && oldBuffer.sample(rand, e) && e.origin == Rgsc::ORIGIN_PLAYED && e.member == -1 &&
+          e.side == -1, "an entry with its origin and no member loads, with the member and side unknown");
   }
 
   printf("%s (%d failures)\n", failures == 0 ? "all RGSC checks passed" : "RGSC checks FAILED", failures);

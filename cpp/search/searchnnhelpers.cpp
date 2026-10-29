@@ -134,13 +134,16 @@ bool Search::initNodeNNOutput(
 
   //Enclosure fork (owner, 2026-10-04): RGSC's tree candidates, from the network's own output (before any noise).
   //KataGame fork (2026-10-27): with the evaluation's context, which a game that keeps states keeps with the state.
+  //KataGame fork (2026-10-29): and this search's AZdb member and side, for the analysis (Rgsc::Entry::member).
   if(rgscTracker != nullptr || rgscSwingTracker != nullptr) {
     const Rgsc::Context context = Rgsc::Context::of(
       thread.history.rules.komi, getPlayoutDoublingAdvantagePla(), searchParams.playoutDoublingAdvantage);
+    const int member = searchParams.diversityMember;
+    const int side = Board::indexOfPlayer(plaThatSearchIsFor);
     if(rgscTracker != nullptr)
-      rgscTracker->offer(**result, thread.board, thread.history, context);
+      rgscTracker->offer(**result, thread.board, thread.history, context, member, side);
     if(rgscSwingTracker != nullptr)
-      rgscSwingTracker->offer(**result, thread.board, thread.history, context);
+      rgscSwingTracker->offer(**result, thread.board, thread.history, context, member, side);
   }
 
   if(antiMirrorDifficult) {

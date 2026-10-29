@@ -374,7 +374,19 @@ struct Match {
   int chooserPlayer = 0;
   //The member of each of the rules' players.
   int members[2] = {0, 0};
+  //Whether the game starts from a state of RGSC's buffer, vanilla or swing (restartMatch).
+  bool restart = false;
 };
+
+//The match of a game that starts from a state of RGSC's buffer, either buffer (a departure from both papers: the
+//engine repository's games/blueprints/docs/research/diversity-players.md, "The matchmaker and one trainer"): member 0
+//against itself, whatever the matchmaker would draw. Member 0 is the chooser at both sides, so its rows train at both.
+//The league takes nothing from it (League::finishGame).
+inline Match restartMatch() {
+  Match match;
+  match.restart = true;
+  return match;
+}
 
 //The mixture over the members 0 to chooser that the chooser meets as the rules' player chooserPlayer: the other
 //player's maximum-entropy Nash mixture of the table over the members 0 to chooser (maxentNash). The table's rows are
@@ -448,6 +460,8 @@ void sideStatistics(const Positions& positions, int numActions, std::vector<doub
 //  These are the positions of the rows that train;
 //- μ and σ move at each side of the game, every member's (the normalizer's update);
 //- the table adds the game's result, when the game has one.
+//A game that starts from a state of RGSC's buffer (restartMatch) changes none of them: ψ, μ and σ come from games
+//from the normal start only, and the table holds the results of the matchmaker's games. It counts as a game.
 //The matchmaker draws among every member of the latent (NUM_MEMBERS).
 template<class E> class League {
  public:
@@ -473,8 +487,11 @@ template<class E> class League {
     return std::make_shared<const State<E>>(rows.data(), mean.data(), sd.data(), l0);
   }
 
-  //A game's members, by PSRO-NASH (drawMatch) on the table as it is.
-  Match draw(Rand& rand) const {
+  //A game's members: by PSRO-NASH (drawMatch) on the table as it is, or member 0 against itself in a game that starts
+  //from a state of RGSC's buffer (restart: restartMatch), with no draw.
+  Match draw(Rand& rand, bool restart) const {
+    if(restart)
+      return restartMatch();
     Payoff table;
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -485,9 +502,14 @@ template<class E> class League {
 
   //A finished game: its match, its sides' statistics (sideStatistics), the game's copy of the state (snapshot), and
   //the first player's score (1 a win, 0.5 a draw, 0 a loss; NaN for a game without a result, which the table does
-  //not take). Returns the league's count of finished games, this one included.
+  //not take). A restart (Match::restart) only counts. Returns the league's count of finished games, this one
+  //included.
   int64_t finishGame(const Match& match, const std::vector<double> side[2], const State<E>& gameState,
                      double firstScore) {
+    if(match.restart) {
+      std::lock_guard<std::mutex> lock(mutex);
+      return ++games;
+    }
     std::vector<double> phi(N), meanPhi[2];
     int counts[2];
     for(int p = 0; p < 2; p++) {

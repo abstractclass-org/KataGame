@@ -304,22 +304,6 @@ namespace Play {
     std::vector<double>& playSelectionValuesBuf
   );
 
-  //KataGame fork (2026-10-29): AZdb's seam with the search (the engine repository's
-  //games/blueprints/docs/research/diversity-players.md, "The search", "The matchmaker and one trainer"). A search's
-  //member is the one whose latent its evaluations read and whose diversity term its utility adds
-  //(SearchParams::diversityMember; its λ is the params' diversityLambda, the run's setting). Self-play's matchmaker
-  //sets each search's member and the game's copy of the members' state through these functions only.
-  //Whether the search plays AZdb's members: SearchParams::diversityMember, Search::setDiversityState and
-  //NNEvaluator::computesIntrinsicHead, of the search's build step (abscls-hqyw.4). Without them member 0 plays as
-  //before, and another member is refused.
-  bool searchPlaysDiversityMembers();
-  void setDiversityMember(SearchParams& params, int member);
-  int diversityMemberOf(const SearchParams& params);
-  void setDiversityState(Search* search, const std::shared_ptr<const AZdb::State<GameEncoding>>& state);
-  //Whether nnEval computes AZdb's intrinsic value head: a model with the head, on a backend that computes it
-  //(NNEvaluator::computesIntrinsicHead, of the search's build step; without it, whether the model has the head).
-  bool computesIntrinsicHead(const NNEvaluator* nnEval);
-
 }
 
 
