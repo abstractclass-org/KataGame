@@ -272,7 +272,10 @@
  *                           for the position p after a move of player. Diversity::MOVES (int) is each player's moves
  *                           in a game, the reward's divisor. Diversity::Normalizer (a type) is their running
  *                           normalization: Normalizer(mean, sd) from each statistic's mean and standard deviation,
- *                           and z(x, out) const writes the normalized statistics of x. Blueprints' 57 statistics
+ *                           z(x, out) const writes the normalized statistics of x, update(x, positions) moves the
+ *                           running estimates by one finished side (the statistics of its positions, one after
+ *                           another), and mean(i) and sd(i) const give statistic i's estimates (self-play's league,
+ *                           program/azdbleague.h). Blueprints' 57 statistics
  *                           (game/blueprints/diversity.h) and 60 moves. Default: none, 0 statistics, 1 move, and
  *                           every member's reward is 0 (diversityStatistics, diversityMoves, diversityStatisticsOf,
  *                           DiversityNormalizer).
@@ -888,6 +891,9 @@ template<class E> void diversityStatisticsOf(const encoding::P<E>& p, int player
 template<class E, bool = encoding::HasDiversity<E>::value> struct DiversityNormalizer {
   DiversityNormalizer(const double*, const double*) {}
   void z(const double*, double*) const {}
+  void update(const double*, int) {}
+  double mean(int) const { return 0.0; }
+  double sd(int) const { return 0.0; }
 };
 template<class E> struct DiversityNormalizer<E, true> : E::Diversity::Normalizer {
   DiversityNormalizer(const double* mean, const double* sd) : E::Diversity::Normalizer(mean, sd) {}

@@ -160,10 +160,10 @@ def test_the_loss_is_the_squared_error_on_the_rows_with_targets():
                                                                                 rel=1e-4)
 
 
-def converted(seed=0):
+def converted(seed=0, **options):
     ckpt = checkpoint(13)
     olds = networks(ckpt)
-    touched = add_diversity_members.convert(ckpt, seed)
+    touched = add_diversity_members.convert(ckpt, seed, **options)
     return ckpt, olds, touched
 
 
@@ -173,8 +173,9 @@ def outputs_without_intrinsic(net, out):
     return out[:-1] + [out[-1][:, :4]]
 
 
-def test_member_0_computes_what_the_network_did():
-    ckpt, olds, touched = converted()
+@pytest.mark.parametrize("random_last_layer", [False, True])
+def test_member_0_computes_what_the_network_did(random_last_layer):
+    ckpt, olds, touched = converted(random_last_layer=random_last_layer)
     assert len(touched) == 3, touched  # the model, the SWA model, the optimizer
     assert modelconfigs.get_inputs_version(ckpt["config"]) == 14 and ckpt["config"]["intrinsic_head"]
     news = networks(ckpt)
@@ -188,14 +189,44 @@ def test_member_0_computes_what_the_network_did():
                 assert len(got) == len(expected)
                 for e, o in zip(expected, got):
                     torch.testing.assert_close(o, e, rtol=1e-5, atol=1e-5)
-            # The other members differ a little, and the head gives each member its own A and B.
+            # The other members differ a little. A head with a random last layer gives each member its own A and B, and
+            # a head whose last layer is 0 gives 0.
             heads = []
             for member in range(MEMBERS):
                 out = flat(new(binary, torch.cat([global_13, latent(3, member)], dim=1)))
                 heads.append(out[-1][:, 4:6])
                 if member > 0:
                     assert not torch.equal(out[1], expected[1])  # the value logits
-            assert all(not torch.equal(heads[0], h) for h in heads[1:]) and heads[0].abs().min() > 0
+            if random_last_layer:
+                assert all(not torch.equal(heads[0], h) for h in heads[1:]) and heads[0].abs().min() > 0
+            else:
+                assert not any(h.any() for h in heads)
+
+
+def test_the_heads_last_layer_starts_at_0_and_the_trunk_gets_no_gradient_through_it():
+    ckpt, _, touched = converted()
+    assert all("its last layer at 0" in t for t in touched[:2]), touched
+    random, _, _ = converted(random_last_layer=True)
+    for part in ("model", "swa_model"):
+        for k in add_diversity_members.LAST_LAYER:
+            key = add_diversity_members.key_of(ckpt[part], k)
+            assert not ckpt[part][key].any(), key
+            assert random[part][key].abs().min() > 0, key
+        # The head's other layers are KataGo's initialization, the same with either choice.
+        for k in ckpt[part]:
+            if add_diversity_members.HEAD in k and not any(k.endswith(last) for last in add_diversity_members.LAST_LAYER):
+                assert torch.equal(ckpt[part][k], random[part][k]), k
+    model = Model(ckpt["config"], blueprints.MAX_BOARD_LEN)
+    model.load_state_dict(ckpt["model"])
+    batch = random_batch(model)
+    batch["globalInputNC"][:, V13_GLOBALS:] = latent(batch["globalInputNC"].shape[0], 3)
+    pred = model.postprocess_output(model(batch["binaryInputNCHW"], batch["globalInputNC"]))[0][19]
+    assert not pred.any()
+    # A loss on A and B trains the last layer, and gives the trunk and the head's other layers no gradient.
+    torch.square(pred - 1.0).sum().backward()
+    assert model.value_head.intrinsic_value.linear_out.weight.grad.abs().sum() > 0
+    assert not model.value_head.intrinsic_value.linear2.weight.grad.any()
+    assert model.conv_spatial.weight.grad is None or not model.conv_spatial.weight.grad.any()
 
 
 def test_the_latent_columns_are_member_0s_zeros_and_small_draws():

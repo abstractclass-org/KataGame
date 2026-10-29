@@ -91,6 +91,83 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
   NeuralNet::globalCleanup();
 }
 
+// The members' latent of each row of a writer's text output (TrainingWriteBuffers::writeToTextOstream): the member
+// whose input is 1, one for each row.
+static vector<int> latentsOfRows(const string& text, int64_t rows) {
+  const size_t at = text.find("globalInputNC\n");
+  testAssert(at != string::npos);
+  istringstream in(text.substr(at));
+  string line;
+  getline(in, line);  // the section's name
+  getline(in, line);  // the array's header
+  vector<int> out;
+  for(int64_t r = 0; r < rows; r++) {
+    testAssert((bool)getline(in, line));
+    istringstream values(line);
+    vector<float> row;
+    float v;
+    while(values >> v)
+      row.push_back(v);
+    testAssert((int)row.size() == NNInputs::NUM_FEATURES_GLOBAL_V14);
+    int member = -1;
+    for(int i = 0; i < NNInputs::NUM_DIVERSITY_MEMBERS; i++)
+      if(row[NNInputs::NUM_FEATURES_GLOBAL_V13 + i] == 1.0f) {
+        testAssert(member == -1);
+        member = i;
+      }
+    out.push_back(member);
+  }
+  return out;
+}
+
+// KataGame fork (2026-10-29): AZdb's matchmaker trains only the chooser's rows (FinishedGameData::diversityTrains).
+// The game written again as a game of member 2 (the first player) against member 4: with the first player's rows
+// only, the second's only, and both. The first two hold the rows of their player's moves, each with its member's
+// latent, and together the rows of both. Every row of the game has a whole weight, so that no draw decides a row.
+static void checkChoosersRows(FinishedGameData& data, int inputsVersion, int nnLen, int maxRows, const string& seed) {
+  const int savedMembers[2] = {data.diversityMembers[0], data.diversityMembers[1]};
+  data.diversityMembers[0] = 2;
+  data.diversityMembers[1] = 4;
+  testAssert(data.sidePositions.empty());
+  int64_t movesOf[2] = {0, 0};
+  {
+    BoardHistory hist(data.startHist);
+    Board board(data.startBoard);
+    Player pla = data.startPla;
+    for(size_t t = data.startHist.moveHistory.size(); t < data.endHist.moveHistory.size(); t++) {
+      const double weight = data.targetWeightByTurn[t - data.startHist.moveHistory.size()];
+      testAssert(weight == std::floor(weight));
+      movesOf[Board::indexOfPlayer(pla)] += (int64_t)weight;
+      const Move& move = data.endHist.moveHistory[t];
+      hist.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL);
+      pla = hist.presumedNextMovePla;
+    }
+  }
+  int64_t rows[3];
+  const bool trains[3][2] = {{true, false}, {false, true}, {true, true}};
+  for(int k = 0; k < 3; k++) {
+    ostringstream sink;
+    TrainingDataWriter writer(&sink, inputsVersion, maxRows, 1.0, nnLen, nnLen, 1, seed + "chooser");
+    data.diversityTrains[0] = trains[k][0];
+    data.diversityTrains[1] = trains[k][1];
+    writer.writeGame(data);
+    //The game's rows fit in one file, so that none has left the buffer.
+    rows[k] = writer.numRowsInBuffer();
+    testAssert(rows[k] < maxRows);
+    writer.flushIfNonempty();
+    if(k < 2)
+      for(int member : latentsOfRows(sink.str(), rows[k]))
+        testAssert(member == (k == 0 ? 2 : 4));
+  }
+  data.diversityTrains[0] = data.diversityTrains[1] = true;
+  data.diversityMembers[0] = savedMembers[0];
+  data.diversityMembers[1] = savedMembers[1];
+  testAssert(movesOf[0] > 0 && movesOf[1] > 0);
+  testAssert(rows[0] == movesOf[0] && rows[1] == movesOf[1] && rows[2] == rows[0] + rows[1]);
+  cout << "the chooser's rows: " << rows[0] << " of the first player, " << rows[1] << " of the second, " << rows[2]
+       << " of both" << endl;
+}
+
 // Enclosure fork: training rows from a self-play game (plan step 6).
 //
 //   katago runenclosurerowtests OUT_FILE [SEED [NPZ_DIR [INPUTS_VERSION]]]
@@ -103,7 +180,8 @@ void Tests::runEnclosureNNTests(const string& modelFile, const string& inputsFil
 // KataGame fork (2026-10-29): from the inputs version 14, both players are AZdb's member 2, with a fixed state
 // (AZDB_TEST_PSI below, each statistic's mean 0 and standard deviation 1, l0 1). The evaluator has no intrinsic head,
 // so the rows hold targets of the intrinsic value head only where their span reaches the game's end (program/azdb.h),
-// and their latent is member 2's.
+// and their latent is member 2's. Then the game, as one of member 2 against member 4, checks that only the chooser's
+// rows are written (checkChoosersRows), apart from the output.
 void Tests::runEnclosureRowTests(const string& outFile, const string& seed, const string& npzDir, int inputsVersion) {
   NeuralNet::globalInitialize();
   Logger logger(nullptr, false, false, false);
@@ -162,6 +240,8 @@ void Tests::runEnclosureRowTests(const string& outFile, const string& seed, cons
   }
   dataWriter.writeGame(*gameData);
   dataWriter.flushIfNonempty();
+  if(inputsVersion >= 14)
+    checkChoosersRows(*gameData, inputsVersion, nnLen, maxRows, seed);
   if(npzDir != "") {
     TrainingDataWriter npzWriter(npzDir, inputsVersion, maxRows, firstFileMinRandProp, nnLen, nnLen, seed + "dwriter");
     npzWriter.writeGame(*gameData);

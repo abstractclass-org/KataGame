@@ -2,7 +2,7 @@
 """KataGame fork: give a training checkpoint of the inputs version 13 AZdb's members: the inputs version 14 and the
 intrinsic value head.
 
-    python add_diversity_members.py CHECKPOINT OUT [-seed S] [-latent-scale F]
+    python add_diversity_members.py CHECKPOINT OUT [-seed S] [-latent-scale F] [-random-last-layer]
 
 AZdb (Zahavy et al., "Diversifying AI: Towards Creative Chess with AlphaZero", arXiv 2308.09175; the engine
 repository's games/blueprints/docs/research/diversity-players.md, "The cost on this machine", "How it starts") trains
@@ -19,7 +19,14 @@ This sets the config's inputs_version to 14 and intrinsic_head, in the model, th
   (Model.initialize) times F, LATENT_SCALE by default. With zero weights every member would start as the checkpoint's
   network, every member's estimate of psi would be equal, and every reward would be 0 ("How it starts"). With these
   weights the members differ a little at the first export, and training sets how much.
-- The intrinsic value head is new, with KataGo's initialization, as enclosure_add_regret_heads.py gives RGSC's heads.
+- The intrinsic value head is new, with KataGo's initialization, as enclosure_add_regret_heads.py gives RGSC's heads,
+  except its last layer (linear_out), whose weights and bias start at 0. Then A and B are 0 at the first export, and
+  the shared trunk gets no gradient through the head until the head's last layer has learned: a fresh head's outputs
+  on bpj4's rows are about 9.3 (A) and 4.9 (B), against targets that sum about 10 rewards, each a dot product of phi's
+  differences divided by 60, and their loss would train the trunk far more than the value's loss does (the engine
+  repository's
+  games/blueprints/docs/decisions/styles.md, "AZdb's latent, intrinsic value head and targets"). -random-last-layer
+  keeps KataGo's initialization of that layer too.
 
 S seeds both draws (default 0), so that a conversion repeats. The model and the SWA model get the same new weights.
 The optimizer's state is rebuilt by parameter name, as enclosure_add_regret_heads.py rebuilds it: every old parameter
@@ -48,11 +55,14 @@ VERSION, PREVIOUS = 14, 13
 LATENT_SCALE = 0.1
 GLOBAL = "linear_global.weight"
 HEAD = "value_head.intrinsic_value."
+# The head's last layer, which starts at 0 unless random_last_layer.
+LAST_LAYER = (HEAD + "linear_out.weight", HEAD + "linear_out.bias")
 
 
-def convert(ckpt, seed=0, latent_scale=LATENT_SCALE):
+def convert(ckpt, seed=0, latent_scale=LATENT_SCALE, random_last_layer=False):
     """ckpt (a loaded checkpoint of the inputs version 13) with the inputs version 14 and the intrinsic value head, in
-    place. Returns what it changed, one line each."""
+    place: the head's last layer at 0, or with KataGo's initialization with random_last_layer. Returns what it
+    changed, one line each."""
     config = ckpt["config"]
     version = modelconfigs.get_inputs_version(config)
     if version != PREVIOUS:
@@ -79,6 +89,10 @@ def convert(ckpt, seed=0, latent_scale=LATENT_SCALE):
     old_keys = set(old_model.state_dict())
     added = [k for k in fresh if k not in old_keys]
     assert added and all(k.startswith(HEAD) for k in added), added
+    assert all(k in added for k in LAST_LAYER), added
+    if not random_last_layer:
+        for k in LAST_LAYER:
+            fresh[k] = torch.zeros_like(fresh[k])
 
     touched = []
     for part in ("model", "swa_model"):
@@ -91,7 +105,8 @@ def convert(ckpt, seed=0, latent_scale=LATENT_SCALE):
         prefix = key[:-len(GLOBAL)]
         for k in added:
             ckpt[part][prefix + k] = fresh[k].clone()
-        touched.append(f"{part} {key}: {old_n} -> {new_n}; {len(added)} tensors of the intrinsic value head")
+        touched.append(f"{part} {key}: {old_n} -> {new_n}; {len(added)} tensors of the intrinsic value head, its last "
+                       f"layer {'random' if random_last_layer else 'at 0'}")
 
     ckpt["config"] = new_config
     if "optimizer" in ckpt:
@@ -141,11 +156,13 @@ def main():
     parser.add_argument("-latent-scale", type=float, default=LATENT_SCALE,
                         help="the other members' latent columns against KataGo's initialization of linear_global "
                              f"(default {LATENT_SCALE})")
+    parser.add_argument("-random-last-layer", action="store_true",
+                        help="the intrinsic value head's last layer with KataGo's initialization (default: 0)")
     args = parser.parse_args()
     if os.path.exists(args.out):
         sys.exit(f"{args.out} exists: give a new path")
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    touched = convert(ckpt, args.seed, args.latent_scale)
+    touched = convert(ckpt, args.seed, args.latent_scale, args.random_last_layer)
     torch.save(ckpt, args.out)
     print(f"{args.out}: {args.checkpoint} with AZdb's members (the inputs version {VERSION}, the intrinsic value "
           "head)\n  " + "\n  ".join(touched))

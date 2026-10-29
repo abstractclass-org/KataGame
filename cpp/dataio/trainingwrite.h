@@ -157,6 +157,10 @@ struct FinishedGameData {
   //the head), which the targets read where their span ends.
   int diversityMembers[2] = {0, 0};
   std::shared_ptr<const AZdb::State<GameEncoding>> diversityState;
+  //KataGame fork (2026-10-29): whether each player's rows train, by the rules' player, its main rows and its side
+  //positions' rows. AZdb's matchmaker (program/azdbleague.h) trains only the chooser's rows, both players' in a game of
+  //the chooser against itself. Both by default.
+  bool diversityTrains[2] = {true, true};
   std::vector<float> intrinsicAByTurn;
   std::vector<float> intrinsicBByTurn;
 

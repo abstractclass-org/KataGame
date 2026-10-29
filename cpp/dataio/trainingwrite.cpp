@@ -1343,6 +1343,8 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
       data.intrinsicBByTurn.empty() ? NULL : data.intrinsicBByTurn.data(), intrinsicTargets);
   }
   auto memberOf = [&](Player pla) { return diversityRows ? data.diversityMembers[Board::indexOfPlayer(pla)] : 0; };
+  //KataGame fork (2026-10-29): only the rows of the players that train (AZdb's chooser), main rows and side rows.
+  auto trains = [&](Player pla) { return data.diversityTrains[Board::indexOfPlayer(pla)]; };
 
   Board board(data.startBoard);
   BoardHistory hist(data.startHist);
@@ -1351,7 +1353,7 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
   //Write main game rows
   int startTurnIdx = (int)data.startHist.moveHistory.size();
   for(int turnAfterStart = 0; turnAfterStart<numMoves; turnAfterStart++) {
-    double targetWeight = data.targetWeightByTurn[turnAfterStart];
+    double targetWeight = trains(nextPlayer) ? data.targetWeightByTurn[turnAfterStart] : 0.0;
     int turnIdx = turnAfterStart + startTurnIdx;
 
     int64_t unreducedNumVisits = data.policyTargetsByTurn[turnAfterStart].unreducedNumVisits;
@@ -1463,7 +1465,7 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
   for(int i = 0; i<data.sidePositions.size(); i++) {
     SidePosition* sp = data.sidePositions[i];
 
-    double targetWeight = sp->targetWeight;
+    double targetWeight = trains(sp->pla) ? sp->targetWeight : 0.0;
     while(targetWeight > 0.0) {
       if(targetWeight >= 1.0 || rand.nextBool(targetWeight)) {
         if(debugOut == NULL || rowCount.load(std::memory_order_relaxed) % debugOnlyWriteEvery == 0) {
