@@ -686,7 +686,9 @@ int bestDrop(const Game& g, const string& view, const SearchNode* tree, int pick
     playAction(*after, pick);
     NNResultBuf buf;
     buf.symmetryFromHash = true;
-    E.nnEval->evaluate(after->board, after->hist, after->pla(), MiscNNInputParams(), buf, false, false);
+    MiscNNInputParams params;
+    params.diversityMember = E.search->searchParams.diversityMember;  //AZdb's latent: the search's member's drop
+    E.nnEval->evaluate(after->board, after->hist, after->pla(), params, buf, false, false);
     evaluated = buf.result;
     out = evaluated.get();
   }

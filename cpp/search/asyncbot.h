@@ -56,6 +56,8 @@ class AsyncBot {
   void setExternalPatternBonusTable(std::unique_ptr<PatternBonusTable>&& table);
   void setCopyOfExternalPatternBonusTable(const std::unique_ptr<PatternBonusTable>& table);
   void setExternalEvalCache(const std::shared_ptr<EvalCacheTable>& cache);
+  //KataGame fork (2026-10-30): AZdb's members' state for the search's diversity term (Search::setDiversityState).
+  void setDiversityState(const std::shared_ptr<const AZdb::State<GameEncoding>>& state);
   void clearSearch();
   void clearEvalCache();
 

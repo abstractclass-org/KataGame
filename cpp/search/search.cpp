@@ -746,7 +746,7 @@ void Search::beginSearch(bool pondering) {
 
   //KataGame fork (2026-10-29): AZdb's diversity term for this search.
   diversityWeight = resolveDiversityWeight(searchParams);
-  checkDiversitySetup();
+  checkDiversitySetup(searchParams, nnEvaluator, diversityState != nullptr);
 
   numSearchesBegun++;
 

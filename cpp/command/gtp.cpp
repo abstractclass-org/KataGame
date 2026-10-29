@@ -1798,6 +1798,7 @@ struct GTPEngine {
             (analysisParams.playoutDoublingAdvantagePla == C_EMPTY || analysisParams.playoutDoublingAdvantagePla == pla) ?
             analysisParams.playoutDoublingAdvantage : -analysisParams.playoutDoublingAdvantage;
           nnInputParams.symmetry = symmetry;
+          nnInputParams.diversityMember = analysisParams.diversityMember;  //KataGame fork: AZdb's latent
 
           NNResultBuf buf;
           bool skipCache = true;
@@ -1814,6 +1815,7 @@ struct GTPEngine {
             (analysisParams.playoutDoublingAdvantagePla == C_EMPTY || analysisParams.playoutDoublingAdvantagePla == prevPla) ?
             analysisParams.playoutDoublingAdvantage : -analysisParams.playoutDoublingAdvantage;
           nnInputParams.symmetry = symmetry;
+          nnInputParams.diversityMember = analysisParams.diversityMember;  //KataGame fork: AZdb's latent
 
           NNResultBuf buf;
           bool skipCache = true;
@@ -1853,6 +1855,7 @@ struct GTPEngine {
           analysisParams.playoutDoublingAdvantage : -analysisParams.playoutDoublingAdvantage;
         nnInputParams.symmetry = symmetry;
         nnInputParams.policyOptimism = policyOptimism;
+        nnInputParams.diversityMember = analysisParams.diversityMember;  //KataGame fork: AZdb's latent
         //When evaluating the human model, featurize per its own resolution (which may differ from the
         //main search's modes carried by the history), matching how in-search human evals featurize.
         if(useHumanModel) {

@@ -47,6 +47,7 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, and the defaults of the optional members with a stub game. |
 | `cpp/tests/enclosure/testgameareas.cpp` | The look-ahead area and the komi area (optional members of the encoding part) through the front, for the build's game: the short-term value targets' lambdas and the komi draw's standard deviation, against each game's pinned areas, and the defaults with stub games. |
 | `cpp/tests/enclosure/testcheapsearch.cpp` | Self-play's full and cheap searches (`play.cpp`'s `GameRunner`), for the build's game: the share of full searches among the actions that draw one, and with `cheapSearchPerMove`, the search of an action that continues a move. |
+| `cpp/tests/enclosure/testdiversityinputs.cpp` | AZdb's latent in the network's inputs and cache, for any game: member 0 keeps the cache's hash of an evaluation without a member and the members' hashes differ, the rows of V14 are V13's with the member's one-hot after V13's global inputs (the float rows and the packed rows at each allowed symmetry), the rows of V13 do not read the member, and the training rows have 80 global targets before V14 and 84 in its rows. |
 | `cpp/tests/enclosure/testdiversitysearch.cpp` | AZdb's diversity term in the search, for a build's game that gives AZdb's statistics (Blueprints): member 0's search against KataGo's, D on chains, a transposition, the member's choice by its reward, each member's evaluations, the refusals and the tree's clear. |
 | `cpp/tests/enclosure/testkomi.cpp` | Komi through the front, for the build's game: the result and the value targets at komis that decide a game, the global inputs at the history's komi, the even-komi search's bracket (an optional member of the encoding part) against KataGo's code and each game's pinned bracket, the two rules where the win-loss value keeps its sign up to the limit (no even komi, or KataGo's bracket end), each game's pinned lead step, and a self-play config's komi draws. |
 
@@ -590,6 +591,16 @@ member `Diversity` (above). A game without it gives every member the reward 0.
   game's state (`Search::setDiversityState`), and the eval cache. A member of 1 to 4 needs a model of V14. The search
   clears its tree when P changes, as for the pattern bonus, and when the state, the member or w changes.
   `testdiversitysearch` checks the term ("The checks").
+- **The analysis engine** reads the run's state of the members once, at its start: the league's file that self-play
+  writes, which the setting `diversityStateFile` names (`AZdb::readState`: ψ, μ, σ and ℓ0 as the file holds them,
+  with the league's checks). The state then stays the same for the engine's life, and every search shares it
+  (`AsyncBot::setDiversityState`). A search of member 0 does not read it, so a query of member 0 gets the same response
+  with the file and without it. The engine checks its config at its start, and each query that overrides settings,
+  as the search checks itself (`Search::checkDiversitySetup`): a member 1 to 4 with w > 0 and no file is refused
+  with the search's message. A query cannot change `diversityStateFile`. GTP and Blueprints' engine protocol do not
+  read the file, so their members 1 to 4 play with λ = 1 only. Their evaluations outside the search (GTP's
+  `kata-raw-nn`, `kata-raw-human-nn` and `debug_moves`, the protocol's drop after a pick) read the latent of the
+  search's member.
 
 **The training targets** are the slots of KataGo's spatial targets (`valueTargetsNCHW`) and the two that the fork
 added. `TARGETS` declares the slots that the game writes. The front computes C2-3 and C7 from `pieces`
@@ -832,6 +843,10 @@ the network's cache (`nnCacheSizePowerOfTwo`) changes the games once the cache i
 (`normalAsymmetricPlayoutProb`) need at least 5 visits in each search. In a game with them, a cheap search of fewer
 visits stops the test with an error ("asymmetric playout doubling resulted in fewer than 5 visits"). So with very few
 visits, set that probability to 0, or use a set of games that has no such game.
+
+**AZdb's latent:** `testdiversityinputs POSITIONS_FILE` names no game, so it runs on any game's build, with the game's
+positions (Blueprints': `tests/data/blueprints_positions.txt`). It needs no network. It checks the cache's hash of each
+member, the rows of V14 against V13's at each allowed symmetry, and the count of the training rows' global targets.
 
 **AZdb's search:** `testdiversitysearch MODEL MODEL_WITHOUT_HEAD` runs on a build of a game that gives AZdb's statistics
 (Blueprints), with two networks of the game of the inputs version 14: one with the intrinsic value head, one without

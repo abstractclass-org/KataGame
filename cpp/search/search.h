@@ -321,6 +321,10 @@ struct Search {
   void setDiversityState(const std::shared_ptr<const AZdb::State<GameEncoding>>& state);
   //w = (1 - λ) / λ for a member >= 1, else 0 (diversityWeight).
   static double resolveDiversityWeight(const SearchParams& params);
+  //At the start of a search of params on nnEval, with or without the members' state (hasState): refuses a member
+  //without the latent, and the term without its head or its state, with a StringError that gives the reason. The
+  //analysis engine checks its config and each query with it, before their searches.
+  static void checkDiversitySetup(const SearchParams& params, const NNEvaluator* nnEval, bool hasState);
 
   //If the number of threads is reduced, this can free up some excess threads in the thread pool.
   //Calling this is never necessary, it may just reduce some resource use.
@@ -546,8 +550,6 @@ private:
   //caller checks diversityWeight first, so that a search with w = 0 runs KataGo's lines only.
   double getDiversityHeadUtility(const NNOutput& nnOutput, Player nextPla) const;
   double computeDiversityReward(const Board& board, const BoardHistory& hist) const;
-  //At the start of a search: refuses a member without the latent, and the term without its head or its state.
-  void checkDiversitySetup() const;
 
   //----------------------------------------------------------------------------------------
   // Miscellaneous search biasing helpers, root move selection, etc.

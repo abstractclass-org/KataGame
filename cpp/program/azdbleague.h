@@ -723,6 +723,32 @@ template<class E> class League {
   int64_t games = 0;
 };
 
+//The members' state in a run's league file (League::save), for the searches outside self-play (the analysis engine's
+//setting diversityStateFile): ψ, μ, σ and ℓ0 as the file holds them, with load's checks, as a game of self-play would
+//take its copy at that point (League::snapshot). A file that does not exist is an error.
+template<class E> std::shared_ptr<const State<E>> readState(const std::string& path) {
+  double l0;
+  {
+    std::ifstream in(path);
+    if(!in)
+      throw StringError("AZdb: cannot read the members' state " + path);
+    try {
+      nlohmann::json j;
+      in >> j;
+      l0 = j.at("l0").get<double>();
+    }
+    catch(const nlohmann::json::exception& e) {
+      throw StringError("AZdb: " + path + " is not a league's file: " + e.what());
+    }
+  }
+  //load replaces the seed's μ and σ with the file's.
+  const std::vector<double> mean(League<E>::N, 0.0), sd(League<E>::N, 1.0);
+  League<E> league(l0, mean.data(), sd.data());
+  if(!league.load(path))
+    throw StringError("AZdb: cannot read the members' state " + path);
+  return league.snapshot();
+}
+
 //The seed of the statistics' normalization: each statistic's mean and standard deviation over a reference's positions,
 //from a file of tools/diversity_stats.py's seed (the engine repository's games/blueprints/runs/diversity_seed.json):
 //{"statistics": [{"mean": ..., "sd": ...}, ...]}, one entry for each statistic in their order.

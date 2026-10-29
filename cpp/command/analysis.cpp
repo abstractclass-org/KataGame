@@ -9,6 +9,7 @@
 #include "../program/playutils.h"
 #include "../program/play.h"
 #include "../program/rootviews.h"
+#include "../program/azdbleague.h"
 #include "../command/commandline.h"
 #include "../core/test.h"
 #include "../main.h"
@@ -227,6 +228,21 @@ int MainCmds::analysis(const vector<string>& args) {
       }
     }
   }
+
+  //KataGame fork (2026-10-30): AZdb's members (the engine repository's games/blueprints/docs/research/
+  //diversity-players.md, "The search"). A search of a member 1 to 4 adds its diversity term from the run's state of the
+  //members, the league's file that self-play writes (diversityStateFile, AZdb::readState). The engine reads it once,
+  //here, so the state stays fixed for the engine's life, and every search shares it. A search of member 0 never reads
+  //it. The engine checks the config's search here, and the search of each query that overrides settings when it reads
+  //the query, as the search checks itself (Search::checkDiversitySetup): a member 1 to 4 whose term needs the state
+  //and has no file is refused.
+  std::shared_ptr<const AZdb::State<GameEncoding>> diversityState = nullptr;
+  if(cfg.contains("diversityStateFile")) {
+    const string file = cfg.getString("diversityStateFile");
+    diversityState = AZdb::readState<GameEncoding>(file);
+    logger.write("AZdb: the members' state of " + file + ", fixed for the engine's life");
+  }
+  Search::checkDiversitySetup(defaultParams, nnEval, diversityState != nullptr);
 
 #ifndef USE_EIGEN_BACKEND
   {
@@ -517,6 +533,7 @@ int MainCmds::analysis(const vector<string>& args) {
     AsyncBot* bot = new AsyncBot(defaultParams, nnEval, humanEval, &logger, searchRandSeed);
     bot->setCopyOfExternalPatternBonusTable(patternBonusTable);
     bot->setExternalEvalCache(evalCache);
+    bot->setDiversityState(diversityState);  //KataGame fork: AZdb's members' state, or none
     threads.emplace_back(analysisLoopProtected,bot,threadIdx);
     bots.push_back(bot);
   }
@@ -1222,12 +1239,17 @@ int MainCmds::analysis(const vector<string>& args) {
         // Reload settings to allow overrides
         if(!overrideSettings.empty()) {
           try {
+            //KataGame fork: AZdb's members' state is the engine's, read once at its start.
+            if(overrideSettings.count("diversityStateFile") > 0)
+              throw StringError("diversityStateFile is the engine's, read once at its start: a query cannot change it");
             ConfigParser localCfg(cfg);
             //Ignore any unused keys in the ORIGINAL config
             localCfg.markAllKeysUsedWithPrefix("");
             localCfg.overrideKeys(overrideSettings);
             loadParams(localCfg, rbase.params, rbase.perspective, defaultPerspective);
             SearchParams::failIfParamsDifferOnUnchangeableParameter(defaultParams,rbase.params);
+            //KataGame fork: the query's AZdb member, refused as its search would refuse it.
+            Search::checkDiversitySetup(rbase.params, nnEval, diversityState != nullptr);
             //Soft failure on unused override keys newly present in the config
             vector<string> unusedKeys = localCfg.unusedKeys();
             if(unusedKeys.size() > 0) {

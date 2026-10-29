@@ -160,6 +160,10 @@ void AsyncBot::setExternalEvalCache(const std::shared_ptr<EvalCacheTable>& cache
   stopAndWait();
   search->setExternalEvalCache(cache);
 }
+void AsyncBot::setDiversityState(const std::shared_ptr<const AZdb::State<GameEncoding>>& state) {
+  stopAndWait();
+  search->setDiversityState(state);
+}
 void AsyncBot::clearSearch() {
   stopAndWait();
   search->clearSearch();

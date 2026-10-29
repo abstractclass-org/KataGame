@@ -341,11 +341,11 @@ double Search::computeDiversityReward(const Board& board, const BoardHistory& hi
   return (plaThatSearchIsFor == P_WHITE ? diversityWeight : -diversityWeight) * reward;
 }
 
-void Search::checkDiversitySetup() const {
-  const int member = searchParams.diversityMember;
+void Search::checkDiversitySetup(const SearchParams& params, const NNEvaluator* nnEval, bool hasState) {
+  const int member = params.diversityMember;
   if(member < 0 || member >= NNInputs::NUM_DIVERSITY_MEMBERS)
     throw StringError("diversityMember must be from 0 to " + Global::intToString(NNInputs::NUM_DIVERSITY_MEMBERS - 1));
-  if(!(searchParams.diversityLambda > 0.0 && searchParams.diversityLambda <= 1.0))
+  if(!(params.diversityLambda > 0.0 && params.diversityLambda <= 1.0))
     throw StringError("diversityLambda must be above 0 and at most 1");
   if(member == 0)
     return;
@@ -353,21 +353,22 @@ void Search::checkDiversitySetup() const {
   auto refuse = [&](const string& why) {
     throw StringError("diversityMember " + Global::intToString(member) + why);
   };
-  if(NNModelVersion::getInputsVersion(nnEvaluator->getModelVersion()) < 14)
+  if(NNModelVersion::getInputsVersion(nnEval->getModelVersion()) < 14)
     refuse(" needs a model of the inputs version 14 or later, which reads AZdb's members");
-  if(diversityWeight == 0.0)
+  if(resolveDiversityWeight(params) == 0.0)
     return;
   auto refuseTerm = [&](const string& why) {
-    refuse(" with diversityLambda " + Global::doubleToString(searchParams.diversityLambda) +
+    refuse(" with diversityLambda " + Global::doubleToString(params.diversityLambda) +
            " adds AZdb's diversity term to the search, which " + why);
   };
-  if(!nnEvaluator->hasIntrinsicHead())
+  if(!nnEval->hasIntrinsicHead())
     refuseTerm("needs a model with the intrinsic value head");
-  if(!nnEvaluator->computesIntrinsicHead())
+  if(!nnEval->computesIntrinsicHead())
     refuseTerm("needs a backend that computes the intrinsic value head (CUDA or Eigen)");
-  if(diversityState == nullptr)
-    refuseTerm("needs the members' state of the game (Search::setDiversityState)");
-  if(searchParams.useEvalCache)
+  if(!hasState)
+    refuseTerm("needs the members' state (Search::setDiversityState): self-play's copy for the game, or the run's "
+               "file that the analysis engine's setting diversityStateFile names");
+  if(params.useEvalCache)
     refuseTerm("cannot run with useEvalCache, whose cached utilities leave the term out");
 }
 
