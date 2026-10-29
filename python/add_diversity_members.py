@@ -21,12 +21,11 @@ This sets the config's inputs_version to 14 and intrinsic_head, in the model, th
   weights the members differ a little at the first export, and training sets how much.
 - The intrinsic value head is new, with KataGo's initialization, as enclosure_add_regret_heads.py gives RGSC's heads,
   except its last layer (linear_out), whose weights and bias start at 0. Then A and B are 0 at the first export, and
-  the shared trunk gets no gradient through the head until the head's last layer has learned: a fresh head's outputs
-  on bpj4's rows are about 9.3 (A) and 4.9 (B), against targets that sum about 10 rewards, each a dot product of phi's
-  differences divided by 60, and their loss would train the trunk far more than the value's loss does (the engine
-  repository's
-  games/blueprints/docs/decisions/styles.md, "AZdb's latent, intrinsic value head and targets"). -random-last-layer
-  keeps KataGo's initialization of that layer too.
+  the shared trunk gets no gradient through the head until the head's last layer has learned. A fresh head's outputs
+  on bpj4's rows are about 9.3 (A) and 4.9 (B). The targets sum about 10 rewards, each a dot product of phi's
+  differences divided by 60. So a fresh head's loss would train the trunk far more than the value's loss does (the
+  engine repository's games/blueprints/docs/decisions/styles.md, "AZdb's latent, intrinsic value head and targets").
+  -random-last-layer keeps KataGo's initialization of that layer too.
 
 S seeds both draws (default 0), so that a conversion repeats. The model and the SWA model get the same new weights.
 The optimizer's state is rebuilt by parameter name, as enclosure_add_regret_heads.py rebuilds it: every old parameter

@@ -329,6 +329,24 @@ namespace nash {
       w /= sum;
     return x;
   }
+
+  //The row player's maximum-entropy optimal strategy (maxentNash) of the game a: rows x cols numbers, row-major, the
+  //row player's payoff. At most 8 rows and 8 columns: the kernels are every pair of a set of rows and a set of
+  //columns.
+  inline std::vector<double> maxent(const double* a, int rows, int cols) {
+    if(rows < 1 || cols < 1 || rows > 8 || cols > 8)
+      throw StringError("maxentNash: a game of 1 to 8 rows and columns");
+    double scale = 1.0;
+    for(int i = 0; i < rows * cols; i++) {
+      if(!std::isfinite(a[i]))
+        throw StringError("maxentNash: a payoff that is not finite");
+      scale = std::max(scale, std::fabs(a[i]));
+    }
+    const double tol = 1e-9 * scale;
+    double value;
+    const std::vector<std::vector<double>> vertices = optimalVertices(a, rows, cols, tol, value);
+    return maxentOver(vertices, a, rows, cols, value, tol);
+  }
 }
 
 //The maximum-entropy Nash equilibrium of a zero-sum game in a matrix: among the equilibria, the strategies of the
@@ -336,30 +354,17 @@ namespace nash {
 //choice of a Nash equilibrium of a zero-sum game). payoff holds rows x cols numbers, row-major, the row player's
 //payoff, which the row player maximizes and the column player minimizes. rowMix gets the row player's strategy (rows
 //numbers) and colMix the column player's (cols numbers). A table of equal results makes every strategy optimal, so
-//both strategies are uniform. At most 8 rows and 8 columns: the kernels are every pair of a set of rows and a set of
-//columns.
+//both strategies are uniform. At most 8 rows and 8 columns.
 inline void maxentNash(const double* payoff, int rows, int cols, double* rowMix, double* colMix) {
-  if(rows < 1 || cols < 1 || rows > 8 || cols > 8)
-    throw StringError("maxentNash: a game of 1 to 8 rows and columns");
-  double scale = 1.0;
-  for(int i = 0; i < rows * cols; i++) {
-    if(!std::isfinite(payoff[i]))
-      throw StringError("maxentNash: a payoff that is not finite");
-    scale = std::max(scale, std::fabs(payoff[i]));
-  }
-  const double tol = 1e-9 * scale;
-  double value;
-  std::vector<std::vector<double>> vertices = nash::optimalVertices(payoff, rows, cols, tol, value);
-  std::vector<double> x = nash::maxentOver(vertices, payoff, rows, cols, value, tol);
-  std::copy(x.begin(), x.end(), rowMix);
+  const std::vector<double> row = nash::maxent(payoff, rows, cols);
+  std::copy(row.begin(), row.end(), rowMix);
   //The column player's: the row player's of the game -payoff^T.
   std::vector<double> minus((size_t)cols * rows);
   for(int r = 0; r < rows; r++)
     for(int c = 0; c < cols; c++)
       minus[c * rows + r] = -payoff[r * cols + c];
-  vertices = nash::optimalVertices(minus.data(), cols, rows, tol, value);
-  x = nash::maxentOver(vertices, minus.data(), cols, rows, value, tol);
-  std::copy(x.begin(), x.end(), colMix);
+  const std::vector<double> col = nash::maxent(minus.data(), cols, rows);
+  std::copy(col.begin(), col.end(), colMix);
 }
 
 //A game's members, drawn by the matchmaker.
@@ -371,48 +376,44 @@ struct Match {
   int members[2] = {0, 0};
 };
 
+//The mixture over the members 0 to chooser that the chooser meets as the rules' player chooserPlayer: the other
+//player's maximum-entropy Nash mixture of the table over the members 0 to chooser (maxentNash). The table's rows are
+//the first player's, so the chooser as the first player meets the second player's mixture (the row player's of
+//-table^T), and as the second player the first player's (the row player's of the table).
+inline std::vector<double> opponentMixture(const Payoff& payoff, int chooser, int chooserPlayer) {
+  const int n = chooser + 1;
+  //The opponent's payoff, the opponent in the rows.
+  std::vector<double> opponentPayoff((size_t)n * n);
+  for(int r = 0; r < n; r++)
+    for(int c = 0; c < n; c++)
+      opponentPayoff[r * n + c] = chooserPlayer == 0 ? -payoff.score(c, r) : payoff.score(r, c);
+  return nash::maxent(opponentPayoff.data(), n, n);
+}
+
 //PSRO-NASH's interaction graphs (Appendix B, Fig. 10), one for each player of the chooser: graphs[p][i][j] is the
 //probability that the chooser i, as the rules' player p, plays against the member j. For j <= i, it is the other
-//player's maximum-entropy Nash mixture of the table over the members 0 to i; for j > i it is 0, so the graphs are lower
-//triangular and member 0 plays only against itself. The current member is in the population it answers, as in the
-//paper ("player 0 ... essentially engages in standard AZ self-play"). members: the run's members, 1 to NUM_MEMBERS.
-inline void interactionGraphs(const Payoff& payoff, int members, double graphs[2][NUM_MEMBERS][NUM_MEMBERS]) {
+//player's maximum-entropy Nash mixture of the table over the members 0 to i (opponentMixture); for j > i it is 0, so
+//the graphs are lower triangular and member 0 plays only against itself. The current member is in the population it
+//answers, as in the paper ("player 0 ... essentially engages in standard AZ self-play").
+inline void interactionGraphs(const Payoff& payoff, double graphs[2][NUM_MEMBERS][NUM_MEMBERS]) {
   for(int p = 0; p < 2; p++)
-    for(int i = 0; i < NUM_MEMBERS; i++)
+    for(int i = 0; i < NUM_MEMBERS; i++) {
+      const std::vector<double> mixture = opponentMixture(payoff, i, p);
       for(int j = 0; j < NUM_MEMBERS; j++)
-        graphs[p][i][j] = 0.0;
-  for(int i = 0; i < members; i++) {
-    const int n = i + 1;
-    std::vector<double> table((size_t)n * n), first(n), second(n);
-    for(int r = 0; r < n; r++)
-      for(int c = 0; c < n; c++)
-        table[r * n + c] = payoff.score(r, c);
-    maxentNash(table.data(), n, n, first.data(), second.data());
-    //The chooser as the first player meets the second player's mixture, and as the second the first's.
-    for(int j = 0; j < n; j++) {
-      graphs[0][i][j] = second[j];
-      graphs[1][i][j] = first[j];
+        graphs[p][i][j] = j <= i ? mixture[j] : 0.0;
     }
-  }
 }
 
 //PSRO-NASH's draw of a game (Appendix B, Eq. 10): P(i, j, t) = P(j | i, t) P_unif(i) P_unif(t). The chooser i is
-//uniform over the run's members, its player t is uniform, and its opponent j comes from the interaction graph of t
-//(interactionGraphs). members: the run's members, 1 to NUM_MEMBERS.
-inline Match drawMatch(const Payoff& payoff, int members, Rand& rand) {
+//uniform over the members, its player t is uniform, and its opponent j comes from the interaction graph of t
+//(opponentMixture).
+inline Match drawMatch(const Payoff& payoff, Rand& rand) {
   Match match;
-  match.chooser = (int)rand.nextUInt((uint32_t)members);
+  match.chooser = (int)rand.nextUInt((uint32_t)NUM_MEMBERS);
   match.chooserPlayer = (int)rand.nextUInt(2);
-  const int n = match.chooser + 1;
-  std::vector<double> table((size_t)n * n), first(n), second(n);
-  for(int r = 0; r < n; r++)
-    for(int c = 0; c < n; c++)
-      table[r * n + c] = payoff.score(r, c);
-  maxentNash(table.data(), n, n, first.data(), second.data());
-  const std::vector<double>& mixture = match.chooserPlayer == 0 ? second : first;
-  const int opponent = (int)rand.nextUInt(mixture.data(), mixture.size());
+  const std::vector<double> mixture = opponentMixture(payoff, match.chooser, match.chooserPlayer);
   match.members[match.chooserPlayer] = match.chooser;
-  match.members[1 - match.chooserPlayer] = opponent;
+  match.members[1 - match.chooserPlayer] = (int)rand.nextUInt(mixture.data(), mixture.size());
   return match;
 }
 
@@ -447,16 +448,14 @@ void sideStatistics(const Positions& positions, int numActions, std::vector<doub
 //  These are the positions of the rows that train;
 //- μ and σ move at each side of the game, every member's (the normalizer's update);
 //- the table adds the game's result, when the game has one.
+//The matchmaker draws among every member of the latent (NUM_MEMBERS).
 template<class E> class League {
  public:
   static constexpr int N = GameInterface::diversityStatistics<E>();
 
-  //members: the run's members, 1 to NUM_MEMBERS; the matchmaker draws among them. l0: the distance at which a
-  //member's reward is 0. seedMean, seedSd: each statistic's mean and standard deviation over the seed's positions.
-  League(int members_, double l0_, const double* seedMean, const double* seedSd)
-    : members(members_), l0(l0_), normalizer(seedMean, seedSd) {
-    if(members < 1 || members > NUM_MEMBERS)
-      throw StringError("AZdb: the run's members are 1 to " + Global::intToString(NUM_MEMBERS));
+  //l0: the distance at which a member's reward is 0. seedMean, seedSd: each statistic's mean and standard deviation
+  //over the seed's positions.
+  League(double l0_, const double* seedMean, const double* seedSd) : l0(l0_), normalizer(seedMean, seedSd) {
     for(int i = 0; i < NUM_MEMBERS; i++)
       psi[i].assign(N, 0.0);
   }
@@ -481,14 +480,14 @@ template<class E> class League {
       std::lock_guard<std::mutex> lock(mutex);
       table = payoff;
     }
-    return drawMatch(table, members, rand);
+    return drawMatch(table, rand);
   }
 
   //A finished game: its match, its sides' statistics (sideStatistics), the game's copy of the state (snapshot), and
   //the first player's score (1 a win, 0.5 a draw, 0 a loss; NaN for a game without a result, which the table does
-  //not take).
-  void finishGame(const Match& match, const std::vector<double> side[2], const State<E>& gameState,
-                  double firstScore) {
+  //not take). Returns the league's count of finished games, this one included.
+  int64_t finishGame(const Match& match, const std::vector<double> side[2], const State<E>& gameState,
+                     double firstScore) {
     std::vector<double> phi(N), meanPhi[2];
     int counts[2];
     for(int p = 0; p < 2; p++) {
@@ -515,44 +514,41 @@ template<class E> class League {
     }
     if(std::isfinite(firstScore))
       payoff.add(match.members[0], match.members[1], firstScore);
-    games++;
+    return ++games;
   }
 
-  //Saves the league to path (a temporary file, then a rename).
+  //Saves the league to path (a temporary file, then a rename), under the league's lock, as RGSC's buffer saves.
   void save(const std::string& path) const {
+    std::lock_guard<std::mutex> lock(mutex);
     nlohmann::json j;
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      j["version"] = LEAGUE_FILE_VERSION;
-      j["members"] = NUM_MEMBERS;
-      j["statistics"] = N;
-      j["l0"] = l0;
-      j["games"] = games;
-      j["sides"] = std::vector<int64_t>(sides, sides + NUM_MEMBERS);
-      j["psi"] = nlohmann::json::array();
-      for(int i = 0; i < NUM_MEMBERS; i++)
-        j["psi"].push_back(psi[i]);
-      std::vector<double> mean(N), sd(N);
-      for(int s = 0; s < N; s++) {
-        mean[s] = normalizer.mean(s);
-        sd[s] = normalizer.sd(s);
-      }
-      j["mean"] = mean;
-      j["sd"] = sd;
-      nlohmann::json table;
-      table["decay"] = Payoff::DECAY;
-      table["games"] = nlohmann::json::array();
-      table["wins"] = nlohmann::json::array();
-      table["draws"] = nlohmann::json::array();
-      for(int r = 0; r < NUM_MEMBERS; r++) {
-        table["games"].push_back(std::vector<double>(payoff.games[r], payoff.games[r] + NUM_MEMBERS));
-        table["wins"].push_back(std::vector<double>(payoff.wins[r], payoff.wins[r] + NUM_MEMBERS));
-        table["draws"].push_back(std::vector<double>(payoff.draws[r], payoff.draws[r] + NUM_MEMBERS));
-      }
-      j["payoff"] = table;
+    j["version"] = LEAGUE_FILE_VERSION;
+    j["members"] = NUM_MEMBERS;
+    j["statistics"] = N;
+    j["l0"] = l0;
+    j["games"] = games;
+    j["sides"] = std::vector<int64_t>(sides, sides + NUM_MEMBERS);
+    j["psi"] = nlohmann::json::array();
+    for(int i = 0; i < NUM_MEMBERS; i++)
+      j["psi"].push_back(psi[i]);
+    std::vector<double> mean(N), sd(N);
+    for(int s = 0; s < N; s++) {
+      mean[s] = normalizer.mean(s);
+      sd[s] = normalizer.sd(s);
     }
+    j["mean"] = mean;
+    j["sd"] = sd;
+    nlohmann::json table;
+    table["decay"] = Payoff::DECAY;
+    table["games"] = nlohmann::json::array();
+    table["wins"] = nlohmann::json::array();
+    table["draws"] = nlohmann::json::array();
+    for(int r = 0; r < NUM_MEMBERS; r++) {
+      table["games"].push_back(std::vector<double>(payoff.games[r], payoff.games[r] + NUM_MEMBERS));
+      table["wins"].push_back(std::vector<double>(payoff.wins[r], payoff.wins[r] + NUM_MEMBERS));
+      table["draws"].push_back(std::vector<double>(payoff.draws[r], payoff.draws[r] + NUM_MEMBERS));
+    }
+    j["payoff"] = table;
     const std::string tmp = path + ".tmp";
-    std::lock_guard<std::mutex> fileLock(fileMutex);
     {
       std::ofstream out(tmp);
       if(!out)
@@ -567,7 +563,7 @@ template<class E> class League {
 
   //Loads the league from path, saved by save. False when the file does not exist: the league stays as it starts.
   //A file of another version or of other counts is refused (an error), so that a run never restarts ψ by mistake.
-  //The run's members and l0 stay the caller's.
+  //l0 stays the caller's.
   bool load(const std::string& path) {
     std::ifstream in(path);
     if(!in)
@@ -621,22 +617,18 @@ template<class E> class League {
     return true;
   }
 
-  //Each member's distance to its nearest other member, ℓ_i = ||ψ^i - ψ^j*||, from ψ as it is.
+  //Each member's distance to its nearest other member, ℓ_i = ||ψ^i - ψ^j*||, from ψ as it is (the nearest members
+  //of State).
   std::vector<double> distances() const {
-    std::lock_guard<std::mutex> lock(mutex);
+    const std::shared_ptr<const State<E>> state = snapshot();
     std::vector<double> out(NUM_MEMBERS, 0.0);
     for(int i = 0; i < NUM_MEMBERS; i++) {
-      double best = -1.0;
-      for(int k = 0; k < NUM_MEMBERS; k++) {
-        if(k == i)
-          continue;
-        double d2 = 0.0;
-        for(int s = 0; s < N; s++)
-          d2 += (psi[i][s] - psi[k][s]) * (psi[i][s] - psi[k][s]);
-        if(best < 0.0 || d2 < best)
-          best = d2;
-      }
-      out[i] = std::sqrt(std::max(0.0, best));
+      const std::vector<double>& mine = state->psi[i];
+      const std::vector<double>& theirs = state->psi[state->nearest[i]];
+      double d2 = 0.0;
+      for(int s = 0; s < N; s++)
+        d2 += (mine[s] - theirs[s]) * (mine[s] - theirs[s]);
+      out[i] = std::sqrt(d2);
     }
     return out;
   }
@@ -654,7 +646,7 @@ template<class E> class League {
     }
     const std::vector<double> d = distances();
     double graphs[2][NUM_MEMBERS][NUM_MEMBERS];
-    interactionGraphs(table, members, graphs);
+    interactionGraphs(table, graphs);
     std::ostringstream out;
     out << "AZdb: " << gameCount << " games; sides and distances by member:";
     for(int i = 0; i < NUM_MEMBERS; i++)
@@ -662,7 +654,7 @@ template<class E> class League {
     out << " (l0 " << l0 << "); graphs as the first player and as the second:";
     for(int p = 0; p < 2; p++) {
       out << " [";
-      for(int i = 0; i < members; i++) {
+      for(int i = 0; i < NUM_MEMBERS; i++) {
         out << (i == 0 ? "" : " ") << "(";
         for(int j = 0; j <= i; j++)
           out << (j == 0 ? "" : " ") << Global::strprintf("%.2f", graphs[p][i][j]);
@@ -673,7 +665,8 @@ template<class E> class League {
     return out.str();
   }
 
-  //What the league holds, for the tests and the analysis.
+  //What the league holds, for the tests and the analysis. mean and sd are the normalizer's own, where a snapshot
+  //rebuilds them from the mean and the standard deviation.
   std::vector<double> psiOf(int member) const {
     std::lock_guard<std::mutex> lock(mutex);
     return psi[member];
@@ -699,13 +692,10 @@ template<class E> class League {
     return games;
   }
 
-  const int members;
   const double l0;
 
  private:
   mutable std::mutex mutex;
-  //Two threads that save at once write the file one after the other.
-  mutable std::mutex fileMutex;
   std::vector<double> psi[NUM_MEMBERS];
   GameInterface::DiversityNormalizer<E> normalizer;
   Payoff payoff;

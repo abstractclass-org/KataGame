@@ -910,7 +910,8 @@ namespace {
 }
 
 bool Play::searchPlaysDiversityMembers() {
-  return HasDiversityMember<SearchParams>::value && HasDiversityState<Search>::value;
+  return HasDiversityMember<SearchParams>::value && HasDiversityState<Search>::value &&
+    HasComputesIntrinsic<NNEvaluator>::value;
 }
 void Play::setDiversityMember(SearchParams& params, int member) {
   setMemberOf(params, member);
@@ -1463,6 +1464,17 @@ static void computeValueSurpriseByTurn(
 //cheap search was surprising, and redo them with full searches. Overwrites those turns' recorded targets and
 //stats with those of the new full searches and raises their target weights to what a full-search turn would get,
 //so that they get recorded as full-quality training positions. Does not affect the game itself in any way.
+//KataGame fork (2026-10-29): whether the rows of the turn turnAfterStart of a finished game train: its mover's
+//FinishedGameData::diversityTrains (AZdb trains only the chooser's rows). The turns that do not train have the weight
+//0, take no reanalysis and no excess surprise, so that KataGo's spread of a game's weight by surprise
+//(policySurpriseDataWeight, valueSurpriseDataWeight) gives the game's weight to the turns that train. Their side
+//positions are still searched, because a chain of side positions alternates its players, and the row writer leaves
+//out their rows. Needs the game's endHist.
+static bool turnTrains(const FinishedGameData* gameData, int turnAfterStart) {
+  const Move& move = gameData->endHist.moveHistory[gameData->startHist.moveHistory.size() + turnAfterStart];
+  return gameData->diversityTrains[Board::indexOfPlayer(move.pla)];
+}
+
 static void reanalyzeCheapSearchPositions(
   Search* botB, Search* botW,
   const PlaySettings& playSettings,
@@ -1487,7 +1499,7 @@ static void reanalyzeCheapSearchPositions(
 
   vector<int> candidateTurns;
   for(int i = 0; i<numMoves; i++)
-    if(wasCheapSearchByTurn[i])
+    if(wasCheapSearchByTurn[i] && turnTrains(gameData, i))  //KataGame fork (2026-10-29): AZdb's turns that train
       candidateTurns.push_back(i);
   if(candidateTurns.size() <= 0)
     return;
@@ -1733,6 +1745,9 @@ FinishedGameData* Play::runGame(
     PlayUtils::setKomiWithNoise(extraBlackAndKomi,hist,gameRand);
   }
 
+  //KataGame fork (2026-10-29): whether each player's rows train (MatchPairer::BotSpec::trains, AZdb's chooser).
+  gameData->diversityTrains[Board::indexOfPlayer(P_BLACK)] = botSpecB.trains;
+  gameData->diversityTrains[Board::indexOfPlayer(P_WHITE)] = botSpecW.trains;
   gameData->bName = botSpecB.botName;
   gameData->wName = botSpecW.botName;
   gameData->bIdx = botSpecB.botIdx;
@@ -1977,7 +1992,10 @@ FinishedGameData* Play::runGame(
       gameData->searchEntropyByTurn.push_back(targets.searchEntropy);
       rawNNValues.push_back(targets.rawNNValues);
 
-      gameData->targetWeightByTurn.push_back(limits.targetWeight);
+      //KataGame fork (2026-10-29): a turn of a player whose rows do not train (AZdb) has the weight 0, so that the
+      //game's weight is spread over the training players' turns only (turnTrains).
+      gameData->targetWeightByTurn.push_back(
+        gameData->diversityTrains[Board::indexOfPlayer(pla)] ? limits.targetWeight : 0.0f);
       gameData->reanalysisByTurn.emplace_back();
       wasCheapSearchByTurn.push_back(limits.isCheapSearch);
 
@@ -2279,8 +2297,10 @@ FinishedGameData* Play::runGame(
         auto policySurprisePropValueOfTurn = [&](int i) {
           float targetWeight = gameData->targetWeightByTurn[i];
           double policySurprise = gameData->policySurpriseByTurn[i];
+          //KataGame fork (2026-10-29): a turn whose rows do not train (AZdb, turnTrains) takes no excess surprise.
           bool excludeExcessSurprise =
-            playSettings.useReanalyze && wasCheapSearchByTurn[i] && !gameData->reanalysisByTurn[i].wasReanalyzed;
+            (playSettings.useReanalyze && wasCheapSearchByTurn[i] && !gameData->reanalysisByTurn[i].wasReanalyzed) ||
+            !turnTrains(gameData, i);
           double excessSurprise = excludeExcessSurprise ? 0.0 : std::max(0.0,policySurprise-thresholdToIncludeReduced);
           return targetWeight * policySurprise + (1-targetWeight) * excessSurprise;
         };
@@ -2878,15 +2898,13 @@ FinishedGameData* GameRunner::runGame(
   }
 
   bool clearBotBeforeSearchThisGame = clearBotBeforeSearch;
-  if(botSpecB.botIdx == botSpecW.botIdx) {
+  //KataGame fork (2026-10-29): self-play clears its searches before each move with two bots too (AZdb's members),
+  //as Play::runGame requires of self-play.
+  if(botSpecB.botIdx == botSpecW.botIdx || playSettings.forSelfPlay) {
     //Avoid interactions between the two bots since they're the same.
     //Also in self-play this makes sure root noise is effective on each new search
     clearBotBeforeSearchThisGame = true;
   }
-  //KataGame fork (2026-10-29): self-play clears its searches before each move with two bots too (AZdb's members),
-  //as Play::runGame requires of self-play.
-  if(playSettings.forSelfPlay)
-    clearBotBeforeSearchThisGame = true;
 
   //In 2% of games, don't autoterminate the game upon all pass alive, to just provide a tiny bit of training data on positions that occur
   //as both players must wrap things up manually, because within the search we don't autoterminate games, meaning that the NN will get

@@ -205,6 +205,9 @@ class MatchPairer {
     std::string botName;
     NNEvaluator* nnEval;
     SearchParams baseParams;
+    //KataGame fork (2026-10-29): whether the rows of this bot's player train (FinishedGameData::diversityTrains).
+    //AZdb's matchmaker trains only the chooser's rows (command/selfplay.cpp). True by default.
+    bool trains = true;
   };
 
   MatchPairer(const MatchPairer&) = delete;
@@ -306,8 +309,9 @@ namespace Play {
   //member is the one whose latent its evaluations read and whose diversity term its utility adds
   //(SearchParams::diversityMember; its λ is the params' diversityLambda, the run's setting). Self-play's matchmaker
   //sets each search's member and the game's copy of the members' state through these functions only.
-  //Whether the search plays AZdb's members: SearchParams::diversityMember and Search::setDiversityState, of the
-  //search's build step (abscls-hqyw.4). Without them member 0 plays as before, and another member is refused.
+  //Whether the search plays AZdb's members: SearchParams::diversityMember, Search::setDiversityState and
+  //NNEvaluator::computesIntrinsicHead, of the search's build step (abscls-hqyw.4). Without them member 0 plays as
+  //before, and another member is refused.
   bool searchPlaysDiversityMembers();
   void setDiversityMember(SearchParams& params, int member);
   int diversityMemberOf(const SearchParams& params);

@@ -151,7 +151,7 @@ static void checkChoosersRows(FinishedGameData& data, int inputsVersion, int nnL
     data.diversityTrains[0] = trains[k][0];
     data.diversityTrains[1] = trains[k][1];
     writer.writeGame(data);
-    //The game's rows fit in one file, so that none has left the buffer.
+    // The game's rows fit in one file, so that none has left the buffer.
     rows[k] = writer.numRowsInBuffer();
     testAssert(rows[k] < maxRows);
     writer.flushIfNonempty();
@@ -168,6 +168,58 @@ static void checkChoosersRows(FinishedGameData& data, int inputsVersion, int nnL
        << " of both" << endl;
 }
 
+// KataGame fork (2026-10-29): a player whose rows do not train (MatchPairer::BotSpec::trains, AZdb's chooser) has the
+// weight 0 at each of its turns before KataGo spreads the game's weight by surprise, so that its turns take none of it.
+// A game with surprise weights where the second player does not train: its turns have the weight 0, and the first
+// player's weights before their random rounding (targetWeightByTurnUnrounded) sum to its count of turns, each turn's
+// weight 1 before the spread.
+static void checkWeightsOfTurnsThatTrain(const MatchPairer::BotSpec& botSpec, Logger& logger, const string& seed) {
+  MatchPairer::BotSpec botSpecB = botSpec;
+  MatchPairer::BotSpec botSpecW = botSpec;
+  botSpecW.trains = false;
+  Board initialBoard;
+  BoardHistory initialHist(initialBoard, P_BLACK, Rules(), 0);
+  ExtraBlackAndKomi extraBlackAndKomi;
+  PlaySettings playSettings;
+  playSettings.forSelfPlay = true;
+  playSettings.policySurpriseDataWeight = 0.5;
+  playSettings.valueSurpriseDataWeight = 0.1;
+  Rand rand(seed + "weights");
+  OtherGameProperties otherGameProps;
+  auto shouldStop = []() noexcept { return false; };
+  FinishedGameData* gameData = Play::runGame(
+    initialBoard, P_BLACK, initialHist, extraBlackAndKomi,
+    botSpecB, botSpecW,
+    seed + "weights search",
+    false, true,
+    logger, false, false,
+    1000, shouldStop,
+    nullptr,
+    playSettings, otherGameProps,
+    rand,
+    nullptr,
+    nullptr
+  );
+  testAssert(gameData->diversityTrains[0] && !gameData->diversityTrains[1]);
+  double sums[2] = {0.0, 0.0};
+  int turns[2] = {0, 0};
+  const size_t start = gameData->startHist.moveHistory.size();
+  testAssert(gameData->targetWeightByTurnUnrounded.size() == gameData->targetWeightByTurn.size());
+  for(size_t t = 0; t < gameData->targetWeightByTurn.size(); t++) {
+    const int p = Board::indexOfPlayer(gameData->endHist.moveHistory[start + t].pla);
+    sums[p] += gameData->targetWeightByTurnUnrounded[t];
+    turns[p]++;
+    if(p == 1)
+      testAssert(gameData->targetWeightByTurn[t] == 0.0f);
+  }
+  testAssert(turns[0] > 0 && turns[1] > 0);
+  testAssert(sums[1] == 0.0);
+  testAssert(std::fabs(sums[0] - turns[0]) < 1e-3 * turns[0]);
+  cout << "the weights of the turns that train: " << sums[0] << " over the first player's " << turns[0]
+       << " turns, 0 over the second player's " << turns[1] << endl;
+  delete gameData;
+}
+
 // Enclosure fork: training rows from a self-play game (plan step 6).
 //
 //   katago runenclosurerowtests OUT_FILE [SEED [NPZ_DIR [INPUTS_VERSION]]]
@@ -181,7 +233,8 @@ static void checkChoosersRows(FinishedGameData& data, int inputsVersion, int nnL
 // (AZDB_TEST_PSI below, each statistic's mean 0 and standard deviation 1, l0 1). The evaluator has no intrinsic head,
 // so the rows hold targets of the intrinsic value head only where their span reaches the game's end (program/azdb.h),
 // and their latent is member 2's. Then the game, as one of member 2 against member 4, checks that only the chooser's
-// rows are written (checkChoosersRows), apart from the output.
+// rows are written (checkChoosersRows), and a second game, whose second player does not train, checks the turns'
+// weights (checkWeightsOfTurnsThatTrain), apart from the output.
 void Tests::runEnclosureRowTests(const string& outFile, const string& seed, const string& npzDir, int inputsVersion) {
   NeuralNet::globalInitialize();
   Logger logger(nullptr, false, false, false);
@@ -240,8 +293,10 @@ void Tests::runEnclosureRowTests(const string& outFile, const string& seed, cons
   }
   dataWriter.writeGame(*gameData);
   dataWriter.flushIfNonempty();
-  if(inputsVersion >= 14)
+  if(inputsVersion >= 14) {
     checkChoosersRows(*gameData, inputsVersion, nnLen, maxRows, seed);
+    checkWeightsOfTurnsThatTrain(botSpec, logger, seed);
+  }
   if(npzDir != "") {
     TrainingDataWriter npzWriter(npzDir, inputsVersion, maxRows, firstFileMinRandProp, nnLen, nnLen, seed + "dwriter");
     npzWriter.writeGame(*gameData);

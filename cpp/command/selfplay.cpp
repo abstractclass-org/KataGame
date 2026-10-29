@@ -169,27 +169,26 @@ static bool rgscAfterGame(
 //  OUTPUT_DIR/azdb-games.jsonl.
 //- The search's λ of members 1 to 4 is the search parameter diversityLambda.
 struct AZdbSettings {
-  int members = 1;
+  bool enabled = false;
   string stateFile;
   string seedFile;
   string gamesFile;
   double l0 = 0.0;
-  bool enabled() const { return members > 1; }
 
   static AZdbSettings load(ConfigParser& cfg, const string& outputDir, int inputsVersion) {
     AZdbSettings s;
-    if(cfg.contains("diversityMembers"))
-      s.members = cfg.getInt("diversityMembers", 1, AZdb::NUM_MEMBERS);
-    if(!s.enabled())
+    const int members = cfg.contains("diversityMembers") ? cfg.getInt("diversityMembers", 1, AZdb::NUM_MEMBERS) : 1;
+    if(members == 1)
       return s;
     //The members' state (AZdb::State) holds every member of the latent, and each member's nearest member is among
     //them all.
-    if(s.members != AZdb::NUM_MEMBERS)
+    if(members != AZdb::NUM_MEMBERS)
       throw StringError("AZdb: diversityMembers is 1 (member 0 alone) or " + Global::intToString(AZdb::NUM_MEMBERS) +
                         " (every member of the latent)");
+    s.enabled = true;
     if(!Play::searchPlaysDiversityMembers())
-      throw StringError("AZdb: this build's search does not play the members (SearchParams::diversityMember and "
-                        "Search::setDiversityState, the search's build step)");
+      throw StringError("AZdb: this build's search does not play the members (SearchParams::diversityMember, "
+                        "Search::setDiversityState and NNEvaluator::computesIntrinsicHead, the search's build step)");
     if(inputsVersion < 14)
       throw StringError("AZdb: the rows of the members hold their latent from the inputs version 14, not " +
                         Global::intToString(inputsVersion) + " (inputsVersion)");
@@ -213,7 +212,7 @@ static AZdb::League<GameEncoding>* loadAZdbLeague(const AZdbSettings& settings, 
       throw StringError("AZdb: " + settings.stateFile + " does not exist, and diversitySeedFile gives no seed");
     AZdb::readSeed(settings.seedFile, n, mean, sd);
   }
-  AZdb::League<GameEncoding>* league = new AZdb::League<GameEncoding>(settings.members, settings.l0, mean.data(), sd.data());
+  AZdb::League<GameEncoding>* league = new AZdb::League<GameEncoding>(settings.l0, mean.data(), sd.data());
   league->load(settings.stateFile);
   logger.write(string("AZdb: ") + (resumes ? "the league read again from " + settings.stateFile :
                                    "a new league from the seed " + settings.seedFile) + "; " + league->summary());
@@ -266,14 +265,14 @@ static void azdbAfterGame(
   const BoardHistory& end = gameData.endHist;
   const double firstScore = !end.isGameFinished ? std::numeric_limits<double>::quiet_NaN()
     : end.winner == P_BLACK ? 1.0 : end.winner == P_WHITE ? 0.0 : 0.5;
-  league.finishGame(match, side, *gameData.diversityState, firstScore);
+  const int64_t games = league.finishGame(match, side, *gameData.diversityState, firstScore);
   {
     const string line = AZdb::gameRecord<GameEncoding>(match, end.rules.komi, firstScore, side).dump();
     std::lock_guard<std::mutex> lock(gamesLog.mutex);
     gamesLog.out << line << "\n";
     gamesLog.out.flush();
   }
-  if(league.gamesFinished() % 50 == 0) {
+  if(games % 50 == 0) {
     league.save(settings.stateFile);
     logger.write(league.summary());
   }
@@ -408,12 +407,10 @@ int MainCmds::selfplay(const vector<string>& args) {
   //its games.
   AZdb::League<GameEncoding>* azdbLeague = NULL;
   AZdbGamesLog azdbGamesLog;
-  if(azdbSettings.enabled()) {
+  if(azdbSettings.enabled) {
     azdbLeague = loadAZdbLeague(azdbSettings, logger);
-    azdbGamesLog.out.open(azdbSettings.gamesFile, std::ios::app);
-    if(!azdbGamesLog.out)
-      throw StringError("AZdb: cannot write " + azdbSettings.gamesFile);
-    logger.write("AZdb: " + Global::intToString(azdbSettings.members) + " members, l0 " +
+    FileUtils::open(azdbGamesLog.out, azdbSettings.gamesFile, std::ios::app);
+    logger.write("AZdb: " + Global::intToString(AZdb::NUM_MEMBERS) + " members, l0 " +
                  Global::doubleToString(azdbSettings.l0) + "; the league in " + azdbSettings.stateFile +
                  ", the games' lines in " + azdbSettings.gamesFile);
   }
@@ -468,7 +465,7 @@ int MainCmds::selfplay(const vector<string>& args) {
     );
     logger.write("Loaded latest neural net " + modelName + " from: " + modelFile);
     //KataGame fork (2026-10-29): AZdb's members need a model and a backend that play them.
-    if(azdbSettings.enabled())
+    if(azdbSettings.enabled)
       checkAZdbModel(nnEval);
 
     string modelOutputDir = outputDir + "/" + modelName;
@@ -663,6 +660,9 @@ int MainCmds::selfplay(const vector<string>& args) {
           azdbState = azdbLeague->snapshot();
           botSpecB.botIdx = azdbMatch.members[Board::indexOfPlayer(P_BLACK)];
           botSpecW.botIdx = azdbMatch.members[Board::indexOfPlayer(P_WHITE)];
+          //Only the chooser's rows train (both players' in a game of the chooser against itself).
+          botSpecB.trains = botSpecB.botIdx == azdbMatch.chooser;
+          botSpecW.trains = botSpecW.botIdx == azdbMatch.chooser;
           Play::setDiversityMember(botSpecB.baseParams, botSpecB.botIdx);
           Play::setDiversityMember(botSpecW.baseParams, botSpecW.botIdx);
           attach = [&rgscAttach, azdbState](const MatchPairer::BotSpec& spec, Search* search) {
@@ -679,13 +679,11 @@ int MainCmds::selfplay(const vector<string>& args) {
           attach,
           nullptr
         );
-        //The rows: each player's latent is its member, their rewards and targets come from the game's copy of the
-        //state, and only the chooser's rows train (both players' in a game of the chooser against itself).
+        //The rows: each player's latent is its member, and their rewards and targets come from the game's copy of the
+        //state. Which rows train came with the bots (MatchPairer::BotSpec::trains).
         if(gameData != NULL && azdbLeague != NULL) {
-          for(int p = 0; p < 2; p++) {
+          for(int p = 0; p < 2; p++)
             gameData->diversityMembers[p] = azdbMatch.members[p];
-            gameData->diversityTrains[p] = azdbMatch.members[p] == azdbMatch.chooser;
-          }
           gameData->diversityState = azdbState;
         }
         if(gameData != NULL && rgscBuffer != NULL) {
