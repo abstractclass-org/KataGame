@@ -6,4 +6,5 @@
 # (not the folders) into katago.
 command/blueprintsprotocol.cpp  # its engine protocol (the engine repository's games/blueprints/README.md), also in WebAssembly
 command/blueprintsprotocol.h
+command/blueprintssite.h        # the site's moves and the engine's actions, for the protocol and the practice bot
 command/blueprintsengine.cpp    # the protocol's native command, katago blueprints-engine

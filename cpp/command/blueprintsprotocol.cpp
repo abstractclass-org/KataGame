@@ -50,6 +50,7 @@
 // ("views") and the searches. The policy and the ownership of such a search are the network's at the root in the
 // rule's view.
 #include "../command/blueprintsprotocol.h"
+#include "../command/blueprintssite.h"
 
 #include "../core/global.h"
 #include "../core/config_parser.h"
@@ -160,73 +161,11 @@ struct Game {
   Player pla() const { return board.nextPla(); }  // the player to move, as the history takes it
 };
 
-// The site's hex of the rules board's point (x, y).
-int siteQ(const Pos& p, int x) { return x - bp::RULES_RADIUS + p.offsetQ; }
-int siteR(const Pos& p, int y) { return y - bp::RULES_RADIUS + p.offsetR; }
-// The rules board's point of the site's hex (q, r), on the board or off it.
-int rulesX(const Pos& p, int q) { return q - p.offsetQ + bp::RULES_RADIUS; }
-int rulesY(const Pos& p, int r) { return r - p.offsetR + bp::RULES_RADIUS; }
+// The site's moves and the engine's actions: siteQ, rulesX, siteText, isPick, siteFits, spanWith, limitText,
+// parseSiteMove, handAction and placementAction (command/blueprintssite.h, which the practice bot shares).
+using namespace BlueprintsSite;
 
 string playerName(int player) { return player == 0 ? "b" : "r"; }
-
-// The site's placement "K@q,r" of blueprint k with its anchor cell on the rules point (x, y).
-string placementText(const Pos& p, int k, int x, int y) {
-  return std::to_string(k + 1) + "@" + bp::cell_text(siteQ(p, x), siteR(p, y));
-}
-
-// The site's string of the engine's action at p, pass excepted: a placement names its anchor hex in the board's
-// coordinates, a pick or a drop its cell in the blueprint's frame (the view's turns undone, gamerules.h ViewHand).
-string siteText(const Pos& p, int action) {
-  const int x = bp::action_x(action), y = bp::action_y(action), channel = bp::action_channel(action);
-  bp::ViewHand hand;
-  bp::view_hand(p, bp::turn_of(p.ply), hand);
-  if(channel < bp::HAND_CHANNEL) {
-    const int k = channel - bp::PLACE;
-    int rx, ry;
-    bp::view_of(p).rules_point(x - hand.mq[k], y - hand.mr[k], rx, ry);
-    return placementText(p, k, rx, ry);
-  }
-  const int k = channel - bp::HAND_CHANNEL;
-  int q, r;
-  hand.site_cell(k, x, y, q, r);
-  return std::to_string(k + 1) + ":" + bp::cell_text(q, r);
-}
-
-// Whether the action is a pick: a cell of the hand when no pick waits for its drop.
-bool isPick(const Pos& p, int action) {
-  return action != GameRules::PASS_ACTION && bp::action_channel(action) >= bp::HAND_CHANNEL && p.picked < 0;
-}
-
-// Whether the mover's blueprint k fits with its anchor cell on the rules point (x, y), on the board or off it, by the
-// site's rule on its grid with no edge: every hex of its cells empty (a hex off the rules board is empty, as bp::at
-// reads it), and one of them touching a cell of the mover.
-bool siteFits(const Pos& p, int k, int x, int y) {
-  const int mover = bp::turn_of(p.ply);
-  const bp::Blueprint& b = p.hand[mover][k];
-  if(b.n == 0)
-    return false;
-  bool touches = false;
-  for(int i = 0; i < b.n; i++) {
-    const int cx = x + b.q[i], cy = y + b.r[i];
-    if(bp::at(p, cx, cy))
-      return false;
-    touches = touches || bp::next_to_own(p, cx, cy, mover);
-  }
-  return touches;
-}
-
-// The hexes that the cells (their box, bp::cells_box) and blueprint b with its anchor cell on (x, y) span, in q or in
-// r, whichever is more. The rules board holds at most RULES_LEN.
-int spanWith(bp::Box box, const bp::Blueprint& b, int x, int y) {
-  for(int i = 0; i < b.n; i++)
-    box.add(x + b.q[i], y + b.r[i]);
-  return std::max(box.x1 - box.x0, box.y1 - box.y0) + 1;
-}
-
-string limitText(int span) {
-  return "the cells would span " + std::to_string(span) + " hexes, and this build's rules board holds " +
-         std::to_string(bp::RULES_LEN) + " x " + std::to_string(bp::RULES_LEN);
-}
 
 // Calls f(k, x, y) once for each placement of the mover's blueprint k, its anchor cell on the rules point (x, y), on
 // the board or off it, that the site's rule allows (siteFits), with span its cells' span with the placement
@@ -264,31 +203,6 @@ void forEachSitePlacement(const Pos& p, F&& f) {
   }
 }
 
-// A site's cell string "K:q,r" (blueprint K from 1, the cell q,r in its frame) or placement "K@q,r" (its anchor
-// hex): K, q and r. False for other text.
-bool parseSiteMove(const string& text, char sep, int& k, int& q, int& r) {
-  if(text.size() < 5 || text[1] != sep || text[0] < '1' || text[0] > '0' + bp::HAND)
-    return false;
-  k = text[0] - '1';
-  return bp::parse_cell(text.substr(2), q, r);
-}
-
-// The engine's action of the site's pick or drop "K:q,r" at p (its cell in blueprint K's frame), when it is legal and
-// names that cell; else -1.
-int handAction(const Pos& p, const string& text) {
-  int k, q, r;
-  if(!parseSiteMove(text, ':', k, q, r))
-    return -1;
-  bp::ViewHand hand;
-  bp::view_hand(p, bp::turn_of(p.ply), hand);
-  int x, y;
-  hand.hand_point(k, q, r, x, y);
-  if(!bp::on_view(x, y))
-    return -1;
-  const int action = bp::action_at(x, y, bp::HAND_CHANNEL + k);
-  return GameRules::is_legal(p, action) && siteText(p, action) == text ? action : -1;
-}
-
 enum class Played { OK, ILLEGAL, LIMIT };
 
 // Plays one action of the engine in g, through the front.
@@ -311,22 +225,12 @@ Played playSiteMove(Game& g, const string& text, bool& outsideView, string& why)
   }
   int k, q, r;
   if(parseSiteMove(text, '@', k, q, r)) {
-    const int x = rulesX(p, q), y = rulesY(p, r);
-    // The view's hex of the anchor cell's image: the anchor cell's hex in the view, plus the blueprint's shift in the
-    // view's frame (gamerules.h, play).
-    bp::ViewHand hand;
-    bp::view_hand(p, bp::turn_of(p.ply), hand);
-    int vx, vy;
-    bp::view_of(p).view_point(x, y, vx, vy);
-    vx += hand.mq[k];
-    vy += hand.mr[k];
-    if(bp::on_view(vx, vy)) {
-      const int action = bp::action_at(vx, vy, bp::PLACE + k);
-      if(GameRules::is_legal(p, action) && siteText(p, action) == text) {
-        playAction(g, action);
-        return Played::OK;
-      }
+    const int action = placementAction(p, k, q, r, text);
+    if(action >= 0) {
+      playAction(g, action);
+      return Played::OK;
     }
+    const int x = rulesX(p, q), y = rulesY(p, r);
     if(!siteFits(p, k, x, y)) {
       why = text + " is not legal here";
       return Played::ILLEGAL;
