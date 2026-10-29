@@ -1,5 +1,5 @@
 // Blueprints' engine protocol: Enclosure's (command/enclosureprotocol.cpp, the engine repository's
-// docs/design/04-notation-and-protocol.md), version 0.7.0 (Enclosure's engine stays 0.6.x), with Blueprints' fields and
+// docs/design/04-notation-and-protocol.md), version 0.7.1 (Enclosure's engine stays 0.6.x), with Blueprints' fields and
 // strategyjam.org's moves. See blueprintsprotocol.h. The engine repository's games/blueprints/README.md, "The browser
 // build", gives the fields.
 //
@@ -90,10 +90,11 @@ static_assert(std::is_same<GameRules, bp::GameRules>::value, "the protocol of Bl
 
 namespace {
 
-// The interface's version (design 04, "Versioning"). Blueprints' build takes 0.7.0 for the search of the root's views
-// (rootViews on by default, no raw values in a reply of more views, a query with no candidate refused), which breaks a
-// 0.6 client. Enclosure's engine stays 0.6.x (0.6.2 adds its own maps).
-const char* PROTOCOL = "0.7.0";
+// The interface's version (design 04, "Versioning"). Blueprints' build took 0.7.0 for the search of the root's views
+// (rootViews on by default, no raw values in a reply of more views), which breaks a 0.6 client. 0.7.1 accepts the query
+// whose passes find no candidate, which 0.7.0 refused: its move is the first pass's policy move. Enclosure's engine
+// stays 0.6.x (0.6.2 adds its own maps).
+const char* PROTOCOL = "0.7.1";
 // The first build that searched as this one does (design 04, "The same search"), given as each reply's "search". A
 // change that can alter an analysis reply sets it to "", and the build then names itself. After that build's release,
 // it takes the released build's name.
@@ -934,10 +935,11 @@ json viewsReply(const Running& r, bool during) {
   const Game& g = *r.game;
   json res;
   RootViews::Choice choice;
-  // No candidate yet: a pass of 1 visit (a small maxVisits) searches its root only, and finds no move.
+  // A pass of 1 visit (a small maxVisits) searches its root only, and finds no candidate: the reply then has the first
+  // pass's policy move, with no visits (RootViews::Searches::result). It has none before the first pass's root has its
+  // evaluation.
   if(!r.searches->result(res, choice, r.thread != nullptr && r.playouts > 0 ? E.search : nullptr))
-    return errorReply(q["id"], {"maxVisits", "the passes of the root's views found no candidate: give the search more "
-                                             "visits, or set rootViews false"});
+    return errorReply(q["id"], {"", "the search gave no analysis"});
   const int pvLen = analysisPVLen(q);
   // Each candidate's line from the root in the view that names its move ("view", else the root's own). No tree: each
   // search's tree went with the next search.

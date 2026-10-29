@@ -380,7 +380,8 @@ For a game whose network sees a part of a larger board (the views of "Optional m
 genmove and Blueprints' engine protocol add `rootViews` (`program/rootviews.cpp`, the fields and the commands in
 `docs/Analysis_Engine.md` and `docs/GTP_Extensions.md`, the protocol's in the engine repository's
 `games/blueprints/README.md`). It is off when a config leaves it out, and Blueprints' config turns it on. It searches
-the root in each view of a cover (a pass), then the child positions of the best candidates (a check). In GTP, each
+the root in each view of a cover (a pass), then the child positions of the best candidates (a check). When no pass
+finds a candidate (a pass of 1 visit searches its root only), the move is the first pass's policy move. In GTP, each
 search takes its share of the clock's time for the move, and a move that the position's own view cannot name is
 `MOVE/VIEW`.
 `Search::fixedScoreCenter` gives these searches one centre of the score utility in place of each root's centre

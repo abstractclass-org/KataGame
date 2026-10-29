@@ -18,7 +18,9 @@
 //candidate (the same child position). The candidates with the best child values from the root mover's side then get a
 //search of their child position each (a check), with the rest of the visits, and the move is the check with the best
 //value. The passes and the checks take the first pass's score centre, so that their utilities have one scale. Their
-//visits are not compared. The analysis engine's rootViews (command/analysis.cpp), GTP's genmove (command/gtp.cpp) and
+//visits are not compared. When no pass finds a candidate (abscls-csmy: a pass of 1 visit, with maxVisits at most 2 x
+//the views, searches its root only), the move is the best legal move of the first pass's root by the network's
+//policy, with no check. The analysis engine's rootViews (command/analysis.cpp), GTP's genmove (command/gtp.cpp) and
 //Blueprints' engine protocol (command/blueprintsprotocol.cpp) all search so.
 namespace RootViews {
   struct Settings {
@@ -88,7 +90,8 @@ namespace RootViews {
     bool done(Search& search, Loc chosen);
     //The response, the analysis engine's, and the chosen move, from the searches done and from running, the search
     //that next() gave, as it is now (nullptr: none): a reply during the search, or the best check or pass so far when
-    //it stops. False when no search gave a candidate yet.
+    //it stops. With no candidate, the first pass's policy move (policy below). False before the first pass's root has
+    //its evaluation.
     bool result(nlohmann::json& ret, Choice& choice, const Search* running = nullptr) const;
 
   private:
@@ -105,13 +108,16 @@ namespace RootViews {
     struct Results {
       std::vector<Candidate> candidates;
       std::map<Hash128, size_t> byChild;
+      //When the first pass gives no candidate: the best legal move of its root by the network's policy, as a
+      //candidate of no visits, the move while no search gives a candidate.
+      std::vector<Candidate> policy;
       nlohmann::json passes = nlohmann::json::array();
       nlohmann::json single;  //the analysis of a cover of one view
       Loc chosen = Board::NULL_LOC;  //and its chosen move
       int numSearches = 0;
       int64_t totalVisits = 0;
     };
-    void record(Results& results, nlohmann::json& out, Loc chosen) const;
+    void record(Results& results, const Search& search, nlohmann::json& out, Loc chosen) const;
     bool respond(const Results& results, nlohmann::json& ret, Choice& choice) const;
     Loc ownMove(const Hash128& child) const;
     void nameMove(nlohmann::json& info, Loc own, const std::string& view) const;
