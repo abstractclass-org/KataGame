@@ -375,10 +375,10 @@ For an engine protocol (design 04 of the engine repository), two additions that 
 ### The search of the root's views
 
 For a game whose network sees a part of a larger board (the views of "Optional members"), the analysis engine and GTP's
-genmove add `rootViews`, off by default (`program/rootviews.cpp`, the fields and the commands in
-`docs/Analysis_Engine.md` and `docs/GTP_Extensions.md`). It searches the root in each view of a cover (a pass), then
-the child positions of the best candidates (a check). In GTP, each search takes its share of the clock's time for the
-move, and a move that the position's own view cannot name is `MOVE/VIEW`.
+genmove add `rootViews` (`program/rootviews.cpp`, the fields and the commands in `docs/Analysis_Engine.md` and
+`docs/GTP_Extensions.md`). It is off when a config leaves it out, and Blueprints' config turns it on. It searches the
+root in each view of a cover (a pass), then the child positions of the best candidates (a check). In GTP, each search
+takes its share of the clock's time for the move, and a move that the position's own view cannot name is `MOVE/VIEW`.
 `Search::fixedScoreCenter` gives these searches one centre of the score utility in place of each root's centre
 (`computeRootValues`). Outside them it is `NAN`, and each search takes its root's centre, as in KataGo.
 
