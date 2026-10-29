@@ -385,11 +385,11 @@ search takes its share of the clock's time for the move, and a move that the pos
 `Search::fixedScoreCenter` gives these searches one centre of the score utility in place of each root's centre
 (`computeRootValues`). Outside them it is `NAN`, and each search takes its root's centre, as in KataGo.
 
-`RootViews::Searches` holds the passes and the checks one at a time, for a caller that runs each search: next() gives
-each search's root and its share of the limits, done() takes the search at its end, and result() gives the response
-at any time, with a search that has not ended. `RootViews::search` runs them on an `AsyncBot` (the analysis engine and
-GTP). Blueprints' engine protocol (`command/blueprintsprotocol.cpp`) runs them in its slices, with the manual
-interface of `Search`, so a reply during the search gives the candidates so far.
+`RootViews::Searches` holds the passes and the checks one at a time, for a caller that runs each search. `next()`
+gives each search's root and its share of the limits. `done()` takes the search at its end. `result()` gives the
+response at any time, also with a search that has not ended. `RootViews::search` runs them on an `AsyncBot` (the
+analysis engine and GTP). Blueprints' engine protocol (`command/blueprintsprotocol.cpp`) runs them in its slices,
+with the manual interface of `Search`, so a reply during the search gives the candidates so far.
 
 ## The rules part
 

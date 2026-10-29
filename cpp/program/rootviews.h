@@ -10,16 +10,16 @@
 #include "../search/asyncbot.h"
 #include "../external/nlohmann_json/json.hpp"
 
-//KataGame fork (abscls-il4e.3, abscls-il4e.4, abscls-il4e.9): the root views, for a game whose network sees a part of a larger board
-//(Blueprints: a view of 67 x 67 points of its rules board). The game gives views that hold every legal move of the root
-//between them (GameInterface::viewCover). With one view, the search is the one of that view: the usual search when the
-//rules' view holds every move. With more, each view gets a search of the root in that view (a pass) with a share of the
-//visits. Each pass's best moves are the candidates, and a move that two passes find is one candidate (the same child
-//position). The candidates with the best child values from the root mover's side then get a search of their child
-//position each (a check), with the rest of the visits, and the move is the check with the best value. The passes and
-//the checks take the first pass's score centre, so that their utilities have one scale. Their visits are not compared.
-//The analysis engine's rootViews (command/analysis.cpp), GTP's genmove (command/gtp.cpp) and Blueprints' engine
-//protocol (command/blueprintsprotocol.cpp, abscls-il4e.9) all search so.
+//KataGame fork (abscls-il4e.3, abscls-il4e.4, abscls-il4e.9): the root views, for a game whose network sees a part of a
+//larger board (Blueprints: a view of 67 x 67 points of its rules board). The game gives views that hold every legal
+//move of the root between them (GameInterface::viewCover). With one view, the search is the one of that view: the usual
+//search when the rules' view holds every move. With more, each view gets a search of the root in that view (a pass)
+//with a share of the visits. Each pass's best moves are the candidates, and a move that two passes find is one
+//candidate (the same child position). The candidates with the best child values from the root mover's side then get a
+//search of their child position each (a check), with the rest of the visits, and the move is the check with the best
+//value. The passes and the checks take the first pass's score centre, so that their utilities have one scale. Their
+//visits are not compared. The analysis engine's rootViews (command/analysis.cpp), GTP's genmove (command/gtp.cpp) and
+//Blueprints' engine protocol (command/blueprintsprotocol.cpp) all search so.
 namespace RootViews {
   struct Settings {
     double passShare = 0.5;  //rootViewsPassShare: the passes' share of the visits, the playouts and the time
@@ -54,6 +54,8 @@ namespace RootViews {
     bool includePVVisits = false;
     bool includeNoResultValue = false;
   };
+  //The analysis engine's response of the search as it is now: Search::getAnalysisJson with the report's arguments.
+  bool analysisJson(const Search& search, const Report& report, nlohmann::json& out);
 
   //The move that the search chose: a move of the root's own view (view ""), or a move that only another view names,
   //with that view (loc is then the move in it).
@@ -109,7 +111,6 @@ namespace RootViews {
       int numSearches = 0;
       int64_t totalVisits = 0;
     };
-    bool analysis(const Search& search, nlohmann::json& out) const;
     void record(Results& results, nlohmann::json& out, Loc chosen) const;
     bool respond(const Results& results, nlohmann::json& ret, Choice& choice) const;
     Loc ownMove(const Hash128& child) const;
@@ -120,8 +121,7 @@ namespace RootViews {
     Player rootPla_;
     std::vector<std::string> views_;
     Settings settings_;
-    Report report_;
-    Player perspective_;  //every search reports its values from this side
+    Report report_;  //its perspective the side of every search's values
     double moverSign_;  //+1 when it is the root mover's, else -1
     std::map<Hash128, Loc> ownMoves_;  //each move of the root's own view by its child position
     std::vector<Board> boards_;  //the root in each view

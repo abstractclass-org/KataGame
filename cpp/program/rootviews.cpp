@@ -60,9 +60,9 @@ RootViews::Searches::Searches(
 {
   //Every search reports its values from one side: the report's perspective as the root has it. A check's root has
   //another player to move.
-  perspective_ =
+  report_.perspective =
     report.perspective == P_BLACK || (report.perspective != P_WHITE && rootPla == P_BLACK) ? P_BLACK : P_WHITE;
-  moverSign_ = rootPla == perspective_ ? 1.0 : -1.0;
+  moverSign_ = rootPla == report_.perspective ? 1.0 : -1.0;
   testAssert(!views.empty());
   boards_.reserve(views.size());
   for(const string& view : views) {
@@ -132,7 +132,7 @@ bool RootViews::Searches::next() {
 bool RootViews::Searches::done(Search& search, Loc chosen) {
   testAssert(current_ >= 0);
   json out;
-  const bool suc = analysis(search, out);
+  const bool suc = analysisJson(search, report_, out);
   if(suc) {
     if(current_ == 0 && views_.size() > 1)
       search.fixedScoreCenter = search.recentScoreCenter;
@@ -147,16 +147,16 @@ bool RootViews::Searches::result(json& ret, Choice& choice, const Search* runnin
     return respond(results_, ret, choice);
   Results results = results_;
   json out;
-  if(analysis(*running, out))
+  if(analysisJson(*running, report_, out))
     record(results, out, Board::NULL_LOC);
   return respond(results, ret, choice);
 }
 
-bool RootViews::Searches::analysis(const Search& search, json& out) const {
+bool RootViews::analysisJson(const Search& search, const Report& report, json& out) {
   return search.getAnalysisJson(
-    perspective_, report_.analysisPVLen, report_.preventEncore, report_.includePolicy, report_.includeOwnership,
-    report_.includeOwnershipStdev, report_.includeMovesOwnership, report_.includeMovesOwnershipStdev,
-    report_.includePVVisits, report_.includeNoResultValue, out);
+    report.perspective, report.analysisPVLen, report.preventEncore, report.includePolicy, report.includeOwnership,
+    report.includeOwnershipStdev, report.includeMovesOwnership, report.includeMovesOwnershipStdev,
+    report.includePVVisits, report.includeNoResultValue, out);
 }
 
 //The analysis out of the current search into results.

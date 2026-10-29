@@ -41,12 +41,13 @@
 // random numbers from the query's "seed" and the position.
 //
 // The root's views (program/rootviews.h; games/blueprints/README.md, "The browser build"): an analysis's "rootViews"
-// (by default the settings' rootViews, true in analysis_blueprints.cfg) searches the cover of the root's views. When the
-// rule's view holds every legal placement, the search and the reply are those without it. One other view that holds
-// them: the search of that view. More views: their passes and checks (RootViews::Searches), run one after another in
-// the slices, each with its share of the visits. The reply then has the candidates of every view by the site's
-// strings, and the root's values are the best candidate's, with no raw values. rootInfo gives the cover ("views") and
-// the searches. The policy and the ownership of such a search are the network's at the root in the rule's view.
+// (by default the settings' rootViews, true in analysis_blueprints.cfg) searches the cover of the root's views. When
+// the rule's view holds every legal placement, the search and the reply are those without it. One other view that
+// holds them: the search of that view. More views: their passes and checks (RootViews::Searches), run one after
+// another in the slices, each with its share of the visits. The reply then has the candidates of every view by the
+// site's strings, and the root's values are the best candidate's, with no raw values. rootInfo gives the cover
+// ("views") and the searches. The policy and the ownership of such a search are the network's at the root in the
+// rule's view.
 #include "../command/blueprintsprotocol.h"
 
 #include "../core/global.h"
@@ -885,11 +886,21 @@ struct Running {
   // view or in more views (with includePolicy or includeOwnership).
   std::shared_ptr<NNOutput> ruleEval;
   int64_t visits = 0;  // the query's
-  SearchThread* thread = nullptr;  // the search in slices, or none between two searches of the root's views
+  SearchThread* thread = nullptr;  // the search in slices, or none when every search is done
   int64_t maxVisits = 0, nonPlayoutVisits = 0, playouts = 0;  // its visits
-  bool more = false;  // the next search of the root's views waits to begin
   int64_t sliceVisits = 0;  // 0: by time
   double sliceSeconds = 0;
+
+  // The rule's view alone: the search and the reply without the root's views.
+  bool ruleViewAlone() const { return views.size() == 1 && views[0].empty(); }
+  // Its end ends its search in slices, and the score centre of the root's views (RootViews::Searches::done).
+  ~Running() {
+    if(thread != nullptr) {
+      E.search->endManualSearch(*thread);
+      delete thread;
+    }
+    E.search->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN();
+  }
 };
 Running* RUN = nullptr;
 
@@ -900,6 +911,17 @@ int analysisPVLen(const json& q) {
     if(l->is_number_integer())
       pvLen = std::max(0, l->get<int>());
   return pvLen;
+}
+
+// What each search reports (Search::getAnalysisJson): Black's values, and two actions for each site move of the line
+// and one more for its first edit's drop.
+RootViews::Report analysisReport(const json& q) {
+  RootViews::Report report;
+  report.perspective = P_BLACK;
+  report.analysisPVLen = 2 * analysisPVLen(q) + 1;
+  report.preventEncore = false;
+  report.includePVVisits = flag(q, "includePVVisits");
+  return report;
 }
 
 // A moveInfo of a search whose root is g in `view` ("" its own), in the site's moves: its move and its line (siteLine,
@@ -964,6 +986,26 @@ void rootMaps(const json& q, const Game& g, const NNOutput* root, json& reply) {
   }
 }
 
+// The analysis reply around rootInfo and moveInfos, in the site's moves: the protocol's fields, and the cover of the
+// root's views when it is not the rule's view alone. The policy and the ownership are the network's at the root in the
+// rule's view: the search's root, else the evaluation of the root that a search in another view or in more views took.
+json replyOf(const Running& r, bool during, json rootInfo, json moveInfos) {
+  const json& q = r.query;
+  const Game& g = *r.game;
+  dropGoFields(rootInfo);
+  rootInfo["currentPlayer"] = playerName(g.pla() == P_BLACK ? 0 : 1);
+  if(!r.ruleViewAlone())
+    rootInfo["views"] = viewsJson(g.board.pos, r.views);
+  json reply = {
+    {"id", q["id"]}, {"isDuringSearch", during}, {"turnNumber", g.moves}, {"engine", engineTag()},
+    {"rootInfo", std::move(rootInfo)}, {"moveInfos", std::move(moveInfos)}, {"movesOutsideView", g.outside},
+  };
+  const SearchNode* tree = E.search->rootNode;
+  rootMaps(q, g, !r.ruleViewAlone() ? r.ruleEval.get() : tree != nullptr ? tree->getNNOutput() : nullptr, reply);
+  reply["view"] = viewJson(g.board.pos);
+  return reply;
+}
+
 // The analysis reply of one search from its tree as it is now (during a search in slices, or after it): the search of
 // the rule's view, or of the one view of the root's views (r.views) that holds every legal placement.
 json searchReply(const Running& r, bool during) {
@@ -972,10 +1014,8 @@ json searchReply(const Running& r, bool during) {
   const string& view = r.views[0];
   const SearchNode* tree = E.search->rootNode;
   const int pvLen = analysisPVLen(q);
-  const bool pvVisits = flag(q, "includePVVisits");
   json out;
-  // Two actions for each site move of the line, and one more for its first edit's drop.
-  if(!E.search->getAnalysisJson(P_BLACK, 2 * pvLen + 1, false, false, false, false, false, false, pvVisits, false, out))
+  if(!RootViews::analysisJson(*E.search, analysisReport(q), out))
     return errorReply(q["id"], {"", "the search gave no analysis"});
   json moveInfos = json::array();
   std::map<int, string> named;  // each candidate's action -> its site move
@@ -1001,16 +1041,9 @@ json searchReply(const Running& r, bool during) {
     if(mi.contains("isSymmetryOf"))
       mi["isSymmetryOf"] = siteMove(actionOf(mi["isSymmetryOf"]));
   json rootInfo = std::move(out["rootInfo"]);
-  dropGoFields(rootInfo);
-  rootInfo["currentPlayer"] = playerName(g.pla() == P_BLACK ? 0 : 1);
-  if(!view.empty()) {
-    rootInfo["views"] = viewsJson(g.board.pos, r.views);
+  if(!view.empty())
     rootInfo["searches"] = 1;
-  }
-  json reply = {
-    {"id", q["id"]}, {"isDuringSearch", during}, {"turnNumber", g.moves}, {"engine", engineTag()},
-    {"rootInfo", std::move(rootInfo)}, {"moveInfos", std::move(moveInfos)}, {"movesOutsideView", g.outside},
-  };
+  json reply = replyOf(r, during, std::move(rootInfo), std::move(moveInfos));
   if(flag(q, "chooseMove") && !during) {
     // The move KataGo's GTP engine would play (Search::getChosenMoveLoc), drawn with the chosen-move temperature and
     // seeded by the query's "seed" (default 0) and the position, never by earlier requests. A pick names its edit,
@@ -1019,23 +1052,22 @@ json searchReply(const Running& r, bool during) {
     const Loc loc = E.search->getChosenMoveLoc(rand);
     reply["chosenMove"] = loc == Board::NULL_LOC ? json(nullptr) : siteMove(Board::actionOfMoveLoc(loc));
   }
-  // The rule's view's search has the root's evaluation at its root; a search in another view takes the rule's view's.
-  const NNOutput* root = !view.empty() ? r.ruleEval.get() : tree != nullptr ? tree->getNNOutput() : nullptr;
-  rootMaps(q, g, root, reply);
-  reply["view"] = viewJson(g.board.pos);
   return reply;
 }
 
-// The analysis reply of the root's views (RootViews::Searches) from the searches done and the one in slices that has
-// played: the candidates of every view, by their checks' values and then their passes', and the root's values, the
-// best candidate's. The rootInfo has no raw values of the network: each search has its own root.
+// The analysis reply of the root's views (RootViews::Searches) from the searches done and the one in slices once it
+// has played (a search that just began has its root only): the candidates of every view, by their checks' values and
+// then their passes', and the root's values, the best candidate's. The rootInfo has no raw values of the network: each
+// search has its own root.
 json viewsReply(const Running& r, bool during) {
   const json& q = r.query;
   const Game& g = *r.game;
   json res;
   RootViews::Choice choice;
+  // No candidate yet: a pass of 1 visit (a small maxVisits) searches its root only, and finds no move.
   if(!r.searches->result(res, choice, r.thread != nullptr && r.playouts > 0 ? E.search : nullptr))
-    return errorReply(q["id"], {"", "the search gave no analysis"});
+    return errorReply(q["id"], {"maxVisits", "the passes of the root's views found no candidate: give the search more "
+                                             "visits, or set rootViews false"});
   const int pvLen = analysisPVLen(q);
   // Each candidate's line from the root in the view that names its move ("view", else the root's own). No tree: each
   // search's tree went with the next search.
@@ -1047,19 +1079,10 @@ json viewsReply(const Running& r, bool during) {
     mi.erase("view");
     moveInfos.push_back(std::move(mi));
   }
-  json rootInfo = std::move(res["rootInfo"]);
-  dropGoFields(rootInfo);
-  rootInfo["currentPlayer"] = playerName(g.pla() == P_BLACK ? 0 : 1);
-  rootInfo["views"] = viewsJson(g.board.pos, r.views);
-  json reply = {
-    {"id", q["id"]}, {"isDuringSearch", during}, {"turnNumber", g.moves}, {"engine", engineTag()},
-    {"rootInfo", std::move(rootInfo)}, {"moveInfos", std::move(moveInfos)}, {"movesOutsideView", g.outside},
-  };
+  json reply = replyOf(r, during, std::move(res["rootInfo"]), std::move(moveInfos));
   // The best check or pass: the search's choice, with no temperature (RootViews::search, as GTP's genmove).
   if(flag(q, "chooseMove") && !during)
     reply["chosenMove"] = reply["moveInfos"].empty() ? json(nullptr) : reply["moveInfos"][0]["move"];
-  rootMaps(q, g, r.ruleEval.get(), reply);
-  reply["view"] = viewJson(g.board.pos);
   return reply;
 }
 
@@ -1068,13 +1091,6 @@ json analysisReply(const Running& r, bool during) {
 }
 
 void endRunning() {
-  if(RUN == nullptr)
-    return;
-  if(RUN->thread != nullptr) {
-    E.search->endManualSearch(*RUN->thread);
-    delete RUN->thread;
-  }
-  E.search->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN();  // the root's views' (RootViews::Searches)
   delete RUN;
   RUN = nullptr;
 }
@@ -1084,26 +1100,35 @@ int64_t shareOfVisits(int64_t visits, double share) {
   return (int64_t)std::ceil(std::min((double)((int64_t)1 << 62), visits * share));
 }
 
-// Begins the next search of the root's views (searches->next()), in slices.
-void beginViewSearch(Running& r) {
-  E.search->setPosition(r.searches->pla(), r.searches->board(), r.searches->hist());
-  r.maxVisits = shareOfVisits(r.visits, r.searches->share());
+// Begins a search in slices of E.search's root, with its share of the query's visits (1: all of them).
+void beginSlices(Running& r, double share) {
+  r.maxVisits = shareOfVisits(r.visits, share);
   r.playouts = 0;
-  r.more = false;
   E.search->beginSearch(false);
   r.nonPlayoutVisits = E.search->getRootVisits();
   r.thread = new SearchThread(0, *E.search);
 }
 
-// Ends the search of the root's views that runs in slices, gives it to searches, and readies the next one, if any.
-// False when the search gave no analysis.
-bool endViewSearch(Running& r) {
+// Begins the next search of the root's views (searches->next()) in slices. False when every search is done.
+bool beginNextView(Running& r) {
+  if(!r.searches->next())
+    return false;
+  E.search->setPosition(r.searches->pla(), r.searches->board(), r.searches->hist());
+  beginSlices(r, r.searches->share());
+  return true;
+}
+
+// Ends the search in slices at its visits. With the root's views, gives it to searches and begins the next one, if
+// any. False when the search gave no analysis.
+bool endSlices(Running& r) {
   E.search->endManualSearch(*r.thread);
   delete r.thread;
   r.thread = nullptr;
+  if(r.searches == nullptr)
+    return true;
   if(!r.searches->done(*E.search, Board::NULL_LOC))
     return false;
-  r.more = r.searches->next();
+  beginNextView(r);
   return true;
 }
 
@@ -1113,32 +1138,24 @@ json runSlice() {
   Running& r = *RUN;
   ClockTimer timer;
   int64_t done = 0;
-  while(true) {
-    if(r.thread != nullptr && r.playouts + r.nonPlayoutVisits >= r.maxVisits) {
-      if(r.searches == nullptr)
-        break;
-      if(!endViewSearch(r)) {
+  while(r.thread != nullptr) {
+    if(r.playouts + r.nonPlayoutVisits >= r.maxVisits) {
+      if(!endSlices(r)) {
         const json reply = errorReply(r.query["id"], {"", "the search gave no analysis"});
         endRunning();
         return reply;
       }
+      continue;  // the next search can reach its visits with its root's
     }
     if(r.sliceVisits > 0 ? done >= r.sliceVisits : (done >= 1 && timer.getSeconds() >= r.sliceSeconds))
       break;
-    if(r.thread == nullptr) {
-      if(!r.more)
-        break;
-      beginViewSearch(r);
-      continue;  // a search can reach its visits with its root's
-    }
     const double left = double(r.maxVisits - r.playouts - r.nonPlayoutVisits);
     if(E.search->runSinglePlayout(*r.thread, left)) {
       r.playouts++;
       done++;
     }
   }
-  const bool during =
-    r.searches == nullptr ? r.playouts + r.nonPlayoutVisits < r.maxVisits : r.thread != nullptr || r.more;
+  const bool during = r.thread != nullptr;
   const json reply = analysisReply(r, during);
   if(!during)
     endRunning();
@@ -1206,7 +1223,8 @@ json analyze(const json& q) {
   bool rootViews = E.rootViews;
   if(const json* v = field(q, "rootViews")) {
     if(!v->is_boolean())
-      return errorReply(q["id"], {"rootViews", "rootViews is true or false: whether the search covers the root's views"});
+      return errorReply(q["id"], {"rootViews",
+                                  "rootViews is true or false: whether the search covers the root's views"});
     rootViews = v->get<bool>();
   }
   int64_t sliceVisits = 0;
@@ -1231,7 +1249,7 @@ json analyze(const json& q) {
   r->visits = visits;
   r->sliceVisits = sliceVisits;
   r->sliceSeconds = sliceSeconds;
-  const bool ruleView = r->views.size() == 1 && r->views[0].empty();
+  const bool ruleView = r->ruleViewAlone();
   p.maxVisits = visits;
   p.maxPlayouts = (int64_t)1 << 50;
   p.maxTime = maxTime;
@@ -1264,39 +1282,28 @@ json analyze(const json& q) {
   E.search->randSeed = "analysis:" + seedText(q);
   E.search->numSearchesBegun = 0;
   r->game = std::move(g);
-  if(r->views.size() > 1) {
-    // The passes and the checks (RootViews::Searches), each with its share of the visits and of maxTime.
-    RootViews::Report report;
-    report.perspective = P_BLACK;
-    report.analysisPVLen = 2 * analysisPVLen(q) + 1;  // as searchReply's
-    report.preventEncore = false;
-    report.includePVVisits = flag(q, "includePVVisits");
+  // More views: the passes and the checks (RootViews::Searches), each with its share of the visits and of maxTime.
+  if(r->views.size() > 1)
     r->searches.reset(new RootViews::Searches(
-      r->game->board, r->game->hist, r->game->pla(), r->views, E.rootViewSettings, report));
-    r->more = r->searches->next();
-    if(slice == nullptr) {
-      bool suc = true;
-      while(suc && r->more) {
-        E.search->setPosition(r->searches->pla(), r->searches->board(), r->searches->hist());
-        E.search->runWholeSearch(nullptr, nullptr, false, TimeControls(), r->searches->share());
-        suc = r->searches->done(*E.search, Board::NULL_LOC);
-        r->more = suc && r->searches->next();
-      }
-      E.search->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN();
-      return suc ? analysisReply(*r, false) : errorReply(q["id"], {"", "the search gave no analysis"});
-    }
-    RUN = r.release();
-    return runSlice();
-  }
+      r->game->board, r->game->hist, r->game->pla(), r->views, E.rootViewSettings, analysisReport(q)));
   if(slice == nullptr) {
-    E.search->runWholeSearch(r->game->pla());
-    return analysisReply(*r, false);
+    if(r->searches == nullptr) {
+      E.search->runWholeSearch(r->game->pla());
+      return analysisReply(*r, false);
+    }
+    bool suc = true;
+    while(suc && r->searches->next()) {
+      E.search->setPosition(r->searches->pla(), r->searches->board(), r->searches->hist());
+      E.search->runWholeSearch(nullptr, nullptr, false, TimeControls(), r->searches->share());
+      suc = r->searches->done(*E.search, Board::NULL_LOC);
+    }
+    return suc ? analysisReply(*r, false) : errorReply(q["id"], {"", "the search gave no analysis"});
   }
-  r->maxVisits = visits;
   RUN = r.release();
-  E.search->beginSearch(false);
-  RUN->nonPlayoutVisits = E.search->getRootVisits();
-  RUN->thread = new SearchThread(0, *E.search);
+  if(RUN->searches == nullptr)
+    beginSlices(*RUN, 1.0);
+  else
+    beginNextView(*RUN);
   return runSlice();
 }
 
