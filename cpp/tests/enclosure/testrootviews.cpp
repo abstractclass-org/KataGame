@@ -32,8 +32,10 @@
 #include "../../core/config_parser.h"
 #include "../../core/global.h"
 #include "../../core/logger.h"
+#include "../../core/rand.h"
 #include "../../core/test.h"
 #include "../../neuralnet/nneval.h"
+#include "../../program/playutils.h"
 #include "../../program/rootviews.h"
 #include "../../search/asyncbot.h"
 #include "../../search/search.h"
@@ -74,24 +76,15 @@ static SearchParams params(int64_t visits) {
   return p;
 }
 
-//The best legal move of the board's root by the network's own evaluation, as the search evaluates its root.
+//The best legal move of the board's root by the network's own evaluation, as the search evaluates its root: KataGo's
+//policy move with no temperature (PlayUtils::chooseRandomPolicyMove), apart from the code under test.
 static Loc policyMove(NNEvaluator* nnEval, const Board& board, const BoardHistory& hist, Player pla) {
   NNResultBuf buf;
   MiscNNInputParams nnInputParams;
   nnInputParams.drawEquivalentWinsForWhite = params(1).drawEquivalentWinsForWhite;
   nnEval->evaluate(board, hist, pla, nnInputParams, buf, false, false);
-  const PolicyView policy = buf.result->policy();
-  Loc best = Board::NULL_LOC;
-  float prior = -1.0f;
-  for(int k = 0; k < policy.n; k++) {
-    const int S = NNPos::MAX_BOARD_LEN;
-    const Loc loc = NNPos::posToLoc(policy.legalPos(k), board.x_size, board.y_size, S, S);
-    if(policy.probAt(k) > prior && hist.isLegal(board, loc, pla)) {
-      best = loc;
-      prior = policy.probAt(k);
-    }
-  }
-  return best;
+  Rand rand("testrootviews");  //no draw at temperature 0
+  return PlayUtils::chooseRandomPolicyMove(buf.result.get(), board, hist, pla, rand, 0.0, true, Board::NULL_LOC);
 }
 
 //A root's position and its cover.

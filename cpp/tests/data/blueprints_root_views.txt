@@ -1,6 +1,6 @@
 # Blueprints' positions for testrootviews (tests/enclosure/testrootviews.cpp): positions whose cover has several views
 # (abscls-csmy). Each line: LABEL STATE, the state a position's whole state (GameInterface::stateText). Made by hand:
-# the start's board and hands at ply 3 (Blue to move), with Blue's lone plain cells at far hexes, so that the
+# the start's board and hands after 3 moves (Blue to move), with Blue's lone plain cells at far hexes, so that the
 # placements next to each lie in a view of their own, and no footprints. views3 has cells at (70,0) and (-70,0); views5
 # also at (0,70) and (0,-70); views13 at 12 hexes 80 and 150 from the middle, as many views as the site's games have at
 # most. views4-ruleviewout has cells at (70,0), (-70,0) and (0,70) and Blue's last placement's box far from its cells,

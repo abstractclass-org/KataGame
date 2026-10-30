@@ -53,8 +53,20 @@ static Hash128 childHash(const Board& board, Loc loc) {
   return GameRules::hash(p);
 }
 
-//The best legal move of the search's root by the network's policy, with no root noise, and its prior: NULL_LOC when
-//the root has no evaluation yet. Of equal priors, the first one in the policy's order.
+//The values of a rootInfo and of a moveInfo (Search::getAnalysisJson).
+static const char* const VALUE_KEYS[] = {"winrate", "scoreSelfplay", "scoreLead", "scoreStdev", "utility"};
+
+//Sets the values of the moveInfo info to those of from, a rootInfo: a moveInfo also gives scoreLead as scoreMean.
+static void setValues(json& info, const json& from) {
+  for(const char* key : VALUE_KEYS)
+    info[key] = from[key];
+  info["scoreMean"] = from["scoreLead"];
+}
+
+//The best legal move of the search's root by the network's raw policy, and its prior: NULL_LOC when the root has no
+//evaluation yet. Of equal priors, the first one in the policy's order. KataGo's genmove at a root with no visited child
+//(Search::getPlaySelectionValues) reads the policy with root noise, the allowed and the avoided moves, then draws with
+//the chosen move's temperature: it plays this move at temperature 0 with none of them.
 static Loc bestPolicyMove(const Search& search, double& prior) {
   const SearchNode* root = search.getRootNode();
   const NNOutput* nnOutput = root == NULL ? NULL : root->getNNOutput();
@@ -74,10 +86,11 @@ static Loc bestPolicyMove(const Search& search, double& prior) {
   return best;
 }
 
-//The moveInfo of a move with no visits at the search's root, as KataGo gives a move from the policy
-//(Search::getAnalysisData with minMovesToTryToGet, getAnalysisJson's fields): with no child visited, the first-play
-//value has no reduction, so the values are the root's (rootInfo, in the report's perspective); the bounds, the weights
-//and the play selection value are 0, the line is the move alone, and the ownership is the root's tree's.
+//The moveInfo of a move with no visits at the search's root, with the fields that KataGo's policy fill gives such a
+//move (Search::getAnalysisDataOfSingleChild, getAnalysisJson's fields). KataGo gives none at a root with no visited
+//child. There, the first-play value has no reduction (rootFpuLossProp 0, KataGo's default), so the values are the
+//root's (rootInfo, in the report's perspective). The bounds, the weights and the play selection value are 0, the line
+//is the move alone, and the ownership is the root's tree's.
 static json unvisitedMoveInfo(
   const Search& search, const RootViews::Report& report, Loc loc, double prior, const json& rootInfo
 ) {
@@ -86,9 +99,7 @@ static json unvisitedMoveInfo(
   info["move"] = move;
   info["visits"] = 0;
   info["weight"] = 0.0;
-  for(const char* key : {"utility", "winrate", "scoreSelfplay", "scoreLead", "scoreStdev"})
-    info[key] = rootInfo[key];
-  info["scoreMean"] = rootInfo["scoreLead"];
+  setValues(info, rootInfo);
   if(report.includeNoResultValue)
     info["noResultValue"] = 0.0;
   info["prior"] = Global::roundDynamic(prior, 8);
@@ -270,7 +281,7 @@ void RootViews::Searches::record(Results& results, const Search& search, json& o
         json info = unvisitedMoveInfo(search, report_, loc, prior, out["rootInfo"]);
         const double value = moverSign_ * info["utility"].get<double>();
         const Loc own = ownMove(childHash(boards_[0], loc));
-        results.policy.push_back(Candidate{0, loc, own, std::move(info), value, 0, json()});
+        results.policyMove.push_back(Candidate{0, loc, own, std::move(info), value, 0, json()});
       }
     }
     out["view"] = views_[i];
@@ -322,7 +333,7 @@ void RootViews::Searches::nameMove(json& info, Loc own, const string& view) cons
 //The response from results: a cover of one view gives its search's analysis. With more, the finalists by their checks'
 //values, then the other candidates by their passes' values (before the checks, every candidate by its passes' values).
 //A check's values replace its candidate's, and the best candidate's are the root's. With no candidate, the first
-//pass's policy move (Results::policy), whose values are its root's.
+//pass's policy move (Results::policyMove), whose values are its root's.
 bool RootViews::Searches::respond(const Results& results, json& ret, Choice& choice) const {
   //The choice: the move of the root's own view when it names the move, else the move in its view.
   auto setChoice = [&choice](Loc loc, Loc own, const string& view) {
@@ -350,15 +361,12 @@ bool RootViews::Searches::respond(const Results& results, json& ret, Choice& cho
     ret["rootInfo"]["searches"] = results.numSearches;
     return true;
   }
-  //No pass found a candidate (abscls-csmy): each pass of 1 visit, with maxVisits at most 2 x the views, searches its
-  //root only. The move is then the first pass's policy move, with no more search. It is the move that KataGo's genmove
-  //plays at a root with no visited child (Search::getPlaySelectionValues falls back on the policy), with no
-  //temperature. The other way, a search of the rule's view after the passes, would add a search to the response, to
-  //its visits and to the bot's last position, and with 1 visit it too gives its root's policy move. So the passes, the
-  //visits, the searches and the bot's position stay as the passes left them. The first pass is the search of the
-  //cover's first view: Blueprints' cover takes first the view that holds the most legal placements, which is the rule's
-  //view when it holds as many as any view.
-  const vector<Candidate>& candidates = results.candidates.empty() ? results.policy : results.candidates;
+  //No pass found a candidate (abscls-csmy): a pass of 1 visit searches its root only. The move is then the first pass's
+  //policy move, with no temperature, as the best check has none. No other search runs (a search of the rule's view
+  //with 1 visit would also give its policy move), so the passes, the visits and the bot's position stay as the passes
+  //left them. The first pass is the search of the cover's first view: Blueprints' cover takes first the view that holds
+  //the most legal placements, the rule's view when it holds as many as any view.
+  const vector<Candidate>& candidates = results.candidates.empty() ? results.policyMove : results.candidates;
   if(candidates.empty())
     return false;
   auto byValue = [&](size_t a, size_t b) { return candidates[a].value > candidates[b].value; };
@@ -372,7 +380,6 @@ bool RootViews::Searches::respond(const Results& results, json& ret, Choice& cho
   else
     std::stable_sort(order.begin(), order.begin() + numFinalists_, byValue);
 
-  const char* const valueKeys[] = {"winrate", "scoreSelfplay", "scoreLead", "scoreStdev", "utility"};
   json moveInfos = json::array();
   json checks = json::array();
   for(size_t i = 0; i < order.size(); i++) {
@@ -381,9 +388,7 @@ bool RootViews::Searches::respond(const Results& results, json& ret, Choice& cho
     info["visits"] = c.visits;
     info["order"] = (int)i;
     if(!c.check.is_null()) {
-      for(const char* key : valueKeys)
-        info[key] = c.check[key];
-      info["scoreMean"] = c.check["scoreLead"];
+      setValues(info, c.check);
       info["checkVisits"] = c.check["visits"];
     }
     nameMove(info, c.own, views_[c.pass]);
@@ -402,7 +407,7 @@ bool RootViews::Searches::respond(const Results& results, json& ret, Choice& cho
   const json& best = moveInfos[0];
   json rootInfo;
   rootInfo["visits"] = results.totalVisits;
-  for(const char* key : valueKeys)
+  for(const char* key : VALUE_KEYS)
     rootInfo[key] = best[key];
   Hash128 thisHash = rootBoard_.getSitHashWithSimpleKo(rootPla_), symHash = thisHash;
   for(int symmetry : SymmetryHelpers::ALLOWED) {
