@@ -471,12 +471,12 @@ int MainCmds::analysis(const vector<string>& args) {
           }
           else if(request->status.load(std::memory_order_acquire) == AnalyzeRequest::STATUS_TERMINATED)
             reportNoAnalysis(request);
-          //A search that stopped before its root's evaluation (abscls-csmy): normal when shutting down, a bug otherwise.
-          //No query's limits stop a pass before its first visit, which evaluates its root, and the first pass's root then
-          //gives the policy move. The error has the query's id, so that a client does not wait for a response. At a
-          //shutdown (quitWithoutWaiting) the write queue is read-only already, and only the log gets it.
+          //KataGame fork (abscls-csmy): a search stopped before its root's evaluation with no terminate: after a pass
+          //with a searchFactorAfterOnePass or searchFactorAfterTwoPass of 0, or at a shutdown (quitWithoutWaiting, its
+          //write queue read-only: only the log gets the error). The message names the turn, for several analyzeTurns.
           else
-            reportErrorForId(request->id, "rootViews", "The search of the root's views gave no analysis");
+            reportErrorForId(request->id, "rootViews", "The search of the root's views gave no analysis of turn " +
+                             Global::intToString(request->turnNumber));
         }
         else if(request->reportDuringSearch) {
           std::function<void(const Search* search)> callback = [&request,&reportAnalysis](const Search* search) {
