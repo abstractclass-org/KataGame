@@ -420,7 +420,7 @@ int MainCmds::analysis(const vector<string>& args) {
 
   auto analysisLoop = [
     &logger,&toAnalyzeQueue,&reportAnalysis,&reportNoAnalysis,&logSearchInfo,&logSearchTreeOptions,&nnEval,&openRequestsMutex,&openRequests,
-    &rootViewSettings,&preventEncore,&pushToWrite
+    &rootViewSettings,&preventEncore,&pushToWrite,&reportErrorForId
   ](AsyncBot* bot, int threadIdx) {
     while(true) {
       std::pair<std::pair<int64_t,int64_t>,AnalyzeRequest*> analysisItem;
@@ -471,8 +471,12 @@ int MainCmds::analysis(const vector<string>& args) {
           }
           else if(request->status.load(std::memory_order_acquire) == AnalyzeRequest::STATUS_TERMINATED)
             reportNoAnalysis(request);
+          //A search that stopped before its root's evaluation (abscls-csmy): normal when shutting down, a bug otherwise.
+          //No query's limits stop a pass before its first visit, which evaluates its root, and the first pass's root then
+          //gives the policy move. The error has the query's id, so that a client does not wait for a response. At a
+          //shutdown (quitWithoutWaiting) the write queue is read-only already, and only the log gets it.
           else
-            logger.write("Note: root views' search quitting with no result - normal when shutting down, a bug otherwise");
+            reportErrorForId(request->id, "rootViews", "The search of the root's views gave no analysis");
         }
         else if(request->reportDuringSearch) {
           std::function<void(const Search* search)> callback = [&request,&reportAnalysis](const Search* search) {
