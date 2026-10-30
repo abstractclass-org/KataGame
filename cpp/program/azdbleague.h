@@ -585,16 +585,29 @@ template<class E> class League {
   //A file of another version or of other counts is refused (an error), so that a run never restarts ψ by mistake.
   //l0 stays the caller's.
   bool load(const std::string& path) {
+    nlohmann::json j;
+    if(!readFile(path, j))
+      return false;
+    load(j, path);
+    return true;
+  }
+
+  //The file at path as JSON, into j. False when the file does not exist. A file that is not JSON is refused.
+  static bool readFile(const std::string& path, nlohmann::json& j) {
     std::ifstream in(path);
     if(!in)
       return false;
-    nlohmann::json j;
     try {
       in >> j;
     }
     catch(const nlohmann::json::exception& e) {
       throw StringError("AZdb: " + path + " is not a league's file: " + e.what());
     }
+    return true;
+  }
+
+  //Loads the league from j, a league's file (readFile) that path names, with the checks of load(path).
+  void load(const nlohmann::json& j, const std::string& path) {
     auto refuse = [&](const std::string& why) { throw StringError("AZdb: " + path + ": " + why); };
     try {
       if(j.at("version").get<int>() != LEAGUE_FILE_VERSION)
@@ -634,7 +647,6 @@ template<class E> class League {
     catch(const nlohmann::json::exception& e) {
       refuse(std::string("a key is missing or of another type: ") + e.what());
     }
-    return true;
   }
 
   //Each member's distance to its nearest other member, ℓ_i = ||ψ^i - ψ^j*||, from ψ as it is (the nearest members
@@ -727,25 +739,20 @@ template<class E> class League {
 //setting diversityStateFile): ψ, μ, σ and ℓ0 as the file holds them, with load's checks, as a game of self-play would
 //take its copy at that point (League::snapshot). A file that does not exist is an error.
 template<class E> std::shared_ptr<const State<E>> readState(const std::string& path) {
+  nlohmann::json j;
+  if(!League<E>::readFile(path, j))
+    throw StringError("AZdb: cannot read the members' state " + path);
   double l0;
-  {
-    std::ifstream in(path);
-    if(!in)
-      throw StringError("AZdb: cannot read the members' state " + path);
-    try {
-      nlohmann::json j;
-      in >> j;
-      l0 = j.at("l0").get<double>();
-    }
-    catch(const nlohmann::json::exception& e) {
-      throw StringError("AZdb: " + path + " is not a league's file: " + e.what());
-    }
+  try {
+    l0 = j.at("l0").get<double>();
+  }
+  catch(const nlohmann::json::exception& e) {
+    throw StringError("AZdb: " + path + " is not a league's file: " + e.what());
   }
   //load replaces the seed's μ and σ with the file's.
   const std::vector<double> mean(League<E>::N, 0.0), sd(League<E>::N, 1.0);
   League<E> league(l0, mean.data(), sd.data());
-  if(!league.load(path))
-    throw StringError("AZdb: cannot read the members' state " + path);
+  league.load(j, path);
   return league.snapshot();
 }
 

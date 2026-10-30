@@ -597,10 +597,12 @@ member `Diversity` (above). A game without it gives every member the reward 0.
   (`AsyncBot::setDiversityState`). A search of member 0 does not read it, so a query of member 0 gets the same response
   with the file and without it. The engine checks its config at its start, and each query that overrides settings,
   as the search checks itself (`Search::checkDiversitySetup`): a member 1 to 4 with w > 0 and no file is refused
-  with the search's message. A query cannot change `diversityStateFile`. GTP and Blueprints' engine protocol do not
-  read the file, so their members 1 to 4 play with λ = 1 only. Their evaluations outside the search (GTP's
-  `kata-raw-nn`, `kata-raw-human-nn` and `debug_moves`, the protocol's drop after a pick) read the latent of the
-  search's member.
+  with the search's message. A query cannot change `diversityStateFile`. A query of a member 1 to 4 with w > 0 does
+  not search the root's views (`rootViews`, a game with views): a check of a finalist searches the next position for
+  its player to move, so its term would be that player's, without the member's own move. GTP and Blueprints' engine
+  protocol do not read the file, so their members 1 to 4 play with λ = 1 only. Their evaluations outside the search
+  (GTP's `kata-raw-nn`, `kata-raw-human-nn` and `debug_moves`, the protocol's drop after a pick) read the latent of
+  the search's member.
 
 **The training targets** are the slots of KataGo's spatial targets (`valueTargetsNCHW`) and the two that the fork
 added. `TARGETS` declares the slots that the game writes. The front computes C2-3 and C7 from `pieces`
