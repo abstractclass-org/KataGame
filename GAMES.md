@@ -879,7 +879,11 @@ of a cover, that RGSC's played entry after a move in a view restores to the repl
 candidate at a root in a set view restores with its key to the position in the rules' view. The games must hold a move
 in another view and a full search whose cover has more views: a run whose games lack either fails, as it did not
 test them. With `OUT_DIR`, it writes the games' rows and records there, for the engine repository's
-`games/blueprints/tools/check_rows.py --records`.
+`games/blueprints/tools/check_rows.py --records`. It then checks that no row has a policy target of sum 0 with its
+weight (C26, C28), and it writes each game again with a second writer, to no file, after it sets to 0 the targets of
+the moves that the row's view keeps of each next policy that the view moves (the moves that KataGo's policy target
+pruning cuts to 0 can be all that a view keeps). Each row whose next policy then keeps only moves of target 0 must have
+no second policy target, and the games must give such a row.
 
 **AZdb's latent:** `testdiversityinputs POSITIONS_FILE` names no game, so it runs on any game's build, with the game's
 positions (Blueprints': `tests/data/blueprints_positions.txt`). It needs no network. It checks the cache's hash of each

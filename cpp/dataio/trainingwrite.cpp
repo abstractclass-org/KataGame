@@ -1282,6 +1282,8 @@ bool TrainingDataWriter::flushIfNonempty(string& resultingFilename) {
     return false;
 
   isFirstFile = false;
+  if(beforeWrite)
+    beforeWrite(*writeBuffers);
 
   if(debugOut != NULL) {
     writeBuffers->writeToTextOstream(*debugOut);
@@ -1431,6 +1433,10 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
     //view (so such rows are as without the root's views). Each move of the next policy goes into that view
     //(GameInterface::viewAction), and a move that the view does not hold drops out. A row whose next policy keeps no
     //move has no second policy target (its weight C28 is 0), and the writer counts it (numRowsNextPolicyLost).
+    //KataGame fork (abscls-3tbn): so does a row whose kept moves' targets sum to 0. A search's policy lists each child
+    //of its root, and KataGo's policy target pruning (Search::getPlaySelectionValues) can cut a child to 0. When the
+    //view keeps only such moves, the target is no distribution, and the trainer, which divides it by its sum, gets
+    //NaN. A policy that keeps all its moves sums to 10 or more (Play::extractPolicyTarget's scaleMaxToAtLeast).
     std::unique_ptr<Board> nextFrame;
     bool nextPolicyTranslated = false;
     vector<PolicyTargetMove> translatedTarget1;
@@ -1446,13 +1452,16 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
         Board searched(next);
         FinishedGameData::setBoardView(searched, searchView);
         const Board& frame = nextFrame != nullptr ? *nextFrame : next;
+        int64_t keptSum = 0;
         for(const PolicyTargetMove& move : *policyTarget1) {
           const int action = GameInterface::viewAction<GameRules>(
             searched.pos, Board::actionOfMoveLoc(move.loc), frame.pos);
-          if(action >= 0)
+          if(action >= 0) {
             translatedTarget1.emplace_back(Board::moveLocOfAction(action), move.policyTarget);
+            keptSum += move.policyTarget;
+          }
         }
-        policyTarget1 = translatedTarget1.empty() ? NULL : &translatedTarget1;
+        policyTarget1 = keptSum > 0 ? &translatedTarget1 : NULL;
         nextPolicyTranslated = true;
       }
     }

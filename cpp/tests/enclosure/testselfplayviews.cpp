@@ -30,6 +30,15 @@
 // records (WriteSgf) to OUT_DIR/games.sgfs, for games/blueprints/tools/check_rows.py --records. The test prints, over
 // the games: the actions of the loops, those in another view than the rules', the full and the cheap searches whose
 // cover has more views, and the rows whose second policy target the writer moved into the row's view or lost.
+// With OUT_DIR, also (abscls-3tbn):
+// - No row has a policy target of sum 0 with its weight above 0 (C26 for the first, C28 for the second): the trainer
+//   divides each target by its sum.
+// - Next policies of target 0 in the row's view. A search's policy lists each child of its root, and KataGo's policy
+//   target pruning can cut a child to 0, so a row whose view keeps only such moves of the next policy has a target of
+//   sum 0. Such rows are few in the games, so the test also makes them: after the game's rows are written, each next
+//   policy that the row's view moves, keeping a move and dropping a move of target above 0, gets its kept moves'
+//   targets set to 0. A second writer writes the game again, its text to no file, and each row whose next policy keeps
+//   only moves of target 0 must have no second policy target (C28 0). The games must give such a row.
 // Exit code 0 when every check holds.
 
 #include <algorithm>
@@ -39,6 +48,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -154,6 +164,98 @@ static void checkTreeCandidate(const Board& board, const Board& viewed, const Bo
   check(suc, where + ": RGSC's tree candidate at a root in a view restores with its key: " + why);
   check(suc && GameRules::hash(restored.pos) == GameRules::hash(board.pos),
         where + ": RGSC's tree candidate at a root in a view is the position in the rules' view");
+}
+
+struct RowCounts {
+  int64_t rows = 0;
+  int64_t zeroRows = 0;  //the rows at a turn of zeroTurns
+};
+
+//The checks of a file's rows (TrainingDataWriter::beforeWrite): no policy target of sum 0 with its weight above 0, and
+//no second policy target in the rows at a turn of zeroTurns (C51, the row's turn).
+static void checkRows(const TrainingWriteBuffers& b, const set<int>& zeroTurns, RowCounts& counts,
+                      const string& where) {
+  const int64_t numTargets = b.globalTargetsNC.shape[1];
+  const int64_t channels = b.policyTargetsNCMove.shape[1];
+  const int64_t policySize = b.policyTargetsNCMove.shape[2];
+  for(int64_t r = 0; r < b.curRows; r++) {
+    const float* global = b.globalTargetsNC.data + r * numTargets;
+    const int turn = (int)global[51];
+    for(int c = 0; c < 2; c++) {
+      const int16_t* target = b.policyTargetsNCMove.data + (r * channels + c) * policySize;
+      int64_t sum = 0;
+      for(int64_t p = 0; p < policySize; p++)
+        sum += target[p];
+      const float weight = global[c == 0 ? 26 : 28];
+      check(sum > 0 || weight == 0, where + ", the row of turn " + to_string(turn) + ": policy target " + to_string(c) +
+            " of sum " + to_string(sum) + " with its weight " + to_string(weight));
+    }
+    counts.rows++;
+    if(zeroTurns.count(turn) > 0) {
+      counts.zeroRows++;
+      check(global[28] == 0, where + ", the row of turn " + to_string(turn) +
+            ": a next policy with only moves of target 0 in the row's view has a second policy target");
+    }
+  }
+}
+
+struct ZeroCounts {
+  int64_t found = 0;  //rows whose next policy keeps only moves of target 0 in the game as it was played
+  int64_t made = 0;   //rows whose next policy the test changed so
+};
+
+//The next policies of target 0 in the row's view (the case of abscls-3tbn). For each row of the game, its next policy
+//in its view as TrainingDataWriter::writeGame gives it: the next position in the view of GameInterface::viewInFrame,
+//and each move of the next search's policy at its action there (GameInterface::viewAction), or dropped. A policy that
+//keeps moves of target 0 only is found as it is. A policy that keeps a move and drops a move of target above 0 gets its
+//kept moves' targets set to 0. Returns the turns (moveHistory's indices) of the rows of both kinds.
+static set<int> zeroNextPolicies(FinishedGameData& data, ZeroCounts& counts) {
+  set<int> turns;
+  const size_t start = data.startHist.moveHistory.size();
+  const size_t numMoves = data.endHist.moveHistory.size();
+  Board board = data.startHist.initialBoard;
+  BoardHistory hist(board, data.startHist.initialPla, data.startHist.rules, data.startHist.initialEncorePhase);
+  for(size_t i = 0; i < numMoves; i++) {
+    Board row = board;
+    data.setMoveView(i, row);
+    data.playMove(i, board, hist);  //board: the next position, as writeGame's posHistForFutureBoards
+    if(i < start || i + 1 >= numMoves)
+      continue;
+    vector<PolicyTargetMove>* next = data.policyTargetsByTurn[i + 1 - start].policyTargets;
+    const string frameView = GameInterface::viewInFrame<GameRules>(board.pos, row.pos);
+    const string& searchView = data.moveView(i + 1);
+    if(next == NULL || frameView == searchView)
+      continue;
+    Board searched = board;
+    FinishedGameData::setBoardView(searched, searchView);
+    Board frame = board;
+    FinishedGameData::setBoardView(frame, frameView);
+    vector<size_t> kept;
+    int64_t keptSum = 0;
+    bool droppedTarget = false;
+    for(size_t m = 0; m < next->size(); m++) {
+      const PolicyTargetMove& move = (*next)[m];
+      if(GameInterface::viewAction<GameRules>(searched.pos, Board::actionOfMoveLoc(move.loc), frame.pos) >= 0) {
+        kept.push_back(m);
+        keptSum += move.policyTarget;
+      }
+      else
+        droppedTarget = droppedTarget || move.policyTarget > 0;
+    }
+    if(kept.empty())
+      continue;
+    if(keptSum == 0)
+      counts.found++;
+    else if(droppedTarget) {
+      for(size_t m : kept)
+        (*next)[m].policyTarget = 0;
+      counts.made++;
+    }
+    else
+      continue;
+    turns.insert((int)i);
+  }
+  return turns;
 }
 
 static void readGame(int gameIdx, const FinishedGameData& data, int64_t maxVisits, Counts& counts) {
@@ -296,11 +398,21 @@ int main(int argc, char** argv) {
     attach = [state](const MatchPairer::BotSpec&, Search* search) { search->setDiversityState(state); };
   }
 
-  std::unique_ptr<TrainingDataWriter> writer;
+  std::unique_ptr<TrainingDataWriter> writer, zeroWriter;
   std::ofstream sgfOut;
+  std::ofstream noFile;  //never opened: the second writer's text goes nowhere
+  RowCounts rowCounts, zeroRowCounts;
+  ZeroCounts zeroCounts;
+  set<int> zeroTurns;
   if(outDir != "") {
     writer.reset(new TrainingDataWriter(outDir, inputsVersion, 10000, 1.0, nnLen, nnLen, "testselfplayviews rows"));
+    writer->beforeWrite = [&](const TrainingWriteBuffers& b) { checkRows(b, set<int>(), rowCounts, "the rows"); };
     sgfOut.open(outDir + "/games.sgfs");
+    zeroWriter.reset(new TrainingDataWriter(&noFile, inputsVersion, 10000, 1.0, nnLen, nnLen, 1,
+                                            "testselfplayviews rows with targets of 0"));
+    zeroWriter->beforeWrite = [&](const TrainingWriteBuffers& b) {
+      checkRows(b, zeroTurns, zeroRowCounts, "the rows with next policies of target 0");
+    };
   }
 
   MatchPairer::BotSpec botSpec;
@@ -323,6 +435,10 @@ int main(int argc, char** argv) {
       writer->writeGame(*data);
       WriteSgf::writeSgf(sgfOut, data->bName, data->wName, data->endHist, data, false, true);
       sgfOut << endl;
+      //After the game's rows and record: the game again, with next policies of target 0 in the row's view.
+      zeroTurns = zeroNextPolicies(*data, zeroCounts);
+      zeroWriter->writeGame(*data);
+      zeroWriter->flushIfNonempty();
     }
     delete data;
   }
@@ -331,6 +447,14 @@ int main(int argc, char** argv) {
     printf("rows: %lld, with the second policy target in the row's view %lld, without it %lld\n",
            (long long)writer->numRowsWritten(), (long long)writer->numRowsNextPolicyTranslated(),
            (long long)writer->numRowsNextPolicyLost());
+    printf("rows checked for policy targets of sum 0 with a weight: %lld. Next policies with only moves of target 0 "
+           "in the row's view: %lld in the games, %lld made; the second writer's rows at their turns %lld of %lld, "
+           "without the second policy target %lld\n",
+           (long long)rowCounts.rows, (long long)zeroCounts.found, (long long)zeroCounts.made,
+           (long long)zeroRowCounts.zeroRows, (long long)zeroRowCounts.rows,
+           (long long)zeroWriter->numRowsNextPolicyLost());
+    check(rowCounts.rows == writer->numRowsWritten(), "the check sees each row");
+    check(zeroRowCounts.zeroRows > 0, "a row whose next policy keeps only moves of target 0");
   }
   printf("actions: %lld in the loops (%lld before them), %lld in another view than the rules'; covers of more views: "
          "%lld full and %lld cheap searches (of one view: %lld full, %lld cheap)\n",

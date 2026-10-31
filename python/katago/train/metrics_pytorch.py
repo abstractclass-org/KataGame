@@ -24,6 +24,15 @@ def huber_loss(x, y, delta):
 def constant_like(data, other_tensor):
     return torch.tensor(data, dtype=other_tensor.dtype, device=other_tensor.device, requires_grad=False)
 
+def normalized_policy_target(target):
+    """KataGame fork (abscls-3tbn): the policy targets [N, moves] divided by their sums, and 1.0 for each row with a
+    target, 0.0 for each row whose target sums to 0. Such a row stays all 0, not NaN, and its weight must be 0:
+    self-play wrote second policy targets of sum 0 with the weight C28 at 1 (the next policy in the row's view), and
+    each one made its batch's loss NaN."""
+    total = torch.sum(target, dim=1, keepdim=True)
+    has_target = total > 0
+    return target / torch.where(has_target, total, torch.ones_like(total)), has_target.squeeze(1).to(target.dtype)
+
 class Metrics:
     def __init__(self, world_size: int, raw_model: Model):
         self.world_size = world_size
@@ -702,10 +711,9 @@ class Metrics:
         # Enclosure fork: a move is on the board when its point is; each point has the game's policy channels.
         policymask = torch.cat((mask.view(n,h*w).repeat_interleave(self.policy_channels, dim=1),mask.new_ones((n,1))),dim=1)
 
-        target_policy_player = target_policy_ncmove[:, 0, :]
-        target_policy_player = target_policy_player / torch.sum(target_policy_player, dim=1, keepdim=True)
-        target_policy_opponent = target_policy_ncmove[:, 1, :]
-        target_policy_opponent = target_policy_opponent / torch.sum(target_policy_opponent, dim=1, keepdim=True)
+        # KataGame fork (abscls-3tbn): a policy target of sum 0 has the weight 0 (normalized_policy_target).
+        target_policy_player, has_policy_player = normalized_policy_target(target_policy_ncmove[:, 0, :])
+        target_policy_opponent, has_policy_opponent = normalized_policy_target(target_policy_ncmove[:, 1, :])
         target_policy_player_soft = (target_policy_player + 1e-7) * policymask
         target_policy_player_soft = torch.pow(target_policy_player_soft, 0.25)
         target_policy_player_soft /= torch.sum(target_policy_player_soft, dim=1, keepdim=True)
@@ -713,8 +721,8 @@ class Metrics:
         target_policy_opponent_soft = torch.pow(target_policy_opponent_soft, 0.25)
         target_policy_opponent_soft /= torch.sum(target_policy_opponent_soft, dim=1, keepdim=True)
 
-        target_weight_policy_player = target_global_nc[:, 26]
-        target_weight_policy_opponent = target_global_nc[:, 28]
+        target_weight_policy_player = target_global_nc[:, 26] * has_policy_player
+        target_weight_policy_opponent = target_global_nc[:, 28] * has_policy_opponent
 
         target_value = target_global_nc[:, 0:3]
         target_scoremean = target_global_nc[:, 3]

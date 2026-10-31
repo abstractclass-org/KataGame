@@ -2,6 +2,7 @@
 #define DATAIO_TRAINING_WRITE_H_
 
 #include <atomic>
+#include <functional>
 
 #include "../dataio/numpywrite.h"
 #include "../neuralnet/nninputs.h"
@@ -470,9 +471,14 @@ class TrainingDataWriter {
   int64_t numRowsWritten() const;
   // KataGame fork (abscls-il4e.11): of those rows, the game's rows whose second policy target went from the next
   // search's view into the view that the row gives it (writeGame, FinishedGameData::moveViews), and the rows where no
-  // move of it stayed, which then have no second policy target. Safe to call as numRowsWritten.
+  // move of it stayed, or no move with a target above 0, which then have no second policy target. Safe to call as
+  // numRowsWritten.
   int64_t numRowsNextPolicyTranslated() const;
   int64_t numRowsNextPolicyLost() const;
+
+  // KataGame fork (abscls-3tbn): when set, the writer calls it with the rows of each file before it writes them
+  // (flushIfNonempty), for a test's checks of the rows (tests/enclosure/testselfplayviews).
+  std::function<void(const TrainingWriteBuffers&)> beforeWrite;
 
  private:
   std::string outputDir;
