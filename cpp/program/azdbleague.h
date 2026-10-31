@@ -468,13 +468,14 @@ template<class E> class League {
   static constexpr int N = GameInterface::diversityStatistics<E>();
 
   //l0: the distance at which a member's reward is 0. seedMean, seedSd: each statistic's mean and standard deviation
-  //over the seed's positions.
-  League(double l0_, const double* seedMean, const double* seedSd) : l0(l0_), normalizer(seedMean, seedSd) {
+  //over the seed's positions. rewardScale: the reward's scale k (State).
+  League(double l0_, const double* seedMean, const double* seedSd, double rewardScale_ = 1.0)
+    : l0(l0_), rewardScale(rewardScale_), normalizer(seedMean, seedSd) {
     for(int i = 0; i < NUM_MEMBERS; i++)
       psi[i].assign(N, 0.0);
   }
 
-  //The game's copy of the members' state, for its searches and its rows.
+  //The game's copy of the members' state, for its searches and its rows, with the league's ℓ0 and k.
   std::shared_ptr<const State<E>> snapshot() const {
     std::lock_guard<std::mutex> lock(mutex);
     std::vector<double> rows((size_t)NUM_MEMBERS * N), mean(N), sd(N);
@@ -484,7 +485,7 @@ template<class E> class League {
       mean[s] = normalizer.mean(s);
       sd[s] = normalizer.sd(s);
     }
-    return std::make_shared<const State<E>>(rows.data(), mean.data(), sd.data(), l0);
+    return std::make_shared<const State<E>>(rows.data(), mean.data(), sd.data(), l0, rewardScale);
   }
 
   //A game's members, by PSRO-NASH (drawMatch) on the table as it is. A game that starts from a state of RGSC's buffer
@@ -545,6 +546,7 @@ template<class E> class League {
     j["members"] = NUM_MEMBERS;
     j["statistics"] = N;
     j["l0"] = l0;
+    j["reward_scale"] = rewardScale;
     j["games"] = games;
     j["sides"] = std::vector<int64_t>(sides, sides + NUM_MEMBERS);
     j["psi"] = nlohmann::json::array();
@@ -583,7 +585,7 @@ template<class E> class League {
 
   //Loads the league from path, saved by save. False when the file does not exist: the league stays as it starts.
   //A file of another version or of other counts is refused (an error), so that a run never restarts ψ by mistake.
-  //l0 stays the caller's.
+  //l0 and the reward's scale stay the caller's.
   bool load(const std::string& path) {
     nlohmann::json j;
     if(!readFile(path, j))
@@ -725,6 +727,7 @@ template<class E> class League {
   }
 
   const double l0;
+  const double rewardScale;
 
  private:
   mutable std::mutex mutex;
@@ -736,22 +739,27 @@ template<class E> class League {
 };
 
 //The members' state in a run's league file (League::save), for the searches outside self-play (the analysis engine's
-//setting diversityStateFile): ψ, μ, σ and ℓ0 as the file holds them, with load's checks, as a game of self-play would
-//take its copy at that point (League::snapshot). A file that does not exist is an error.
+//setting diversityStateFile): ψ, μ, σ, ℓ0 and the reward's scale as the file holds them, with load's checks, as a game
+//of self-play would take its copy at that point (League::snapshot). So these searches use the run's ℓ0 and k. A file
+//without the reward's scale, saved before the setting, has 1. A file that does not exist is an error.
 template<class E> std::shared_ptr<const State<E>> readState(const std::string& path) {
   nlohmann::json j;
   if(!League<E>::readFile(path, j))
     throw StringError("AZdb: cannot read the members' state " + path);
-  double l0;
+  double l0, rewardScale;
   try {
     l0 = j.at("l0").get<double>();
+    rewardScale = j.contains("reward_scale") ? j.at("reward_scale").get<double>() : 1.0;
   }
   catch(const nlohmann::json::exception& e) {
     throw StringError("AZdb: " + path + " is not a league's file: " + e.what());
   }
+  if(!(rewardScale > 0.0 && std::isfinite(rewardScale)))
+    throw StringError("AZdb: " + path + ": the reward's scale " + Global::doubleToString(rewardScale) +
+                      " is not a positive number");
   //load replaces the seed's μ and σ with the file's.
   const std::vector<double> mean(League<E>::N, 0.0), sd(League<E>::N, 1.0);
-  League<E> league(l0, mean.data(), sd.data());
+  League<E> league(l0, mean.data(), sd.data(), rewardScale);
   league.load(j, path);
   return league.snapshot();
 }

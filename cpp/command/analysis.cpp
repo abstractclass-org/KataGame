@@ -202,16 +202,19 @@ int MainCmds::analysis(const vector<string>& args) {
 
   //KataGame fork (2026-10-30): AZdb's members (the engine repository's games/blueprints/docs/research/
   //diversity-players.md, "The search"). A search of a member 1 to 4 adds its diversity term from the run's state of the
-  //members, the league's file that self-play writes (diversityStateFile, AZdb::readState). The engine reads it once,
-  //here, before the network, so the state stays fixed for the engine's life, and every search shares it. A search of
-  //member 0 never reads it. The engine checks the config's search once the network is loaded, and the search of each
-  //query that overrides settings when it reads the query, as the search checks itself (Search::checkDiversitySetup):
-  //a member 1 to 4 whose term needs the state and has no file is refused.
+  //members, the league's file that self-play writes (diversityStateFile, AZdb::readState), with the run's ℓ0 and the
+  //reward's scale (self-play's diversityL0 and diversityRewardScale). The engine reads it once, here, before the
+  //network, so the state stays fixed for the engine's life, and every search shares it. A search of member 0 never
+  //reads it. The engine checks the config's search once the network is loaded, and the search of each query that
+  //overrides settings when it reads the query, as the search checks itself (Search::checkDiversitySetup): a member 1
+  //to 4 whose term needs the state and has no file is refused.
   std::shared_ptr<const AZdb::State<GameEncoding>> diversityState = nullptr;
   if(cfg.contains("diversityStateFile")) {
     const string file = cfg.getString("diversityStateFile");
     diversityState = AZdb::readState<GameEncoding>(file);
-    logger.write("AZdb: the members' state of " + file + ", fixed for the engine's life");
+    logger.write("AZdb: the members' state of " + file + " (l0 " + Global::doubleToString(diversityState->l0) +
+                 ", the reward's scale " + Global::doubleToString(diversityState->rewardScale) +
+                 "), fixed for the engine's life");
   }
 
   NNEvaluator* nnEval = NULL;

@@ -29,20 +29,23 @@ constexpr int RETURN_TURNS = 5;
 
 //One game's copy of the members' state, taken at the game's start: psi[i], member i's estimate of ψ (the mean of φ
 //over its positions, in the normalized statistics), the normalizer of the statistics (each statistic's mean and
-//standard deviation), and ℓ0, the distance at which a member's reward is 0.
+//standard deviation), ℓ0, the distance at which a member's reward is 0, and the reward's scale k, a multiplier of
+//every member's reward (1: the design's reward; the run's setting diversityRewardScale).
 template<class E> struct State {
   static constexpr int N = GameInterface::diversityStatistics<E>();
   std::vector<double> psi[NUM_MEMBERS];
   GameInterface::DiversityNormalizer<E> normalizer;
   double l0;
+  double rewardScale;
   //nearest[i]: member i's nearest other member j*, the lowest one of equal distances. factor[i]: its reward's factor
-  //(1 - (ℓ_i / ℓ0)^3) / MOVES, with ℓ_i = ||ψ^i - ψ^j*||. 0 for member 0, and for every member when ℓ0 is not
+  //k (1 - (ℓ_i / ℓ0)^3) / MOVES, with ℓ_i = ||ψ^i - ψ^j*||. 0 for member 0, and for every member when ℓ0 is not
   //positive.
   int nearest[NUM_MEMBERS];
   double factor[NUM_MEMBERS];
 
   //psiRows: NUM_MEMBERS rows of N numbers. mean, sd: N numbers each.
-  State(const double* psiRows, const double* mean, const double* sd, double l0_) : normalizer(mean, sd), l0(l0_) {
+  State(const double* psiRows, const double* mean, const double* sd, double l0_, double rewardScale_ = 1.0)
+    : normalizer(mean, sd), l0(l0_), rewardScale(rewardScale_) {
     for(int i = 0; i < NUM_MEMBERS; i++)
       psi[i].assign(psiRows + (size_t)i * N, psiRows + (size_t)(i + 1) * N);
     for(int i = 0; i < NUM_MEMBERS; i++) {
@@ -60,7 +63,8 @@ template<class E> struct State {
         }
       }
       const double ratio = std::sqrt(best) / l0;
-      factor[i] = (i == 0 || !(l0 > 0.0)) ? 0.0 : (1.0 - ratio * ratio * ratio) / GameInterface::diversityMoves<E>();
+      factor[i] = (i == 0 || !(l0 > 0.0)) ? 0.0 :
+        rewardScale * (1.0 - ratio * ratio * ratio) / GameInterface::diversityMoves<E>();
     }
   }
 
@@ -80,7 +84,8 @@ template<class E> struct State {
   }
 
   //Member i's reward of a move whose position after it has the normalized statistics phi, from the side of the
-  //player who moved: (1 - (ℓ_i / ℓ0)^3) φ · (ψ^i - ψ^j*) / MOVES, and 0 for member 0.
+  //player who moved: k (1 - (ℓ_i / ℓ0)^3) φ · (ψ^i - ψ^j*) / MOVES, and 0 for member 0. The rows' targets and the
+  //search's node rewards both read it, so k scales both alike.
   double reward(int member, const double* phi) const {
     if(factor[member] == 0.0)
       return 0.0;

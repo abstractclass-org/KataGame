@@ -177,6 +177,9 @@ static bool rgscAfterGame(
 //- diversityStateFile: the league's file. diversitySeedFile: the seed of μ and σ (games/blueprints/runs/
 //  diversity_seed.json), needed while the league's file does not exist.
 //- diversityL0: ℓ0, the distance at which a member's reward is 0.
+//- diversityRewardScale: the reward's scale k, a multiplier of every member's reward (AZdb::State), in the rows'
+//  targets and in the search's node rewards alike. 1 by default, the design's reward. Like ℓ0, the setting holds also
+//  after a restart, and the league's file records it for the searches outside self-play (AZdb::readState).
 //- diversityGamesFile: a line for each written game, for the analysis (AZdb::gameRecord, and the game's start:
 //  rgsc_source as the rows' C74, and after a restart the member and side that produced its state, Rgsc::Entry).
 //  Default: OUTPUT_DIR/azdb-games.jsonl.
@@ -187,6 +190,7 @@ struct AZdbSettings {
   string seedFile;
   string gamesFile;
   double l0 = 0.0;
+  double rewardScale = 1.0;
 
   static AZdbSettings load(ConfigParser& cfg, const string& outputDir, int inputsVersion) {
     AZdbSettings s;
@@ -208,6 +212,11 @@ struct AZdbSettings {
     s.l0 = cfg.getDouble("diversityL0", 0.0, 1e9);
     if(!(s.l0 > 0.0))
       throw StringError("AZdb: diversityL0 is positive");
+    if(cfg.contains("diversityRewardScale")) {
+      s.rewardScale = cfg.getDouble("diversityRewardScale", 0.0, 1e9);
+      if(!(s.rewardScale > 0.0))
+        throw StringError("AZdb: diversityRewardScale is positive");
+    }
     return s;
   }
 };
@@ -222,7 +231,8 @@ static AZdb::League<GameEncoding>* loadAZdbLeague(const AZdbSettings& settings, 
       throw StringError("AZdb: " + settings.stateFile + " does not exist, and diversitySeedFile gives no seed");
     AZdb::readSeed(settings.seedFile, n, mean, sd);
   }
-  AZdb::League<GameEncoding>* league = new AZdb::League<GameEncoding>(settings.l0, mean.data(), sd.data());
+  AZdb::League<GameEncoding>* league =
+    new AZdb::League<GameEncoding>(settings.l0, mean.data(), sd.data(), settings.rewardScale);
   league->load(settings.stateFile);
   logger.write(string("AZdb: ") + (resumes ? "the league read again from " + settings.stateFile :
                                    "a new league from the seed " + settings.seedFile) + "; " + league->summary());
@@ -428,7 +438,8 @@ int MainCmds::selfplay(const vector<string>& args) {
     azdbLeague = loadAZdbLeague(azdbSettings, logger);
     FileUtils::open(azdbGamesLog.out, azdbSettings.gamesFile, std::ios::app);
     logger.write("AZdb: " + Global::intToString(AZdb::NUM_MEMBERS) + " members, l0 " +
-                 Global::doubleToString(azdbSettings.l0) + "; the league in " + azdbSettings.stateFile +
+                 Global::doubleToString(azdbSettings.l0) + ", the reward's scale " +
+                 Global::doubleToString(azdbSettings.rewardScale) + "; the league in " + azdbSettings.stateFile +
                  ", the games' lines in " + azdbSettings.gamesFile);
   }
 

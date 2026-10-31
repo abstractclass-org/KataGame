@@ -18,6 +18,8 @@
 //   - a search of member 3 after a search of member 2 on the same evaluator reads member 3's evaluations only;
 //   - self-play's kind of search with the term (every weighting that reads the utilities): at each node of its graph,
 //     the node constant is w s_P times the reward of the move into it, and the values are finite;
+//   - the reward's scale k = 100 (State's rewardScale) multiplies the rows' rewards and targets (AZdb::rowTargets) and
+//     the search's node rewards alike: k times those of k = 1. On a chain, D holds with the scaled rewards;
 //   - the refusals (no state, a model without the head, the eval cache), and the tree's clear when P changes.
 //
 //   testdiversitysearch MODEL MODEL_WITHOUT_HEAD
@@ -127,10 +129,10 @@ static const int MEMBER = 2;
 static double weightOf(double lambda) { return (1.0 - lambda) / lambda; }
 static double signedWeight(Player P, double lambda) { return P == P_WHITE ? weightOf(lambda) : -weightOf(lambda); }
 
-//A state where MEMBER's ψ is v and every other member's is 0, with ℓ0 = 2 |v|. MEMBER's nearest member is then
-//member 0 (the lowest of equal distances), so its reward is (1 - 1/8) / MOVES φ · v.
+//A state where MEMBER's ψ is v and every other member's is 0, with ℓ0 = 2 |v| and the reward's scale k. MEMBER's
+//nearest member is then member 0 (the lowest of equal distances), so its reward is k (1 - 1/8) / MOVES φ · v.
 static shared_ptr<const State> memberState(
-  const vector<double>& v, const vector<double>& mean, const vector<double>& sd
+  const vector<double>& v, const vector<double>& mean, const vector<double>& sd, double k = 1.0
 ) {
   const int N = State::N;
   vector<double> psi((size_t)AZdb::NUM_MEMBERS * N, 0.0);
@@ -139,7 +141,7 @@ static shared_ptr<const State> memberState(
     psi[(size_t)MEMBER * N + s] = v[s];
     norm2 += v[s] * v[s];
   }
-  return make_shared<const State>(psi.data(), mean.data(), sd.data(), 2.0 * std::sqrt(norm2));
+  return make_shared<const State>(psi.data(), mean.data(), sd.data(), 2.0 * std::sqrt(norm2), k);
 }
 
 //φ of the move into p from the side of its mover, when it ends a move.
@@ -771,6 +773,59 @@ int main(int argc, char** argv) {
     check(rewarded > 0, "self-play's search: some node has a reward");
     printf("self-play's search: %d nodes of 3 searches, %d with a reward, each the reward of its move\n", nodes,
            rewarded);
+  }
+
+  //The reward's scale k (the run's diversityRewardScale): a state with k = 100 and the same ψ, μ, σ and ℓ0. The rows'
+  //rewards and targets, and the search's node rewards, are k times those of k = 1, through the one reward
+  //(AZdb::State::reward).
+  {
+    const double k = 100.0;
+    const shared_ptr<const State> scaled = memberState(v, mean, sd, k);
+    for(int i = 0; i < AZdb::NUM_MEMBERS; i++)
+      check(near(scaled->factor[i], k * state->factor[i]), "the reward's scale: a member's factor");
+    check(state->factor[member] > 0.0, "the reward's scale: the member's factor at k = 1");
+
+    //The rows of the whole game, both players the member, with the roots' outputs at 0: each target is a sum of
+    //rewards. The rewards are floats, so their sums are compared to 1e-4.
+    const vector<float> zeros(G, 0.0f);
+    const int members[2] = {member, member};
+    auto positionOf = [&](int j) -> const GameRules::Position& { return game[j].board.pos; };
+    AZdb::Targets plain, times;
+    AZdb::rowTargets<GameEncoding>(positionOf, G, true, members, *state, zeros.data(), zeros.data(), plain);
+    AZdb::rowTargets<GameEncoding>(positionOf, G, true, members, *scaled, zeros.data(), zeros.data(), times);
+    int rewards = 0, targets = 0;
+    for(int j = 0; j < G; j++) {
+      const string at = "the reward's scale: row " + Global::intToString(j);
+      check(near(times.ownReward[j], k * plain.ownReward[j], 1e-6) &&
+            near(times.otherReward[j], k * plain.otherReward[j], 1e-6), at + ": its rewards");
+      check(near(times.aTarget[j], k * plain.aTarget[j], 1e-4) && near(times.bTarget[j], k * plain.bTarget[j], 1e-4),
+            at + ": its targets");
+      check(times.aWeight[j] == plain.aWeight[j] && times.bWeight[j] == plain.bWeight[j], at + ": its weights");
+      rewards += plain.ownReward[j] != 0.0f ? 1 : 0;
+      targets += plain.aWeight[j] == 1.0f && plain.aTarget[j] != 0.0f ? 1 : 0;
+    }
+    check(rewards > 0 && targets > 0, "the reward's scale: rows with rewards and targets");
+
+    //The search: on a chain, the node constants are the scaled rows' rewards, and D holds (chainTest). In self-play's
+    //kind of search, each node constant is k times w s_P times the reward of the move into it at k = 1.
+    chainTest(nnEval, logger, lineOf(game, G - 5), member, lambda, scaled, 12, "chain of 5 at k = 100");
+    const Position& root = game[G / 2];
+    const Player P = root.pla();
+    unique_ptr<Search> search = runSearch(nnEval, logger, selfplayParams(200, member, lambda), root, scaled);
+    int nodes = 0, rewarded = 0;
+    forEachNode(*search, [&](const SearchNode& node, const Position& p) {
+      const bool isRoot = &node == search->rootNode;
+      const double want = isRoot ? 0.0 : k * signedWeight(P, lambda) * rewardFor(*state, member, p, P);
+      check(near(node.diversityReward, want), "the reward's scale: a node's reward in self-play's search");
+      check(std::isfinite(utilityOf(node)), "the reward's scale: a finite utility");
+      nodes++;
+      if(node.diversityReward != 0.0)
+        rewarded++;
+    });
+    check(rewarded > 0, "the reward's scale: some node has a reward");
+    printf("the reward's scale: k = %g gives %d rows (%d with a reward, %d with a target) k times their rewards and "
+           "targets, a chain of 5 its D, and %d nodes of self-play's search (%d with a reward) k times their "
+           "rewards\n", k, G, rewards, targets, nodes, rewarded);
   }
 
   //The refusals.
