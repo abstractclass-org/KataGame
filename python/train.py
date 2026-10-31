@@ -2076,13 +2076,11 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
         # harmlessly instead. No-op when barrier is None (single-GPU / non-DDP training).
         safe_barrier(barrier,rank)
 
-        # KataGame fork (2026-10-31): the end of the epoch's GPU work. The engine repository's turn guard
-        # (pipeline/scripts/gpu_turn_guard.sh) ends the trainer's turn at the save's line below, and the trainer then
-        # waits, for new rows or frozen for its next turn, while self-play or another trainer uses the GPU. So it gives
-        # PyTorch's cached memory back first, and holds only its tensors while it waits (abscls-luzl.15).
-        released = trainloop_helpers.release_cached_gpu_memory(device)
-        if released is not None:
-            logging.info("Gave back the GPU's cached memory: reserved %.0f -> %.0f MiB, allocated %.0f MiB" % released)
+        # KataGame fork (2026-10-31): before the save, where the turn guard ends the trainer's turn. The last batch, its
+        # outputs and the gradients go first, so that the trainer waits with its weights and optimizer state only.
+        batch = model_outputs = postprocessed = None
+        optimizer.zero_grad(set_to_none=True)
+        trainloop_helpers.release_cached_gpu_memory(device)
 
         # Finally save, now after validation and exports are done
         save(ddp_model, swa_model, optimizer, metrics_obj, running_metrics, train_state, last_val_metrics)

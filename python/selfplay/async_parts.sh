@@ -4,9 +4,8 @@
 # Trainers: TRAINERS="b10c128 b15c192", each a folder train/NAME. The first trains the self-play network (train.sh's
 # main mode: it exports to models/); the others train alongside on the same data (extra mode: models_extra/, never
 # used by self-play). A size switch is a reorder. Each trainer's architecture is MODELKIND_NAME (default NAME), its
-# batch BATCHSIZE_NAME (default BATCHSIZE: a larger network can need a smaller batch to fit beside the run's other CUDA
-# processes; train.py's learning rate is per sample), its own train.py flags TRAIN_ARGS_NAME (beside TRAIN_EXTRA_ARGS,
-# which every trainer gets), and its part train-NAME.
+# batch BATCHSIZE_NAME (default BATCHSIZE), its own train.py flags TRAIN_ARGS_NAME (beside TRAIN_EXTRA_ARGS, which every
+# trainer gets), and its part train-NAME.
 #
 # Resources: each part runs in its own systemd scope with a memory cap (mem=), a CPU weight (cpu=, systemd's CPUWeight:
 # the kernel shares the CPUs between scopes by weight, not by nice) and a nice value (nice=). LIMITS_GROUP sets them

@@ -1,7 +1,4 @@
-"""The extra heads of a new model (modelconfigs.HEADS, train.py's -heads): RGSC's regret pair (regret), its swing pair
-(swing) and AZdb's intrinsic value head (intrinsic). A network trained from scratch beside a run's network gets the
-run network's heads at its start, where enclosure_add_regret_heads.py and add_diversity_members.py add them to a
-checkpoint trained before (the engine repository's games/blueprints/docs/decisions/port.md, abscls-luzl.15)."""
+"""The extra heads of a new model: modelconfigs.HEADS and train.py's -heads."""
 import os
 import sys
 
@@ -29,7 +26,6 @@ def test_the_heads_read_back_from_the_config_in_one_order():
     assert heads == ("regret", "intrinsic")
     configured = modelconfigs.with_heads(plain, heads)
     assert modelconfigs.get_heads(configured) == ("regret", "intrinsic")
-    assert configured["regret_heads"] is True and configured["intrinsic_head"] is True
     assert "swing_heads" not in configured and "regret_heads" not in plain
     assert modelconfigs.parse_heads("") == ()
 

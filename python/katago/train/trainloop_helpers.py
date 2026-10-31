@@ -551,17 +551,20 @@ def get_local_validation_model(training_model, raw_model, world_size: int):
 def release_cached_gpu_memory(device):
     """KataGame fork (2026-10-31): give the memory that PyTorch's allocator caches on the GPU back to the driver.
 
-    Returns the allocator's reserved memory before and after, and the memory that tensors still hold, in MiB. Off the
-    GPU it does nothing and returns None. The trainer calls it at the end of each epoch, before its checkpoint's save:
-    while it waits for new rows or for its turn, other CUDA processes can use the memory (the engine repository's
-    pipeline/scripts/gpu_turn_guard.sh; games/blueprints/docs/decisions/port.md, abscls-luzl.15).
+    It logs the allocator's reserved memory before and after, and the memory that tensors still hold, in MiB. Off the
+    GPU it does nothing. The trainer calls it at the end of each epoch, before its checkpoint's save: while it waits for
+    new rows or for its turn, other CUDA processes can use the memory (the engine repository's
+    pipeline/scripts/gpu_turn_guard.sh, which ends the turn at that save's line;
+    games/blueprints/docs/decisions/port.md, abscls-luzl.15).
     """
     if device.type != "cuda":
-        return None
+        return
     mib = 1024.0 * 1024.0
     before = torch.cuda.memory_reserved(device)
     torch.cuda.empty_cache()
-    return before / mib, torch.cuda.memory_reserved(device) / mib, torch.cuda.memory_allocated(device) / mib
+    after, allocated = torch.cuda.memory_reserved(device), torch.cuda.memory_allocated(device)
+    logging.info(f"Gave back the GPU's cached memory: reserved {before / mib:.0f} -> {after / mib:.0f} MiB, "
+                 f"allocated {allocated / mib:.0f} MiB")
 
 
 def set_snapshot_metrics(metric_sums, metric_weights, metrics, keys):
