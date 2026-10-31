@@ -19,7 +19,7 @@ well or best: "-fson-mish-rvgl-bnh"
   but the latter is used for inference.
 """
 
-from typing import Dict, Any, Union
+from typing import Dict, Any, Tuple, Union
 
 from ..train import games
 
@@ -79,6 +79,29 @@ INPUTS_VERSIONS = (8, 9, 10, 11, 12, 13, 14)
 
 def get_inputs_version(config: ModelConfig):
     return config.get("inputs_version", 8)
+
+# KataGame fork (2026-10-31): the extra heads of a config, by the names of train.py's -heads, each with its config key:
+# RGSC's regret value and ranking heads (regret), its swing value and ranking heads (swing, only with regret), and
+# AZdb's intrinsic value head (intrinsic). A new model gets them from -heads. enclosure_add_regret_heads.py and
+# add_diversity_members.py add them to a checkpoint trained before.
+HEADS = {"regret": "regret_heads", "swing": "swing_heads", "intrinsic": "intrinsic_head"}
+
+def get_heads(config: ModelConfig) -> Tuple[str, ...]:
+    return tuple(name for name, key in HEADS.items() if config.get(key, False))
+
+# The heads of a comma-separated list, in HEADS' order. An empty list is no extra head.
+def parse_heads(text: str) -> Tuple[str, ...]:
+    names = [name.strip() for name in text.split(",") if name.strip()]
+    unknown = [name for name in names if name not in HEADS]
+    if unknown:
+        raise ValueError(f"unknown heads {unknown} in '{text}': the heads are {', '.join(HEADS)}")
+    if "swing" in names and "regret" not in names:
+        raise ValueError(f"the heads '{text}' have swing without regret: the swing heads need the regret heads")
+    return tuple(name for name in HEADS if name in names)
+
+# A copy of the config with these heads on.
+def with_heads(config: ModelConfig, heads: Tuple[str, ...]) -> ModelConfig:
+    return dict(config, **{HEADS[name]: True for name in heads})
 
 def get_num_bin_input_features(config: ModelConfig):
     version = get_version(config)

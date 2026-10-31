@@ -152,7 +152,7 @@ mode=main
 for t in $TRAINERS; do
     # shellcheck disable=SC2046  # a trainer's own flags are a list
     part "train-$t" ./first_step_lock.sh "$BASEDIR"/first_step.lock "train-$t" \
-        ./train.sh "$BASEDIR" "$t" "$(trainer_kind "$t")" "$BATCHSIZE" "$mode" $TRAIN_ARGS $(trainer_args "$t")
+        ./train.sh "$BASEDIR" "$t" "$(trainer_kind "$t")" "$(trainer_batch "$t")" "$mode" $TRAIN_ARGS $(trainer_args "$t")
     mode=extra
 done
 sleep 2
