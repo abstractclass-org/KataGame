@@ -84,6 +84,8 @@ namespace RootViews {
     //of the limits share() (genMoveSynchronous's searchFactor). The passes come first, then the checks.
     bool next();
     const Board& board() const { return board_; }
+    //The root in the view of pass i: the cover's view i (KataGame fork, abscls-il4e.11: self-play's root of a move).
+    const Board& viewBoard(int i) const { return boards_[i]; }
     const BoardHistory& hist() const { return hist_; }
     Player pla() const { return pla_; }
     double share() const { return share_; }

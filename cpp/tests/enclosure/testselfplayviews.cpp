@@ -22,6 +22,10 @@
 //   rules' view, the action with the same child position, or -1 when that view has none.
 // - RGSC's played positions (Rgsc::playedEntry, with the moves' views) after the game's first move in a view: the
 //   entry's state restores to the replayed position.
+// - RGSC's tree candidate (Rgsc::TreeTracker) at the root of the game's first search in another view than the rules',
+//   after a move: the candidate's state restores, with the candidate's key, to the position in the rules' view.
+// - The games hold a move in another view than the rules' and a full search whose cover has more views: a run whose
+//   games lack either fails, as it did not test them.
 // With OUT_DIR, the games' rows (TrainingDataWriter, the config's inputsVersion) go to OUT_DIR as .npz files, and their
 // records (WriteSgf) to OUT_DIR/games.sgfs, for games/blueprints/tools/check_rows.py --records. The test prints, over
 // the games: the actions of the loops, those in another view than the rules', the full and the cheap searches whose
@@ -123,8 +127,34 @@ static int64_t checkViewActions(const GameRules::Position& p, const vector<strin
 struct Counts {
   int64_t actions = 0, inView = 0, before = 0;
   int64_t fullMore = 0, cheapMore = 0, fullOne = 0, cheapOne = 0;
-  int64_t viewActions = 0, viewPositions = 0, rgscChecked = 0;
+  int64_t viewActions = 0, viewPositions = 0, rgscChecked = 0, trackerChecked = 0;
 };
+
+//RGSC's tree tracker at a search's root in a set view: viewed is board, a position of the game after the moves of hist,
+//in that view. The tracker's candidate restores, with its key, to board, the state in the rules' view.
+static void checkTreeCandidate(const Board& board, const Board& viewed, const BoardHistory& hist,
+                               const Rgsc::Context& context, const string& where) {
+  Rgsc::Settings settings;
+  Rgsc::Buffer buffer(settings);
+  Rgsc::TreeTracker tracker(&buffer);
+  NNOutput output;
+  output.hasRegret = true;
+  output.regretValue = 1.0f;
+  output.regretRanking = 1.0f;
+  //The reason: the hash of a set view keys the view, and the state's text leaves it out.
+  check(Rgsc::stateKey(viewed, context) != Rgsc::stateKey(board, context), where + ": a set view changes the key");
+  tracker.offer(output, viewed, hist, context, 0);
+  check(tracker.found(), where + ": the tracker takes the root in a view");
+  if(!tracker.found())
+    return;
+  const Rgsc::Entry e = tracker.candidate();
+  Board restored;
+  string why;
+  const bool suc = Rgsc::restoreState(e, restored, why);
+  check(suc, where + ": RGSC's tree candidate at a root in a view restores with its key: " + why);
+  check(suc && GameRules::hash(restored.pos) == GameRules::hash(board.pos),
+        where + ": RGSC's tree candidate at a root in a view is the position in the rules' view");
+}
 
 static void readGame(int gameIdx, const FinishedGameData& data, int64_t maxVisits, Counts& counts) {
   const size_t start = data.startHist.moveHistory.size();
@@ -173,8 +203,16 @@ static void readGame(int gameIdx, const FinishedGameData& data, int64_t maxVisit
       counts.viewPositions++;
       checkedPositions++;
     }
-    if(firstInView == 0 && !view.empty())
+    if(firstInView == 0 && !view.empty()) {
       firstInView = i + 1;
+      if(i > 0) {  //the tracker leaves out a state without moves before it, the game's first
+        checkTreeCandidate(board, viewed, hist,
+                           Rgsc::Context::of(data.endHist.rules.komi, data.playoutDoublingAdvantagePla,
+                                             data.playoutDoublingAdvantage),
+                           "game " + to_string(gameIdx) + " move " + to_string(i));
+        counts.trackerChecked++;
+      }
+    }
     data.playMove(i, board, hist);
   }
   check(GameRules::hash(board.pos) == GameRules::hash(data.endHist.getRecentBoard(0).pos),
@@ -298,8 +336,8 @@ int main(int argc, char** argv) {
          "%lld full and %lld cheap searches (of one view: %lld full, %lld cheap)\n",
          (long long)c.actions, (long long)c.before, (long long)c.inView, (long long)c.fullMore, (long long)c.cheapMore,
          (long long)c.fullOne, (long long)c.cheapOne);
-  printf("viewAction: %lld actions compared on %lld positions; RGSC's entries checked: %lld\n",
-         (long long)c.viewActions, (long long)c.viewPositions, (long long)c.rgscChecked);
+  printf("viewAction: %lld actions compared on %lld positions; RGSC's entries checked: %lld played, %lld of the tree\n",
+         (long long)c.viewActions, (long long)c.viewPositions, (long long)c.rgscChecked, (long long)c.trackerChecked);
   check(c.inView > 0, "a move in another view than the rules'");
   check(c.fullMore > 0, "a full search with more views");
 

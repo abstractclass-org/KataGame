@@ -3,6 +3,7 @@
 #include "../core/fileutils.h"
 #include "../core/test.h"
 #include "../neuralnet/modelversion.h"
+#include "../program/rootviews.h"
 
 using namespace std;
 
@@ -128,13 +129,9 @@ FinishedGameData::~FinishedGameData() {
 }
 
 void FinishedGameData::setBoardView(Board& board, const string& view) {
-  if(view.empty())
-    return;
-  GameRules::Position p = board.pos;
   string why;
-  const bool suc = GameInterface::setView<GameRules>(p, view, why);
+  const bool suc = RootViews::setBoardView(board, view, why);
   testAssert(suc);
-  board.setPosition(p);
 }
 
 void FinishedGameData::setMoveView(size_t moveIdx, Board& board) const {

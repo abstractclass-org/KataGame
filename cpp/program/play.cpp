@@ -1359,22 +1359,13 @@ struct TurnSearch {
   Loc loc;      //the search's move, in that view
   SearchTargetsThisTurn targets;  //its policyTarget is owned here until the turn takes it
   float selectedWhiteWinLoss;     //RGSC's V_selected of loc (selectedChildWhiteWinLoss)
-  float regretRanking;            //the root's outputs that the game records, NaN without them
-  float swingRanking;
-  float intrinsicA;
-  float intrinsicB;
-  const NNOutput* rootOutput;     //the root's evaluation, for a side position's fork: the bot's, or ownedOutput
+  //The root's evaluation, whose outputs the game records and a side position's fork reads: the bot's, or ownedOutput
+  const NNOutput* rootOutput;
   std::shared_ptr<NNOutput> ownedOutput;
   ReportedSearchValues rootValues;  //with resignation or reduceVisits
-  //The root's moves with their V_selected, then the root's own (NULL_LOC): a move that the turn takes from another
-  //search (the checks of a cheap search, searchRootViews) reads its value here.
-  vector<std::pair<Loc, float>> moveWhiteWinLoss;
 
   TurnSearch()
-    :view(),loc(Board::NULL_LOC),targets(),selectedWhiteWinLoss(0.0f),
-     regretRanking(std::numeric_limits<float>::quiet_NaN()),swingRanking(std::numeric_limits<float>::quiet_NaN()),
-     intrinsicA(std::numeric_limits<float>::quiet_NaN()),intrinsicB(std::numeric_limits<float>::quiet_NaN()),
-     rootOutput(NULL),ownedOutput(),rootValues(),moveWhiteWinLoss()
+    :view(),loc(Board::NULL_LOC),targets(),selectedWhiteWinLoss(0.0f),rootOutput(NULL),ownedOutput(),rootValues()
   {
     targets.policyTarget = NULL;
   }
@@ -1389,14 +1380,9 @@ struct TurnSearch {
     targets = other.targets;
     other.targets.policyTarget = NULL;
     selectedWhiteWinLoss = other.selectedWhiteWinLoss;
-    regretRanking = other.regretRanking;
-    swingRanking = other.swingRanking;
-    intrinsicA = other.intrinsicA;
-    intrinsicB = other.intrinsicB;
     ownedOutput = other.ownedOutput;
     rootOutput = other.rootOutput;
     rootValues = other.rootValues;
-    moveWhiteWinLoss = other.moveWhiteWinLoss;
   }
 };
 
@@ -1412,17 +1398,22 @@ static void takeTurnSearch(
   extractSearchTargetsThisTurn(turn.targets, bot, board, hist, pla, locsBuf, playSelectionValuesBuf);
   turn.selectedWhiteWinLoss = selectedChildWhiteWinLoss(bot, loc);
   const NNOutput* rootOutput = bot->rootNode != NULL ? bot->rootNode->getNNOutput() : NULL;
-  const float nan = std::numeric_limits<float>::quiet_NaN();
-  turn.regretRanking = rootOutput != NULL && rootOutput->hasRegret ? rootOutput->regretRanking : nan;
-  turn.swingRanking = rootOutput != NULL && rootOutput->hasSwing ? rootOutput->swingRanking : nan;
-  const bool intrinsic = rootOutput != NULL && rootOutput->hasIntrinsic;
-  turn.intrinsicA = intrinsic ? rootOutput->intrinsicA : nan;
-  turn.intrinsicB = intrinsic ? rootOutput->intrinsicB : nan;
   turn.ownedOutput.reset(copyOutput && rootOutput != NULL ? new NNOutput(*rootOutput) : NULL);
   turn.rootOutput = copyOutput ? turn.ownedOutput.get() : rootOutput;
   if(playSettings.allowResignation || playSettings.reduceVisits)
     turn.rootValues = bot->getRootValuesRequireSuccess();
-  turn.moveWhiteWinLoss.clear();
+}
+
+//KataGame fork (abscls-il4e.11): the views in which self-play's search of the root's views (PlaySettings::rootViews)
+//searches board, a position in the rules' view: its cover, or none for the usual search (the setting off, or a cover of
+//the rules' view alone).
+static vector<string> searchedViews(const PlaySettings& playSettings, const Board& board) {
+  if(!playSettings.rootViews)
+    return vector<string>();
+  vector<string> views = RootViews::cover(board);
+  if(views.size() == 1 && views[0].empty())
+    views.clear();
+  return views;
 }
 
 //The limits of a search that takes the share `share` of an action's limits: a pass's or a check's of the root's views
@@ -1532,7 +1523,9 @@ static bool searchRootViews(
   std::unique_ptr<RootViews::Searches> searches(
     new RootViews::Searches(board, hist, pla, views, settings, RootViews::Report()));
   vector<std::unique_ptr<TurnSearch>> passes;
-  vector<std::unique_ptr<Board>> passBoards;
+  //Each pass's moves with their V_selected, then its root's (NULL_LOC): the turn's move comes from a pass or a check,
+  //and reads its value in its pass here.
+  vector<vector<std::pair<Loc, float>>> passMoveValues;
   for(int n = 0; searches->next(); n++) {
     bot->setPosition(searches->pla(), searches->board(), searches->hist());
     const SearchLimitsThisMove shareLimits = shareOfLimits(*limits, searches->share());
@@ -1544,16 +1537,16 @@ static bool searchRootViews(
       takeTurnSearch(
         pass, bot, searches->board(), hist, pla, chosen, playSettings, true, locsBuf, playSelectionValuesBuf);
       pass.view = views[n];
+      passMoveValues.emplace_back();
       ConstSearchNodeChildrenReference children = bot->rootNode->getChildren();
       const int capacity = children.getCapacity();
       for(int i = 0; i<capacity; i++) {
         if(children[i].getIfAllocated() == NULL)
           break;
         const Loc moveLoc = children[i].getMoveLoc();
-        pass.moveWhiteWinLoss.emplace_back(moveLoc, selectedChildWhiteWinLoss(bot, moveLoc));
+        passMoveValues.back().emplace_back(moveLoc, selectedChildWhiteWinLoss(bot, moveLoc));
       }
-      pass.moveWhiteWinLoss.emplace_back(Board::NULL_LOC, selectedChildWhiteWinLoss(bot, Board::NULL_LOC));
-      passBoards.emplace_back(new Board(searches->board()));
+      passMoveValues.back().emplace_back(Board::NULL_LOC, selectedChildWhiteWinLoss(bot, Board::NULL_LOC));
     }
     const bool suc = searches->done(*bot, chosen);
     testAssert(suc);
@@ -1566,14 +1559,15 @@ static bool searchRootViews(
   turn.loc = choice.passLoc;
   //The move's V_selected in its pass: its child's, or the root's for a move without a child there (the last entry), as
   //selectedChildWhiteWinLoss gives them.
-  turn.selectedWhiteWinLoss = turn.moveWhiteWinLoss.back().second;
-  for(const std::pair<Loc, float>& m : turn.moveWhiteWinLoss) {
+  const vector<std::pair<Loc, float>>& moveValues = passMoveValues[choice.pass];
+  turn.selectedWhiteWinLoss = moveValues.back().second;
+  for(const std::pair<Loc, float>& m : moveValues) {
     if(m.first == turn.loc) {
       turn.selectedWhiteWinLoss = m.second;
       break;
     }
   }
-  turnBoard = *passBoards[choice.pass];
+  turnBoard = searches->viewBoard(choice.pass);
   return false;
 }
 
@@ -2130,10 +2124,8 @@ FinishedGameData* Play::runGame(
     //that gave the move (turn): its view (turn.view, the view of the move, of the turn's policy target and of its row)
     //and its root (viewBoard), from the bots' history (searchHist). treeKept: whether toMoveBot holds its tree.
     const BoardHistory& searchHist = botHistRestarted ? botHist : hist;
-    vector<string> views;
-    if(playSettings.rootViews)
-      views = RootViews::cover(board);
-    const bool viewsSearch = views.size() > 1 || (views.size() == 1 && !views[0].empty());
+    const vector<string> views = searchedViews(playSettings, board);
+    const bool viewsSearch = !views.empty();
     TurnSearch turn;
     std::unique_ptr<Board> viewBoard;
     bool treeKept = true;
@@ -2210,13 +2202,20 @@ FinishedGameData* Play::runGame(
       //KataGame fork (2026-10-27): whether the action continues the move of the action before it, for RGSC's regret
       //by kind of action.
       gameData->continuesMoveByTurn.push_back(GameInterface::continuesMove<GameRules>(board.pos));
-      gameData->regretRankingByTurn.push_back(turn.regretRanking);
-      //Enclosure fork (2026-10-11): the swing source's ranking, the same way.
-      gameData->swingRankingByTurn.push_back(turn.swingRanking);
-      //KataGame fork (2026-10-29): AZdb's outputs A and B at the root, which the targets of the intrinsic value head
-      //read where their span ends (TrainingDataWriter::writeGame, the rows of the inputs version 14).
-      gameData->intrinsicAByTurn.push_back(turn.intrinsicA);
-      gameData->intrinsicBByTurn.push_back(turn.intrinsicB);
+      {
+        //KataGame fork (abscls-il4e.11): the root of the search that gave the move (TurnSearch).
+        const NNOutput* rootOutput = turn.rootOutput;
+        gameData->regretRankingByTurn.push_back(
+          rootOutput != NULL && rootOutput->hasRegret ? rootOutput->regretRanking : std::numeric_limits<float>::quiet_NaN());
+        //Enclosure fork (2026-10-11): the swing source's ranking, the same way.
+        gameData->swingRankingByTurn.push_back(
+          rootOutput != NULL && rootOutput->hasSwing ? rootOutput->swingRanking : std::numeric_limits<float>::quiet_NaN());
+        //KataGame fork (2026-10-29): AZdb's outputs A and B at the root, which the targets of the intrinsic value head
+        //read where their span ends (TrainingDataWriter::writeGame, the rows of the inputs version 14).
+        const bool intrinsic = rootOutput != NULL && rootOutput->hasIntrinsic;
+        gameData->intrinsicAByTurn.push_back(intrinsic ? rootOutput->intrinsicA : std::numeric_limits<float>::quiet_NaN());
+        gameData->intrinsicBByTurn.push_back(intrinsic ? rootOutput->intrinsicB : std::numeric_limits<float>::quiet_NaN());
+      }
 
       //Occasionally fork off some positions to evaluate
       //KataGame fork (abscls-il4e.11): from the root of the turn's search, in its view. The fork's move ends the view,
@@ -2613,10 +2612,8 @@ FinishedGameData* Play::runGame(
       //search of the game does (searchRootViews, with the bot's own limits). Its row and its response are then in the
       //view of the search that gave the response (sp->board takes that view), and a response in a view starts the next
       //side position's history again.
-      vector<string> spViews;
-      if(playSettings.rootViews)
-        spViews = RootViews::cover(sp->board);
-      const bool spViewsSearch = spViews.size() > 1 || (spViews.size() == 1 && !spViews[0].empty());
+      const vector<string> spViews = searchedViews(playSettings, sp->board);
+      const bool spViewsSearch = !spViews.empty();
       Loc responseLoc;
       string responseView;
       if(spViewsSearch) {

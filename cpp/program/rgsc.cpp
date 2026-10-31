@@ -7,13 +7,14 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <sstream>
 
 #include "../core/global.h"
 #include "../core/hash.h"
 #include "../core/test.h"
-#include "../dataio/trainingwrite.h"
 #include "../neuralnet/nninputs.h"
+#include "../program/rootviews.h"
 
 using namespace std;
 
@@ -118,8 +119,11 @@ bool Rgsc::restoreState(const Entry& entry, Board& board, string& why) {
 
 //Plays hist's move i on board, in its view (moveViews, KataGame fork abscls-il4e.11).
 static void playMove(const BoardHistory& hist, const vector<string>& moveViews, size_t i, Board& board) {
-  if(i < moveViews.size())
-    FinishedGameData::setBoardView(board, moveViews[i]);
+  if(i < moveViews.size()) {
+    string why;
+    const bool suc = RootViews::setBoardView(board, moveViews[i], why);
+    testAssert(suc);
+  }
   board.playMoveAssumeLegal(hist.moveHistory[i].loc, hist.moveHistory[i].pla);
 }
 
@@ -520,7 +524,20 @@ void Rgsc::TreeTracker::offer(const NNOutput& nnOutput, const Board& board, cons
   const float ranking = swing ? nnOutput.swingRanking : nnOutput.regretRanking;
   if(!(ranking > bestRanking.load(std::memory_order_acquire)))
     return;
-  uint64_t key = keepsStates() ? stateKey(board, context) : keyOf(hist.moveHistory, hist.moveHistory.size());
+  //KataGame fork (abscls-il4e.11): a search's root in a view that a caller set (self-play's root's views,
+  //PlaySettings::rootViews) holds that view in its hash, which the state's text leaves out. The candidate is the state
+  //in the rules' view, whose restart (restoreState) gives its key back.
+  std::unique_ptr<Board> ruleBoard;
+  if(keepsStates() && !GameInterface::viewText<GameRules>(board.pos).empty()) {
+    GameRules::Position p = board.pos;
+    string why;
+    const bool suc = GameInterface::setView<GameRules>(p, "", why);
+    testAssert(suc);
+    ruleBoard.reset(new Board(board));
+    ruleBoard->setPosition(p);
+  }
+  const Board& state = ruleBoard != nullptr ? *ruleBoard : board;
+  uint64_t key = keepsStates() ? stateKey(state, context) : keyOf(hist.moveHistory, hist.moveHistory.size());
   if(buffer->contains(key))
     return;
   lock_guard<std::mutex> lock(mutex);
@@ -531,7 +548,7 @@ void Rgsc::TreeTracker::offer(const NNOutput& nnOutput, const Board& board, cons
   candidateEntry.key = key;
   candidateEntry.side = side;  //KataGame fork (2026-10-29)
   if(keepsStates()) {
-    candidateBoard = board;
+    candidateBoard = state;
     candidateEntry.context = context;
     candidateEntry.turnNumber = hist.getCurrentTurnNumber();
   }

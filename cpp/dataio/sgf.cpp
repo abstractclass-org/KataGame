@@ -2234,13 +2234,8 @@ void WriteSgf::writeSgf(
       out << "C[" << comment << "]";
 
     //KataGame fork (abscls-il4e.11): the move in its view.
-    if(gameData != NULL && !gameData->moveView(i).empty()) {
-      GameRules::Position p = board.pos;
-      string why;
-      bool suc = GameInterface::setView<GameRules>(p, gameData->moveView(i), why);
-      testAssert(suc);
-      board.setPosition(p);
-    }
+    if(gameData != NULL)
+      gameData->setMoveView(i, board);
     hist.makeBoardMoveAssumeLegal(board,loc,pla,NULL);
 
   }

@@ -203,8 +203,8 @@ struct FinishedGameData {
 
   //KataGame fork (abscls-il4e.11): the view of endHist's move moveIdx (moveViews), "" for the rules' view.
   const std::string& moveView(size_t moveIdx) const {
-    static const std::string rules;
-    return moveIdx < moveViews.size() ? moveViews[moveIdx] : rules;
+    static const std::string rulesView;
+    return moveIdx < moveViews.size() ? moveViews[moveIdx] : rulesView;
   }
   //Sets the view of endHist's move moveIdx on board, the position before the move (setBoardView).
   void setMoveView(size_t moveIdx, Board& board) const;
