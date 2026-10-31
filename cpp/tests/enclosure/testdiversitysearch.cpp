@@ -288,6 +288,29 @@ static void forEachNode(const Search& search, const function<void(const SearchNo
   }
 }
 
+//Self-play's kind of search of the member at root on the state searchState, 200 visits: at each node of its graph, of
+//either player's moves, the node constant is scale times w s_P times the reward of the move into it on the state
+//rewardState (none at the root), and the values are finite. Adds the nodes, and the nodes with a reward, to nodes and
+//rewarded.
+static void selfplayRewardsTest(
+  NNEvaluator* nnEval, Logger& logger, const Position& root, int member, double lambda,
+  const shared_ptr<const State>& searchState, const State& rewardState, double scale, const string& label, int& nodes,
+  int& rewarded
+) {
+  const Player P = root.pla();
+  unique_ptr<Search> search = runSearch(nnEval, logger, selfplayParams(200, member, lambda), root, searchState);
+  check(visitsOf(*search->rootNode) >= 200, label + ": its visits");
+  forEachNode(*search, [&](const SearchNode& node, const Position& p) {
+    const bool isRoot = &node == search->rootNode;
+    const double want = isRoot ? 0.0 : scale * signedWeight(P, lambda) * rewardFor(rewardState, member, p, P);
+    check(near(node.diversityReward, want), label + ": a node's reward");
+    check(std::isfinite(utilityOf(node)), label + ": a finite utility");
+    nodes++;
+    if(node.diversityReward != 0.0)
+      rewarded++;
+  });
+}
+
 static string where(const string& label, int depth) { return label + " depth " + Global::intToString(depth); }
 
 //D on a chain: line[0] is the root and line[j] the position after j actions (chainBelow holds). Depth j allows only
@@ -755,21 +778,9 @@ int main(int argc, char** argv) {
   //w s_P times the reward of the move into it (none at the root), and the values are finite.
   {
     int nodes = 0, rewarded = 0;
-    for(int at: {G / 8, G / 2, G - 12}) {
-      const Position& root = game[at];
-      const Player P = root.pla();
-      unique_ptr<Search> search = runSearch(nnEval, logger, selfplayParams(200, MEMBER, lambda), root, state);
-      check(visitsOf(*search->rootNode) >= 200, "self-play's search: its visits");
-      forEachNode(*search, [&](const SearchNode& node, const Position& p) {
-        const bool isRoot = &node == search->rootNode;
-        const double want = isRoot ? 0.0 : signedWeight(P, lambda) * rewardFor(*state, MEMBER, p, P);
-        check(near(node.diversityReward, want), "self-play's search: a node's reward");
-        check(std::isfinite(utilityOf(node)), "self-play's search: a finite utility");
-        nodes++;
-        if(node.diversityReward != 0.0)
-          rewarded++;
-      });
-    }
+    for(int at: {G / 8, G / 2, G - 12})
+      selfplayRewardsTest(nnEval, logger, game[at], MEMBER, lambda, state, *state, 1.0, "self-play's search", nodes,
+                          rewarded);
     check(rewarded > 0, "self-play's search: some node has a reward");
     printf("self-play's search: %d nodes of 3 searches, %d with a reward, each the reward of its move\n", nodes,
            rewarded);
@@ -790,17 +801,17 @@ int main(int argc, char** argv) {
     const vector<float> zeros(G, 0.0f);
     const int members[2] = {member, member};
     auto positionOf = [&](int j) -> const GameRules::Position& { return game[j].board.pos; };
-    AZdb::Targets plain, times;
+    AZdb::Targets plain, atK;
     AZdb::rowTargets<GameEncoding>(positionOf, G, true, members, *state, zeros.data(), zeros.data(), plain);
-    AZdb::rowTargets<GameEncoding>(positionOf, G, true, members, *scaled, zeros.data(), zeros.data(), times);
+    AZdb::rowTargets<GameEncoding>(positionOf, G, true, members, *scaled, zeros.data(), zeros.data(), atK);
     int rewards = 0, targets = 0;
     for(int j = 0; j < G; j++) {
       const string at = "the reward's scale: row " + Global::intToString(j);
-      check(near(times.ownReward[j], k * plain.ownReward[j], 1e-6) &&
-            near(times.otherReward[j], k * plain.otherReward[j], 1e-6), at + ": its rewards");
-      check(near(times.aTarget[j], k * plain.aTarget[j], 1e-4) && near(times.bTarget[j], k * plain.bTarget[j], 1e-4),
+      check(near(atK.ownReward[j], k * plain.ownReward[j], 1e-6) &&
+            near(atK.otherReward[j], k * plain.otherReward[j], 1e-6), at + ": its rewards");
+      check(near(atK.aTarget[j], k * plain.aTarget[j], 1e-4) && near(atK.bTarget[j], k * plain.bTarget[j], 1e-4),
             at + ": its targets");
-      check(times.aWeight[j] == plain.aWeight[j] && times.bWeight[j] == plain.bWeight[j], at + ": its weights");
+      check(atK.aWeight[j] == plain.aWeight[j] && atK.bWeight[j] == plain.bWeight[j], at + ": its weights");
       rewards += plain.ownReward[j] != 0.0f ? 1 : 0;
       targets += plain.aWeight[j] == 1.0f && plain.aTarget[j] != 0.0f ? 1 : 0;
     }
@@ -809,19 +820,9 @@ int main(int argc, char** argv) {
     //The search: on a chain, the node constants are the scaled rows' rewards, and D holds (chainTest). In self-play's
     //kind of search, each node constant is k times w s_P times the reward of the move into it at k = 1.
     chainTest(nnEval, logger, lineOf(game, G - 5), member, lambda, scaled, 12, "chain of 5 at k = 100");
-    const Position& root = game[G / 2];
-    const Player P = root.pla();
-    unique_ptr<Search> search = runSearch(nnEval, logger, selfplayParams(200, member, lambda), root, scaled);
     int nodes = 0, rewarded = 0;
-    forEachNode(*search, [&](const SearchNode& node, const Position& p) {
-      const bool isRoot = &node == search->rootNode;
-      const double want = isRoot ? 0.0 : k * signedWeight(P, lambda) * rewardFor(*state, member, p, P);
-      check(near(node.diversityReward, want), "the reward's scale: a node's reward in self-play's search");
-      check(std::isfinite(utilityOf(node)), "the reward's scale: a finite utility");
-      nodes++;
-      if(node.diversityReward != 0.0)
-        rewarded++;
-    });
+    selfplayRewardsTest(nnEval, logger, game[G / 2], member, lambda, scaled, *state, k,
+                        "the reward's scale: self-play's search", nodes, rewarded);
     check(rewarded > 0, "the reward's scale: some node has a reward");
     printf("the reward's scale: k = %g gives %d rows (%d with a reward, %d with a target) k times their rewards and "
            "targets, a chain of 5 its D, and %d nodes of self-play's search (%d with a reward) k times their "

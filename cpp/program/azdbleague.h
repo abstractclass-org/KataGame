@@ -749,7 +749,7 @@ template<class E> std::shared_ptr<const State<E>> readState(const std::string& p
   double l0, rewardScale;
   try {
     l0 = j.at("l0").get<double>();
-    rewardScale = j.contains("reward_scale") ? j.at("reward_scale").get<double>() : 1.0;
+    rewardScale = j.value("reward_scale", 1.0);
   }
   catch(const nlohmann::json::exception& e) {
     throw StringError("AZdb: " + path + " is not a league's file: " + e.what());
