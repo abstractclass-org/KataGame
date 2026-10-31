@@ -1,5 +1,6 @@
 #include "../program/playsettings.h"
 
+#include "../program/rootviews.h"
 #include "../program/setup.h"
 
 PlaySettings::PlaySettings()
@@ -17,6 +18,7 @@ PlaySettings::PlaySettings()
    reanalyzePolicySurpriseWeight(1.0),reanalyzeValueSurpriseWeight(1.0),reanalyzeSurpriseExponent(1.0),
    reanalyzeUseOutcomeTargets(true),
    recordTreePositions(false),recordTreeThreshold(0),recordTreeTargetWeight(0.0f),
+   rootViews(false),rootViewsPassShare(0.5),rootViewsCandidates(2),rootViewsFinalists(3),
    noResolveTargetWeights(false),
    allowResignation(false),resignThreshold(0.0),resignConsecTurns(1),
    forSelfPlay(false),
@@ -126,6 +128,17 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg, bool isDistributed
   playSettings.maxAsymmetricRatio = cfg.getDouble("maxAsymmetricRatio",1.0,100.0);
   playSettings.minAsymmetricCompensateKomiProb = cfg.getDouble("minAsymmetricCompensateKomiProb",0.0,1.0);
   playSettings.sekiForkHackProb = cfg.contains("sekiForkHackProb") ? cfg.getDouble("sekiForkHackProb",0.0,1.0) : 0.0;
+  //KataGame fork (abscls-il4e.11): the root's views in self-play, and a cheap search's split of them (the analysis
+  //engine's settings and defaults, RootViews::loadSettings).
+  playSettings.rootViews = cfg.contains("rootViews") ? cfg.getBool("rootViews") : false;
+  {
+    const RootViews::Settings rootViewSettings = RootViews::loadSettings(cfg);
+    playSettings.rootViewsPassShare = rootViewSettings.passShare;
+    playSettings.rootViewsCandidates = rootViewSettings.candidates;
+    playSettings.rootViewsFinalists = rootViewSettings.finalists;
+  }
+  if(playSettings.rootViews && playSettings.useReanalyze)
+    throw StringError("rootViews does not combine with useReanalyze: a reanalysis searches a turn again in one view");
   playSettings.forSelfPlay = true;
   playSettings.logSearchTreeOptions = Setup::loadLogSearchTreeOptions(cfg);
 

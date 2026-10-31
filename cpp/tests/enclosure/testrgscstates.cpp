@@ -116,13 +116,13 @@ static void checkPlayed(const vector<Board>& boards, const vector<Move>& moves, 
   for(const Move& m : moves)
     hist.makeBoardMoveAssumeLegal(board, m.loc, m.pla, NULL);
   const size_t start = moves.size() / 4, count = moves.size() - start;
-  const vector<uint64_t> keys = Rgsc::playedKeys(hist, start, count, context);
+  const vector<uint64_t> keys = Rgsc::playedKeys(hist, {}, start, count, context);
   for(size_t k = 0; k < count; k++)
     check(keys[k] == (Rgsc::keepsStates() ? Rgsc::stateKey(boards[start + k], context) : Rgsc::keyOf(moves, start + k)),
           "the key of the played position after " + to_string(start + k) + " moves");
   for(size_t length : {start, moves.size() / 2, moves.size() - 1}) {
     const string where = "the played position after " + to_string(length) + " moves";
-    const Rgsc::Entry e = Rgsc::playedEntry(hist, length, context);
+    const Rgsc::Entry e = Rgsc::playedEntry(hist, {}, length, context);
     const vector<Move> prefix(moves.begin(), moves.begin() + length);
     if(Rgsc::keepsStates()) {
       const Rgsc::Entry want = Rgsc::stateEntry(boards[length], context, (int64_t)length);

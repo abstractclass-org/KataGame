@@ -300,8 +300,15 @@ void SelfplayManager::countOneGameStarted(NNEvaluator* nnEval) {
     logger->write(nnEval->getModelFileName());
     logger->write("Games finished: " + Global::int64ToString(foundData->gamesFinishedCount.load(std::memory_order_relaxed)));
     logger->write("Moves played: " + Global::int64ToString(foundData->movesPlayedCount.load(std::memory_order_relaxed)));
-    if(foundData->tdataWriter != NULL)
+    if(foundData->tdataWriter != NULL) {
       logger->write("Data rows: " + Global::int64ToString(foundData->tdataWriter->numRowsWritten()));
+      //KataGame fork (abscls-il4e.11): the rows whose second policy target the root's views moved into the row's view.
+      if(foundData->tdataWriter->numRowsNextPolicyTranslated() > 0)
+        logger->write(
+          "Data rows with the next policy in the row's view: " +
+          Global::int64ToString(foundData->tdataWriter->numRowsNextPolicyTranslated()) + ", without it: " +
+          Global::int64ToString(foundData->tdataWriter->numRowsNextPolicyLost()));
+    }
     logger->write("NN rows: " + Global::int64ToString(nnEval->numRowsProcessed()));
     logger->write("NN batches: " + Global::int64ToString(nnEval->numBatchesProcessed()));
     logger->write("NN avg batch size: " + Global::doubleToString(nnEval->averageProcessedBatchSize()));
@@ -415,6 +422,11 @@ void SelfplayManager::runDataWriteLoopImpl(ModelData* modelData) {
     logger->write("Final games finished: " + Global::int64ToString(modelData->gamesFinishedCount.load(std::memory_order_relaxed)));
     logger->write("Final moves played: " + Global::int64ToString(modelData->movesPlayedCount.load(std::memory_order_relaxed)));
     logger->write("Final data rows: " + Global::int64ToString(modelData->tdataWriter->numRowsWritten()));
+    if(modelData->tdataWriter->numRowsNextPolicyTranslated() > 0)
+      logger->write(
+        "Final data rows with the next policy in the row's view: " +
+        Global::int64ToString(modelData->tdataWriter->numRowsNextPolicyTranslated()) + ", without it: " +
+        Global::int64ToString(modelData->tdataWriter->numRowsNextPolicyLost()));
     logger->write("Final NN rows: " + Global::int64ToString(modelData->nnEval->numRowsProcessed()));
     logger->write("Final NN batches: " + Global::int64ToString(modelData->nnEval->numBatchesProcessed()));
     logger->write("Final NN avg batch size: " + Global::doubleToString(modelData->nnEval->averageProcessedBatchSize()));

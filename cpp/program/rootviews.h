@@ -60,10 +60,14 @@ namespace RootViews {
   bool analysisJson(const Search& search, const Report& report, nlohmann::json& out);
 
   //The move that the search chose: a move of the root's own view (view ""), or a move that only another view names,
-  //with that view (loc is then the move in it).
+  //with that view (loc is then the move in it). KataGame fork (abscls-il4e.11): pass, the pass that gave the move (its
+  //view the cover's view of that index), and passLoc, the move in that pass's view, for self-play, which names each
+  //move in the view of its search (Play::runGame).
   struct Choice {
     Loc loc = Board::NULL_LOC;
     std::string view;
+    int pass = -1;
+    Loc passLoc = Board::NULL_LOC;
   };
 
   //The searches of the root's views (above), one at a time, for a caller that runs each search: search() below runs

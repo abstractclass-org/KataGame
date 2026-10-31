@@ -335,10 +335,13 @@ void RootViews::Searches::nameMove(json& info, Loc own, const string& view) cons
 //A check's values replace its candidate's, and the best candidate's are the root's. With no candidate, the first
 //pass's policy move (Results::policyMove), whose values are its root's.
 bool RootViews::Searches::respond(const Results& results, json& ret, Choice& choice) const {
-  //The choice: the move of the root's own view when it names the move, else the move in its view.
-  auto setChoice = [&choice](Loc loc, Loc own, const string& view) {
+  //The choice: the move of the root's own view when it names the move, else the move in its view. And the move's pass,
+  //with the move in that pass's view.
+  auto setChoice = [&choice](Loc loc, Loc own, const string& view, int pass) {
     choice.loc = own != Board::NULL_LOC ? own : loc;
     choice.view = own != Board::NULL_LOC ? string() : view;
+    choice.pass = pass;
+    choice.passLoc = loc;
   };
   if(views_.size() == 1) {
     if(results.single.is_null())
@@ -346,7 +349,7 @@ bool RootViews::Searches::respond(const Results& results, json& ret, Choice& cho
     ret = results.single;
     const Board& board = boards_[0];
     const Loc chosen = results.chosen;
-    setChoice(chosen, Board::NULL_LOC, views_[0]);
+    setChoice(chosen, Board::NULL_LOC, views_[0], 0);
     if(!views_[0].empty()) {
       for(json& info : ret["moveInfos"]) {
         Loc loc;
@@ -355,7 +358,7 @@ bool RootViews::Searches::respond(const Results& results, json& ret, Choice& cho
       }
       ret["view"] = views_[0];  //the frame of the ownership and the policy
       if(chosen != Board::NULL_LOC)
-        setChoice(chosen, ownMove(childHash(board, chosen)), views_[0]);
+        setChoice(chosen, ownMove(childHash(board, chosen)), views_[0], 0);
     }
     ret["rootInfo"]["views"] = views_;
     ret["rootInfo"]["searches"] = results.numSearches;
@@ -403,7 +406,7 @@ bool RootViews::Searches::respond(const Results& results, json& ret, Choice& cho
     moveInfos.push_back(std::move(info));
   }
   const Candidate& top = candidates[order[0]];
-  setChoice(top.loc, top.own, views_[top.pass]);
+  setChoice(top.loc, top.own, views_[top.pass], top.pass);
   const json& best = moveInfos[0];
   json rootInfo;
   rootInfo["visits"] = results.totalVisits;

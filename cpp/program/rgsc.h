@@ -129,12 +129,17 @@ namespace Rgsc {
   //the state's key is not the entry's.
   bool restoreState(const Entry& entry, Board& board, std::string& why);
   //The keys of a game's played positions: keys[k] of the position after start + k of hist's moves, for k from 0 to
-  //count - 1. The moves' key (keyOf), or in a game that keeps states the state's key with the context.
-  std::vector<uint64_t> playedKeys(const BoardHistory& hist, size_t start, size_t count, const Context& context);
+  //count - 1. The moves' key (keyOf), or in a game that keeps states the state's key with the context. KataGame fork
+  //(abscls-il4e.11): moveViews, the view of each of hist's moves (FinishedGameData::moveViews, empty: the rules' view
+  //for all), in which the replay plays it.
+  std::vector<uint64_t> playedKeys(
+    const BoardHistory& hist, const std::vector<std::string>& moveViews, size_t start, size_t count,
+    const Context& context);
   //The entry of the position after `length` of hist's moves, with its key: the moves, or in a game that keeps states
-  //the state (replayed from hist's first position), the context and the turn number. Its regret, origin, member and
-  //side are the caller's.
-  Entry playedEntry(const BoardHistory& hist, size_t length, const Context& context);
+  //the state (replayed from hist's first position, each move in its view of moveViews), the context and the turn
+  //number. Its regret, origin, member and side are the caller's. A game whose moves have views keeps states.
+  Entry playedEntry(
+    const BoardHistory& hist, const std::vector<std::string>& moveViews, size_t length, const Context& context);
   //Sets start to a game's exact start from an entry: its moves from an empty board of xSize x ySize, or in a game that
   //keeps states the state itself, with its turn number and its context frozen (Sgf::PositionSample::frozenContext).
   //False, with the reason, when the state does not come back with its key (restoreState).

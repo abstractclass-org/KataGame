@@ -4,6 +4,7 @@
 #include "../core/fileutils.h"
 #include "../core/timer.h"
 #include "../program/playutils.h"
+#include "../program/rootviews.h"
 #include "../program/setup.h"
 #include "../search/asyncbot.h"
 #include "../search/searchnode.h"
@@ -1350,6 +1351,232 @@ static Loc runBotWithLimits(
   return loc;
 }
 
+//KataGame fork (abscls-il4e.11): what a turn of self-play records of the search whose move it plays, taken at that
+//search's end while the bot holds its tree: the search of the turn's position, or with the root's views
+//(PlaySettings::rootViews) the pass that gave the move. Its move and its policy target are in the view of its root.
+struct TurnSearch {
+  string view;  //the view of the search's root, "" the rules'
+  Loc loc;      //the search's move, in that view
+  SearchTargetsThisTurn targets;  //its policyTarget is owned here until the turn takes it
+  float selectedWhiteWinLoss;     //RGSC's V_selected of loc (selectedChildWhiteWinLoss)
+  float regretRanking;            //the root's outputs that the game records, NaN without them
+  float swingRanking;
+  float intrinsicA;
+  float intrinsicB;
+  const NNOutput* rootOutput;     //the root's evaluation, for a side position's fork: the bot's, or ownedOutput
+  std::shared_ptr<NNOutput> ownedOutput;
+  ReportedSearchValues rootValues;  //with resignation or reduceVisits
+  //The root's moves with their V_selected, then the root's own (NULL_LOC): a move that the turn takes from another
+  //search (the checks of a cheap search, searchRootViews) reads its value here.
+  vector<std::pair<Loc, float>> moveWhiteWinLoss;
+
+  TurnSearch()
+    :view(),loc(Board::NULL_LOC),targets(),selectedWhiteWinLoss(0.0f),
+     regretRanking(std::numeric_limits<float>::quiet_NaN()),swingRanking(std::numeric_limits<float>::quiet_NaN()),
+     intrinsicA(std::numeric_limits<float>::quiet_NaN()),intrinsicB(std::numeric_limits<float>::quiet_NaN()),
+     rootOutput(NULL),ownedOutput(),rootValues(),moveWhiteWinLoss()
+  {
+    targets.policyTarget = NULL;
+  }
+  ~TurnSearch() { delete targets.policyTarget; }
+  TurnSearch(const TurnSearch&) = delete;
+  TurnSearch& operator=(const TurnSearch&) = delete;
+  //Takes other's record: other gives up its policy target.
+  void take(TurnSearch& other) {
+    delete targets.policyTarget;
+    view = other.view;
+    loc = other.loc;
+    targets = other.targets;
+    other.targets.policyTarget = NULL;
+    selectedWhiteWinLoss = other.selectedWhiteWinLoss;
+    regretRanking = other.regretRanking;
+    swingRanking = other.swingRanking;
+    intrinsicA = other.intrinsicA;
+    intrinsicB = other.intrinsicB;
+    ownedOutput = other.ownedOutput;
+    rootOutput = other.rootOutput;
+    rootValues = other.rootValues;
+    moveWhiteWinLoss = other.moveWhiteWinLoss;
+  }
+};
+
+//Takes the search of bot, whose root is board, hist and pla and whose move is loc, into turn. copyOutput: turn keeps
+//its own copy of the root's evaluation, for a search whose tree another search replaces before the turn reads it.
+static void takeTurnSearch(
+  TurnSearch& turn, Search* bot, const Board& board, const BoardHistory& hist, Player pla, Loc loc,
+  const PlaySettings& playSettings, bool copyOutput, vector<Loc>& locsBuf, vector<double>& playSelectionValuesBuf
+) {
+  delete turn.targets.policyTarget;
+  turn.targets.policyTarget = NULL;
+  turn.loc = loc;
+  extractSearchTargetsThisTurn(turn.targets, bot, board, hist, pla, locsBuf, playSelectionValuesBuf);
+  turn.selectedWhiteWinLoss = selectedChildWhiteWinLoss(bot, loc);
+  const NNOutput* rootOutput = bot->rootNode != NULL ? bot->rootNode->getNNOutput() : NULL;
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  turn.regretRanking = rootOutput != NULL && rootOutput->hasRegret ? rootOutput->regretRanking : nan;
+  turn.swingRanking = rootOutput != NULL && rootOutput->hasSwing ? rootOutput->swingRanking : nan;
+  const bool intrinsic = rootOutput != NULL && rootOutput->hasIntrinsic;
+  turn.intrinsicA = intrinsic ? rootOutput->intrinsicA : nan;
+  turn.intrinsicB = intrinsic ? rootOutput->intrinsicB : nan;
+  turn.ownedOutput.reset(copyOutput && rootOutput != NULL ? new NNOutput(*rootOutput) : NULL);
+  turn.rootOutput = copyOutput ? turn.ownedOutput.get() : rootOutput;
+  if(playSettings.allowResignation || playSettings.reduceVisits)
+    turn.rootValues = bot->getRootValuesRequireSuccess();
+  turn.moveWhiteWinLoss.clear();
+}
+
+//The limits of a search that takes the share `share` of an action's limits: a pass's or a check's of the root's views
+//(RootViews::Searches::share), at least 1 visit and 1 playout.
+static SearchLimitsThisMove shareOfLimits(const SearchLimitsThisMove& limits, double share) {
+  SearchLimitsThisMove out = limits;
+  out.doAlterVisitsPlayouts = true;
+  out.numAlterVisits = std::max((int64_t)1, (int64_t)ceil((double)limits.numAlterVisits * share));
+  out.numAlterPlayouts = std::max((int64_t)1, (int64_t)ceil((double)limits.numAlterPlayouts * share));
+  return out;
+}
+
+//The value of a pass of the root's views for pla, the player to move at its root: the utility of the child of its most
+//visited move (by its edge's visits; of equal visits, the first one), from pla's side. The analysis engine's
+//candidates compare by the same utility. -infinity when no move has a visit.
+static double passValue(const Search* bot, Player pla) {
+  double value = -std::numeric_limits<double>::infinity();
+  if(bot->rootNode == NULL)
+    return value;
+  ConstSearchNodeChildrenReference children = bot->rootNode->getChildren();
+  const int capacity = children.getCapacity();
+  int64_t mostVisits = 0;
+  for(int i = 0; i<capacity; i++) {
+    const SearchNode* child = children[i].getIfAllocated();
+    if(child == NULL)
+      break;
+    const int64_t visits = children[i].getEdgeVisits();
+    if(visits > mostVisits) {
+      mostVisits = visits;
+      const double utility = child->stats.utilityAvg.load(std::memory_order_acquire);
+      value = pla == P_WHITE ? utility : -utility;
+    }
+  }
+  return value;
+}
+
+//KataGame fork (abscls-il4e.11): self-play's search of an action with the root's views (PlaySettings::rootViews), when
+//the cover of its position (board, in the rules' view) is not the rules' view alone. bot searches each root in its
+//view, from hist (the bots' history, which starts again after a move in a view: Play::runGame), with the action's
+//limits (runBotWithLimits), or with NULL limits with its own (a side position's search, runWholeSearchAndGetMove).
+//turn takes the search whose move the action plays, turnBoard its root. Returns whether bot still holds that search's
+//tree.
+//- One view: the search in that view, with the action's limits.
+//- More views, in a full search, or in a cheap search of a player with a diversity term (AZdb's members 1 to 4): a
+//  pass for each view of the cover, with the whole of the action's limits in a full search and an even share of them
+//  in a cheap one. The move is the move of the pass whose most visited move has the best value of its child for the
+//  player to move (passValue, the first such pass), chosen within that pass as self-play chooses (the temperature over
+//  its visits). Every pass searches for the same player, with the same diversity term, and a move's reward is a
+//  constant of its child, the same position from every view. The passes take the first pass's score centre.
+//- More views, in a cheap search otherwise: the analysis engine's split (RootViews::Searches), passes then checks with
+//  shares of the action's limits. A check searches the next position for its player to move, so a diversity term
+//  would be that player's (abscls-e0gz): the cheap searches with a term take the passes above. The move is the
+//  search's choice, named in the view of the pass that gave it, and the turn takes that pass.
+static bool searchRootViews(
+  Search* bot, const Board& board, const BoardHistory& hist, Player pla, const vector<string>& views,
+  const PlaySettings& playSettings, const SearchLimitsThisMove* limits,
+  vector<Loc>& locsBuf, vector<double>& playSelectionValuesBuf, TurnSearch& turn, Board& turnBoard
+) {
+  const int numViews = (int)views.size();
+  struct CenterReset {
+    Search* bot;
+    ~CenterReset() { bot->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN(); }
+  } centerReset{bot};
+  auto run = [&](Player movePla, const SearchLimitsThisMove* searchLimits) {
+    return searchLimits == NULL ? bot->runWholeSearchAndGetMove(movePla)
+      : runBotWithLimits(bot, movePla, playSettings, *searchLimits);
+  };
+  if(numViews == 1) {
+    turnBoard = board;
+    FinishedGameData::setBoardView(turnBoard, views[0]);
+    bot->setPosition(pla, turnBoard, hist);
+    const Loc loc = run(pla, limits);
+    takeTurnSearch(turn, bot, turnBoard, hist, pla, loc, playSettings, false, locsBuf, playSelectionValuesBuf);
+    turn.view = views[0];
+    return true;
+  }
+
+  const bool cheap = limits != NULL && limits->isCheapSearch;
+  if(!cheap || Search::resolveDiversityWeight(bot->searchParams) != 0.0) {
+    const SearchLimitsThisMove passLimits = cheap ? shareOfLimits(*limits, 1.0 / numViews) : SearchLimitsThisMove();
+    double best = 0.0;
+    int bestPass = -1;
+    for(int i = 0; i<numViews; i++) {
+      Board root(board);
+      FinishedGameData::setBoardView(root, views[i]);
+      bot->setPosition(pla, root, hist);
+      const Loc loc = run(pla, cheap ? &passLimits : limits);
+      if(i == 0)
+        bot->fixedScoreCenter = bot->recentScoreCenter;
+      const double value = passValue(bot, pla);
+      if(bestPass < 0 || value > best) {
+        best = value;
+        bestPass = i;
+        takeTurnSearch(
+          turn, bot, root, hist, pla, loc, playSettings, i + 1 < numViews, locsBuf, playSelectionValuesBuf);
+        turn.view = views[i];
+        turnBoard = root;
+      }
+    }
+    return bestPass == numViews - 1;
+  }
+
+  RootViews::Settings settings;
+  settings.passShare = playSettings.rootViewsPassShare;
+  settings.candidates = playSettings.rootViewsCandidates;
+  settings.finalists = playSettings.rootViewsFinalists;
+  std::unique_ptr<RootViews::Searches> searches(
+    new RootViews::Searches(board, hist, pla, views, settings, RootViews::Report()));
+  vector<std::unique_ptr<TurnSearch>> passes;
+  vector<std::unique_ptr<Board>> passBoards;
+  for(int n = 0; searches->next(); n++) {
+    bot->setPosition(searches->pla(), searches->board(), searches->hist());
+    const SearchLimitsThisMove shareLimits = shareOfLimits(*limits, searches->share());
+    const Loc chosen = run(searches->pla(), &shareLimits);
+    if(n < numViews) {
+      //A pass: the turn can take it, with its moves' values.
+      passes.emplace_back(new TurnSearch());
+      TurnSearch& pass = *passes.back();
+      takeTurnSearch(
+        pass, bot, searches->board(), hist, pla, chosen, playSettings, true, locsBuf, playSelectionValuesBuf);
+      pass.view = views[n];
+      ConstSearchNodeChildrenReference children = bot->rootNode->getChildren();
+      const int capacity = children.getCapacity();
+      for(int i = 0; i<capacity; i++) {
+        if(children[i].getIfAllocated() == NULL)
+          break;
+        const Loc moveLoc = children[i].getMoveLoc();
+        pass.moveWhiteWinLoss.emplace_back(moveLoc, selectedChildWhiteWinLoss(bot, moveLoc));
+      }
+      pass.moveWhiteWinLoss.emplace_back(Board::NULL_LOC, selectedChildWhiteWinLoss(bot, Board::NULL_LOC));
+      passBoards.emplace_back(new Board(searches->board()));
+    }
+    const bool suc = searches->done(*bot, chosen);
+    testAssert(suc);
+  }
+  nlohmann::json response;
+  RootViews::Choice choice;
+  const bool suc = searches->result(response, choice);
+  testAssert(suc && choice.pass >= 0 && choice.pass < (int)passes.size());
+  turn.take(*passes[choice.pass]);
+  turn.loc = choice.passLoc;
+  //The move's V_selected in its pass: its child's, or the root's for a move without a child there (the last entry), as
+  //selectedChildWhiteWinLoss gives them.
+  turn.selectedWhiteWinLoss = turn.moveWhiteWinLoss.back().second;
+  for(const std::pair<Loc, float>& m : turn.moveWhiteWinLoss) {
+    if(m.first == turn.loc) {
+      turn.selectedWhiteWinLoss = m.second;
+      break;
+    }
+  }
+  turnBoard = *passBoards[choice.pass];
+  return false;
+}
+
 //KL divergence of a win/loss/noresult distribution from the raw neural net value prediction, capped at 1.
 static double valueSurpriseKL(double winValue, double lossValue, double noResultValue, const ReportedSearchValues& rawNNValues) {
   double valueSurprise = 0.0;
@@ -1840,6 +2067,19 @@ FinishedGameData* Play::runGame(
   //KataGame fork: the last action's search limits, for an action that continues its move (cheapSearchPerMove).
   SearchLimitsThisMove lastLimits = SearchLimitsThisMove();
 
+  //KataGame fork (abscls-il4e.11): self-play's search of the root's views (PlaySettings::rootViews). The moves before
+  //the loop are in the rules' view. botHist is the bots' history once a move in a view has started it again (after
+  //such a move, botHistRestarted), as a search replays its history from its start: until then the game's history.
+  if(playSettings.rootViews) {
+    if(!recordFullData)
+      throw StringError("rootViews is a setting of self-play");
+    if(playSettings.recordTreePositions || onEachMove != nullptr)
+      throw StringError("rootViews does not combine with recordTreePositions or a callback of each move");
+    gameData->moveViews.assign(hist.moveHistory.size(), string());
+  }
+  BoardHistory botHist;
+  bool botHistRestarted = false;
+
   ClockTimer timer;
 
   //Main play loop
@@ -1885,31 +2125,50 @@ FinishedGameData* Play::runGame(
       clearBotBeforeSearch, otherGameProps, false, continuesMove ? &lastLimits : NULL
     );
     lastLimits = limits;
+    //KataGame fork (abscls-il4e.11): with the root's views, the cover of the position. The rules' view alone gives the
+    //usual search. Else searchRootViews searches the position in the cover's views, and the turn records the search
+    //that gave the move (turn): its view (turn.view, the view of the move, of the turn's policy target and of its row)
+    //and its root (viewBoard), from the bots' history (searchHist). treeKept: whether toMoveBot holds its tree.
+    const BoardHistory& searchHist = botHistRestarted ? botHist : hist;
+    vector<string> views;
+    if(playSettings.rootViews)
+      views = RootViews::cover(board);
+    const bool viewsSearch = views.size() > 1 || (views.size() == 1 && !views[0].empty());
+    TurnSearch turn;
+    std::unique_ptr<Board> viewBoard;
+    bool treeKept = true;
     Loc loc;
-    if(playSettings.recordTimePerMove) {
-      double t0 = timer.getSeconds();
+    const double t0 = playSettings.recordTimePerMove ? timer.getSeconds() : 0.0;
+    if(!viewsSearch)
       loc = runBotWithLimits(toMoveBot, pla, playSettings, limits);
+    else {
+      viewBoard.reset(new Board(board));
+      treeKept = searchRootViews(
+        toMoveBot, board, searchHist, pla, views, playSettings, &limits, locsBuf, playSelectionValuesBuf, turn,
+        *viewBoard);
+      loc = turn.loc;
+    }
+    if(playSettings.recordTimePerMove) {
       double t1 = timer.getSeconds();
       if(pla == P_BLACK)
         gameData->bTimeUsed += t1-t0;
       else
         gameData->wTimeUsed += t1-t0;
     }
-    else {
-      loc = runBotWithLimits(toMoveBot, pla, playSettings, limits);
-    }
+    const Board& turnBoard = viewBoard != nullptr ? *viewBoard : board;
 
     if(pla == P_BLACK)
       gameData->bMoveCount += 1;
     else
       gameData->wMoveCount += 1;
 
-    if(loc == Board::NULL_LOC || !toMoveBot->isLegalStrict(loc,pla))
-      failIllegalMove(toMoveBot,logger,board,loc);
-    if(logSearchInfo)
+    if(loc == Board::NULL_LOC || (viewsSearch ? !hist.isLegal(turnBoard,loc,pla) : !toMoveBot->isLegalStrict(loc,pla)))
+      failIllegalMove(toMoveBot,logger,turnBoard,loc);
+    if(logSearchInfo && treeKept)
       logSearch(toMoveBot,logger,loc,otherGameProps,playSettings.logSearchTreeOptions);
     if(logMoves)
-      logger.write("Move " + Global::uint64ToString(hist.moveHistory.size()) + " made: " + Location::toString(loc,board));
+      logger.write("Move " + Global::uint64ToString(hist.moveHistory.size()) + " made: " +
+                   Location::toString(loc,board) + (turn.view.empty() ? "" : "/" + turn.view));
 
     if(!recordFullData) {
       ValueTargets whiteValueTargets;
@@ -1923,11 +2182,16 @@ FinishedGameData* Play::runGame(
       gameData->policyTargetsByTurn.emplace_back(nullptr,unreducedNumVisits);
     }
     else {
-      SearchTargetsThisTurn targets;
-      extractSearchTargetsThisTurn(targets, toMoveBot, board, hist, pla, locsBuf, playSelectionValuesBuf);
+      //KataGame fork (abscls-il4e.11): the turn's records from the search that gave its move (TurnSearch), taken here
+      //for the usual search, as they were read from toMoveBot.
+      if(!viewsSearch)
+        takeTurnSearch(
+          turn, toMoveBot, board, searchHist, pla, loc, playSettings, false, locsBuf, playSelectionValuesBuf);
+      SearchTargetsThisTurn& targets = turn.targets;
       gameData->whiteValueTargetsByTurn.push_back(targets.whiteValueTargets);
       gameData->whiteQValueTargetsByTurn.push_back(targets.whiteQValueTargets);
       gameData->policyTargetsByTurn.emplace_back(targets.policyTarget,targets.unreducedNumVisits);
+      targets.policyTarget = NULL;  //gameData owns it now
       gameData->nnRawStatsByTurn.push_back(targets.nnRawStats);
       gameData->policySurpriseByTurn.push_back(targets.policySurprise);
       gameData->policyEntropyByTurn.push_back(targets.policyEntropy);
@@ -1942,36 +2206,33 @@ FinishedGameData* Play::runGame(
       wasCheapSearchByTurn.push_back(limits.isCheapSearch);
 
       //Enclosure fork (owner, 2026-10-04): RGSC's per-turn records (program/rgsc.h), for every move, full or cheap.
-      gameData->selectedWhiteWinLossByTurn.push_back(selectedChildWhiteWinLoss(toMoveBot, loc));
+      gameData->selectedWhiteWinLossByTurn.push_back(turn.selectedWhiteWinLoss);
       //KataGame fork (2026-10-27): whether the action continues the move of the action before it, for RGSC's regret
       //by kind of action.
       gameData->continuesMoveByTurn.push_back(GameInterface::continuesMove<GameRules>(board.pos));
-      {
-        const NNOutput* rootOutput = toMoveBot->rootNode != NULL ? toMoveBot->rootNode->getNNOutput() : NULL;
-        gameData->regretRankingByTurn.push_back(
-          rootOutput != NULL && rootOutput->hasRegret ? rootOutput->regretRanking : std::numeric_limits<float>::quiet_NaN());
-        //Enclosure fork (2026-10-11): the swing source's ranking, the same way.
-        gameData->swingRankingByTurn.push_back(
-          rootOutput != NULL && rootOutput->hasSwing ? rootOutput->swingRanking : std::numeric_limits<float>::quiet_NaN());
-        //KataGame fork (2026-10-29): AZdb's outputs A and B at the root, which the targets of the intrinsic value head
-        //read where their span ends (TrainingDataWriter::writeGame, the rows of the inputs version 14).
-        const bool intrinsic = rootOutput != NULL && rootOutput->hasIntrinsic;
-        gameData->intrinsicAByTurn.push_back(intrinsic ? rootOutput->intrinsicA : std::numeric_limits<float>::quiet_NaN());
-        gameData->intrinsicBByTurn.push_back(intrinsic ? rootOutput->intrinsicB : std::numeric_limits<float>::quiet_NaN());
-      }
+      gameData->regretRankingByTurn.push_back(turn.regretRanking);
+      //Enclosure fork (2026-10-11): the swing source's ranking, the same way.
+      gameData->swingRankingByTurn.push_back(turn.swingRanking);
+      //KataGame fork (2026-10-29): AZdb's outputs A and B at the root, which the targets of the intrinsic value head
+      //read where their span ends (TrainingDataWriter::writeGame, the rows of the inputs version 14).
+      gameData->intrinsicAByTurn.push_back(turn.intrinsicA);
+      gameData->intrinsicBByTurn.push_back(turn.intrinsicB);
 
       //Occasionally fork off some positions to evaluate
+      //KataGame fork (abscls-il4e.11): from the root of the turn's search, in its view. The fork's move ends the view,
+      //and a move in a view starts the side position's history again, as the bots' (searchHist).
       Loc sidePositionForkLoc = Board::NULL_LOC;
       if(playSettings.sidePositionProb > 0.0 && gameRand.nextBool(playSettings.sidePositionProb)) {
-        testAssert(toMoveBot->rootNode != NULL);
-        const NNOutput* nnOutput = toMoveBot->rootNode->getNNOutput();
+        const NNOutput* nnOutput = turn.rootOutput;
         testAssert(nnOutput != NULL);
         Loc banMove = loc;
-        sidePositionForkLoc = chooseRandomForkingMove(nnOutput, board, hist, pla, gameRand, banMove);
+        sidePositionForkLoc = chooseRandomForkingMove(nnOutput, turnBoard, searchHist, pla, gameRand, banMove);
         if(sidePositionForkLoc != Board::NULL_LOC) {
-          SidePosition* sp = new SidePosition(board,hist,pla,(int)gameData->changedNeuralNets.size());
+          SidePosition* sp = new SidePosition(turnBoard,searchHist,pla,(int)gameData->changedNeuralNets.size());
           sp->hist.makeBoardMoveAssumeLegal(sp->board,sidePositionForkLoc,sp->pla,NULL);
           sp->pla = sp->hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
+          if(!turn.view.empty() && !sp->hist.isGameFinished)
+            RootViews::restartHistory(sp->board, sp->hist);
           if(sp->hist.isGameFinished) delete sp;
           else sidePositionsToSearch.push_back(sp);
         }
@@ -1995,7 +2256,7 @@ FinishedGameData* Play::runGame(
     }
 
     if(playSettings.allowResignation || playSettings.reduceVisits) {
-      ReportedSearchValues values = toMoveBot->getRootValuesRequireSuccess();
+      ReportedSearchValues values = recordFullData ? turn.rootValues : toMoveBot->getRootValuesRequireSuccess();
       historicalMctsWinLossValues.push_back(values.winLossValue);
       historicalMctsLeads.push_back(values.lead);
       historicalMctsScoreStdevs.push_back(values.expectedScoreStdev);
@@ -2004,18 +2265,66 @@ FinishedGameData* Play::runGame(
     if(onEachMove != nullptr)
       onEachMove(board,hist,pla,loc,historicalMctsWinLossValues,historicalMctsLeads,historicalMctsScoreStdevs,toMoveBot);
 
-    //Finally, make the move on the bots
-    bool suc;
-    suc = botB->makeMove(loc,pla);
-    testAssert(suc);
-    if(botB != botW) {
-      suc = botW->makeMove(loc,pla);
-      testAssert(suc);
+    //KataGame fork (abscls-il4e.11): the bots' history after the move. A move in a view (turn.view) names its action in
+    //that view, which a replay of the history from its start would read in the rules' view (the search's graph hash,
+    //GraphHash::getGraphHashFromScratch), so the history starts again after it (RootViews::restartHistory), as GTP's.
+    //The game's history keeps every move, and the game the view of each (moveViews).
+    if(playSettings.rootViews && (botHistRestarted || !turn.view.empty())) {
+      if(!botHistRestarted) {
+        botHist = hist;
+        botHistRestarted = true;
+      }
+      Board after(turnBoard);
+      botHist.makeBoardMoveAssumeLegal(after,loc,pla,NULL);
+      if(!turn.view.empty() && !botHist.isGameFinished)
+        RootViews::restartHistory(after, botHist);
     }
 
-    //And make the move on our copy of the board
-    testAssert(hist.isLegal(board,loc,pla));
-    hist.makeBoardMoveAssumeLegal(board,loc,pla,NULL);
+    if(!viewsSearch) {
+      //Finally, make the move on the bots
+      bool suc;
+      suc = botB->makeMove(loc,pla);
+      testAssert(suc);
+      if(botB != botW) {
+        suc = botW->makeMove(loc,pla);
+        testAssert(suc);
+      }
+
+      //And make the move on our copy of the board
+      testAssert(hist.isLegal(board,loc,pla));
+      hist.makeBoardMoveAssumeLegal(board,loc,pla,NULL);
+    }
+    else {
+      //KataGame fork (abscls-il4e.11): the move on the game's board in the view of the turn's search, then on the bots.
+      //toMoveBot, when it holds the turn's search, keeps the move's subtree (makeMove) and starts its history again
+      //after a move in a view, as botHist. Another bot whose position is the game's takes a move of the rules' view.
+      //Each other bot takes the bots' position after the move (setPosition).
+      board = turnBoard;
+      testAssert(hist.isLegal(board,loc,pla));
+      hist.makeBoardMoveAssumeLegal(board,loc,pla,NULL);
+      const BoardHistory& nextHist = botHistRestarted ? botHist : hist;
+      vector<Search*> bots = {botB};
+      if(botW != botB)
+        bots.push_back(botW);
+      for(Search* bot : bots) {
+        if(bot == toMoveBot && treeKept) {
+          const bool suc = bot->makeMove(loc,pla);
+          testAssert(suc);
+          if(!turn.view.empty() && !bot->rootHistory.isGameFinished) {
+            RootViews::restartHistory(bot->rootBoard, bot->rootHistory);
+            bot->rootKoHashTable->recompute(bot->rootHistory);
+          }
+        }
+        else if(bot != toMoveBot && turn.view.empty()) {
+          const bool suc = bot->makeMove(loc,pla);
+          testAssert(suc);
+        }
+        else
+          bot->setPosition(nextHist.presumedNextMovePla, board, nextHist);
+      }
+    }
+    if(playSettings.rootViews)
+      gameData->moveViews.push_back(turn.view);
 
     //Check for resignation
     if(playSettings.allowResignation && historicalMctsWinLossValues.size() >= playSettings.resignConsecTurns) {
@@ -2294,30 +2603,60 @@ FinishedGameData* Play::runGame(
       }
 
       Search* toMoveBot = sp->pla == P_BLACK ? botB : botW;
-      toMoveBot->setPosition(sp->pla,sp->board,sp->hist);
       //We do NOT apply playoutDoublingAdvantage here. If changing this, note that it is coordinated with train data writing
       //not using playoutDoublingAdvantage for these rows too.
       testAssert(toMoveBot->searchParams.playoutDoublingAdvantage == 0.0);
       testAssert(toMoveBot->searchParams.playoutDoublingAdvantagePla == C_EMPTY);
       sp->playoutDoublingAdvantagePla = C_EMPTY;
       sp->playoutDoublingAdvantage = 0.0;
-      Loc responseLoc = toMoveBot->runWholeSearchAndGetMove(sp->pla);
+      //KataGame fork (abscls-il4e.11): with the root's views, a side position's search searches its cover as a full
+      //search of the game does (searchRootViews, with the bot's own limits). Its row and its response are then in the
+      //view of the search that gave the response (sp->board takes that view), and a response in a view starts the next
+      //side position's history again.
+      vector<string> spViews;
+      if(playSettings.rootViews)
+        spViews = RootViews::cover(sp->board);
+      const bool spViewsSearch = spViews.size() > 1 || (spViews.size() == 1 && !spViews[0].empty());
+      Loc responseLoc;
+      string responseView;
+      if(spViewsSearch) {
+        TurnSearch spTurn;
+        Board spRoot(sp->board);
+        searchRootViews(
+          toMoveBot, sp->board, sp->hist, sp->pla, spViews, playSettings, NULL, locsBuf, playSelectionValuesBuf, spTurn,
+          spRoot);
+        responseLoc = spTurn.loc;
+        responseView = spTurn.view;
+        sp->board = spRoot;
+        sp->policyTarget = *spTurn.targets.policyTarget;
+        sp->whiteValueTargets = spTurn.targets.whiteValueTargets;
+        sp->whiteQValueTargets = spTurn.targets.whiteQValueTargets;
+        sp->policySurprise = spTurn.targets.policySurprise;
+        sp->policyEntropy = spTurn.targets.policyEntropy;
+        sp->searchEntropy = spTurn.targets.searchEntropy;
+        sp->nnRawStats = spTurn.targets.nnRawStats;
+        sp->unreducedNumVisits = spTurn.targets.unreducedNumVisits;
+      }
+      else {
+        toMoveBot->setPosition(sp->pla,sp->board,sp->hist);
+        responseLoc = toMoveBot->runWholeSearchAndGetMove(sp->pla);
 
-      Play::extractPolicyTarget(sp->policyTarget, toMoveBot, toMoveBot->rootNode, locsBuf, playSelectionValuesBuf);
-      extractValueTargets(sp->whiteValueTargets, toMoveBot, toMoveBot->rootNode);
-      extractQValueTargets(sp->whiteQValueTargets.targets, toMoveBot, toMoveBot->rootNode);
+        Play::extractPolicyTarget(sp->policyTarget, toMoveBot, toMoveBot->rootNode, locsBuf, playSelectionValuesBuf);
+        extractValueTargets(sp->whiteValueTargets, toMoveBot, toMoveBot->rootNode);
+        extractQValueTargets(sp->whiteQValueTargets.targets, toMoveBot, toMoveBot->rootNode);
 
-      double policySurprise = 0.0, policyEntropy = 0.0, searchEntropy = 0.0;
-      bool success = toMoveBot->getPolicySurpriseAndEntropy(policySurprise, searchEntropy, policyEntropy);
-      testAssert(success);
-      (void)success; //Avoid warning when asserts are disabled
-      sp->policySurprise = policySurprise;
-      sp->policyEntropy = policyEntropy;
-      sp->searchEntropy = searchEntropy;
+        double policySurprise = 0.0, policyEntropy = 0.0, searchEntropy = 0.0;
+        bool success = toMoveBot->getPolicySurpriseAndEntropy(policySurprise, searchEntropy, policyEntropy);
+        testAssert(success);
+        (void)success; //Avoid warning when asserts are disabled
+        sp->policySurprise = policySurprise;
+        sp->policyEntropy = policyEntropy;
+        sp->searchEntropy = searchEntropy;
 
-      sp->nnRawStats = computeNNRawStats(toMoveBot, sp->board, sp->hist, sp->pla);
+        sp->nnRawStats = computeNNRawStats(toMoveBot, sp->board, sp->hist, sp->pla);
+        sp->unreducedNumVisits = toMoveBot->getRootVisits();
+      }
       sp->targetWeight = 1.0f;
-      sp->unreducedNumVisits = toMoveBot->getRootVisits();
       sp->numNeuralNetChangesSoFar = (int)gameData->changedNeuralNets.size();
 
       gameData->sidePositions.push_back(sp);
@@ -2346,6 +2685,8 @@ FinishedGameData* Play::runGame(
         SidePosition* sp2 = new SidePosition(sp->board,sp->hist,sp->pla,(int)gameData->changedNeuralNets.size());
         sp2->hist.makeBoardMoveAssumeLegal(sp2->board,responseLoc,sp2->pla,NULL);
         sp2->pla = sp2->hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
+        if(!responseView.empty() && !sp2->hist.isGameFinished)
+          RootViews::restartHistory(sp2->board, sp2->hist);  //KataGame fork (abscls-il4e.11): a response in a view
         if(sp2->hist.isGameFinished)
           delete sp2;
         else {
@@ -2425,6 +2766,8 @@ FinishedGameData* Play::runGame(
       int numMoves = (int)(gameData->endHist.moveHistory.size() - gameData->startHist.moveHistory.size());
       for(int turnAfterStart = 0; turnAfterStart<numMoves; turnAfterStart++) {
         int turnIdx = turnAfterStart + startTurnIdx;
+        //KataGame fork (abscls-il4e.11): the turn's position in the view of its search, its row's view (moveViews).
+        gameData->setMoveView(turnIdx, board);
         if(gameData->targetWeightByTurn[turnAfterStart] > 0 &&
            //Avoid computing lead when no result was considered to be very likely, since in such cases
            //the relationship between komi and the result can somewhat break.
@@ -2447,6 +2790,10 @@ FinishedGameData* Play::runGame(
         testAssert(move.pla == pla);
         hist.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL);
         pla = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
+        //KataGame fork (abscls-il4e.11): after a move in a view, the history that the lead's search reads starts
+        //again, as the bots' did during the game.
+        if(!gameData->moveView(turnIdx).empty() && !hist.isGameFinished)
+          RootViews::restartHistory(board, hist);
       }
 
       for(int i = 0; i<gameData->sidePositions.size(); i++) {
@@ -2497,6 +2844,11 @@ static void replayGameUpToMove(const FinishedGameData* finishedGameData, int mov
 
   //Replay all those moves
   for(int i = 0; i<moveIdx; i++) {
+    //KataGame fork (abscls-il4e.11): the replay stops before a move in a view (moveViews, the root's views in
+    //self-play), so that a fork's moves before its start are all of the rules' view, as its record names them. A
+    //fork's position is then the one before the game's first move in another view.
+    if(!finishedGameData->moveView(i).empty())
+      return;
     Loc loc = finishedGameData->endHist.moveHistory[i].loc;
     if(!hist.isLegal(board,loc,pla)) {
       //We have a bug of some sort if we got an illegal move on replay, unless

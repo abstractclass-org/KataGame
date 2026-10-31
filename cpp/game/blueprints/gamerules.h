@@ -2004,6 +2004,52 @@ struct GameRules {
     for(const View& view : cover)
       views.push_back(view == rule ? "" : view_text_of(p, view));
   }
+  // p's rule's view in the frame of frame's view (GameInterface): the middle of p's rule view (its mover's window),
+  // turned to the orientation of frame's view (a view that a caller set on frame, else frame's own). A row's inputs
+  // give the windows' boxes in the row's view, so a policy of p in this view lies in the row's frame: self-play's
+  // rows write the second policy target in it when the root's views are on (TrainingDataWriter). "" when it is p's
+  // rule view.
+  static std::string view_in_frame(const Position& p, const Position& frame) {
+    const View rule = rule_view(p);
+    View view = rule;
+    view.o = view_of(frame).o;
+    return view == rule ? "" : view_text_of(p, view);
+  }
+  // The action of other, p in another view (set_view), that plays what p's legal action plays (GameInterface): the
+  // same placement (its blueprint with its (0, 0) cell on the same rules point) or the same cell of the hand, each read
+  // as play reads it. -1 when other's view does not hold it.
+  static int view_action(const Position& p, int action, const Position& other) {
+    if(action == PASS_ACTION)
+      return action;
+    const int mover = turn_of(p.ply);
+    const int x = action_x(action), y = action_y(action), channel = action_channel(action);
+    const View from = view_of(p), to = view_of(other);
+    // The shifts of the mover's blueprints in each view's frame: in orientation 0 none, as in play.
+    ViewHand fromHand, toHand;
+    if(from.o != 0)
+      view_hand(p, mover, fromHand);
+    if(to.o != 0)
+      view_hand(other, mover, toHand);
+    int ox, oy;
+    if(channel < HAND_CHANNEL) {
+      const int k = channel - PLACE;
+      int rx, ry, vx, vy;
+      from.rules_point(x - fromHand.mq[k], y - fromHand.mr[k], rx, ry);
+      to.view_point(rx, ry, vx, vy);
+      ox = vx + toHand.mq[k];
+      oy = vy + toHand.mr[k];
+    }
+    else {
+      const int k = channel - HAND_CHANNEL;
+      int q, r;
+      fromHand.site_cell(k, x, y, q, r);
+      toHand.hand_point(k, q, r, ox, oy);
+    }
+    if(!on_view(ox, oy))
+      return -1;
+    const int out = action_at(ox, oy, channel);
+    return is_legal(other, out) ? out : -1;
+  }
 };
 
 static_assert(GameInterface::checkRules<GameRules>(), "Blueprints' rules part");

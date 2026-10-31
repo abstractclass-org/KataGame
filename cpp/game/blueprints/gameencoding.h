@@ -1118,7 +1118,9 @@ struct GameEncoding {
   //   none follows): the second policy target is a policy of the next position's view. When the two differ, that
   //   policy is in a turned frame that the row's inputs do not give, so the trainer gives it the weight 0
   //   (katago/train/games/blueprints.py, mask_targets). Both are 0 in the rows from before the orientations, as their
-  //   views were.
+  //   views were. With the root's views in self-play, the next position holds the view that the row gives it
+  //   (view_in_frame: its window in the row's orientation, where the writer moves the second policy target), so G79
+  //   is G78.
   // A row whose positions stop before a horizon or a turn's end (a game that hit the turn limit) has no C2-3 or C5-6:
   // their weight C33 and their flag C69 are 0. A row whose positions stop before the game's end has no C1 or C4.
   static constexpr unsigned TARGETS = GameInterface::TARGET_OWNERSHIP | GameInterface::TARGET_SEKI |

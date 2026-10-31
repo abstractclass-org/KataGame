@@ -127,6 +127,26 @@ FinishedGameData::~FinishedGameData() {
     delete changedNeuralNets[i];
 }
 
+void FinishedGameData::setBoardView(Board& board, const string& view) {
+  if(view.empty())
+    return;
+  GameRules::Position p = board.pos;
+  string why;
+  const bool suc = GameInterface::setView<GameRules>(p, view, why);
+  testAssert(suc);
+  board.setPosition(p);
+}
+
+void FinishedGameData::setMoveView(size_t moveIdx, Board& board) const {
+  setBoardView(board, moveView(moveIdx));
+}
+
+void FinishedGameData::playMove(size_t moveIdx, Board& board, BoardHistory& hist) const {
+  const Move& move = endHist.moveHistory[moveIdx];
+  setMoveView(moveIdx, board);
+  hist.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL);
+}
+
 void FinishedGameData::printDebug(ostream& out) const {
   out << "bName " << bName << endl;
   out << "wName " << wName << endl;
@@ -551,7 +571,8 @@ void TrainingWriteBuffers::addRow(
   SGFMetadata* sgfMeta,
   Rand& rand,
   const ReanalysisData& reanalysisData,
-  int diversityMember
+  int diversityMember,
+  const Board* nextFrame
 ) {
   static_assert(NNModelVersion::latestInputsVersionImplemented == 14, "");
   if(inputsVersion < 3 || inputsVersion > 14)
@@ -668,7 +689,8 @@ void TrainingWriteBuffers::addRow(
     labels.emplace(board.pos);
     if(policyTarget1 != NULL) {
       testAssert(posHistForFutureBoards != NULL && whiteValueTargetsIdx + 1 < (int)posHistForFutureBoards->size());
-      nextLabels.emplace((*posHistForFutureBoards)[whiteValueTargetsIdx + 1].pos);
+      //KataGame fork (abscls-il4e.11): in the view of the second policy target (nextFrame) when the writer gave one.
+      nextLabels.emplace(nextFrame != NULL ? nextFrame->pos : (*posHistForFutureBoards)[whiteValueTargetsIdx + 1].pos);
     }
   }
 
@@ -883,9 +905,14 @@ void TrainingWriteBuffers::addRow(
       const vector<Board>& boards = *posHistForFutureBoards;
       testAssert(whiteValueTargetsIdx >= 0 && whiteValueTargetsIdx < (int)boards.size());
       vector<float> values(GameInterface::TargetValues::size(boardArea), 0.0f);
+      //KataGame fork (abscls-il4e.11): the row's position as the row has it (board, in the view of its search), and
+      //the next one in the view of the second policy target (nextFrame) when the writer gave one. The others are the
+      //game's positions, each in the rules' view.
       gameTargets = GameInterface::trainingTargets<GameEncoding>(
-        [&](int j) -> const GameRules::Position& { return boards[j].pos; }, (int)boards.size(), whiteValueTargetsIdx,
-        Board::indexOfPlayer(nextPlayer), values.data());
+        [&](int j) -> const GameRules::Position& {
+          return j == whiteValueTargetsIdx ? board.pos
+            : j == whiteValueTargetsIdx + 1 && nextFrame != NULL ? nextFrame->pos : boards[j].pos;
+        }, (int)boards.size(), whiteValueTargetsIdx, Board::indexOfPlayer(nextPlayer), values.data());
       testAssert((gameTargets & ~ownTargets) == 0);
       //C0, C4 and C5-6 times 120, rounded at random (the expected value is exact), and the others as they are. The
       //random rounding goes slot by slot, point by point.
@@ -1137,7 +1164,8 @@ TrainingDataWriter::TrainingDataWriter(ostream* dbgOut, int iVersion, int maxRow
 {}
 
 TrainingDataWriter::TrainingDataWriter(const string& outDir, ostream* dbgOut, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyEvery, const string& randSeed)
-  :outputDir(outDir),inputsVersion(iVersion),rand(randSeed),writeBuffers(NULL),debugOut(dbgOut),debugOnlyWriteEvery(onlyEvery),rowCount(0)
+  :outputDir(outDir),inputsVersion(iVersion),rand(randSeed),writeBuffers(NULL),debugOut(dbgOut),debugOnlyWriteEvery(onlyEvery),rowCount(0),
+   nextPolicyTranslatedCount(0),nextPolicyLostCount(0)
 {
   int numBinaryChannels;
   int numGlobalChannels;
@@ -1232,6 +1260,12 @@ int64_t TrainingDataWriter::numRowsInBuffer() const {
 int64_t TrainingDataWriter::numRowsWritten() const {
   return rowCount.load(std::memory_order_relaxed);
 }
+int64_t TrainingDataWriter::numRowsNextPolicyTranslated() const {
+  return nextPolicyTranslatedCount.load(std::memory_order_relaxed);
+}
+int64_t TrainingDataWriter::numRowsNextPolicyLost() const {
+  return nextPolicyLostCount.load(std::memory_order_relaxed);
+}
 
 void TrainingDataWriter::writeAndClearIfFull() {
   if(writeBuffers->curRows >= writeBuffers->maxRows || (isFirstFile && writeBuffers->curRows >= firstFileMaxRows)) {
@@ -1318,6 +1352,7 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
 
       Move move = data.endHist.moveHistory[turnIdx];
       testAssert(move.pla == nextPlayer);
+      data.setMoveView(turnIdx, board);  //KataGame fork (abscls-il4e.11): the move in its view (moveViews)
       testAssert(hist.isLegal(board,move.loc,move.pla));
       hist.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL);
       nextPlayer = hist.presumedNextMovePla;  //Enclosure fork: two-edge turns
@@ -1390,6 +1425,41 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
     //later turns and past positions read that array too.
     bool skipOutcomeDerivedTargets = reanalysisData.wasReanalyzed && !reanalysisData.usedOutcomeTargets;
 
+    //KataGame fork (abscls-il4e.11): the row's position in the view of its turn's search (moveViews), the view of its
+    //inputs and of its first policy target.
+    data.setMoveView(turnIdx, board);
+    //KataGame fork (abscls-il4e.11): with the root's views, the second policy target is the next search's policy, in
+    //that search's view. The row gives the next position the view of GameInterface::viewInFrame (nextFrame): the next
+    //mover's window in the row's frame, which is the next position's own view when the row's position has the rule's
+    //view (so such rows are as without the root's views). Each move of the next policy goes into that view
+    //(GameInterface::viewAction), and a move that the view does not hold drops out. A row whose next policy keeps no
+    //move has no second policy target (its weight C28 is 0), and the writer counts it (numRowsNextPolicyLost).
+    std::unique_ptr<Board> nextFrame;
+    bool nextPolicyTranslated = false;
+    vector<PolicyTargetMove> translatedTarget1;
+    if(targetWeight > 0.0 && policyTarget1 != NULL && !skipOutcomeDerivedTargets && !data.moveViews.empty()) {
+      const Board& next = posHistForFutureBoards[turnAfterStart + 1];
+      const string frameView = GameInterface::viewInFrame<GameRules>(next.pos, board.pos);
+      const string& searchView = data.moveView(turnIdx + 1);
+      if(!frameView.empty()) {
+        nextFrame.reset(new Board(next));
+        FinishedGameData::setBoardView(*nextFrame, frameView);
+      }
+      if(frameView != searchView) {
+        Board searched(next);
+        FinishedGameData::setBoardView(searched, searchView);
+        const Board& frame = nextFrame != nullptr ? *nextFrame : next;
+        for(const PolicyTargetMove& move : *policyTarget1) {
+          const int action = GameInterface::viewAction<GameRules>(
+            searched.pos, Board::actionOfMoveLoc(move.loc), frame.pos);
+          if(action >= 0)
+            translatedTarget1.emplace_back(Board::moveLocOfAction(action), move.policyTarget);
+        }
+        policyTarget1 = translatedTarget1.empty() ? NULL : &translatedTarget1;
+        nextPolicyTranslated = true;
+      }
+    }
+
     while(targetWeight > 0.0) {
       if(targetWeight >= 1.0 || rand.nextBool(targetWeight)) {
         if(debugOut == NULL || rowCount.load(std::memory_order_relaxed) % debugOnlyWriteEvery == 0) {
@@ -1430,8 +1500,15 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
             NULL,
             rand,
             reanalysisData,
-            memberOf(nextPlayer)
+            memberOf(nextPlayer),
+            nextFrame.get()
           );
+          //KataGame fork (abscls-il4e.11): the rows whose second policy target the view of the row moved, and lost.
+          if(nextPolicyTranslated) {
+            nextPolicyTranslatedCount.fetch_add(1, std::memory_order_relaxed);
+            if(policyTarget1 == NULL)
+              nextPolicyLostCount.fetch_add(1, std::memory_order_relaxed);
+          }
           //KataGame fork (2026-10-29): AZdb's targets of the intrinsic value head (0 without a state).
           if(!intrinsicTargets.aTarget.empty())
             writeBuffers->setLastRowIntrinsic(
@@ -1470,8 +1547,16 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
       if(targetWeight >= 1.0 || rand.nextBool(targetWeight)) {
         if(debugOut == NULL || rowCount.load(std::memory_order_relaxed) % debugOnlyWriteEvery == 0) {
 
-          int turnIdx = (int)sp->hist.moveHistory.size();
+          //KataGame fork (abscls-il4e.11): the side position's index in the game's moves from its turn number. Its
+          //history starts again after a move in a view (the root's views in self-play), and then holds fewer moves, but
+          //the same turn number. The row's C56, its history's first turn number, stays the game's.
+          int turnIdx = (int)(sp->hist.getCurrentTurnNumber() - data.endHist.initialTurnNumber);
           testAssert(turnIdx >= data.startHist.moveHistory.size());
+          std::unique_ptr<BoardHistory> spHist;
+          if(sp->hist.initialTurnNumber != data.endHist.initialTurnNumber) {
+            spHist.reset(new BoardHistory(sp->hist));
+            spHist->setInitialTurnNumber(data.endHist.initialTurnNumber);
+          }
           whiteValueTargetsBuf[0] = sp->whiteValueTargets;
           whiteQValueTargetsBuf[0] = sp->whiteQValueTargets;
           bool isSidePosition = true;
@@ -1481,7 +1566,7 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
           float leadTargetWeightFactor = 1.0f;
 
           writeBuffers->addRow(
-            sp->board,sp->hist,sp->pla,
+            sp->board,spHist != nullptr ? *spHist : sp->hist,sp->pla,
             data.startHist,
             data.endHist, // actual game ending hist, even for side position
             turnIdx,

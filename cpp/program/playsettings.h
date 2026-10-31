@@ -99,6 +99,22 @@ struct PlaySettings {
   int recordTreeThreshold;
   float recordTreeTargetWeight;
 
+  //KataGame fork (abscls-il4e.11): self-play's search of the root's views (program/rootviews.h), for a game with views
+  //of its own (GameInterface::viewCover: Blueprints'). Each searched position, the game's and a side position's,
+  //computes its cover. A cover of the rules' view alone gives the usual search. A cover of one other view gives the
+  //search in that view, with the action's limits. With more views, a full search gives each view a search of the root
+  //with the whole of the action's limits (a pass), and the move comes from the pass whose most visited move has the
+  //best value of its child for the player to move (the passes share the first pass's score centre). A cheap search
+  //splits its limits as the analysis engine's rootViews does (rootViewsPassShare, rootViewsCandidates and
+  //rootViewsFinalists, with the analysis engine's defaults), but for a player with a diversity term (AZdb's members 1
+  //to 4): its passes take the limits between them, with no checks, as a check searches for the next player to move. The
+  //move then lies in the view of the pass that gave it, and so do the turn's policy target and row: the game keeps the
+  //view of each move (FinishedGameData::moveViews). Off by default. It does not combine with useReanalyze.
+  bool rootViews;
+  double rootViewsPassShare;
+  int rootViewsCandidates;
+  int rootViewsFinalists;
+
   //Don't stochastically integerify target weights
   bool noResolveTargetWeights;
 

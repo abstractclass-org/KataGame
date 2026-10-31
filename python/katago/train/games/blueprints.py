@@ -24,7 +24,9 @@ The view has an orientation (the C++ gamerules.h): self-play can turn each posit
 orientation, and its 4 symmetries on top of the views' 3 orientations give the hex grid's 12. The second policy target
 is a policy of the next position's view. When that view has another orientation (the global targets G78 and G79), the
 policy lies in a turned frame that the row does not give, so it has the weight 0 too. With one orientation a game, no
-row has a next view of another orientation.
+row has a next view of another orientation. With the root's views in self-play, a row can have another view than the
+rule's, and the writer moves the second policy target into the next mover's window in the row's orientation (the C++
+view_in_frame), so G79 is G78 there too.
 
 The extended inputs of the inputs version 10 (the C++ gameencoding.h, for bpj3): the mover's cells that the opponent's
 placements in its own view take, and the minimap with each player's view on it, move as pixels (the minimap's bins of

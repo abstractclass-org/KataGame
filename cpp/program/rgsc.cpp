@@ -12,6 +12,7 @@
 #include "../core/global.h"
 #include "../core/hash.h"
 #include "../core/test.h"
+#include "../dataio/trainingwrite.h"
 #include "../neuralnet/nninputs.h"
 
 using namespace std;
@@ -115,15 +116,24 @@ bool Rgsc::restoreState(const Entry& entry, Board& board, string& why) {
   return true;
 }
 
+//Plays hist's move i on board, in its view (moveViews, KataGame fork abscls-il4e.11).
+static void playMove(const BoardHistory& hist, const vector<string>& moveViews, size_t i, Board& board) {
+  if(i < moveViews.size())
+    FinishedGameData::setBoardView(board, moveViews[i]);
+  board.playMoveAssumeLegal(hist.moveHistory[i].loc, hist.moveHistory[i].pla);
+}
+
 //The board of a game after `length` of hist's moves from its first position (hist.initialBoard), replayed.
-static Board playedBoard(const BoardHistory& hist, size_t length) {
+static Board playedBoard(const BoardHistory& hist, const vector<string>& moveViews, size_t length) {
   Board board = hist.initialBoard;
   for(size_t i = 0; i < length; i++)
-    board.playMoveAssumeLegal(hist.moveHistory[i].loc, hist.moveHistory[i].pla);
+    playMove(hist, moveViews, i, board);
   return board;
 }
 
-vector<uint64_t> Rgsc::playedKeys(const BoardHistory& hist, size_t start, size_t count, const Context& context) {
+vector<uint64_t> Rgsc::playedKeys(
+  const BoardHistory& hist, const vector<string>& moveViews, size_t start, size_t count, const Context& context
+) {
   testAssert(start + count <= hist.moveHistory.size());
   vector<uint64_t> keys(count);
   if(!keepsStates()) {
@@ -134,19 +144,21 @@ vector<uint64_t> Rgsc::playedKeys(const BoardHistory& hist, size_t start, size_t
     }
     return keys;
   }
-  Board board = playedBoard(hist, start);
+  Board board = playedBoard(hist, moveViews, start);
   for(size_t k = 0; k < count; k++) {
     keys[k] = stateKey(board, context);
     if(k + 1 < count)
-      board.playMoveAssumeLegal(hist.moveHistory[start + k].loc, hist.moveHistory[start + k].pla);
+      playMove(hist, moveViews, start + k, board);
   }
   return keys;
 }
 
-Rgsc::Entry Rgsc::playedEntry(const BoardHistory& hist, size_t length, const Context& context) {
+Rgsc::Entry Rgsc::playedEntry(
+  const BoardHistory& hist, const vector<string>& moveViews, size_t length, const Context& context
+) {
   testAssert(length <= hist.moveHistory.size());
   if(keepsStates())
-    return stateEntry(playedBoard(hist, length), context, hist.initialTurnNumber + (int64_t)length);
+    return stateEntry(playedBoard(hist, moveViews, length), context, hist.initialTurnNumber + (int64_t)length);
   Entry e;
   e.key = keyOf(hist.moveHistory, length);
   e.moves.assign(hist.moveHistory.begin(), hist.moveHistory.begin() + length);

@@ -53,7 +53,7 @@ static void rgscOfferCandidate(
   testAssert(hist.moveHistory.size() >= start + regretByTurn.size());
   const Rgsc::Context context = Rgsc::Context::of(
     hist.rules.komi, gameData.playoutDoublingAdvantagePla, gameData.playoutDoublingAdvantage);
-  const vector<uint64_t> keys = Rgsc::playedKeys(hist, start, regretByTurn.size(), context);
+  const vector<uint64_t> keys = Rgsc::playedKeys(hist, gameData.moveViews, start, regretByTurn.size(), context);
   bool found = tracker->found();
   float best = tracker->ranking();
   double regret = found ? std::max(buffer.floorRegret(), (double)tracker->regretValue()) : 0.0;
@@ -80,7 +80,7 @@ static void rgscOfferCandidate(
     entry.origin = Rgsc::ORIGIN_TREE;
   }
   else {
-    entry = Rgsc::playedEntry(hist, played, context);
+    entry = Rgsc::playedEntry(hist, gameData.moveViews, played, context);
     entry.origin = Rgsc::ORIGIN_PLAYED;
     entry.side = Board::indexOfPlayer(hist.moveHistory[played].pla);
   }
@@ -275,8 +275,7 @@ static void azdbAfterGame(
     BoardHistory hist(gameData.startHist);
     boards.push_back(board);
     for(size_t t = gameData.startHist.moveHistory.size(); t < gameData.endHist.moveHistory.size(); t++) {
-      const Move& move = gameData.endHist.moveHistory[t];
-      hist.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL);
+      gameData.playMove(t, board, hist);  //KataGame fork (abscls-il4e.11): in its view
       boards.push_back(board);
     }
   }

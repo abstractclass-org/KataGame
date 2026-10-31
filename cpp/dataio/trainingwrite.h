@@ -164,6 +164,12 @@ struct FinishedGameData {
   bool diversityTrains[2] = {true, true};
   std::vector<float> intrinsicAByTurn;
   std::vector<float> intrinsicBByTurn;
+  //KataGame fork (abscls-il4e.11): the view in which each move of endHist names its action (GameInterface::setView),
+  //by the move's index in endHist.moveHistory: "" for the rules' view. Self-play's search of the root's views
+  //(PlaySettings::rootViews) names each move in the view of the search that chose it, so the turn's policy target and
+  //row are in that view too. Empty without it: every move is in the rules' view. Replays play each move in its view
+  //(playMove), and the records name a move in a view as GTP does (MOVE/VIEW, WriteSgf).
+  std::vector<std::string> moveViews;
 
   Color* finalFullArea;
   Color* finalOwnership;
@@ -194,6 +200,18 @@ struct FinishedGameData {
   ~FinishedGameData();
 
   void printDebug(std::ostream& out) const;
+
+  //KataGame fork (abscls-il4e.11): the view of endHist's move moveIdx (moveViews), "" for the rules' view.
+  const std::string& moveView(size_t moveIdx) const {
+    static const std::string rules;
+    return moveIdx < moveViews.size() ? moveViews[moveIdx] : rules;
+  }
+  //Sets the view of endHist's move moveIdx on board, the position before the move (setBoardView).
+  void setMoveView(size_t moveIdx, Board& board) const;
+  //Plays endHist's move moveIdx on board and hist, in its view.
+  void playMove(size_t moveIdx, Board& board, BoardHistory& hist) const;
+  //Sets a view of the game's on board (GameInterface::setView): "" leaves board as it is. The view must be one.
+  static void setBoardView(Board& board, const std::string& view);
 };
 
 struct TrainingWriteBuffers {
@@ -422,7 +440,11 @@ struct TrainingWriteBuffers {
     SGFMetadata* sgfMeta,
     Rand& rand,
     const ReanalysisData& reanalysisData = ReanalysisData(),
-    int diversityMember = 0  //KataGame fork: the member of the row's player, its latent from the inputs version 14
+    int diversityMember = 0,  //KataGame fork: the member of the row's player, its latent from the inputs version 14
+    //KataGame fork (abscls-il4e.11): the position after the row's move in the view of policyTarget1 when it is not
+    //posHistForFutureBoards' (the root's views, TrainingDataWriter::writeGame), else NULL. board, the row's position,
+    //can hold a view too: the game's targets read both in their views (GameInterface::trainingTargets).
+    const Board* nextFrame = NULL
   );
 
   void writeToZipFile(const std::string& fileName);
@@ -446,6 +468,11 @@ class TrainingDataWriter {
   // Cumulative training rows added by this writer, including rows still in the buffer not yet flushed to file.
   // Safe to call concurrently from other threads (e.g. for stats logging).
   int64_t numRowsWritten() const;
+  // KataGame fork (abscls-il4e.11): of those rows, the game's rows whose second policy target went from the next
+  // search's view into the view that the row gives it (writeGame, FinishedGameData::moveViews), and the rows where no
+  // move of it stayed, which then have no second policy target. Safe to call as numRowsWritten.
+  int64_t numRowsNextPolicyTranslated() const;
+  int64_t numRowsNextPolicyLost() const;
 
  private:
   std::string outputDir;
@@ -458,6 +485,8 @@ class TrainingDataWriter {
   // Atomic only so that numRowsWritten() can be read for stats from other threads;
   // all mutation happens on the single thread using this writer.
   std::atomic<int64_t> rowCount;
+  std::atomic<int64_t> nextPolicyTranslatedCount;
+  std::atomic<int64_t> nextPolicyLostCount;
 
   bool isFirstFile;
   int firstFileMaxRows;

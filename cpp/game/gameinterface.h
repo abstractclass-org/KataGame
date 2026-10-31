@@ -115,18 +115,24 @@
  *                           draws, its one-line position too: a replay or an analysis from that text gives them back.
  *                           Self-play's SGF records do not hold them. Blueprints' view orientation under
  *                           viewOrientation = randomGame. Default: none (drawStart).
- *   view_text(p), set_view(p, text, why), view_cover(p, views)
- *                           std::string, bool, void: the views of a game whose network sees a part of a larger board,
- *                           each a text of the game's own ("" for the view that the rules give the position).
- *                           view_text gives the view that a caller set on p, or "". set_view sets p's view until p's
- *                           next action (play ends it, and every later position has the rules' view): the legal
- *                           actions, what each action means, the inputs, the symmetries' images and the hash are then
- *                           that view's. "" gives the rules' view back. It returns false with the reason for a text
- *                           that names no view. view_cover gives views (std::vector<std::string>) that hold every
+ *   view_text(p), set_view(p, text, why), view_cover(p, views), view_in_frame(p, frame), view_action(p, action, other)
+ *                           std::string, bool, void, std::string, int: the views of a game whose network sees a part
+ *                           of a larger board, each a text of the game's own ("" for the view that the rules give the
+ *                           position). view_text gives the view that a caller set on p, or "". set_view sets p's view
+ *                           until p's next action (play ends it, and every later position has the rules' view): the
+ *                           legal actions, what each action means, the inputs, the symmetries' images and the hash are
+ *                           then that view's. "" gives the rules' view back. It returns false with the reason for a
+ *                           text that names no view. view_cover gives views (std::vector<std::string>) that hold every
  *                           legal move of p between them, each move as an action of p with one of the views set: {""}
- *                           when the rules' view holds them all. The analysis engine's rootViews searches each view
- *                           of the cover. A game gives all three or none. Blueprints' views. Default: one view, ""
- *                           (viewText, setView, viewCover).
+ *                           when the rules' view holds them all. The analysis engine's rootViews and self-play's
+ *                           rootViews search each view of the cover. view_in_frame gives p's rules' view as the frame
+ *                           of frame's view sees it (frame: another position, whose view a caller can have set): the
+ *                           view that a training row of frame gives the policy of p, the position after the row's
+ *                           move (TrainingDataWriter, the second policy target), "" when that is p's rules' view.
+ *                           view_action gives the action of other that plays what the legal action plays on p, where
+ *                           other is p in another view (set_view), or -1 when other's view does not name it: the
+ *                           same child position. A game gives all five or none. Blueprints' views. Default: one
+ *                           view, "" (viewText, setView, viewCover, viewInFrame, viewAction: the action itself).
  *   state_text(p), parse_state(text, p, why)
  *                           std::string, bool: the whole state that the network reads, as one line: the one-line
  *                           position and what it leaves out that the inputs read (input_hash: the earlier turns of the
@@ -453,6 +459,10 @@ namespace rules {
                                    std::declval<std::string&>()))
   GAMEINTERFACE_DETECT(HasViewCover, void,
                        G::view_cover(std::declval<const P<G>&>(), std::declval<std::vector<std::string>&>()))
+  GAMEINTERFACE_DETECT(HasViewInFrame, std::string,
+                       G::view_in_frame(std::declval<const P<G>&>(), std::declval<const P<G>&>()))
+  GAMEINTERFACE_DETECT(HasViewAction, int,
+                       G::view_action(std::declval<const P<G>&>(), 0, std::declval<const P<G>&>()))
   GAMEINTERFACE_DETECT(HasStateText, std::string, G::state_text(std::declval<const P<G>&>()))
   GAMEINTERFACE_DETECT(HasParseState, bool,
                        G::parse_state(std::declval<const std::string&>(), std::declval<P<G>&>(),
@@ -526,10 +536,12 @@ template<class R> constexpr bool checkRules() {
                 "game interface, rules part: the game gives SETTINGS (the settings' names, const char*) and "
                 "set_setting(const std::string& name, const std::string& value, std::string& why) -> bool together, "
                 "or neither");
-  static_assert(HasViewText<R>::value == HasSetView<R>::value && HasViewCover<R>::value == HasSetView<R>::value,
+  static_assert(HasViewText<R>::value == HasSetView<R>::value && HasViewCover<R>::value == HasSetView<R>::value &&
+                  HasViewInFrame<R>::value == HasSetView<R>::value && HasViewAction<R>::value == HasSetView<R>::value,
                 "game interface, rules part: the game gives view_text(const Position&) -> std::string, "
-                "set_view(Position&, const std::string&, std::string& why) -> bool and view_cover(const Position&, "
-                "std::vector<std::string>&) together, or none");
+                "set_view(Position&, const std::string&, std::string& why) -> bool, view_cover(const Position&, "
+                "std::vector<std::string>&), view_in_frame(const Position&, const Position&) -> std::string and "
+                "view_action(const Position&, int, const Position&) -> int together, or none");
   static_assert(HasStateText<R>::value == HasParseState<R>::value,
                 "game interface, rules part: the game gives state_text(const Position&) -> std::string and "
                 "parse_state(const std::string&, Position&, std::string& why) -> bool together, or neither");
@@ -738,6 +750,29 @@ template<class R> void viewCover(const typename R::Position& p, std::vector<std:
   else {
     (void)p;
     views.assign(1, "");
+  }
+}
+
+//p's rules' view in the frame of frame's view: the game's, else "" (the rules' view, the only one).
+template<class R> std::string viewInFrame(const typename R::Position& p, const typename R::Position& frame) {
+  if constexpr(rules::HasViewInFrame<R>::value)
+    return R::view_in_frame(p, frame);
+  else {
+    (void)p;
+    (void)frame;
+    return "";
+  }
+}
+
+//The action of other (p in another view) that plays what p's legal action plays, or -1: the game's, else the action
+//itself (one view).
+template<class R> int viewAction(const typename R::Position& p, int action, const typename R::Position& other) {
+  if constexpr(rules::HasViewAction<R>::value)
+    return R::view_action(p, action, other);
+  else {
+    (void)p;
+    (void)other;
+    return action;
   }
 }
 
