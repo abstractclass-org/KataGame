@@ -229,14 +229,29 @@ void replay() {
       playAction(*POS, a);
 }
 
-// GTP's refusal of a move by COLOR (command/gtp.cpp, turnError), or "".
-string turnError(const string& color) {
+// The session's game from the start, with no moves.
+void newGame() {
+  MOVES.clear();
+  replay();
+}
+
+// The seat of GTP's colour COLOR (0 for b, Blue; 1 for w, Red), as bp::turn_of and CLOCK number them, or -1 when the
+// colour does not parse.
+int seatOf(const string& color) {
   Player pla;
   if(!PlayerIO::tryParsePlayer(color, pla))
+    return -1;
+  return pla == P_BLACK ? 0 : 1;
+}
+
+// GTP's refusal of a move by COLOR (command/gtp.cpp, turnError), or "".
+string turnError(const string& color) {
+  const int seat = seatOf(color);
+  if(seat < 0)
     return "Could not parse color: '" + color + "'";
   if(GameRules::terminal(*POS))
     return "the game is over";
-  if((pla == P_BLACK ? 0 : 1) != bp::turn_of(POS->ply))
+  if(seat != bp::turn_of(POS->ply))
     return "it is " + colorOf(*POS) + "'s turn";
   return "";
 }
@@ -270,8 +285,7 @@ string start(const vector<string>& args) {
   });
   NETWORK = HOST->network(SESSION);
   POS = new bp::Position();
-  MOVES.clear();
-  replay();
+  newGame();
   return ok("");
 }
 
@@ -348,11 +362,10 @@ string play(const vector<string>& args) {
 // time_left COLOR TIME STONES: GTP's, and the reading for an edit's drop when GTP takes it.
 string timeLeft(const vector<string>& args, const string& line) {
   const string response = engine(line);
-  Player pla;
+  const int seat = args.size() == 4 ? seatOf(args[1]) : -1;
   double seconds = 0;
-  if(!failed(response) && args.size() == 4 && PlayerIO::tryParsePlayer(args[1], pla) &&
-     Global::tryStringToDouble(args[2], seconds)) {
-    ClockReading& c = CLOCK[pla == P_BLACK ? 0 : 1];
+  if(!failed(response) && seat >= 0 && Global::tryStringToDouble(args[2], seconds)) {
+    ClockReading& c = CLOCK[seat];
     c.set = true;
     c.seconds = seconds;
     c.stones = args[3];
@@ -362,14 +375,13 @@ string timeLeft(const vector<string>& args, const string& line) {
 }
 
 // Before an edit's drop: GTP's clock of the mover gets the time left after the pick, the last time_left less the time
-// since it came. Nothing without a time_left since the last genmove.
+// since it came. Nothing without a time_left since the last genmove (always so in a host with no clock, which refuses
+// time_left).
 void clockBeforeDrop(const string& color) {
-  Player pla;
-  if(!HOST->clock() || !PlayerIO::tryParsePlayer(color, pla))
+  const int seat = seatOf(color);
+  if(seat < 0 || !CLOCK[seat].set)
     return;
-  const ClockReading& c = CLOCK[pla == P_BLACK ? 0 : 1];
-  if(!c.set)
-    return;
+  const ClockReading& c = CLOCK[seat];
   const double spent = std::chrono::duration<double>(std::chrono::steady_clock::now() - c.at).count();
   engine("time_left " + color + " " + Global::doubleToString(std::max(0.0, c.seconds - spent)) + " " + c.stones);
 }
@@ -402,9 +414,9 @@ string genmove(const vector<string>& args, const string& line) {
     m.push_back(drop);
     playAction(*POS, drop);
   }
-  Player pla;
-  if(PlayerIO::tryParsePlayer(color, pla))
-    CLOCK[pla == P_BLACK ? 0 : 1].set = false;
+  const int seat = seatOf(color);
+  if(seat >= 0)
+    CLOCK[seat].set = false;
   MOVES.push_back(m);
   return ok(move);
 }
@@ -439,15 +451,13 @@ string setGame(const vector<string>& args) {
   const string cleared = engine("clear_board");
   if(failed(cleared))
     return cleared;
-  MOVES.clear();
-  replay();
+  newGame();
   for(size_t i = 0; i < moves.size(); i++) {
     for(const Action& a : moves[i]) {
       const string response = engine("play " + colorOf(*POS) + " " + gtpText(a));
       if(failed(response)) {
         engine("clear_board");
-        MOVES.clear();
-        replay();
+        newGame();
         return fail("move " + std::to_string(i) + ": " + text(response));
       }
       playAction(*POS, a);
@@ -501,10 +511,8 @@ std::string BlueprintsPractice::handle(const std::string& line, bool& quit) {
   if(command == "time_left")
     return timeLeft(args, line);
   const string response = GTPSessions::handle(SESSION, line, quit);
-  if(!failed(response) && command == "clear_board") {
-    MOVES.clear();
-    replay();
-  }
+  if(!failed(response) && command == "clear_board")
+    newGame();
   return response;
 }
 

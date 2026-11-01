@@ -13,17 +13,15 @@
 #include "../command/commandline.h"
 #include "../command/gtpsession.h"
 #include "../core/config_parser.h"
+#include "../core/fileutils.h"
 #include "../core/global.h"
-#include "../core/sha2.h"
 #include "../game/board.h"
 #include "../main.h"
 #include "../neuralnet/nninterface.h"
 #include "../neuralnet/nninputs.h"
 #include "../external/nlohmann_json/json.hpp"
 
-#include <fstream>
 #include <iostream>
-#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
@@ -58,11 +56,8 @@ class NativeHost : public BlueprintsPractice::Host {
       nlohmann::json::parse(models.size() > 1 && models[0] == '=' ? models.substr(1) : "null", nullptr, false);
     if(list.is_array() && !list.empty() && list[0].contains("internalName") && list[0]["internalName"].is_string())
       n.name = list[0]["internalName"].get<string>();
-    ifstream in(modelFile, ios::binary);
-    const vector<char> bytes((istreambuf_iterator<char>(in)), istreambuf_iterator<char>());
-    char hash[65];
-    SHA2::get256(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), hash);
-    n.sha256 = string(hash, 64);
+    string bytes;
+    FileUtils::loadFileIntoString(modelFile, "", bytes, &n.sha256);
     n.bytes = bytes.size();
     return n;
   }
