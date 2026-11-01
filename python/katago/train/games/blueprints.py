@@ -288,6 +288,23 @@ def mask_targets(binary_inputs, global_inputs, value_targets, global_targets):
     return out
 
 
+def legal_moves(binary_inputs, global_inputs):
+    """The moves that the rows' inputs make legal (N, MAX_BOARD_LEN^2 * POLICY_CHANNELS + 1), from the rows as read: a
+    placement of blueprint k on its plane of anchors that fit (MY_PLACES + k) while no pick waits for its drop, and a
+    pick or a drop of blueprint k on its plane of legal hand actions (LEGAL_HAND + k). The pass is never legal: no row
+    has a pass target (the engine repository's games/blueprints/tools/check_rows.py checks the targets against the
+    same planes). None for the rows before the inputs version 10, which have no plane of legal hand actions."""
+    planes = binary_inputs[:, 1:]
+    if planes.shape[1] < LEGAL_HAND + HAND:
+        return None
+    n = planes.shape[0]
+    waiting = global_inputs[:, PICKED_INPUT] > 0.5
+    places = (planes[:, MY_PLACES:MY_PLACES + HAND] > 0.5) & ~waiting[:, None, None, None]
+    hand = planes[:, LEGAL_HAND:LEGAL_HAND + HAND] > 0.5
+    moves = torch.cat((places, hand), dim=1).permute(0, 2, 3, 1).reshape(n, -1)  # (N, y * x * channel)
+    return torch.cat((moves, torch.zeros(n, 1, dtype=torch.bool, device=moves.device)), dim=1)
+
+
 def income_mask(binary_inputs):
     """The points where the loss of C5-6 reads the target (N, 2, y, x): the row's cells that can go, not walls. C5 the
     opponent's, C6 the mover's (the input planes of the cells, which move as pixels)."""

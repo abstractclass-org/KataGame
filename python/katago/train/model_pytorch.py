@@ -2719,6 +2719,116 @@ class TransformerFFNBlock(torch.nn.Module):
         return result
 
 
+def patch_padding(pos_len: int, patch: int):
+    """KataGame fork (abscls-ra93.2): the padding (before, after) of each axis of a pos_len board up to a multiple of
+    patch, as even as it can be. For 67 and 3 it is (1, 1), symmetric about the board's middle, so the 4 symmetries of
+    a hexagonal view map patches to patches. For 67 and 2 it is (0, 1), which the turn by 180 degrees does not keep."""
+    total = (-pos_len) % patch
+    return total // 2, total - total // 2
+
+
+class PatchTransformerBlock(torch.nn.Module):
+    """KataGame fork (2026-11-01, the engine repository's abscls-ra93.2): a residual block whose branch runs attention
+    on patches of the board, the token section of the shape hybrid3 (the engine repository's
+    games/blueprints/tools/net_shapes.py, abscls-ra93.1). It is KataGo's NestedBottleneckTransformerBlock with a patch
+    in place of each 1x1 convolution:
+
+    - The board times the mask, padded to a multiple of the patch (patch_padding), and each patch x patch square of
+      points as one token's channels (a space-to-depth, F.pixel_unshuffle: channel c * patch * patch + dy * patch + dx).
+    - A linear map of each token to the token width (config "patch_channels").
+    - config "patch_pairs" pairs of KataGo's attention block (learned 2D RoPE on the token grid, config
+      "transformer_heads") and FFN block (SwiGLU, config "transformer_ffn_channels"), each added to the tokens.
+    - RMSNorm, a linear map back to patch x patch points of c_main channels, the depth-to-space (F.pixel_shuffle), the
+      padding cut off, times the mask. The block returns this residual and the trunk adds it, so the trunk before the
+      block is the skip.
+
+    The attention has no mask. Each token holds a point of the board when the padding is less than a patch (always),
+    and a board whose mask plane is all ones (Blueprints' view) holds no token without a point on the board. On a
+    board with points off it, a token of off-board points only enters the attention with an input of 0.
+
+    The initialization under fixup is the bottleneck's: the input map with KataGo's init_weights at the scale
+    fixup_scale ** (1 / (1 + pairs)) (no activation before it, so the identity's gain), the attention and FFN blocks
+    with their own initialization, and the output map at 0, so that the block starts as the identity. Only fixup is
+    built: the other norm kinds' scales are not defined for this block. No C++ backend and no export has this block."""
+    def __init__(self, name, c_main, config, activation, pos_len):
+        super(PatchTransformerBlock, self).__init__()
+        self.name = name
+        self.norm_kind = config["norm_kind"]
+        assert self.norm_kind == "fixup", f"the patch block is built for fixup only, not {self.norm_kind}"
+        self.c_main = c_main
+        self.patch = config["patch_size"]
+        self.c_token = config["patch_channels"]
+        self.internal_length = config["patch_pairs"]
+        self.pos_len = pos_len
+        self.padding = patch_padding(pos_len, self.patch)
+        self.grid = (pos_len + sum(self.padding)) // self.patch
+        c_patch = c_main * self.patch * self.patch
+        self.pack = torch.nn.Linear(c_patch, self.c_token, bias=False)
+        self.blockstack = torch.nn.ModuleList()
+        for i in range(self.internal_length):
+            self.blockstack.append(TransformerAttentionBlock(
+                name=name+".blockstack.attn"+str(i+1),
+                c_main=self.c_token,
+                config=config,
+                activation=activation,
+                pos_len=self.grid,
+                use_rope=True,
+            ))
+            self.blockstack.append(TransformerFFNBlock(
+                name=name+".blockstack.ffn"+str(i+1),
+                c_main=self.c_token,
+                config=config,
+                activation=activation,
+                use_swiglu=True,
+            ))
+        self.norm = torch.nn.RMSNorm(self.c_token, eps=1e-6)
+        self.unpack = torch.nn.Linear(self.c_token, c_patch, bias=False)
+
+    def pack_points(self, x):
+        """(N, C, L, L) -> (N, C * patch * patch, G, G): the padded board, each patch as one token's channels."""
+        before, after = self.padding
+        return torch.nn.functional.pixel_unshuffle(
+            torch.nn.functional.pad(x, (before, after, before, after)), self.patch)
+
+    def unpack_points(self, tokens):
+        """The inverse of pack_points: (N, C * patch * patch, G, G) -> (N, C, L, L), the padding cut off."""
+        before = self.padding[0]
+        out = torch.nn.functional.pixel_shuffle(tokens, self.patch)
+        return out[:, :, before:before + self.pos_len, before:before + self.pos_len]
+
+    def initialize(self, fixup_scale):
+        init_weights(self.pack.weight, "identity", scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)))
+        for block in self.blockstack:
+            block.initialize(fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)))
+        self.unpack.weight.data.zero_()
+
+    def add_reg_dict(self, reg_dict:Dict[str,List]):
+        reg_dict["normal"].append(self.pack.weight)
+        for block in self.blockstack:
+            block.add_reg_dict(reg_dict)
+        reg_dict["noreg"].append(self.norm.weight)
+        reg_dict["normal"].append(self.unpack.weight)
+
+    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
+        pass
+
+    def add_brenorm_clippage(self, upper_rclippage, lower_rclippage, dclippage):
+        pass
+
+    def forward(self, x, mask, mask_sum_hw, mask_sum: float, extra_outputs: Optional[ExtraOutputs], block_shared_data: Optional[Dict[str, Any]] = None):
+        """x: NCHW, mask: N1HW. Returns the residual, NCHW (the caller adds it to the trunk)."""
+        n = x.shape[0]
+        tokens = self.pack_points(x * mask)
+        seq = self.pack(tokens.flatten(2).transpose(1, 2))  # (N, G * G, token width)
+        for block in self.blockstack:
+            seq = seq + block(seq, mask=None, mask_sum_hw=None, mask_sum=None, extra_outputs=extra_outputs)
+        tokens = self.unpack(self.norm(seq)).transpose(1, 2).reshape(n, -1, self.grid, self.grid)
+        out = self.unpack_points(tokens) * mask
+        if extra_outputs is not None:
+            extra_outputs.report(self.name+".out", out)
+        return out
+
+
 class PolicyHead(torch.nn.Module):
     def __init__(self, c_in, c_p1, c_g1, config, activation):
         super(PolicyHead, self).__init__()
@@ -3201,6 +3311,7 @@ _BLOCK_KIND_FLAGS = {
     "bottlenest2transformerropegabsg":      (True,  False),
     "bottlenest2transformertabsg":         (False, True),
     "bottlenest2transformerropetabsg":     (False, True),
+    "patchtransformerropesg":               (False, False),
 }
 
 def _block_kind_base(block_kind: str) -> str:
@@ -3612,6 +3723,15 @@ class Model(torch.nn.Module):
                     use_swiglu=True,
                     use_rope=True,
                     use_tab=True,
+                ))
+            elif block_kind == "patchtransformerropesg":
+                assert not use_gpool_this_block
+                self.blocks.append(PatchTransformerBlock(
+                    name=block_name,
+                    c_main=self.c_trunk,
+                    config=self.config,
+                    activation=self.activation,
+                    pos_len=pos_len,
                 ))
             else:
                 assert False, f"Unknown block kind: {block_config[1]}"

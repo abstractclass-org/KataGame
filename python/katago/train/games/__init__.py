@@ -83,6 +83,12 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         inputs as the rows of version 12, but other meanings: a run that switches to version 13
                         (add_extended_inputs.py) trains on the rows of version 13 only. Default: False, and version 13
                         is version 12 (canonical_labels).
+  legal_moves(binary_inputs, global_inputs)
+                        the moves that the rows' inputs make legal (N, policy) as booleans, in the policy's order (the
+                        point's index * POLICY_CHANNELS + the channel, then pass), from the rows as read (no symmetry).
+                        Only an evaluation reads it: the network's policy outside these moves is an error that the
+                        search hides (the engine repository's abscls-ra93.2). None for rows that do not hold the planes
+                        it reads. Default: none (legal_moves below gives None).
 """
 
 import importlib
@@ -254,6 +260,12 @@ def apply_symmetry_global_inputs(game, global_inputs, symmetry):
     out = global_inputs.clone()
     out[:, start:start + extended] = mapping(global_inputs[:, start:start + extended], symmetry)
     return out
+
+
+def legal_moves(game, binary_inputs, global_inputs):
+    """The game's legal_moves of the rows, or None for a game without it."""
+    legal = getattr(game, "legal_moves", None)
+    return None if legal is None else legal(binary_inputs, global_inputs)
 
 
 def loss_coefficients(game):

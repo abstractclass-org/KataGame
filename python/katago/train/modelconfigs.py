@@ -2198,3 +2198,30 @@ for name, base_config in list(config_of_name.items()):
         "internal_num_channels": config["trunk_num_channels"],
     }
     config_of_name[name+"-meta"] = config
+
+
+# KataGame fork (2026-11-01, the engine repository's abscls-ra93.2): hybrid3, a shape for Blueprints' 67 x 67 view
+# (the engine repository's games/blueprints/tools/net_shapes.py and games/blueprints/docs/decisions/training.md,
+# abscls-ra93.1): b6c96's input convolution, blocks and heads at 64 channels, two residual blocks, the patch block
+# (model_pytorch.PatchTransformerBlock: 3 x 3 patches of hexes as 529 tokens, 4 attention/SwiGLU pairs of width 128,
+# 4 heads, an FFN of 384, the learned 2D RoPE), then one residual block. The patch block's residual is added to the
+# trunk, so the trunk after the two residual blocks is the skip. Fixup only, and outside the variants above: the patch
+# block has no scales for the other norm kinds. No C++ backend reads the patch block yet.
+hybrid3 = {
+    **b6c96,
+    "trunk_num_channels":64,
+    "mid_num_channels":64,
+    "block_kind": [
+        ["rconv1","regular"],
+        ["rconv2","regular"],
+        ["patch1","patchtransformerropesg"],
+        ["rconv3","regular"],
+    ],
+    "patch_size":3,
+    "patch_channels":128,
+    "patch_pairs":4,
+    "transformer_heads":4,
+    "transformer_ffn_channels":384,
+    "learnable_rope":True,
+}
+config_of_name["hybrid3"] = hybrid3
