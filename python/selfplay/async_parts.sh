@@ -166,13 +166,14 @@ selfplay_key() {  # KEY=VALUE[,...]: added to SELFPLAY_IN_FORCE (nothing for an 
 }
 
 train_flags() {  # the train.py flags of every trainer, from the levers (after run_defaults)
-    local pace=""
+    local pace="" gate=""
     [[ "$EXPORT_MIN_MINUTES" == 0 ]] || pace=" -export-min-minutes $EXPORT_MIN_MINUTES"
+    [[ -z "$EXPORT_GATE_MARGIN" ]] ||
+        gate=" -export-gate-margin $EXPORT_GATE_MARGIN -export-gate-refusals $EXPORT_GATE_REFUSALS"
     echo "-game $GAME -samples-per-epoch $NUM_TRAIN_SAMPLES_PER_EPOCH -swa-period-samples $NUM_TRAIN_SAMPLES_PER_SWA" \
         "-no-repeat-files -max-train-bucket-per-new-data $MAX_TRAIN_PER_DATA -max-train-bucket-size" \
         "$MAX_TRAIN_SAMPLES_PER_CYCLE${WAIT_FOR_DATA_SECONDS:+ -wait-for-data-seconds $WAIT_FOR_DATA_SECONDS}" \
-        "$TRAIN_EXTRA_ARGS$pace${EXPORT_GATE_MARGIN:+ -export-gate-margin $EXPORT_GATE_MARGIN" \
-        "-export-gate-refusals $EXPORT_GATE_REFUSALS}${GRAD_SCALE_FLOOR:+ -grad-scale-floor $GRAD_SCALE_FLOOR}"
+        "$TRAIN_EXTRA_ARGS$pace$gate${GRAD_SCALE_FLOOR:+ -grad-scale-floor $GRAD_SCALE_FLOOR}"
 }
 
 scaled_rows() {  # UPSTREAM GO_BYTES BYTES: upstream's count of Go's rows, scaled to the same bytes of rows of BYTES
