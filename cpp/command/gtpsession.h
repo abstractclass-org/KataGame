@@ -20,6 +20,9 @@ namespace GTPSessions {
   //A new game from the set-up start (the practice bot, games/enclosure/docs/design/22-practice-bot.md), as clear_board starts one
   //from the standard start: undo stops at it, and its turn number is its moves played. The caller checks the start.
   void setStart(GTPSession* session, const GameRules::Position& start);
+  //KataGame fork (Blueprints' native practice engine, command/blueprintspracticeengine.cpp): ends the session as
+  //MainCmds::gtp ends its own (its search and pondering stop), and deletes it.
+  void finish(GTPSession* session);
 }
 
 #endif  // COMMAND_GTPSESSION_H_

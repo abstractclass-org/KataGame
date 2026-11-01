@@ -290,7 +290,11 @@ void TimeControls::getTime(const Board& board, const BoardHistory& hist, double 
     //turn's last move, and a full turn has the game's TURN_MOVES (Enclosure: two edges). So a move counts its share of
     //the increment, and a move with more of its turn to come leaves each of them its share of the time left, since no
     //increment comes between them.
-    const double moveIncrement = increment / GameInterface::turnMoves<GameRules>();
+    //KataGame fork (abscls-h8xj): an action that continues a move (Blueprints' drop, after its pick) is one move with
+    //the action before it, whose search had the move's share of the increment. So it gets none, only its share of the
+    //time left.
+    const double moveIncrement =
+      GameInterface::continuesMove<GameRules>(board.pos) ? 0.0 : increment / GameInterface::turnMoves<GameRules>();
     //Note that some GTP controllers might give us a negative mainTimeLeft in weird cases. We tolerate this and do the best we can.
     if(mainTimeLeft <= moveIncrement) {
       minTime = std::min(std::max(0.0, mainTimeLeft * 0.5), std::max(0.0, mainTimeLeft + moveIncrement - mainTimeLimit));

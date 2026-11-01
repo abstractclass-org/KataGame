@@ -419,6 +419,8 @@ struct GTPEngine {
 
   vector<double> recentWinLossValues;
   double lastSearchFactor;
+  //KataGame fork (abscls-h8xj): the network's rows when the last genmove's search ended, for the log of the next one.
+  uint64_t rowsAfterLastSearch = 0;
   double desiredDynamicPDAForWhite;
   std::unique_ptr<PatternBonusTable> patternBonusTable;
 
@@ -1137,6 +1139,16 @@ struct GTPEngine {
     string response;
     bool responseIsError = false;
     Loc moveLocToPlay = Board::NULL_LOC;
+    //KataGame fork (abscls-h8xj): with logSearchInfo, what the search starts from. The tree's root holds the visits of
+    //the last search's subtree and of the pondering since, and the rows that the network evaluated since the last
+    //search are pondering's (genmove clears the network's counts at its start, and only searches evaluate).
+    if(gargs.logSearchInfo) {
+      const int64_t kept = bot->getSearchStopAndWait()->getRootVisits();
+      const uint64_t rows = nnEval->numRowsProcessed();
+      logger.write("Before the search: " + Global::int64ToString(kept) + " visits at the root, " +
+                   Global::uint64ToString(rows >= rowsAfterLastSearch ? rows - rowsAfterLastSearch : rows) +
+                   " network rows since the last search (pondering)");
+    }
     //KataGame fork (abscls-il4e.4): with rootViews, a position that needs a view other than the rules' takes the root
     //views' search, whose move can be in another view (viewToPlay). The rules' view alone gives the usual search.
     string viewToPlay;
@@ -1157,6 +1169,7 @@ struct GTPEngine {
       testAssert(onMoveWasCalled);
       handleGenMoveResult(pla,bot->getSearchStopAndWait(),logger,gargs,args,genmoveMoveLoc,response,responseIsError,moveLocToPlay);
     }
+    rowsAfterLastSearch = nnEval->numRowsProcessed();
     printGTPResponse(response,responseIsError);
     if(moveLocToPlay != Board::NULL_LOC && playChosenMove) {
       bool suc = play(moveLocToPlay,pla,viewToPlay);  //KataGame fork: play keeps moveViews beside moveHistory
@@ -4172,6 +4185,11 @@ GTPSession* GTPSessions::start(ConfigParser& cfg, const string& nnModelFile) {
 void GTPSessions::setStart(GTPSession* session, const GameRules::Position& start) {
   session->maybeSaveAvoidPatterns(false); //as clear_board
   session->engine->setStart(start);
+}
+
+void GTPSessions::finish(GTPSession* session) {
+  session->finish();
+  delete session;
 }
 
 string GTPSessions::handle(GTPSession* session, const string& line, bool& quit) {
