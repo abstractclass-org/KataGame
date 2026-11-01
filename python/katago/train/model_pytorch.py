@@ -2720,9 +2720,10 @@ class TransformerFFNBlock(torch.nn.Module):
 
 
 def patch_padding(pos_len: int, patch: int):
-    """KataGame fork (abscls-ra93.2): the padding (before, after) of each axis of a pos_len board up to a multiple of
-    patch, as even as it can be. For 67 and 3 it is (1, 1), symmetric about the board's middle, so the 4 symmetries of
-    a hexagonal view map patches to patches. For 67 and 2 it is (0, 1), which the turn by 180 degrees does not keep."""
+    """KataGame fork (2026-11-01, abscls-ra93.2): the padding (before, after) of each axis of a pos_len board up to a
+    multiple of patch, as even as it can be. For 67 and 3 it is (1, 1), symmetric about the board's middle, so the 4
+    symmetries of a hexagonal view map patches to patches. For 67 and 2 it is (0, 1), which the turn by 180 degrees
+    does not keep."""
     total = (-pos_len) % patch
     return total // 2, total - total // 2
 
@@ -2731,7 +2732,9 @@ class PatchTransformerBlock(torch.nn.Module):
     """KataGame fork (2026-11-01, the engine repository's abscls-ra93.2): a residual block whose branch runs attention
     on patches of the board, the token section of the shape hybrid3 (the engine repository's
     games/blueprints/tools/net_shapes.py, abscls-ra93.1). It is KataGo's NestedBottleneckTransformerBlock with a patch
-    in place of each 1x1 convolution:
+    in place of each 1x1 convolution. It departs from it as net_shapes' measured shape does: KataGo's bottleneck puts a
+    norm and an activation before each 1x1 convolution (NormActConv), and this block has none before the packing and
+    an RMSNorm without an activation before the unpacking:
 
     - The board times the mask, padded to a multiple of the patch (patch_padding), and each patch x patch square of
       points as one token's channels (a space-to-depth, F.pixel_unshuffle: channel c * patch * patch + dy * patch + dx).
@@ -2744,7 +2747,8 @@ class PatchTransformerBlock(torch.nn.Module):
 
     The attention has no mask. Each token holds a point of the board when the padding is less than a patch (always),
     and a board whose mask plane is all ones (Blueprints' view) holds no token without a point on the board. On a
-    board with points off it, a token of off-board points only enters the attention with an input of 0.
+    board with points off it, a token of off-board points starts at 0 but takes part in the attention unmasked, so
+    the block is built for boards without such tokens.
 
     The initialization under fixup is the bottleneck's: the input map with KataGo's init_weights at the scale
     fixup_scale ** (1 / (1 + pairs)) (no activation before it, so the identity's gain), the attention and FFN blocks
@@ -2797,9 +2801,10 @@ class PatchTransformerBlock(torch.nn.Module):
         return out[:, :, before:before + self.pos_len, before:before + self.pos_len]
 
     def initialize(self, fixup_scale):
-        init_weights(self.pack.weight, "identity", scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)))
+        scale = math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length))
+        init_weights(self.pack.weight, "identity", scale=scale)
         for block in self.blockstack:
-            block.initialize(fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)))
+            block.initialize(fixup_scale=scale)
         self.unpack.weight.data.zero_()
 
     def add_reg_dict(self, reg_dict:Dict[str,List]):
@@ -3311,7 +3316,7 @@ _BLOCK_KIND_FLAGS = {
     "bottlenest2transformerropegabsg":      (True,  False),
     "bottlenest2transformertabsg":         (False, True),
     "bottlenest2transformerropetabsg":     (False, True),
-    "patchtransformerropesg":               (False, False),
+    "patchtransformerropesg":               (False, False),  # KataGame fork (2026-11-01): hybrid3's patch block
 }
 
 def _block_kind_base(block_kind: str) -> str:
@@ -3725,6 +3730,7 @@ class Model(torch.nn.Module):
                     use_tab=True,
                 ))
             elif block_kind == "patchtransformerropesg":
+                # KataGame fork (2026-11-01, the engine repository's abscls-ra93.2): hybrid3's patch block.
                 assert not use_gpool_this_block
                 self.blocks.append(PatchTransformerBlock(
                     name=block_name,

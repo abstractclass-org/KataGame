@@ -72,7 +72,7 @@ def test_the_four_symmetries_map_patches_to_patches():
     for symmetry in [s for s in range(8) if blueprints.SYMMETRIES & (1 << s)]:
         moved = block.pack_points(games.apply_symmetry_points(ids, symmetry)).sort(dim=1).values
         tokens = games.apply_symmetry_points(block.pack_points(ids).sort(dim=1).values, symmetry)
-        assert torch.equal(moved.sort(dim=1).values, tokens), symmetry
+        assert torch.equal(moved, tokens), symmetry
 
 
 def test_hybrid3_gives_the_trainers_outputs_and_starts_as_the_identity():
@@ -229,7 +229,9 @@ def test_the_holdouts_measures_repeat_and_count_the_mass_outside_the_legal_moves
     batch["globalTargetsNC"][:, [25, 26]] = 1.0
     batch["policyTargetsNCMove"][:, 0, 0] = 1.0
     uniform = ((torch.zeros(2, 2, policy_len(SIZE, blueprints.POLICY_CHANNELS)),),)
-    total, weight = holdout_losses.illegal_mass(blueprints, uniform, batch)
+    legal = games.legal_moves(blueprints, batch["binaryInputNCHW"], batch["globalInputNC"])
+    total = holdout_losses.illegal_mass(uniform, legal, batch)
+    weight = holdout_losses.batch_weights(batch)["p0w"]
     moves = policy_len(SIZE, blueprints.POLICY_CHANNELS)
     assert weight == 2.0
     torch.testing.assert_close(total / weight, torch.tensor(1.0 - 4 * SIZE / moves))

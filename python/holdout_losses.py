@@ -31,6 +31,7 @@ import sys
 import numpy as np
 import torch
 
+from export_gate_check import validation_metrics
 from katago.train import data_processing_pytorch, games, modelconfigs
 from katago.train.load_model import load_model
 from katago.train.metrics_pytorch import Metrics
@@ -43,39 +44,27 @@ LOSSES = {
 }
 
 
-def validation_metrics(metrics_obj, network, outputs, batch):
-    """The trainer's validation metrics of a batch at train.py's default loss scales (export_gate_check.py's)."""
-    return metrics_obj.metrics_dict_batchwise(
-        network, network.postprocess_output(outputs), None, batch, is_training=False, soft_policy_weight_scale=8.0,
-        disable_optimistic_policy=False, meta_kata_only_soft_policy=False, value_loss_scale=0.6,
-        td_value_loss_scales=[0.6, 0.6, 0.6], seki_loss_scale=1.0, variance_time_loss_scale=1.0,
-        main_loss_scale=None, intermediate_loss_scale=None, include_model_norms=False)
+def policy_weights(batch):
+    """Each row's weight of each policy target (N, 2): the row's weight (C25) times the target's (C26, C28), as the
+    loss's weights, and 0 for a target of sum 0."""
+    targets = batch["globalTargetsNC"]
+    return targets[:, 25:26] * targets[:, [26, 28]] * (batch["policyTargetsNCMove"].sum(dim=2) > 0)
 
 
 def batch_weights(batch):
-    """The rows' weights that the metrics do not sum: each policy target's (C26, C28, as the loss's weights, without
-    the rows of a target of sum 0), the ownership's (C27) and the lead's (C29), times the row's weight (C25)."""
+    """The rows' weights that the metrics do not sum: each policy target's (policy_weights), the ownership's (C27) and
+    the lead's (C29), times the row's weight (C25)."""
     targets = batch["globalTargetsNC"]
-    policy = batch["policyTargetsNCMove"]
     weight = targets[:, 25]
-    has = policy.sum(dim=2) > 0
-    return {"p0w": (weight * targets[:, 26] * has[:, 0]).sum(), "p1w": (weight * targets[:, 28] * has[:, 1]).sum(),
-            "ow": (weight * targets[:, 27]).sum(), "leadw": (weight * targets[:, 29]).sum()}
+    p0w, p1w = policy_weights(batch).sum(dim=0)
+    return {"p0w": p0w, "p1w": p1w, "ow": (weight * targets[:, 27]).sum(), "leadw": (weight * targets[:, 29]).sum()}
 
 
-def illegal_mass(game, network_outputs, batch):
-    """The sum over the batch's rows with a policy target of the policy's mass outside the legal moves, and those rows'
-    weight. None for a game without legal_moves."""
-    legal = games.legal_moves(game, batch["binaryInputNCHW"], batch["globalInputNC"])
-    if legal is None:
-        return None
-    policy_logits = network_outputs[0][0][:, 0, :].float()
-    probs = torch.softmax(policy_logits, dim=1)
-    outside = (probs * ~legal).sum(dim=1)
-    weights = batch_weights(batch)
-    targets = batch["globalTargetsNC"]
-    row = targets[:, 25] * targets[:, 26] * (batch["policyTargetsNCMove"][:, 0].sum(dim=1) > 0)
-    return (outside * row).sum(), weights["p0w"]
+def illegal_mass(network_outputs, legal, batch):
+    """The sum over the batch's rows of the policy's mass outside the legal moves (games.legal_moves), each row at its
+    weight of the policy target (policy_weights). Its mean divides by p0w (batch_weights)."""
+    probs = torch.softmax(network_outputs[0][0][:, 0, :].float(), dim=1)
+    return ((probs * ~legal).sum(dim=1) * policy_weights(batch)[:, 0]).sum()
 
 
 def evaluate(networks, npz_files, batch_size, device, seed, max_batches=None):
@@ -83,7 +72,7 @@ def evaluate(networks, npz_files, batch_size, device, seed, max_batches=None):
     model = next(iter(networks.values()))
     config = model.config
     game = modelconfigs.get_game(config)
-    metrics_obj = Metrics(1, model)
+    metrics = validation_metrics(Metrics(1, model))  # the trainer's validation metrics (the export gate's)
     sums = {label: {} for label in networks}
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -95,14 +84,14 @@ def evaluate(networks, npz_files, batch_size, device, seed, max_batches=None):
             break
         rows += batch["binaryInputNCHW"].shape[0]
         extra = {k: float(v) for k, v in batch_weights(batch).items()}
+        legal = games.legal_moves(game, batch["binaryInputNCHW"], batch["globalInputNC"])
         for label, network in networks.items():
             outputs = network(batch["binaryInputNCHW"], batch["globalInputNC"])
-            metrics = validation_metrics(metrics_obj, network, outputs, batch)
-            add = {k: float(v) for k, v in metrics.items() if torch.is_tensor(v) or isinstance(v, (int, float))}
+            add = {k: float(v) for k, v in metrics(network, outputs, batch).items()
+                   if torch.is_tensor(v) or isinstance(v, (int, float))}
             add.update(extra)
-            mass = illegal_mass(game, outputs, batch)
-            if mass is not None:
-                add["illegal_sum"], add["illegal_w"] = float(mass[0]), float(mass[1])
+            if legal is not None:
+                add["illegal_sum"] = float(illegal_mass(outputs, legal, batch))
             for k, v in add.items():
                 sums[label][k] = sums[label].get(k, 0.0) + v
     return {label: measures(s, rows) for label, s in sums.items()}
@@ -118,7 +107,7 @@ def measures(s, rows):
             out[loss] = mean(loss + "_sum", weight)
     out["pacc1"] = mean("pacc1_sum", "p0w")
     if "illegal_sum" in s:
-        out["illegal"] = mean("illegal_sum", "illegal_w")
+        out["illegal"] = mean("illegal_sum", "p0w")
     return out
 
 
