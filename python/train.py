@@ -1174,21 +1174,15 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     export_reference = None
     export_reference_path = os.path.join(traindir, export_gate.REFERENCE_FILE)
     if rank == 0 and export_decider.gates:
-        saved = export_gate.load_reference(export_reference_path)
-        if saved is not None:
-            try:
-                export_gate.networks_on("cpu", make_gate_model, {"raw": saved["model"], "swa": saved["swa_model"]})
-                export_reference = {"raw_reference": saved["model"], "swa_reference": saved["swa_model"]}
-                logging.info(f"Export gate: the reference is the last export, {saved['name']} "
-                             f"({export_reference_path})")
-            except RuntimeError as e:
-                logging.warning(f"Export gate: {export_reference_path} does not load into this model ({e}), so the "
+        export_reference = export_gate.load_reference(export_reference_path)
+        if export_reference is not None and export_gate.fits(export_reference, raw_model):
+            logging.info(f"Export gate: the reference is the last export, {export_reference['name']} "
+                         f"({export_reference_path})")
+        else:
+            if export_reference is not None:
+                logging.warning(f"Export gate: {export_reference_path} has the weights of another model, so the "
                                 "reference is the starting checkpoint")
-        if export_reference is None:
-            export_reference = {
-                "raw_reference": export_gate.state_on_cpu(raw_model),
-                "swa_reference": export_gate.state_on_cpu(swa_model.module) if swa_model is not None else None,
-            }
+            export_reference = export_gate.reference_of(raw_model, swa_model)
             logging.info(f"Export gate: the reference is the starting checkpoint "
                          f"({train_state['global_step_samples']} samples)")
     logging.info(f"Export pace {export_min_minutes:g} min, gate margin "
@@ -1877,8 +1871,9 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                 metrics = trainloop_helpers.detensorify_metrics(metrics)
                 # The scale only with a floor: get_scale reads it from the GPU. The metrics' read above has waited for
                 # this batch's work, the scaler's update with it.
+                # A floor implies fp16, and so a scaler.
                 gnorm_watcher.observe(metrics, gnorm_cap=gnorm_cap, grad_scale=(
-                    scaler.get_scale() if scaler is not None and gnorm_watcher.grad_scale_floor is not None else None))
+                    scaler.get_scale() if gnorm_watcher.grad_scale_floor is not None else None))
 
                 if lookahead_k is not None and lookahead_print:
                     # Only accumulate metrics when lookahead is synced if lookahead_print is True
@@ -2013,7 +2008,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
             export_now = exports and is_time_to_export and not skip_export_this_time and export_decider.ask(train_state)
 
         # Validate
-        gate_validation = None
+        gate_losses = {}  # KataGame fork (abscls-8mbo): the export gate's losses (GateValidation.losses)
         if rank == 0:
             logging.info("Beginning validation after epoch!")
             val_files = []
@@ -2044,69 +2039,21 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                     val_metric_weights = defaultdict(float)
                     val_samples = 0
                     t0 = time.perf_counter()
-                    # KataGame fork (abscls-8mbo): the export gate's networks run on the same batches, with the same
-                    # symmetries: the last export's raw and SWA weights, and the candidate's SWA weights. The
-                    # candidate's raw weights are this validation's own. Each runs eagerly on a quarter of a batch at a
-                    # time, so that it holds the activations of a quarter batch.
-                    if export_now and export_decider.gates:
-                        def gate_forward(network, part):
-                            meta = part["metadataInputNC"] if raw_model.get_has_metadata_encoder() else None
-                            if use_amp:
-                                with autocast("cuda", dtype=amp_dtype):
-                                    return network(part["binaryInputNCHW"], part["globalInputNC"], input_meta=meta)
-                            return network(part["binaryInputNCHW"], part["globalInputNC"], input_meta=meta)
-
-                        def gate_metrics(network, outputs, part):
-                            return metrics_obj.metrics_dict_batchwise(
-                                network, network.postprocess_output(outputs), None, part, is_training=False,
-                                soft_policy_weight_scale=soft_policy_weight_scale,
-                                disable_optimistic_policy=disable_optimistic_policy,
-                                meta_kata_only_soft_policy=meta_kata_only_soft_policy,
-                                value_loss_scale=value_loss_scale, td_value_loss_scales=td_value_loss_scales,
-                                seki_loss_scale=seki_loss_scale, variance_time_loss_scale=variance_time_loss_scale,
-                                main_loss_scale=main_loss_scale, intermediate_loss_scale=intermediate_loss_scale,
-                                include_model_norms=False,
-                            )
-
-                        gate_networks = export_gate.networks_on(device, make_gate_model, export_reference)
-                        if swa_model is not None:
-                            gate_networks["swa"] = swa_model.module
-                        saved_gate_flex = {name: n.use_flex_attention for name, n in gate_networks.items()}
-                        for network in gate_networks.values():
-                            network.use_flex_attention = raw_model.use_flex_attention
-                        gate_validation = export_gate.GateValidation(
-                            gate_networks, gate_forward, gate_metrics, chunk_rows=batch_size // 4)
-                    for batch in data_processing_pytorch.read_npz_training_data(
-                        val_files,
-                        batch_size,
-                        world_size=1,  # Only the main process validates
-                        rank=0,        # Only the main process validates
-                        pos_len=pos_len,
-                        device=device,
-                        randomize_symmetries=True,
-                        include_meta=raw_model.get_has_metadata_encoder(),
-                        model_config=model_config
-                    ):
+                    # KataGame fork (abscls-8mbo): the validation's forward and losses, of the trainer's network and of
+                    # the export gate's networks alike.
+                    def validation_forward(network, batch):
+                        meta = batch["metadataInputNC"] if raw_model.get_has_metadata_encoder() else None
                         if use_amp:
                             with autocast("cuda", dtype=amp_dtype):
                                 # Note: output heads are already in fp32 despite autocast
-                                model_outputs = validation_model(
-                                    batch["binaryInputNCHW"],
-                                    batch["globalInputNC"],
-                                    input_meta=(batch["metadataInputNC"] if raw_model.get_has_metadata_encoder() else None),
-                                )
-                        else:
-                            model_outputs = validation_model(
-                                batch["binaryInputNCHW"],
-                                batch["globalInputNC"],
-                                input_meta=(batch["metadataInputNC"] if raw_model.get_has_metadata_encoder() else None),
-                            )
-                        postprocessed = raw_model.postprocess_output(model_outputs)
-                        extra_outputs = None
-                        metrics = metrics_obj.metrics_dict_batchwise(
-                            raw_model,
-                            postprocessed,
-                            extra_outputs,
+                                return network(batch["binaryInputNCHW"], batch["globalInputNC"], input_meta=meta)
+                        return network(batch["binaryInputNCHW"], batch["globalInputNC"], input_meta=meta)
+
+                    def validation_metrics(network, model_outputs, batch, **kwargs):
+                        return metrics_obj.metrics_dict_batchwise(
+                            network,
+                            network.postprocess_output(model_outputs),
+                            None,
                             batch,
                             is_training=False,
                             soft_policy_weight_scale=soft_policy_weight_scale,
@@ -2118,7 +2065,41 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                             variance_time_loss_scale=variance_time_loss_scale,
                             main_loss_scale=main_loss_scale,
                             intermediate_loss_scale=intermediate_loss_scale,
+                            **kwargs,
                         )
+
+                    # KataGame fork (abscls-8mbo): the export gate's networks run on the same batches, with the same
+                    # symmetries: the last export's raw and SWA weights, and the candidate's SWA weights. The
+                    # candidate's raw weights are this validation's own. Each runs eagerly on a quarter of a batch at a
+                    # time, so that it holds the activations of a quarter batch. The reference's networks are new, and
+                    # the gate drops them after the pass: only the SWA network's attention mode is given back.
+                    gate_validation = None
+                    if export_now and export_decider.gates:
+                        gate_networks = export_gate.networks_on(device, make_gate_model, export_reference)
+                        if swa_model is not None:
+                            gate_networks["swa"] = swa_model.module
+                            saved_swa_use_flex_attention = swa_model.module.use_flex_attention
+                        for gate_network in gate_networks.values():
+                            gate_network.use_flex_attention = raw_model.use_flex_attention
+                        gate_validation = export_gate.GateValidation(
+                            gate_networks, validation_forward,
+                            lambda network, outputs, part: validation_metrics(
+                                network, outputs, part, include_model_norms=False),
+                            chunk_rows=batch_size // 4)
+                        gate_networks = gate_network = None
+                    for batch in data_processing_pytorch.read_npz_training_data(
+                        val_files,
+                        batch_size,
+                        world_size=1,  # Only the main process validates
+                        rank=0,        # Only the main process validates
+                        pos_len=pos_len,
+                        device=device,
+                        randomize_symmetries=True,
+                        include_meta=raw_model.get_has_metadata_encoder(),
+                        model_config=model_config
+                    ):
+                        model_outputs = validation_forward(validation_model, batch)
+                        metrics = validation_metrics(raw_model, model_outputs, batch)
                         metrics = trainloop_helpers.detensorify_metrics(metrics)
                         if gate_validation is not None:
                             gate_validation.add("raw", metrics, batch["binaryInputNCHW"].shape[0])
@@ -2138,17 +2119,17 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                     logging.info(f"Validation took {t1-t0} seconds")
                     validation_model.train()
                     if gate_validation is not None:
-                        for name, network in gate_networks.items():
-                            network.use_flex_attention = saved_gate_flex[name]
-                        # The reference's networks leave the GPU (the save below gives the cached memory back).
-                        gate_networks = None
-                        gate_validation.networks = {}
+                        gate_losses = gate_validation.losses()
+                        if swa_model is not None:
+                            swa_model.module.use_flex_attention = saved_swa_use_flex_attention
+                        # The reference's networks leave the GPU: the release before the save gives their memory back.
+                        gate_validation = None
                 raw_model.use_flex_attention = saved_use_flex_attention
 
         # KataGame fork (abscls-8mbo): the gate judges the export that the pace let through (export_gate.ExportDecider).
         # A refusal is a log line, and the training goes on. Too many in a row raise ExportGateError, which halts it.
         if rank == 0 and export_now:
-            if export_decider.judge(gate_validation.losses() if gate_validation is not None else {}):
+            if export_decider.judge(gate_losses):
                 # Export a model for testing, unless somehow it already exists
                 modelname = "%s-s%d-d%d" % (
                     exportprefix,
@@ -2170,12 +2151,9 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                     os.rename(savepathtmp,savepath)
                 # The exported network is the gate's next reference, kept for a restart too.
                 if export_decider.gates:
-                    export_reference = {
-                        "raw_reference": export_gate.state_on_cpu(raw_model),
-                        "swa_reference": export_gate.state_on_cpu(swa_model.module) if swa_model is not None else None,
-                    }
+                    export_reference = export_gate.reference_of(raw_model, swa_model)
                     export_gate.save_reference(export_reference_path, modelname, train_state["global_step_samples"],
-                                               export_reference["raw_reference"], export_reference["swa_reference"])
+                                               export_reference)
 
         # Rejoin all ranks before the final save. The save below is called by every rank and,
         # with a sharded optimizer like Muon, performs a collective (state_dict_for_checkpoint's

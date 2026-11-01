@@ -22,6 +22,18 @@ from katago.train.load_model import load_model
 from katago.train.metrics_pytorch import Metrics
 
 
+def validation_metrics(metrics_obj):
+    """metrics(network, outputs, part) for GateValidation: the trainer's validation metrics at train.py's default loss
+    scales."""
+    def metrics(network, outputs, part):
+        return metrics_obj.metrics_dict_batchwise(
+            network, network.postprocess_output(outputs), None, part, is_training=False, soft_policy_weight_scale=8.0,
+            disable_optimistic_policy=False, meta_kata_only_soft_policy=False, value_loss_scale=0.6,
+            td_value_loss_scales=[0.6, 0.6, 0.6], seki_loss_scale=1.0, variance_time_loss_scale=1.0,
+            main_loss_scale=None, intermediate_loss_scale=None, include_model_norms=False)
+    return metrics
+
+
 def batches(npz_files, batch_size, pos_len, device, model_config):
     # One file a call: within a call the reader keeps one more file in memory.
     for path in npz_files:
@@ -42,26 +54,18 @@ def main():
     args = ap.parse_args()
 
     networks = {}
-    for kind, path in (("", args.candidate), ("_reference", args.reference)):
+    for label, suffix, path in (("candidate", "", args.candidate), ("reference", "_reference", args.reference)):
         model, swa, other = load_model(path, use_swa=True, device=args.device)
         step = other.get("train_state", {}).get("global_step_samples")
-        print(f"{'candidate' if kind == '' else 'reference'}: {path} ({step} samples)", flush=True)
-        networks["raw" + kind] = model
-        networks["swa" + kind] = swa
+        print(f"{label}: {path} ({step} samples)", flush=True)
+        networks["raw" + suffix] = model
+        networks["swa" + suffix] = swa
     model = networks["raw"]
-    metrics_obj = Metrics(1, model)
 
     def forward(network, part):
         return network(part["binaryInputNCHW"], part["globalInputNC"])
 
-    def metrics(network, outputs, part):
-        return metrics_obj.metrics_dict_batchwise(
-            network, network.postprocess_output(outputs), None, part, is_training=False, soft_policy_weight_scale=8.0,
-            disable_optimistic_policy=False, meta_kata_only_soft_policy=False, value_loss_scale=0.6,
-            td_value_loss_scales=[0.6, 0.6, 0.6], seki_loss_scale=1.0, variance_time_loss_scale=1.0,
-            main_loss_scale=None, intermediate_loss_scale=None, include_model_norms=False)
-
-    gate = export_gate.GateValidation(networks, forward, metrics, args.chunk_rows)
+    gate = export_gate.GateValidation(networks, forward, validation_metrics(Metrics(1, model)), args.chunk_rows)
     for i, batch in enumerate(batches(args.npz, args.batch_size, model.pos_len, args.device, model.config)):
         if args.max_batches is not None and i >= args.max_batches:
             break

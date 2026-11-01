@@ -6,13 +6,15 @@ import sys
 
 import pytest
 import torch
+from torch.optim.swa_utils import AveragedModel
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from katago.train import export_gate, games, modelconfigs  # noqa: E402
-from katago.train.data_processing_pytorch import GLOBAL_TARGETS_NC_CHANNELS, VALUE_TARGETS_NCHW_CHANNELS  # noqa: E402
+from export_gate_check import validation_metrics  # noqa: E402
+from katago.train import export_gate  # noqa: E402
 from katago.train.metrics_pytorch import Metrics  # noqa: E402
-from katago.train.model_pytorch import Model, policy_len  # noqa: E402
+from katago.train.model_pytorch import Model  # noqa: E402
 from katago.train.trainloop_helpers import GnormWatcherError, GnormWatcher  # noqa: E402
+from test_game_module import b6c96, random_batch  # noqa: E402
 
 MARGIN = 0.08  # bpj5's margin: above every healthy rise of its 533 validations, below both damaged ones
 
@@ -147,48 +149,21 @@ def test_settings_out_of_range_are_refused(kwargs):
 # --- The gate's pass beside the trainer's validation, on a small network ----------------------------------------------
 
 def network(seed):
-    torch.manual_seed(seed)
-    model = Model(modelconfigs.with_game(modelconfigs.config_of_name["b6c96"], "enclosure"),
-                  games.get("enclosure").MAX_BOARD_LEN)
+    model = b6c96("enclosure", seed)
     model.initialize()
     return model
 
 
-def batch_of(model, n=6):
-    torch.manual_seed(0)
-    size = model.pos_len
-    binary = (torch.rand(n, modelconfigs.get_num_bin_input_features(model.config), size, size) < 0.2).float()
-    binary[:, 0] = 1.0
-    global_targets = torch.zeros(n, GLOBAL_TARGETS_NC_CHANNELS)
-    global_targets[:, 0] = 1.0
-    global_targets[:, [25, 26, 27, 28, 33, 34, 68, 69]] = 1.0
-    score = torch.zeros(n, model.value_head.scorebelief_len)
-    score[:, model.value_head.scorebelief_mid] = 100.0
-    return {"binaryInputNCHW": binary,
-            "globalInputNC": torch.randn(n, modelconfigs.get_num_global_input_features(model.config)),
-            "policyTargetsNCMove": torch.rand(n, 2, policy_len(size, model.policy_head.policy_channels)),
-            "globalTargetsNC": global_targets, "scoreDistrN": score,
-            "valueTargetsNCHW": torch.randint(-1, 2, (n, VALUE_TARGETS_NCHW_CHANNELS, size, size)).float()}
-
-
 def validation(model, networks, chunk_rows):
-    """The gate's pass with the trainer's validation metrics, the model's Metrics."""
-    metrics_obj = Metrics(1, model)
-
-    def metrics(net, outputs, part):
-        return metrics_obj.metrics_dict_batchwise(
-            net, net.postprocess_output(outputs), None, part, is_training=False, soft_policy_weight_scale=8.0,
-            disable_optimistic_policy=False, meta_kata_only_soft_policy=False, value_loss_scale=0.6,
-            td_value_loss_scales=[0.6, 0.6, 0.6], seki_loss_scale=1.0, variance_time_loss_scale=1.0,
-            main_loss_scale=None, intermediate_loss_scale=None, include_model_norms=False)
-
+    """The gate's pass with the trainer's validation metrics (export_gate_check.py's), the model's Metrics."""
+    metrics = validation_metrics(Metrics(1, model))
     return export_gate.GateValidation(networks, lambda net, part: net(part["binaryInputNCHW"], part["globalInputNC"]),
                                       metrics, chunk_rows), metrics
 
 
 def test_the_gates_networks_give_the_same_losses_in_parts_as_on_the_whole_batch():
     model = network(1)
-    batch = batch_of(model)
+    batch = random_batch(model, n=6)
     whole, metrics = validation(model, {"raw": model}, chunk_rows=6)
     parts, _ = validation(model, {"raw": model}, chunk_rows=4)
     whole.evaluate(batch)
@@ -207,13 +182,13 @@ def test_the_gates_networks_give_the_same_losses_in_parts_as_on_the_whole_batch(
 
 def test_a_network_against_its_own_saved_weights_passes_and_a_damaged_one_is_refused(tmp_path):
     model = network(1)
-    batch = batch_of(model)
+    batch = random_batch(model, n=6)
     path = str(tmp_path / export_gate.REFERENCE_FILE)
-    export_gate.save_reference(path, "b6c96-s1-d1", 1, export_gate.state_on_cpu(model), None)
+    export_gate.save_reference(path, "b6c96-s1-d1", 1, export_gate.reference_of(model, None))
     saved = export_gate.load_reference(path)
-    assert (saved["name"], saved["global_step_samples"], saved["swa_model"]) == ("b6c96-s1-d1", 1, None)
-    make = lambda: Model(model.config, model.pos_len)
-    reference = export_gate.networks_on("cpu", make, {"raw_reference": saved["model"], "swa_reference": None})
+    assert (saved["name"], saved["global_step_samples"], saved["swa_reference"]) == ("b6c96-s1-d1", 1, None)
+    assert export_gate.fits(saved, model)
+    reference = export_gate.networks_on("cpu", lambda: Model(model.config, model.pos_len), saved)
     assert list(reference) == ["raw_reference"]
     same, _ = validation(model, {"raw": model, **reference}, chunk_rows=3)
     same.evaluate(batch)
@@ -228,6 +203,18 @@ def test_a_network_against_its_own_saved_weights_passes_and_a_damaged_one_is_ref
     damaged.evaluate(batch)
     assert export_gate.compare(damaged.losses(), MARGIN)[0]
     assert export_gate.load_reference(str(tmp_path / "none.ckpt")) is None
+
+
+def test_a_saved_reference_fits_only_a_model_with_the_names_and_shapes_of_its_weights():
+    # The trainer's start takes the saved reference only when it fits (train.py), else its starting checkpoint.
+    model = network(1)
+    reference = export_gate.reference_of(model, AveragedModel(model))
+    assert export_gate.fits(reference, model)
+    raw = reference["raw_reference"]
+    name = next(iter(raw))
+    assert not export_gate.fits({**reference, "raw_reference": {k: v for k, v in raw.items() if k != name}}, model)
+    assert not export_gate.fits({**reference, "swa_reference": {**raw, name: torch.zeros(7, 7, 7)}}, model)
+    assert not export_gate.fits({"raw_reference": None, "swa_reference": raw}, model)
 
 
 def test_the_reference_is_a_copy_that_later_training_does_not_change():

@@ -34,6 +34,7 @@ REFERENCE_FILE = "export_reference.ckpt"
 LOSSES = ("p0loss", "p1loss")
 # The weights that an export writes, each compared with the same weights of the reference: (candidate, reference).
 PAIRS = (("raw", "raw_reference"), ("swa", "swa_reference"))
+REFERENCES = tuple(reference for _, reference in PAIRS)
 
 
 class ExportGateError(RuntimeError):
@@ -67,9 +68,10 @@ class GateValidation:
         self.sums = {}
 
     def add(self, name, metrics, rows):
+        # The sums stay where the metrics are (a tensor on the GPU adds there, without a wait), until losses reads them.
         s = self.sums.setdefault(name, {"rows": 0, **{k: 0.0 for k in LOSSES}})
         for k in LOSSES:
-            s[k] += float(metrics[k + "_sum"])
+            s[k] = s[k] + metrics[k + "_sum"]
         s["rows"] += rows
 
     def evaluate(self, batch):
@@ -87,7 +89,7 @@ class GateValidation:
 
     def losses(self):
         """{name: {"p0loss": ..., "p1loss": ..., "rows": N}}, each loss per row as the trainer logs it."""
-        return {name: {**{k: s[k] / s["rows"] for k in LOSSES}, "rows": s["rows"]}
+        return {name: {**{k: float(s[k]) / s["rows"] for k in LOSSES}, "rows": s["rows"]}
                 for name, s in self.sums.items() if s["rows"] > 0}
 
 
@@ -177,32 +179,49 @@ class ExportDecider:
         self.refusals = 0
 
 
-def save_reference(path, name, step, raw_state, swa_state):
-    """The last exported network's weights (raw, and SWA or None), with its name and step, for a restart's gate."""
-    torch.save({"name": name, "global_step_samples": step, "model": raw_state, "swa_model": swa_state}, path + ".tmp")
-    os.replace(path + ".tmp", path)
-
-
-def load_reference(path):
-    """The saved reference (save_reference), or None when there is none."""
-    if not os.path.exists(path):
-        return None
-    return torch.load(path, map_location="cpu", weights_only=True)
-
-
 def state_on_cpu(module):
     """A copy of the module's state dict on the CPU, which later training does not change."""
     return {k: v.detach().to("cpu", copy=True) for k, v in module.state_dict().items()}
 
 
-def networks_on(device, make_model, states):
-    """{name: network} for each name's state dict (None leaves the name out), each in a new model on the device. They
-    hold the device's memory until the caller drops the dict."""
+def reference_of(raw_model, swa_model):
+    """The gate's reference from the trainer's networks, by the names of PAIRS: the raw weights and the SWA weights
+    (None without SWA), each a copy on the CPU (state_on_cpu)."""
+    return {"raw_reference": state_on_cpu(raw_model),
+            "swa_reference": state_on_cpu(swa_model.module) if swa_model is not None else None}
+
+
+def fits(reference, model):
+    """Whether the reference's weights (raw, and SWA when it has them) load into the model: the names and shapes of
+    the model's state dict, which a strict load_state_dict checks."""
+    shapes = {k: v.shape for k, v in model.state_dict().items()}
+    states = [reference.get(name) for name in REFERENCES]
+    return states[0] is not None and all(
+        {k: v.shape for k, v in state.items()} == shapes for state in states if state is not None)
+
+
+def save_reference(path, name, step, reference):
+    """The reference (reference_of) of the last exported network, with its name and step, for a restart's gate."""
+    torch.save({"name": name, "global_step_samples": step, **reference}, path + ".tmp")
+    os.replace(path + ".tmp", path)
+
+
+def load_reference(path):
+    """The saved reference (save_reference): its weights by the names of PAIRS, its name and its step. None when there
+    is none."""
+    if not os.path.exists(path):
+        return None
+    return torch.load(path, map_location="cpu", weights_only=True)
+
+
+def networks_on(device, make_model, reference):
+    """{name: network} for each of the reference's weights (None leaves the name out), each in a new model on the
+    device. They hold the device's memory until the caller drops the dict."""
     networks = {}
-    for name, state in states.items():
-        if state is None:
+    for name in REFERENCES:
+        if reference.get(name) is None:
             continue
         network = make_model()
-        network.load_state_dict(state)
+        network.load_state_dict(reference[name])
         networks[name] = network.to(device)
     return networks
