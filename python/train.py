@@ -45,6 +45,7 @@ from katago.utils.training_data_generator import TrainingDataGenerator
 from katago.train import load_model
 from katago.train import data_processing_pytorch
 from katago.train import trainloop_helpers
+from katago.train import export_gate
 from katago.train.metrics_logging import accumulate_metrics, log_metrics, clear_metric_nonfinite
 
 # Whether the validation pass may use flex attention, when the model is using it for training.
@@ -128,6 +129,11 @@ if __name__ == "__main__":
 
     optional_args.add_argument('-epochs-per-export', help='Export model once every this many epochs', type=int, required=False)
     optional_args.add_argument('-export-prob', help='Export model with this probablity', type=float, required=False)
+    # KataGame fork (abscls-ehuh, abscls-8mbo): the pace and the gate of the exports (katago/train/export_gate.py).
+    optional_args.add_argument('-export-min-minutes', help='Export at most one model each this many minutes of wall-clock time: the export of a cycle that ends sooner after the last export is skipped, and the training goes on (default 0: no pace)', type=float, default=0.0, required=False)
+    optional_args.add_argument('-export-gate-margin', help='Refuse an export when its p0loss or p1loss on the validation rows is above the last export\'s, on the same rows, by more than this, for the raw or the SWA weights (default: no gate)', type=float, required=False)
+    optional_args.add_argument('-export-gate-refusals', help='Halt the trainer after this many refused exports in a row (default 3)', type=int, default=3, required=False)
+    optional_args.add_argument('-grad-scale-floor', help='With -use-fp16, halt the trainer when the gradient scaler\'s scale falls below this (default: no floor)', type=float, required=False)
     optional_args.add_argument('-max-epochs-this-instance', help='Terminate training after this many more epochs', type=int, required=False)
     optional_args.add_argument('-max-training-samples', help='Terminate training after about this many training steps in samples', type=int, required=False)
     optional_args.add_argument('-sleep-seconds-per-epoch', help='Sleep this long between epochs', type=int, required=False)
@@ -418,6 +424,10 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
 
     epochs_per_export = args["epochs_per_export"]
     export_prob = args["export_prob"]
+    export_min_minutes = args["export_min_minutes"]
+    export_gate_margin = args["export_gate_margin"]
+    export_gate_refusals = args["export_gate_refusals"]
+    grad_scale_floor = args["grad_scale_floor"]
     max_epochs_this_instance = args["max_epochs_this_instance"]
     max_training_samples = args["max_training_samples"]
     sleep_seconds_per_epoch = args["sleep_seconds_per_epoch"]
@@ -1003,6 +1013,8 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                 # Adopting an initial checkpoint starts a new run, so its export cycle starts
                 # fresh regardless of the counter stored in that checkpoint.
                 train_state["export_cycle_counter"] = 0
+                # KataGame fork (abscls-ehuh): and its pace starts fresh too (export_gate.ExportDecider).
+                train_state.pop("last_export_time", None)
 
             # Do this before loading the state dict, while the model is initialized to fresh values, to get a good baseline.
             # Each rank initializes with its own seed, so rank 0's values are broadcast to keep the
@@ -1152,6 +1164,36 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
         train_state["total_num_data_rows"] = 0
     if "swa_sample_accum" not in train_state:
         train_state["swa_sample_accum"] = 0.0
+
+    # KataGame fork (abscls-ehuh, abscls-8mbo): the pace and the gate of the exports (katago/train/export_gate.py). The
+    # gate's reference is the last exported network's weights, on the CPU: the trainer's folder keeps them for a
+    # restart. Without them (or with weights of another model), it is the checkpoint that the trainer starts from.
+    export_decider = export_gate.ExportDecider(
+        min_minutes=export_min_minutes, margin=export_gate_margin, max_refusals=export_gate_refusals)
+    make_gate_model = lambda: Model(model_config, pos_len)
+    export_reference = None
+    export_reference_path = os.path.join(traindir, export_gate.REFERENCE_FILE)
+    if rank == 0 and export_decider.gates:
+        saved = export_gate.load_reference(export_reference_path)
+        if saved is not None:
+            try:
+                export_gate.networks_on("cpu", make_gate_model, {"raw": saved["model"], "swa": saved["swa_model"]})
+                export_reference = {"raw_reference": saved["model"], "swa_reference": saved["swa_model"]}
+                logging.info(f"Export gate: the reference is the last export, {saved['name']} "
+                             f"({export_reference_path})")
+            except RuntimeError as e:
+                logging.warning(f"Export gate: {export_reference_path} does not load into this model ({e}), so the "
+                                "reference is the starting checkpoint")
+        if export_reference is None:
+            export_reference = {
+                "raw_reference": export_gate.state_on_cpu(raw_model),
+                "swa_reference": export_gate.state_on_cpu(swa_model.module) if swa_model is not None else None,
+            }
+            logging.info(f"Export gate: the reference is the starting checkpoint "
+                         f"({train_state['global_step_samples']} samples)")
+    logging.info(f"Export pace {export_min_minutes:g} min, gate margin "
+                 f"{'none' if export_gate_margin is None else f'{export_gate_margin:g}'}, "
+                 f"refusals before a halt {export_gate_refusals}")
 
 
     if intermediate_loss_scale is not None:
@@ -1576,12 +1618,17 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     logging.info(f"model_norms_only_at_print {model_norms_only_at_print}")
     training_metrics_fn = trainloop_helpers.make_training_metrics_fn(metrics_obj, no_compile, model_norms_only_at_print)
     step_norm_tracker = trainloop_helpers.StepNormTracker(optimizer)
-    gnorm_watcher = trainloop_helpers.GnormWatcher()
+    # KataGame fork (abscls-8mbo): the floor of the gradient scaler's scale, which only fp16 training has.
+    if grad_scale_floor is not None and not use_fp16:
+        logging.warning(f"-grad-scale-floor {grad_scale_floor:g} has no effect without -use-fp16: no gradient scaler")
+    gnorm_watcher = trainloop_helpers.GnormWatcher(grad_scale_floor=grad_scale_floor if use_fp16 else None)
 
     scaler = None
     if use_fp16:
         logging.info("Training in FP16! Creating scaler")
         scaler = GradScaler("cuda")
+        if grad_scale_floor is not None:
+            logging.info(f"Grad scale floor: {grad_scale_floor:g}")
     elif use_bf16:
         logging.info("Training in BF16 AMP without gradient scaling.")
     else:
@@ -1828,7 +1875,10 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                 train_state["global_step_samples"] += batch_size * world_size
 
                 metrics = trainloop_helpers.detensorify_metrics(metrics)
-                gnorm_watcher.observe(metrics, gnorm_cap=gnorm_cap)
+                # The scale only with a floor: get_scale reads it from the GPU. The metrics' read above has waited for
+                # this batch's work, the scaler's update with it.
+                gnorm_watcher.observe(metrics, gnorm_cap=gnorm_cap, grad_scale=(
+                    scaler.get_scale() if scaler is not None and gnorm_watcher.grad_scale_floor is not None else None))
 
                 if lookahead_k is not None and lookahead_print:
                     # Only accumulate metrics when lookahead is synced if lookahead_print is True
@@ -1938,7 +1988,32 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
 
         num_epochs_this_instance += 1
 
+        # The export cycle counter is not reset at export time. It keeps counting epochs so that
+        # outside tooling can track a run's epoch count from its checkpoints, and anything that
+        # cares about the position within an export cycle, such as this check and the -lr-cycle-*
+        # schedule, takes it mod epochs_per_export. One consequence is that a run switched from
+        # -no-export to exporting waits for its next cycle boundary rather than exporting
+        # immediately.
+        is_time_to_export = (train_state["export_cycle_counter"] % epochs_per_export == 0)
+
+        # KataGame fork (abscls-ehuh, abscls-8mbo): the end of a cycle asks for an export, and the pace decides whether
+        # it goes (export_gate.ExportDecider). This comes before the validation, so that the gate's networks run in the
+        # validation's pass, on the same rows.
+        export_now = False
+        if rank == 0:
+            logging.info("Export cycle counter = " + str(train_state["export_cycle_counter"]))
+
+            skip_export_this_time = False
+            if export_prob is not None:
+                if random.random() > export_prob:
+                    skip_export_this_time = True
+                    logging.info("Skipping export model this time")
+
+            exports = not no_export and exportdir is not None and not gnorm_stats_debug
+            export_now = exports and is_time_to_export and not skip_export_this_time and export_decider.ask(train_state)
+
         # Validate
+        gate_validation = None
         if rank == 0:
             logging.info("Beginning validation after epoch!")
             val_files = []
@@ -1969,6 +2044,38 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                     val_metric_weights = defaultdict(float)
                     val_samples = 0
                     t0 = time.perf_counter()
+                    # KataGame fork (abscls-8mbo): the export gate's networks run on the same batches, with the same
+                    # symmetries: the last export's raw and SWA weights, and the candidate's SWA weights. The
+                    # candidate's raw weights are this validation's own. Each runs eagerly on a quarter of a batch at a
+                    # time, so that it holds the activations of a quarter batch.
+                    if export_now and export_decider.gates:
+                        def gate_forward(network, part):
+                            meta = part["metadataInputNC"] if raw_model.get_has_metadata_encoder() else None
+                            if use_amp:
+                                with autocast("cuda", dtype=amp_dtype):
+                                    return network(part["binaryInputNCHW"], part["globalInputNC"], input_meta=meta)
+                            return network(part["binaryInputNCHW"], part["globalInputNC"], input_meta=meta)
+
+                        def gate_metrics(network, outputs, part):
+                            return metrics_obj.metrics_dict_batchwise(
+                                network, network.postprocess_output(outputs), None, part, is_training=False,
+                                soft_policy_weight_scale=soft_policy_weight_scale,
+                                disable_optimistic_policy=disable_optimistic_policy,
+                                meta_kata_only_soft_policy=meta_kata_only_soft_policy,
+                                value_loss_scale=value_loss_scale, td_value_loss_scales=td_value_loss_scales,
+                                seki_loss_scale=seki_loss_scale, variance_time_loss_scale=variance_time_loss_scale,
+                                main_loss_scale=main_loss_scale, intermediate_loss_scale=intermediate_loss_scale,
+                                include_model_norms=False,
+                            )
+
+                        gate_networks = export_gate.networks_on(device, make_gate_model, export_reference)
+                        if swa_model is not None:
+                            gate_networks["swa"] = swa_model.module
+                        saved_gate_flex = {name: n.use_flex_attention for name, n in gate_networks.items()}
+                        for network in gate_networks.values():
+                            network.use_flex_attention = raw_model.use_flex_attention
+                        gate_validation = export_gate.GateValidation(
+                            gate_networks, gate_forward, gate_metrics, chunk_rows=batch_size // 4)
                     for batch in data_processing_pytorch.read_npz_training_data(
                         val_files,
                         batch_size,
@@ -2013,6 +2120,9 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                             intermediate_loss_scale=intermediate_loss_scale,
                         )
                         metrics = trainloop_helpers.detensorify_metrics(metrics)
+                        if gate_validation is not None:
+                            gate_validation.add("raw", metrics, batch["binaryInputNCHW"].shape[0])
+                            gate_validation.evaluate(batch)
                         accumulate_metrics(val_metric_sums, val_metric_weights, metrics, batch_size, decay=1.0, new_weight=1.0)
                         val_samples += batch_size
                         if max_val_samples is not None and val_samples > max_val_samples:
@@ -2027,26 +2137,18 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                     t1 = time.perf_counter()
                     logging.info(f"Validation took {t1-t0} seconds")
                     validation_model.train()
+                    if gate_validation is not None:
+                        for name, network in gate_networks.items():
+                            network.use_flex_attention = saved_gate_flex[name]
+                        # The reference's networks leave the GPU (the save below gives the cached memory back).
+                        gate_networks = None
+                        gate_validation.networks = {}
                 raw_model.use_flex_attention = saved_use_flex_attention
 
-        # The export cycle counter is not reset at export time. It keeps counting epochs so that
-        # outside tooling can track a run's epoch count from its checkpoints, and anything that
-        # cares about the position within an export cycle, such as this check and the -lr-cycle-*
-        # schedule, takes it mod epochs_per_export. One consequence is that a run switched from
-        # -no-export to exporting waits for its next cycle boundary rather than exporting
-        # immediately.
-        is_time_to_export = (train_state["export_cycle_counter"] % epochs_per_export == 0)
-
-        if rank == 0:
-            logging.info("Export cycle counter = " + str(train_state["export_cycle_counter"]))
-
-            skip_export_this_time = False
-            if export_prob is not None:
-                if random.random() > export_prob:
-                    skip_export_this_time = True
-                    logging.info("Skipping export model this time")
-
-            if not no_export and is_time_to_export and not skip_export_this_time and exportdir is not None and not gnorm_stats_debug:
+        # KataGame fork (abscls-8mbo): the gate judges the export that the pace let through (export_gate.ExportDecider).
+        # A refusal is a log line, and the training goes on. Too many in a row raise ExportGateError, which halts it.
+        if rank == 0 and export_now:
+            if export_decider.judge(gate_validation.losses() if gate_validation is not None else {}):
                 # Export a model for testing, unless somehow it already exists
                 modelname = "%s-s%d-d%d" % (
                     exportprefix,
@@ -2055,6 +2157,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                 )
                 savepath = os.path.join(exportdir,modelname)
                 savepathtmp = os.path.join(exportdir,modelname+".tmp")
+                export_decider.exported(train_state)
                 if os.path.exists(savepath):
                     logging.info("NOT saving model, already exists at: " + savepath)
                 else:
@@ -2065,6 +2168,14 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                     save(ddp_model, swa_model, optimizer, metrics_obj, running_metrics, train_state, last_val_metrics, path=os.path.join(savepathtmp,"model.ckpt"), skip_optimizer=True)
                     time.sleep(2)
                     os.rename(savepathtmp,savepath)
+                # The exported network is the gate's next reference, kept for a restart too.
+                if export_decider.gates:
+                    export_reference = {
+                        "raw_reference": export_gate.state_on_cpu(raw_model),
+                        "swa_reference": export_gate.state_on_cpu(swa_model.module) if swa_model is not None else None,
+                    }
+                    export_gate.save_reference(export_reference_path, modelname, train_state["global_step_samples"],
+                                               export_reference["raw_reference"], export_reference["swa_reference"])
 
         # Rejoin all ranks before the final save. The save below is called by every rank and,
         # with a sharded optimizer like Muon, performs a collective (state_dict_for_checkpoint's

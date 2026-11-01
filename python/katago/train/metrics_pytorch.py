@@ -33,6 +33,11 @@ def normalized_policy_target(target):
     has_target = total > 0
     return target / torch.where(has_target, total, torch.ones_like(total)), has_target.squeeze(1).to(target.dtype)
 
+def zero_policy_target_rows(weight, has_target):
+    """KataGame fork (abscls-8mbo): the number of rows with a policy target's weight not 0 but no target (its sum 0,
+    normalized_policy_target's has_target 0)."""
+    return ((weight != 0).to(has_target.dtype) * (1.0 - has_target)).sum()
+
 class Metrics:
     def __init__(self, world_size: int, raw_model: Model):
         self.world_size = world_size
@@ -1184,6 +1189,11 @@ class Metrics:
             extra_results = {
                 "wsum": weight * self.world_size,
                 "nsamp": nsamples * self.world_size,
+                # KataGame fork (abscls-8mbo): the share of rows whose policy target 0 or 1 sums to 0 while its weight
+                # (C26, C28) is not 0. Such a row trains at the weight 0 (normalized_policy_target), so the losses do
+                # not show it, and any share above 0 is a fault of the rows' writer (abscls-3tbn).
+                "p0zrows_sum": zero_policy_target_rows(target_global_nc[:, 26], has_policy_player),
+                "p1zrows_sum": zero_policy_target_rows(target_global_nc[:, 28], has_policy_opponent),
                 "ptentr_sum": policy_target_entropy,
                 "ptsoftentr_sum": soft_policy_target_entropy,
                 "sekiweightscale_sum": seki_weight_scale * weight,

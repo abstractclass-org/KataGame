@@ -295,20 +295,25 @@ void SelfplayManager::countOneGameStarted(NNEvaluator* nnEval) {
   if(logger != NULL && gameStartedCount % logGamesEvery == 0) {
     logger->write("Started " + Global::int64ToString(gameStartedCount) + " games with " + nnEval->getModelName());
   }
+  //KataGame fork (abscls-il4e.11, abscls-8mbo): the rows whose second policy target the root's views moved into the
+  //row's view, every logGamesEvery*10 games started with a network, at least 100. In the block below, every 1,000 games
+  //or more, it came in bpj5 only while the trainer was down: a network there starts 300 to 440 games before the next
+  //export.
+  int64_t logViewsEvery = logGamesEvery*10 > 100 ? logGamesEvery*10 : 100;
+  if(logger != NULL && gameStartedCount % logViewsEvery == 0 && foundData->tdataWriter != NULL &&
+     foundData->tdataWriter->numRowsNextPolicyTranslated() > 0)
+    logger->write(
+      "Data rows with the next policy in the row's view: " +
+      Global::int64ToString(foundData->tdataWriter->numRowsNextPolicyTranslated()) + ", without it: " +
+      Global::int64ToString(foundData->tdataWriter->numRowsNextPolicyLost()) + ", of " +
+      Global::int64ToString(foundData->tdataWriter->numRowsWritten()) + " rows");
   int64_t logNNEvery = logGamesEvery*100 > 1000 ? logGamesEvery*100 : 1000;
   if(logger != NULL && gameStartedCount % logNNEvery == 0) {
     logger->write(nnEval->getModelFileName());
     logger->write("Games finished: " + Global::int64ToString(foundData->gamesFinishedCount.load(std::memory_order_relaxed)));
     logger->write("Moves played: " + Global::int64ToString(foundData->movesPlayedCount.load(std::memory_order_relaxed)));
-    if(foundData->tdataWriter != NULL) {
+    if(foundData->tdataWriter != NULL)
       logger->write("Data rows: " + Global::int64ToString(foundData->tdataWriter->numRowsWritten()));
-      //KataGame fork (abscls-il4e.11): the rows whose second policy target the root's views moved into the row's view.
-      if(foundData->tdataWriter->numRowsNextPolicyTranslated() > 0)
-        logger->write(
-          "Data rows with the next policy in the row's view: " +
-          Global::int64ToString(foundData->tdataWriter->numRowsNextPolicyTranslated()) + ", without it: " +
-          Global::int64ToString(foundData->tdataWriter->numRowsNextPolicyLost()));
-    }
     logger->write("NN rows: " + Global::int64ToString(nnEval->numRowsProcessed()));
     logger->write("NN batches: " + Global::int64ToString(nnEval->numBatchesProcessed()));
     logger->write("NN avg batch size: " + Global::doubleToString(nnEval->averageProcessedBatchSize()));

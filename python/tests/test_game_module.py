@@ -219,7 +219,25 @@ def test_a_policy_target_of_sum_0_gives_a_finite_loss_as_at_its_weight_0(channel
     batch["globalTargetsNC"][0, weight] = 0.0
     at_weight_0 = loss_sums(model, batch)
     assert all(np.isfinite(v) for v in at_weight_1.values()), at_weight_1
+    # The count of such rows (abscls-8mbo) is the only sum that differs: 1 row with its weight, none at the weight 0.
+    zero_rows = f"p{channel}zrows_sum"
+    assert (at_weight_1.pop(zero_rows), at_weight_0.pop(zero_rows)) == (1.0, 0.0)
+    assert at_weight_1.pop(f"p{1 - channel}zrows_sum") == at_weight_0.pop(f"p{1 - channel}zrows_sum") == 0.0
     assert at_weight_1 == at_weight_0
+
+
+def test_rows_with_policy_targets_count_as_zero_rows_only_when_their_target_sums_to_0_with_a_weight():
+    # abscls-8mbo: the trainer's summaries give the share of such rows (p0zrows, p1zrows), each a sum over the batch's
+    # rows, as the other shares of rows (rgrows): its log divides it by the rows.
+    model = b6c96("enclosure", 1)
+    model.initialize()
+    batch = random_batch(model, n=4)
+    assert (loss_sums(model, batch)["p0zrows_sum"], loss_sums(model, batch)["p1zrows_sum"]) == (0.0, 0.0)
+    batch["policyTargetsNCMove"][[1, 2, 3], 1] = 0.0  # three rows with a second target of sum 0
+    batch["globalTargetsNC"][3, 28] = 0.0  # one of them without its weight
+    batch["policyTargetsNCMove"][0, 0] = 0.0  # a first target of sum 0 with its weight
+    sums = loss_sums(model, batch)
+    assert (sums["p0zrows_sum"], sums["p1zrows_sum"]) == (1.0, 2.0)
 
 
 def test_a_game_without_mask_targets_keeps_the_weights():

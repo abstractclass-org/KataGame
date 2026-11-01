@@ -98,9 +98,17 @@ part_limits() {  # PART: "MEM CPUWEIGHT NICE" from the defaults, LIMITS_GROUP an
 #   its settings. A run that goes on past its first hours restarts with PILOT=0: each shuffle reads the whole window
 #   again, and with Blueprints' window of 163,631 rows the pilot's shuffle ran about 5 minutes in every 6 on 4 of the
 #   run's 8 CPUs, beside self-play (bpj2, 2026-10-27).
+# - The trainers' guards of their exports (python/katago/train/export_gate.py) and of fp16 training, each off by
+#   default, as upstream's trainer: EXPORT_MIN_MINUTES (train.py's -export-min-minutes, 0: no pace), EXPORT_GATE_MARGIN
+#   (-export-gate-margin, empty: no gate) with EXPORT_GATE_REFUSALS (-export-gate-refusals, 3) and GRAD_SCALE_FLOOR
+#   (-grad-scale-floor, empty: no floor). The gate needs validation rows (VALIDATE=1). Each guard can hold back the
+#   exports or halt a trainer, so a run turns it on in its own settings with its reason: bpj5's values and their
+#   measures are in the engine repository's games/blueprints/docs/decisions/port.md, "the trainer's export gate". A
+#   lever at its default adds no flag.
 RUN_LEVERS="PILOT CPUS NUM_THREADS_FOR_SHUFFLING NUM_TRAIN_SAMPLES_PER_EPOCH MAX_TRAIN_PER_DATA
 NUM_TRAIN_SAMPLES_PER_SWA BATCHSIZE SHUFFLE_MINROWS MAX_TRAIN_SAMPLES_PER_CYCLE TAPER_WINDOW_SCALE SHUFFLE_KEEPROWS
 ROWS_PER_SHUFFLE_FILE SHUFFLE_WORKER_GROUP_ROWS SHUFFLE_EXTRA_ARGS VALIDATE TRAIN_EXTRA_ARGS SHUFFLE_EVERY EXPORT_EVERY
+EXPORT_MIN_MINUTES EXPORT_GATE_MARGIN EXPORT_GATE_REFUSALS GRAD_SCALE_FLOOR
 WAIT_FOR_DATA_SECONDS OMP_NUM_THREADS MKL_NUM_THREADS SELFPLAY_CONFIG ANALYSIS_CONFIG SELFPLAY_IN_FORCE POS_LEN
 ROW_BYTES"
 ASYNC_KATAGO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"  # KataGame
@@ -132,6 +140,7 @@ run_defaults() {  # needs GAME
     : "${TAPER_WINDOW_SCALE:=50000}" "${SHUFFLE_KEEPROWS:=600000}" "${VALIDATE:=0}" "${TRAIN_EXTRA_ARGS:=}"
     : "${SHUFFLE_EXTRA_ARGS:=}"
     : "${EXPORT_EVERY:=10}"  # upstream's
+    : "${EXPORT_MIN_MINUTES:=0}" "${EXPORT_GATE_MARGIN:=}" "${EXPORT_GATE_REFUSALS:=3}" "${GRAD_SCALE_FLOOR:=}"
     # Self-play's -override-config: the defaults of its config keys, then the run's own (SELFPLAY_OVERRIDES), which win.
     SELFPLAY_IN_FORCE=""
     if (( cpus < $(getconf _NPROCESSORS_ONLN) )); then
@@ -154,10 +163,15 @@ selfplay_key() {  # KEY=VALUE[,...]: added to SELFPLAY_IN_FORCE (nothing for an 
 }
 
 train_flags() {  # the train.py flags of every trainer, from the levers (after run_defaults)
+    local guards=""
+    [[ "${EXPORT_MIN_MINUTES:-0}" == 0 ]] || guards="$guards -export-min-minutes $EXPORT_MIN_MINUTES"
+    [[ -z "${EXPORT_GATE_MARGIN:-}" ]] ||
+        guards="$guards -export-gate-margin $EXPORT_GATE_MARGIN -export-gate-refusals ${EXPORT_GATE_REFUSALS:-3}"
+    [[ -z "${GRAD_SCALE_FLOOR:-}" ]] || guards="$guards -grad-scale-floor $GRAD_SCALE_FLOOR"
     echo "-game $GAME -samples-per-epoch $NUM_TRAIN_SAMPLES_PER_EPOCH -swa-period-samples $NUM_TRAIN_SAMPLES_PER_SWA" \
         "-no-repeat-files -max-train-bucket-per-new-data $MAX_TRAIN_PER_DATA -max-train-bucket-size" \
         "$MAX_TRAIN_SAMPLES_PER_CYCLE${WAIT_FOR_DATA_SECONDS:+ -wait-for-data-seconds $WAIT_FOR_DATA_SECONDS}" \
-        "$TRAIN_EXTRA_ARGS"
+        "$TRAIN_EXTRA_ARGS$guards"
 }
 
 scaled_rows() {  # UPSTREAM GO_BYTES BYTES: upstream's count of Go's rows, scaled to the same bytes of rows of BYTES

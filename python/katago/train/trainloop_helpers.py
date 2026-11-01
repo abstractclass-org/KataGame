@@ -400,6 +400,16 @@ class GnormWatcher:
     - startup: no good batch at all within the first startup_good_limit
       observations. Calibration runs end long before that.
     - rate: >= rate_warn_fraction of the last rate_window batches bad.
+    - KataGame fork (abscls-8mbo): the fp16 gradient scaler's scale below
+      grad_scale_floor (None: no floor). The scaler halves its scale at each
+      batch whose gradients are nonfinite, and doubles it only after 2000
+      batches in a row without one (GradScaler's growth_interval). So sparse
+      nonfinite batches, too few for the triggers above, drive the scale down
+      for as long as they come: in bpj5's halted run (38 nonfinite batches of
+      1487), NaN losses took it from 64, after the start's calibration, to
+      9.5e-7 in an hour. At such a scale the fp16 gradients are noise, and only
+      then did the norm's triggers fire. A scale below the floor stays below it
+      for at least 2000 batches, so one reading below it halts.
 
     Raises GnormWatcherError so the run cannot silently continue.
     Setting KATAGO_GNORM_WATCHER_HALT=0 makes it warn instead.
@@ -409,7 +419,10 @@ class GnormWatcher:
     """
 
     def __init__(self, consecutive_warn_threshold=8, rate_window=100, rate_warn_fraction=0.25,
-                 extreme_cap_factor=50.0, startup_good_limit=30):
+                 extreme_cap_factor=50.0, startup_good_limit=30, grad_scale_floor=None):
+        if grad_scale_floor is not None and not grad_scale_floor > 0:
+            raise ValueError(f"the grad scale floor must be above 0, not {grad_scale_floor}")
+        self.grad_scale_floor = grad_scale_floor
         self.consecutive_warn_threshold = consecutive_warn_threshold
         self.rate_window = rate_window
         self.rate_warn_fraction = rate_warn_fraction
@@ -443,7 +456,7 @@ class GnormWatcher:
         self.observations_at_last_warning = self.total_observed
         logging.warning(message)
 
-    def observe(self, detensorified_metrics, gnorm_cap=None):
+    def observe(self, detensorified_metrics, gnorm_cap=None, grad_scale=None):
         gnorm = detensorified_metrics.get("gnorm_batch")
         nonfinite = gnorm is None
         extreme = (
@@ -477,7 +490,12 @@ class GnormWatcher:
             + (f" latest gnorm {gnorm:.4g} vs cap {gnorm_cap:.4g}" if extreme else "")
             + ")"
         )
-        if self.seen_good and self.consecutive_bad >= self.consecutive_warn_threshold:
+        if self.grad_scale_floor is not None and grad_scale is not None and grad_scale < self.grad_scale_floor:
+            self._trigger(
+                f"GNORM WATCHER: the gradient scaler's scale {grad_scale:.4g} is below the floor "
+                f"{self.grad_scale_floor:g}: nonfinite gradients keep coming {detail}."
+            )
+        elif self.seen_good and self.consecutive_bad >= self.consecutive_warn_threshold:
             self._trigger(
                 f"GNORM WATCHER: gradient norm has been nonfinite or extremely large for "
                 f"{self.consecutive_bad} consecutive batches {detail}."
