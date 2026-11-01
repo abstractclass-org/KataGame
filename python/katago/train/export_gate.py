@@ -132,7 +132,7 @@ class ExportDecider:
             raise ValueError(f"-export-gate-refusals must be 1 or more, not {max_refusals}")
 
     @property
-    def gates(self):
+    def has_gate(self):
         return self.margin is not None
 
     def ask(self, train_state):
@@ -153,7 +153,7 @@ class ExportDecider:
         Without validation rows the gate cannot compare, and the export goes ahead with a log line. After a refusal
         the next export comes at the next cycle's end. After max_refusals refusals in a row, it raises
         ExportGateError."""
-        if not self.gates:
+        if not self.has_gate:
             return True
         if not losses:
             logging.warning("EXPORT GATE: no validation rows to compare on: the export goes ahead untested")

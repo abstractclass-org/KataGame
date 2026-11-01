@@ -53,7 +53,7 @@ def test_a_catch_up_that_asks_every_2_6_minutes_exports_once_each_10_minutes():
     assert min(b - a for a, b in zip(exports, exports[1:])) >= 10
 
 
-def test_tonights_catch_up_and_normal_running_with_a_pace_of_10_minutes():
+def test_bpj5s_catch_up_and_normal_running_of_2026_11_01_with_a_pace_of_10_minutes():
     # bpj5's exports of 2026-11-01 09:04-11:00, each at the next epoch's start in train-b6c96.log (minutes after
     # 09:00). The memory guard stopped the trainer at 09:21:54, and it started again at 09:29: the checkpoint keeps the
     # time of the last export.
@@ -84,7 +84,7 @@ def losses(p0, p1, rows=3840):
 
 
 # bpj5's validations (train/b6c96/metrics_val.json): each against the validation of the last export before it.
-TONIGHT = {
+BPJ5_VALIDATIONS = {
     # The export of 05:53 (b6c96-s30897152), the reference of the two damaged epochs.
     "s30897152": losses(2.284751, 0.823919),
     # The epoch that began at 06:08:11, and the epoch of the export b6c96-s30962304 (06:15:20), both damaged.
@@ -100,7 +100,7 @@ TONIGHT = {
 
 
 def gate(candidate, reference):
-    return export_gate.compare({"raw": TONIGHT[candidate], "raw_reference": TONIGHT[reference]}, MARGIN)
+    return export_gate.compare({"raw": BPJ5_VALIDATIONS[candidate], "raw_reference": BPJ5_VALIDATIONS[reference]}, MARGIN)
 
 
 def test_the_margin_refuses_both_damaged_validations_and_passes_the_largest_healthy_rises():
@@ -111,7 +111,7 @@ def test_the_margin_refuses_both_damaged_validations_and_passes_the_largest_heal
 
 
 def test_the_gate_compares_each_pair_and_a_nonfinite_loss_is_refused():
-    healthy, damaged = TONIGHT["s23599744"], TONIGHT["s30962304"]
+    healthy, damaged = BPJ5_VALIDATIONS["s23599744"], BPJ5_VALIDATIONS["s30962304"]
     refused, lines = export_gate.compare(
         {"raw": healthy, "raw_reference": healthy, "swa": damaged, "swa_reference": healthy}, MARGIN)
     assert refused and lines[0].startswith("raw: ") and "over the margin" in lines[1]
@@ -123,8 +123,8 @@ def test_the_gate_compares_each_pair_and_a_nonfinite_loss_is_refused():
 
 def test_three_refusals_in_a_row_halt_the_trainer_and_an_export_between_them_resets_the_count():
     decider, state = export_gate.ExportDecider(margin=MARGIN, max_refusals=3), {}
-    bad = {"raw": TONIGHT["s30962304"], "raw_reference": TONIGHT["s30897152"]}
-    good = {"raw": TONIGHT["s30897152"], "raw_reference": TONIGHT["s30897152"]}
+    bad = {"raw": BPJ5_VALIDATIONS["s30962304"], "raw_reference": BPJ5_VALIDATIONS["s30897152"]}
+    good = {"raw": BPJ5_VALIDATIONS["s30897152"], "raw_reference": BPJ5_VALIDATIONS["s30897152"]}
     for _ in range(2):
         assert decider.ask(state) and not decider.judge(bad)
     assert decider.judge(good)
@@ -135,7 +135,7 @@ def test_three_refusals_in_a_row_halt_the_trainer_and_an_export_between_them_res
 
 
 def test_without_validation_rows_or_without_a_gate_the_export_goes_ahead():
-    bad = {"raw": TONIGHT["s30962304"], "raw_reference": TONIGHT["s30897152"]}
+    bad = {"raw": BPJ5_VALIDATIONS["s30962304"], "raw_reference": BPJ5_VALIDATIONS["s30897152"]}
     assert export_gate.ExportDecider(margin=MARGIN).judge({})
     assert export_gate.ExportDecider().judge(bad)
 
@@ -249,7 +249,7 @@ def first_halt(watcher, scales):
     return None
 
 
-def test_the_floor_halts_tonights_run_at_its_first_scale_below_1_and_no_healthy_run():
+def test_the_floor_halts_bpj5s_halted_run_at_its_first_scale_below_1_and_no_healthy_run():
     assert first_halt(GnormWatcher(grad_scale_floor=FLOOR), HALTED_RUN) == 6
     assert first_halt(GnormWatcher(grad_scale_floor=FLOOR), HEALTHY_RUN) is None
     # The two runs with rows of target sum 0 before it (02:46-04:00 and 04:00-05:23): at 0.5 too.

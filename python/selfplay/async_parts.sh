@@ -101,7 +101,8 @@ part_limits() {  # PART: "MEM CPUWEIGHT NICE" from the defaults, LIMITS_GROUP an
 # - The trainers' guards of their exports (python/katago/train/export_gate.py) and of fp16 training, each off by
 #   default, as upstream's trainer: EXPORT_MIN_MINUTES (train.py's -export-min-minutes, 0: no pace), EXPORT_GATE_MARGIN
 #   (-export-gate-margin, empty: no gate) with EXPORT_GATE_REFUSALS (-export-gate-refusals, 3) and GRAD_SCALE_FLOOR
-#   (-grad-scale-floor, empty: no floor). The gate needs validation rows (VALIDATE=1). Each guard can hold back the
+#   (-grad-scale-floor, empty: no floor). The gate needs validation rows: a run with a gate and VALIDATE=0 does not
+#   start. Each guard can hold back the
 #   exports or halt a trainer, so a run turns it on in its own settings with its reason: bpj5's values and their
 #   measures are in the engine repository's games/blueprints/docs/decisions/port.md, "the trainer's export gate". A
 #   lever at its default adds no flag.
@@ -141,6 +142,8 @@ run_defaults() {  # needs GAME
     : "${SHUFFLE_EXTRA_ARGS:=}"
     : "${EXPORT_EVERY:=10}"  # upstream's
     : "${EXPORT_MIN_MINUTES:=0}" "${EXPORT_GATE_MARGIN:=}" "${EXPORT_GATE_REFUSALS:=3}" "${GRAD_SCALE_FLOOR:=}"
+    [[ -z "$EXPORT_GATE_MARGIN" || "$VALIDATE" == 1 ]] ||
+        { echo "EXPORT_GATE_MARGIN needs VALIDATE=1: the export gate compares on the validation rows" >&2; return 1; }
     # Self-play's -override-config: the defaults of its config keys, then the run's own (SELFPLAY_OVERRIDES), which win.
     SELFPLAY_IN_FORCE=""
     if (( cpus < $(getconf _NPROCESSORS_ONLN) )); then

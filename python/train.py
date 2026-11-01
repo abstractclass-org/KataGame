@@ -130,7 +130,7 @@ if __name__ == "__main__":
     optional_args.add_argument('-epochs-per-export', help='Export model once every this many epochs', type=int, required=False)
     optional_args.add_argument('-export-prob', help='Export model with this probablity', type=float, required=False)
     # KataGame fork (abscls-ehuh, abscls-8mbo): the pace and the gate of the exports (katago/train/export_gate.py).
-    optional_args.add_argument('-export-min-minutes', help='Export at most one model each this many minutes of wall-clock time: the export of a cycle that ends sooner after the last export is skipped, and the training goes on (default 0: no pace)', type=float, default=0.0, required=False)
+    optional_args.add_argument('-export-min-minutes', help='Export at most one model each this many minutes of wall-clock time: the trainer skips the export of a cycle that ends sooner after the last export, and trains on (default 0: no pace)', type=float, default=0.0, required=False)
     optional_args.add_argument('-export-gate-margin', help='Refuse an export when its p0loss or p1loss on the validation rows is above the last export\'s, on the same rows, by more than this, for the raw or the SWA weights (default: no gate)', type=float, required=False)
     optional_args.add_argument('-export-gate-refusals', help='Halt the trainer after this many refused exports in a row (default 3)', type=int, default=3, required=False)
     optional_args.add_argument('-grad-scale-floor', help='With -use-fp16, halt the trainer when the gradient scaler\'s scale falls below this (default: no floor)', type=float, required=False)
@@ -1173,7 +1173,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     make_gate_model = lambda: Model(model_config, pos_len)
     export_reference = None
     export_reference_path = os.path.join(traindir, export_gate.REFERENCE_FILE)
-    if rank == 0 and export_decider.gates:
+    if rank == 0 and export_decider.has_gate:
         export_reference = export_gate.load_reference(export_reference_path)
         if export_reference is not None and export_gate.fits(export_reference, raw_model):
             logging.info(f"Export gate: the reference is the last export, {export_reference['name']} "
@@ -1869,8 +1869,8 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                 train_state["global_step_samples"] += batch_size * world_size
 
                 metrics = trainloop_helpers.detensorify_metrics(metrics)
-                # The scale only with a floor: get_scale reads it from the GPU. The metrics' read above has waited for
-                # this batch's work, the scaler's update with it.
+                # KataGame fork (abscls-8mbo): the grad-scale floor. The scale only with a floor: get_scale reads it
+                # from the GPU. The metrics' read above has waited for this batch's work, the scaler's update with it.
                 # A floor implies fp16, and so a scaler.
                 gnorm_watcher.observe(metrics, gnorm_cap=gnorm_cap, grad_scale=(
                     scaler.get_scale() if gnorm_watcher.grad_scale_floor is not None else None))
@@ -2074,7 +2074,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                     # time, so that it holds the activations of a quarter batch. The reference's networks are new, and
                     # the gate drops them after the pass: only the SWA network's attention mode is given back.
                     gate_validation = None
-                    if export_now and export_decider.gates:
+                    if export_now and export_decider.has_gate:
                         gate_networks = export_gate.networks_on(device, make_gate_model, export_reference)
                         if swa_model is not None:
                             gate_networks["swa"] = swa_model.module
@@ -2150,7 +2150,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                     time.sleep(2)
                     os.rename(savepathtmp,savepath)
                 # The exported network is the gate's next reference, kept for a restart too.
-                if export_decider.gates:
+                if export_decider.has_gate:
                     export_reference = export_gate.reference_of(raw_model, swa_model)
                     export_gate.save_reference(export_reference_path, modelname, train_state["global_step_samples"],
                                                export_reference)

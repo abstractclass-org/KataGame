@@ -48,7 +48,7 @@ def main():
     ap.add_argument("-npz", nargs="+", required=True, help="the rows: validation files of the run")
     ap.add_argument("-margin", type=float, required=True, help="the trainer's -export-gate-margin")
     ap.add_argument("-batch-size", type=int, default=128)
-    ap.add_argument("-chunk-rows", type=int, default=32, help="rows per forward (default 32, the trainer's batch / 4)")
+    ap.add_argument("-chunk-rows", type=int, default=None, help="rows per forward (default: the batch / 4, as the trainer)")
     ap.add_argument("-max-batches", type=int, default=None)
     ap.add_argument("-device", default="cpu")
     args = ap.parse_args()
@@ -65,7 +65,8 @@ def main():
     def forward(network, part):
         return network(part["binaryInputNCHW"], part["globalInputNC"])
 
-    gate = export_gate.GateValidation(networks, forward, validation_metrics(Metrics(1, model)), args.chunk_rows)
+    chunk_rows = args.chunk_rows if args.chunk_rows is not None else args.batch_size // 4
+    gate = export_gate.GateValidation(networks, forward, validation_metrics(Metrics(1, model)), chunk_rows)
     for i, batch in enumerate(batches(args.npz, args.batch_size, model.pos_len, args.device, model.config)):
         if args.max_batches is not None and i >= args.max_batches:
             break
