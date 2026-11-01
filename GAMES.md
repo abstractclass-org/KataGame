@@ -405,7 +405,8 @@ from its start. Each replay of a finished game plays each move in its view (`Fin
 writer, the records, RGSC's played positions, AZdb's statistics and the lead's estimate. A fork's replay stops before
 the game's first move in a view. The rows' writer moves the second policy target, the next search's policy, into the
 view that the row gives the next position (`view_in_frame`, each move by `view_action`). A move that this view does
-not hold drops out, and a row whose next policy keeps no move has no second policy target. The log counts both kinds
+not hold drops out. A row whose next policy keeps no move, or keeps only moves of target 0 (KataGo's policy target
+pruning and the rounding to whole targets can give a child 0), has no second policy target. The log counts both kinds
 of rows. The setting does not combine with `useReanalyze`.
 
 `RootViews::Searches` holds the passes and the checks one at a time, for a caller that runs each search. `next()`
@@ -880,10 +881,11 @@ candidate at a root in a set view restores with its key to the position in the r
 in another view and a full search whose cover has more views: a run whose games lack either fails, as it did not
 test them. With `OUT_DIR`, it writes the games' rows and records there, for the engine repository's
 `games/blueprints/tools/check_rows.py --records`. It then checks that no row has a policy target of sum 0 with its
-weight (C26, C28), and it writes each game again with a second writer, to no file, after it sets to 0 the targets of
-the moves that the row's view keeps of each next policy that the view moves (the moves that KataGo's policy target
-pruning cuts to 0 can be all that a view keeps). Each row whose next policy then keeps only moves of target 0 must have
-no second policy target, and the games must give such a row.
+weight (C26, C28). The moves of target 0, from KataGo's policy target pruning or the rounding, can be all that a view
+keeps of a next policy. So the test takes each next policy that the row's view moves, where the view keeps a move and
+leaves out a move of target above 0, and sets the kept moves' targets to 0. A second writer writes each game again,
+without its side positions, to no file. Each row whose next policy then keeps only moves of target 0 must have no
+second policy target, the writer must count it in `numRowsNextPolicyLost`, and the games must give such a row.
 
 **AZdb's latent:** `testdiversityinputs POSITIONS_FILE` names no game, so it runs on any game's build, with the game's
 positions (Blueprints': `tests/data/blueprints_positions.txt`). It needs no network. It checks the cache's hash of each

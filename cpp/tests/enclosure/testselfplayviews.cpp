@@ -33,12 +33,14 @@
 // With OUT_DIR, also (abscls-3tbn):
 // - No row has a policy target of sum 0 with its weight above 0 (C26 for the first, C28 for the second): the trainer
 //   divides each target by its sum.
-// - Next policies of target 0 in the row's view. A search's policy lists each child of its root, and KataGo's policy
-//   target pruning can cut a child to 0, so a row whose view keeps only such moves of the next policy has a target of
-//   sum 0. Such rows are few in the games, so the test also makes them: after the game's rows are written, each next
-//   policy that the row's view moves, keeping a move and dropping a move of target above 0, gets its kept moves'
-//   targets set to 0. A second writer writes the game again, its text to no file, and each row whose next policy keeps
-//   only moves of target 0 must have no second policy target (C28 0). The games must give such a row.
+// - Next policies of target 0 in the row's view. A search's policy lists each child of its root, and a child's target
+//   can be 0 (KataGo's policy target pruning, or the rounding to whole targets), so a row whose view keeps only such
+//   moves of the next policy has a target of sum 0. Such rows are few in the games, so the test also makes them. After
+//   the writer takes the game's rows, the test takes each next policy that the row's view moves, where the view keeps
+//   a move and leaves out a move of target above 0, and sets the kept moves' targets to 0. A second writer writes the
+//   game again without its side positions, its text to no file. Each row whose next policy keeps only moves of target
+//   0 must have no second policy target (C28 0), and the writer must count it in numRowsNextPolicyLost. The games
+//   must give such a row.
 // Exit code 0 when every check holds.
 
 #include <algorithm>
@@ -206,9 +208,10 @@ struct ZeroCounts {
 
 //The next policies of target 0 in the row's view (the case of abscls-3tbn). For each row of the game, its next policy
 //in its view as TrainingDataWriter::writeGame gives it: the next position in the view of GameInterface::viewInFrame,
-//and each move of the next search's policy at its action there (GameInterface::viewAction), or dropped. A policy that
-//keeps moves of target 0 only is found as it is. A policy that keeps a move and drops a move of target above 0 gets its
-//kept moves' targets set to 0. Returns the turns (moveHistory's indices) of the rows of both kinds.
+//and each move of the next search's policy at its action there (GameInterface::viewAction), or left out. The test
+//counts a policy that keeps moves of target 0 only, and does not change it. A policy that keeps a move and leaves out a
+//move of target above 0 gets its kept moves' targets set to 0. Returns the turns (moveHistory's indices) of the rows of
+//both kinds.
 static set<int> zeroNextPolicies(FinishedGameData& data, ZeroCounts& counts) {
   set<int> turns;
   const size_t start = data.startHist.moveHistory.size();
@@ -242,17 +245,15 @@ static set<int> zeroNextPolicies(FinishedGameData& data, ZeroCounts& counts) {
       else
         droppedTarget = droppedTarget || move.policyTarget > 0;
     }
-    if(kept.empty())
+    if(kept.empty() || (keptSum > 0 && !droppedTarget))
       continue;
     if(keptSum == 0)
       counts.found++;
-    else if(droppedTarget) {
+    else {
       for(size_t m : kept)
         (*next)[m].policyTarget = 0;
       counts.made++;
     }
-    else
-      continue;
     turns.insert((int)i);
   }
   return turns;
@@ -398,12 +399,13 @@ int main(int argc, char** argv) {
     attach = [state](const MatchPairer::BotSpec&, Search* search) { search->setDiversityState(state); };
   }
 
-  std::unique_ptr<TrainingDataWriter> writer, zeroWriter;
-  std::ofstream sgfOut;
+  //Declared before the writers, whose callbacks refer to them, so that they outlive the writers.
   std::ofstream noFile;  //never opened: the second writer's text goes nowhere
   RowCounts rowCounts, zeroRowCounts;
   ZeroCounts zeroCounts;
   set<int> zeroTurns;
+  std::unique_ptr<TrainingDataWriter> writer, zeroWriter;
+  std::ofstream sgfOut;
   if(outDir != "") {
     writer.reset(new TrainingDataWriter(outDir, inputsVersion, 10000, 1.0, nnLen, nnLen, "testselfplayviews rows"));
     writer->beforeWrite = [&](const TrainingWriteBuffers& b) { checkRows(b, set<int>(), rowCounts, "the rows"); };
@@ -435,10 +437,14 @@ int main(int argc, char** argv) {
       writer->writeGame(*data);
       WriteSgf::writeSgf(sgfOut, data->bName, data->wName, data->endHist, data, false, true);
       sgfOut << endl;
-      //After the game's rows and record: the game again, with next policies of target 0 in the row's view.
+      //After the game's rows and record: the game again, with next policies of target 0 in the row's view. It has no
+      //side positions here, so each row at a turn of zeroTurns is a row of the game's own turns.
       zeroTurns = zeroNextPolicies(*data, zeroCounts);
+      vector<SidePosition*> sidePositions;
+      sidePositions.swap(data->sidePositions);
       zeroWriter->writeGame(*data);
       zeroWriter->flushIfNonempty();
+      sidePositions.swap(data->sidePositions);
     }
     delete data;
   }
@@ -455,6 +461,8 @@ int main(int argc, char** argv) {
            (long long)zeroWriter->numRowsNextPolicyLost());
     check(rowCounts.rows == writer->numRowsWritten(), "the check sees each row");
     check(zeroRowCounts.zeroRows > 0, "a row whose next policy keeps only moves of target 0");
+    check(zeroWriter->numRowsNextPolicyLost() >= zeroRowCounts.zeroRows,
+          "the writer counts each row whose next policy keeps only moves of target 0 as a row without it");
   }
   printf("actions: %lld in the loops (%lld before them), %lld in another view than the rules'; covers of more views: "
          "%lld full and %lld cheap searches (of one view: %lld full, %lld cheap)\n",

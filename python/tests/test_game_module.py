@@ -210,7 +210,7 @@ def test_a_game_without_the_ownership_target_trains_no_ownership(game_without_ow
 def test_a_policy_target_of_sum_0_gives_a_finite_loss_as_at_its_weight_0(channel, weight):
     # Self-play's rows could hold a second policy target of sum 0 with its weight C28 at 1 (the next policy in the
     # row's view, abscls-3tbn). The trainer divides each policy target by its sum, so each such row made its batch's
-    # loss NaN. A target of sum 0, in either channel, now trains as at its weight 0.
+    # loss NaN. A target of sum 0, in either channel, trains as at its weight 0.
     model = b6c96("enclosure", 1)
     model.initialize()
     batch = random_batch(model)

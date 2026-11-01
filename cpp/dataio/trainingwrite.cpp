@@ -1282,6 +1282,7 @@ bool TrainingDataWriter::flushIfNonempty(string& resultingFilename) {
     return false;
 
   isFirstFile = false;
+  //KataGame fork (abscls-3tbn): a test's checks of the rows (beforeWrite).
   if(beforeWrite)
     beforeWrite(*writeBuffers);
 
@@ -1434,9 +1435,10 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
     //(GameInterface::viewAction), and a move that the view does not hold drops out. A row whose next policy keeps no
     //move has no second policy target (its weight C28 is 0), and the writer counts it (numRowsNextPolicyLost).
     //KataGame fork (abscls-3tbn): so does a row whose kept moves' targets sum to 0. A search's policy lists each child
-    //of its root, and KataGo's policy target pruning (Search::getPlaySelectionValues) can cut a child to 0. When the
-    //view keeps only such moves, the target is no distribution, and the trainer, which divides it by its sum, gets
-    //NaN. A policy that keeps all its moves sums to 10 or more (Play::extractPolicyTarget's scaleMaxToAtLeast).
+    //of its root, and a child's target can be 0: KataGo's policy target pruning (Search::getPlaySelectionValues) can
+    //cut it to 0, and Play::extractPolicyTarget rounds each value to a whole target. When the view keeps only such
+    //moves, the target is no distribution, and the trainer, which divides it by its sum, gets NaN. A policy that keeps
+    //all its moves sums to 10 or more (extractPolicyTarget's scaleMaxToAtLeast).
     std::unique_ptr<Board> nextFrame;
     bool nextPolicyTranslated = false;
     vector<PolicyTargetMove> translatedTarget1;
