@@ -1,6 +1,7 @@
 """The trainer's guards of its exports (katago/train/export_gate.py) and of fp16 training (trainloop_helpers.GnormWatcher's
 grad-scale floor), with bpj5's numbers of 2026-11-01 (abscls-8mbo, abscls-ehuh, games/blueprints/docs/decisions/port.md
-in the engine repository, "the trainer's export gate")."""
+in the engine repository, "the trainer's export gate"), and a new model's floor (abscls-8gxv, training.md there, "a new
+model's grad-scale floor")."""
 import os
 import sys
 
@@ -265,3 +266,36 @@ def test_without_a_floor_or_a_scale_nothing_halts(monkeypatch):
     assert first_halt(GnormWatcher(grad_scale_floor=FLOOR), HALTED_RUN) is None  # it warns only
     with pytest.raises(ValueError):
         GnormWatcher(grad_scale_floor=0)
+
+
+# A new b6c96 of abscls-xtoh's GPU job (2026-11-02), the scale after each of its first 20 batches: 17 nonfinite and 3
+# finite, the scale 0.5 at the 20th, where the floor halted it. The log does not give the 3 finite batches' places:
+# here the 6th, the 12th and the 18th. GradScaler halves the scale at each nonfinite batch and doubles it only after
+# 2,000 finite batches in a row.
+NEW_B6C96 = [65536.0 / 2 ** n for n in (1, 2, 3, 4, 5, 5, 6, 7, 8, 9, 10, 10, 11, 12, 13, 14, 15, 15, 16, 17)]
+
+
+def test_a_new_models_scale_under_the_floor_in_its_first_steps_does_not_halt():
+    assert first_halt(GnormWatcher(grad_scale_floor=FLOOR), NEW_B6C96) == 19  # a resumed model's floor, as today
+    assert first_halt(GnormWatcher(grad_scale_floor=FLOOR, grad_scale_floor_armed=False),
+                      NEW_B6C96 + [0.5] * 1980) is None
+
+
+# hybrid3's new model in the pause's plan (v13's first pass, 2026-11-01), the scale at its first epochs' starts and at
+# each change after: 2 from the first epoch's end, then a growth each 16 epochs of 125 batches, with no fall.
+NEW_HYBRID3 = [65536.0, 2.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+
+
+def test_a_new_models_floor_holds_after_the_scale_grows():
+    new = lambda: GnormWatcher(grad_scale_floor=FLOOR, grad_scale_floor_armed=False)  # noqa: E731
+    assert first_halt(new(), NEW_HYBRID3) is None
+    assert first_halt(new(), NEW_HYBRID3[:4] + [2.0, 1.0, 0.5]) == 6
+    # The b6c96 above, had it trained on: 2,000 finite batches at 0.5, the growth to 1, and a later nonfinite batch.
+    assert first_halt(new(), NEW_B6C96 + [0.5] * 1999 + [1.0] * 5 + [0.5]) == 2024
+
+
+def test_a_growth_that_leaves_the_scale_under_the_floor_does_not_arm_it():
+    # A new model whose first steps took the scale to 0.25: its growth to 0.5 after 2,000 finite batches is healthy.
+    watcher = GnormWatcher(grad_scale_floor=FLOOR, grad_scale_floor_armed=False)
+    assert first_halt(watcher, [65536.0, 0.25, 0.5, 0.25, 0.5]) is None
+    assert first_halt(watcher, [1.0, 0.5]) == 1

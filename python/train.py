@@ -133,7 +133,7 @@ if __name__ == "__main__":
     optional_args.add_argument('-export-min-minutes', help='Export at most one model each this many minutes of wall-clock time: the trainer skips the export of a cycle that ends sooner after the last export, and trains on (default 0: no pace)', type=float, default=0.0, required=False)
     optional_args.add_argument('-export-gate-margin', help='Refuse an export when its p0loss or p1loss on the validation rows is above the last export\'s, on the same rows, by more than this, for the raw or the SWA weights (default: no gate)', type=float, required=False)
     optional_args.add_argument('-export-gate-refusals', help='Halt the trainer after this many refused exports in a row (default 3)', type=int, default=3, required=False)
-    optional_args.add_argument('-grad-scale-floor', help='With -use-fp16, halt the trainer when the gradient scaler\'s scale falls below this (default: no floor)', type=float, required=False)
+    optional_args.add_argument('-grad-scale-floor', help='With -use-fp16, halt the trainer when the gradient scaler\'s scale falls below this (default: no floor). A new model\'s floor holds from the scale\'s first growth to the floor or above', type=float, required=False)
     optional_args.add_argument('-max-epochs-this-instance', help='Terminate training after this many more epochs', type=int, required=False)
     optional_args.add_argument('-max-training-samples', help='Terminate training after about this many training steps in samples', type=int, required=False)
     optional_args.add_argument('-sleep-seconds-per-epoch', help='Sleep this long between epochs', type=int, required=False)
@@ -977,7 +977,8 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                 optimizer = torch.optim.SGD(get_param_groups(raw_model,train_state,running_metrics), lr=1.0, momentum=0.9)
             set_optimizer_wd_floors(optimizer, raw_model, train_state)
 
-            return (model_config, ddp_model, raw_model, swa_model, optimizer, metrics_obj, running_metrics, train_state, last_val_metrics)
+            new_model = True
+            return (model_config, ddp_model, raw_model, swa_model, optimizer, metrics_obj, running_metrics, train_state, last_val_metrics, new_model)
         else:
             state_dict = load_model.load_checkpoint(path_to_load_from, map_location=device)
 
@@ -1120,12 +1121,13 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                 train_state["optimizer_name"] = optimizer_name
             set_optimizer_wd_floors(optimizer, raw_model, train_state)
 
-            return (model_config, ddp_model, raw_model, swa_model, optimizer, metrics_obj, running_metrics, train_state, last_val_metrics)
+            new_model = False
+            return (model_config, ddp_model, raw_model, swa_model, optimizer, metrics_obj, running_metrics, train_state, last_val_metrics, new_model)
 
     loaded = None
     while loaded is None:
         loaded = load()
-    (model_config, ddp_model, raw_model, swa_model, optimizer, metrics_obj, running_metrics, train_state, last_val_metrics) = loaded
+    (model_config, ddp_model, raw_model, swa_model, optimizer, metrics_obj, running_metrics, train_state, last_val_metrics, new_model) = loaded
 
 
     if "global_step_samples" not in train_state:
@@ -1615,14 +1617,18 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     # KataGame fork (abscls-8mbo): the floor of the gradient scaler's scale, which only fp16 training has.
     if grad_scale_floor is not None and not use_fp16:
         logging.warning(f"-grad-scale-floor {grad_scale_floor:g} has no effect without -use-fp16: no gradient scaler")
-    gnorm_watcher = trainloop_helpers.GnormWatcher(grad_scale_floor=grad_scale_floor if use_fp16 else None)
+    # KataGame fork (abscls-8gxv): a new model's first batches can take the scale below the floor, so its floor holds
+    # only from the scale's first growth to the floor or above. A model from a checkpoint has it from its first batch.
+    gnorm_watcher = trainloop_helpers.GnormWatcher(grad_scale_floor=grad_scale_floor if use_fp16 else None,
+                                                   grad_scale_floor_armed=not new_model)
 
     scaler = None
     if use_fp16:
         logging.info("Training in FP16! Creating scaler")
         scaler = GradScaler("cuda")
         if grad_scale_floor is not None:
-            logging.info(f"Grad scale floor: {grad_scale_floor:g}")
+            logging.info(f"Grad scale floor: {grad_scale_floor:g}" + (
+                ", from the scale's first growth to it or above (a new model)" if new_model else ""))
     elif use_bf16:
         logging.info("Training in BF16 AMP without gradient scaling.")
     else:

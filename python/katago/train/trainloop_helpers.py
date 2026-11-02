@@ -410,6 +410,12 @@ class GnormWatcher:
       9.5e-7 in an hour. At such a scale the fp16 gradients are noise, and only
       then did the norm's triggers fire. A scale below the floor stays below it
       for at least 2000 batches, so one reading below it halts.
+      With grad_scale_floor_armed=False (a new model, abscls-8gxv), the floor
+      holds only from the first growth of the scale to the floor or above. A
+      new model's first gradients can be beyond fp16's range at a scale of 1:
+      its first batches took the scale to 0.5-2, and a trained model's restart
+      to 8-512. A growth comes after 2000 finite batches in a row, so the
+      first steps are behind the model when the floor arms.
 
     Raises GnormWatcherError so the run cannot silently continue.
     Setting KATAGO_GNORM_WATCHER_HALT=0 makes it warn instead.
@@ -419,10 +425,13 @@ class GnormWatcher:
     """
 
     def __init__(self, consecutive_warn_threshold=8, rate_window=100, rate_warn_fraction=0.25,
-                 extreme_cap_factor=50.0, startup_good_limit=30, grad_scale_floor=None):
+                 extreme_cap_factor=50.0, startup_good_limit=30, grad_scale_floor=None,
+                 grad_scale_floor_armed=True):
         if grad_scale_floor is not None and not grad_scale_floor > 0:
             raise ValueError(f"the grad scale floor must be above 0, not {grad_scale_floor}")
         self.grad_scale_floor = grad_scale_floor
+        self.grad_scale_floor_armed = grad_scale_floor_armed
+        self.last_grad_scale = None
         self.consecutive_warn_threshold = consecutive_warn_threshold
         self.rate_window = rate_window
         self.rate_warn_fraction = rate_warn_fraction
@@ -490,7 +499,17 @@ class GnormWatcher:
             + (f" latest gnorm {gnorm:.4g} vs cap {gnorm_cap:.4g}" if extreme else "")
             + ")"
         )
-        if self.grad_scale_floor is not None and grad_scale is not None and grad_scale < self.grad_scale_floor:
+        if self.grad_scale_floor is not None and grad_scale is not None:
+            if (not self.grad_scale_floor_armed and self.last_grad_scale is not None
+                    and self.last_grad_scale < grad_scale and grad_scale >= self.grad_scale_floor):
+                self.grad_scale_floor_armed = True
+                logging.info(
+                    f"GNORM WATCHER: the gradient scaler's scale grew to {grad_scale:g} at batch {self.total_observed}: "
+                    f"the floor {self.grad_scale_floor:g} holds from now on."
+                )
+            self.last_grad_scale = grad_scale
+        if (self.grad_scale_floor is not None and self.grad_scale_floor_armed and grad_scale is not None
+                and grad_scale < self.grad_scale_floor):
             self._trigger(
                 f"GNORM WATCHER: the gradient scaler's scale {grad_scale:.4g} is below the floor "
                 f"{self.grad_scale_floor:g}: nonfinite gradients keep coming {detail}."
