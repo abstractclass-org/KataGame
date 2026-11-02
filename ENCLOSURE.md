@@ -415,7 +415,10 @@ This section lists them so that a reader sees them as choices. "On" and "off" de
     ([strength.md](../games/enclosure/docs/decisions/strength.md) "The outcome heads overfit").
   - **Validation: on.** `shuffle.sh` keeps 1% of the files out of training (`VALIDATE=1`), and `metrics_val.json`
     holds their losses. (Upstream's `synchronous_loop.sh` turns validation off. Then the loss curves are training
-    losses only, and they rise when the data gets harder, even while the network improves.)
+    losses only, and they rise when the data gets harder, even while the network improves.) A run of
+    `async_start.sh` can give the validation files a window of their own, wider than the training window, so that the
+    validation set always holds rows (`VALIDATION_MIN_ROWS`, `shuffle.py -md5-min-rows`; `async_parts.sh`). v2a does
+    not.
   - **Batch** 256, FP16 training.
   - **Wait for new data: 300 s, KataGo's.** When the train bucket is spent, or too few files remain to fill a
     subepoch, KataGo's trainer waits a fixed 5 minutes. Then it looks for a new shuffle again. The fork makes this

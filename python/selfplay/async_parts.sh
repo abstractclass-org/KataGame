@@ -106,9 +106,16 @@ part_limits() {  # PART: "MEM CPUWEIGHT NICE" from the defaults, LIMITS_GROUP an
 #   exports or halt a trainer, so a run turns it on in its own settings with its reason: bpj5's values and their
 #   measures are in the engine repository's games/blueprints/docs/decisions/port.md, "the trainer's export gate". A
 #   lever at its default adds no flag.
+# - VALIDATION_MIN_ROWS, empty by default: the validation set is upstream's, the files of the training window that
+#   shuffle.sh keeps out of training (1%, by the md5 of their names). A count of rows gives the validation files a
+#   window of their own: older validation files join, newest first, until the set holds that many rows (shuffle.sh,
+#   shuffle.py's -md5-min-rows). The 1% of a window of about 300 files can hold no file for hours, and the export gate
+#   then exports untested. It needs VALIDATE=1. bpj5's value and its measures: the engine repository's
+#   games/blueprints/docs/decisions/port.md, "the validation rows of the export gate".
 RUN_LEVERS="PILOT CPUS NUM_THREADS_FOR_SHUFFLING NUM_TRAIN_SAMPLES_PER_EPOCH MAX_TRAIN_PER_DATA
 NUM_TRAIN_SAMPLES_PER_SWA BATCHSIZE SHUFFLE_MINROWS MAX_TRAIN_SAMPLES_PER_CYCLE TAPER_WINDOW_SCALE SHUFFLE_KEEPROWS
-ROWS_PER_SHUFFLE_FILE SHUFFLE_WORKER_GROUP_ROWS SHUFFLE_EXTRA_ARGS VALIDATE TRAIN_EXTRA_ARGS SHUFFLE_EVERY EXPORT_EVERY
+ROWS_PER_SHUFFLE_FILE SHUFFLE_WORKER_GROUP_ROWS SHUFFLE_EXTRA_ARGS VALIDATE VALIDATION_MIN_ROWS TRAIN_EXTRA_ARGS
+SHUFFLE_EVERY EXPORT_EVERY
 EXPORT_MIN_MINUTES EXPORT_GATE_MARGIN EXPORT_GATE_REFUSALS GRAD_SCALE_FLOOR
 WAIT_FOR_DATA_SECONDS OMP_NUM_THREADS MKL_NUM_THREADS SELFPLAY_CONFIG ANALYSIS_CONFIG SELFPLAY_IN_FORCE POS_LEN
 ROW_BYTES"
@@ -144,6 +151,11 @@ run_defaults() {  # needs GAME
     : "${EXPORT_MIN_MINUTES:=0}" "${EXPORT_GATE_MARGIN:=}" "${EXPORT_GATE_REFUSALS:=3}" "${GRAD_SCALE_FLOOR:=}"
     [[ -z "$EXPORT_GATE_MARGIN" || "$VALIDATE" == 1 ]] ||
         { echo "EXPORT_GATE_MARGIN needs VALIDATE=1: the export gate compares on the validation rows" >&2; return 1; }
+    : "${VALIDATION_MIN_ROWS:=}"
+    [[ -z "$VALIDATION_MIN_ROWS" || "$VALIDATION_MIN_ROWS" =~ ^[1-9][0-9]*$ ]] ||
+        { echo "VALIDATION_MIN_ROWS is a count of rows, not '$VALIDATION_MIN_ROWS'" >&2; return 1; }
+    [[ -z "$VALIDATION_MIN_ROWS" || "$VALIDATE" == 1 ]] ||
+        { echo "VALIDATION_MIN_ROWS needs VALIDATE=1: without it, the shuffle keeps no validation set" >&2; return 1; }
     # Self-play's -override-config: the defaults of its config keys, then the run's own (SELFPLAY_OVERRIDES), which win.
     SELFPLAY_IN_FORCE=""
     if (( cpus < $(getconf _NPROCESSORS_ONLN) )); then
@@ -163,6 +175,14 @@ run_defaults() {  # needs GAME
 
 selfplay_key() {  # KEY=VALUE[,...]: added to SELFPLAY_IN_FORCE (nothing for an empty argument)
     SELFPLAY_IN_FORCE="$SELFPLAY_IN_FORCE${SELFPLAY_IN_FORCE:+${1:+,}}$1"
+}
+
+shuffle_env() {  # the NAME=VALUE words of shuffle.sh's environment, from the levers (after run_defaults)
+    if [[ "$VALIDATE" == 1 ]]; then
+        echo "${VALIDATION_MIN_ROWS:+VALIDATION_MIN_ROWS=$VALIDATION_MIN_ROWS}"
+    else
+        echo "SKIP_VALIDATE=1"
+    fi
 }
 
 train_flags() {  # the train.py flags of every trainer, from the levers (after run_defaults)

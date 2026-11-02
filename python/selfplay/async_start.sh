@@ -68,8 +68,8 @@ SCRATCHDIR="$BASEDIR"/shufflescratch
 mkdir -p "$BASEDIR" "$LOGSDIR" "$SCRATCHDIR" "$BASEDIR"/selfplay
 
 # As the synchronous loop of v2a: validation (VALIDATE=1: 1% of the self-play files held out, train.py reports
-# metrics_val.json).
-if [[ "$VALIDATE" == 1 ]]; then SHUFFLE_ENV=""; else SHUFFLE_ENV="SKIP_VALIDATE=1"; fi
+# metrics_val.json), with its own window when VALIDATION_MIN_ROWS is set (async_parts.sh: shuffle_env).
+SHUFFLE_ENV=$(shuffle_env)
 # Each part's memory cap, CPU weight and nice value: part_limits (async_parts.sh). A lower CPU weight for the
 # parts beside self-play lets self-play keep the CPUs while they wait their turn (2026-10-03: the shuffle took its
 # full share from self-play whenever it ran).

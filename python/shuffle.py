@@ -757,6 +757,13 @@ def compute_num_rows(filename):
     return (filename,num_rows)
 
 
+def md5_path_in_bounds(filename, lbound, ubound):
+    """Whether the md5 filter (-only-include-md5-path-prop-lbound and -ubound, None for no bound) keeps the file: the
+    md5 of its base name, as a number in [0, 1), is at least lbound and below ubound."""
+    hashfloat = int("0x"+hashlib.md5(str(os.path.basename(filename)).encode('utf-8')).hexdigest()[:13],16) / 2 ** 52
+    return (lbound is None or hashfloat >= lbound) and (ubound is None or hashfloat < ubound)
+
+
 class TimeStuff(object):
 
     def __init__(self,taskstr):
@@ -856,6 +863,7 @@ if __name__ == '__main__':
     optional_args.add_argument('-exclude-basename', required=False, action="store_true", help='Consider an exclude to match if basename matches')
     optional_args.add_argument('-only-include-md5-path-prop-lbound', type=float, required=False, help='Just before sharding, include only filepaths hashing to float >= this')
     optional_args.add_argument('-only-include-md5-path-prop-ubound', type=float, required=False, help='Just before sharding, include only filepaths hashing to float < this')
+    optional_args.add_argument('-md5-min-rows', type=int, required=False, help='With an md5 filter: when the files of the window that the filter keeps give fewer rows than this, the older files that it keeps join, newest first, until they give this many (KataGame fork; default: the window only)')
     optional_args.add_argument('-skip-mtime-range-start', type=float, required=False, help='')
     optional_args.add_argument('-skip-mtime-range-end', type=float, required=False, help='')
     optional_args.add_argument('-include-meta', action="store_true", required=False, help='Include sgf metadata inputs')
@@ -908,6 +916,10 @@ if __name__ == '__main__':
     exclude_basename = args.exclude_basename
     only_include_md5_path_prop_lbound = args.only_include_md5_path_prop_lbound
     only_include_md5_path_prop_ubound = args.only_include_md5_path_prop_ubound
+    md5_min_rows = args.md5_min_rows
+    if (md5_min_rows is not None and only_include_md5_path_prop_lbound is None
+            and only_include_md5_path_prop_ubound is None):
+        raise ValueError("-md5-min-rows needs an md5 filter (-only-include-md5-path-prop-lbound or -ubound)")
     skip_mtime_range_start = args.skip_mtime_range_start
     skip_mtime_range_end = args.skip_mtime_range_end
     include_meta = args.include_meta
@@ -1208,6 +1220,42 @@ if __name__ == '__main__':
 
     print("Finally, using: (%d-%d) (%d/%d desired rows)" % (min_start_row,max_end_row,num_rows_used,desired_num_rows), flush=True)
 
+    # KataGame fork (2026-11-02, abscls-0zrx): -md5-min-rows gives the files that the md5 filter keeps a window of
+    # their own, at least as wide as the window above. shuffle.sh's validation shuffle keeps the 1% of the files whose
+    # md5 is in [0.99, 1). A window of about 300 files then holds about 3 of them, and at times none for hours, and the
+    # trainer then has no validation rows: its export gate cannot compare (the engine repository's
+    # games/blueprints/docs/decisions/port.md, "the validation rows of the export gate"). Past the window, the older
+    # files that the filter keeps join, newest first, until the rows that this shuffle keeps of them reach
+    # -md5-min-rows. The other side's shuffle (the md5 in [0, 0.99)) never takes such a file, at any age, so their rows
+    # stay unseen by the trainer. They keep the window's keep_prob: num_rows_used stays the window's rows.
+    if md5_min_rows is not None and num_rows_used > 0:
+        lbound, ubound = only_include_md5_path_prop_lbound, only_include_md5_path_prop_ubound
+        window_keep_prob = (min(num_rows_used, keep_target_rows) if keep_target_rows is not None
+                            else num_rows_used) / num_rows_used
+        md5_rows = sum(n for (f, n) in desired_input_files if md5_path_in_bounds(f, lbound, ubound))
+        num_older_files = 0
+        end_row = start_row
+        for j in range(i + 1, len(all_files)):
+            if md5_rows * window_keep_prob >= md5_min_rows:
+                break
+            (filename,mtime,num_rows) = all_files[j]
+            if skip_mtime_range_start is not None and skip_mtime_range_end is not None:
+                if mtime >= skip_mtime_range_start and mtime <= skip_mtime_range_end:
+                    continue
+            if num_rows is None or num_rows <= 0:
+                continue
+            start_row = end_row - num_rows
+            if md5_path_in_bounds(filename, lbound, ubound):
+                desired_input_files.append((filename,num_rows))
+                md5_rows += num_rows
+                num_older_files += 1
+                min_start_row = min(start_row, min_start_row)
+            end_row = start_row
+        print("md5 window: %d older files that the md5 filter keeps, from row %d: %d rows in the filter, "
+              "%d to keep (-md5-min-rows %d%s)" % (
+                  num_older_files, min_start_row, md5_rows, md5_rows * window_keep_prob, md5_min_rows,
+                  "" if md5_rows * window_keep_prob >= md5_min_rows else ", more than the run holds"), flush=True)
+
     print("GC collect", flush=True)
     del all_files
     gc.collect()
@@ -1224,14 +1272,7 @@ if __name__ == '__main__':
     if only_include_md5_path_prop_lbound is not None or only_include_md5_path_prop_ubound is not None:
         new_desired_input_files = []
         for (input_file,num_rows_in_file) in desired_input_files:
-            input_file_base = os.path.basename(input_file)
-            hashfloat = int("0x"+hashlib.md5(str(input_file_base).encode('utf-8')).hexdigest()[:13],16) / 2 ** 52
-            ok = True
-            if only_include_md5_path_prop_lbound is not None and hashfloat < only_include_md5_path_prop_lbound:
-                ok = False
-            if only_include_md5_path_prop_ubound is not None and hashfloat >= only_include_md5_path_prop_ubound:
-                ok = False
-            if ok:
+            if md5_path_in_bounds(input_file, only_include_md5_path_prop_lbound, only_include_md5_path_prop_ubound):
                 new_desired_input_files.append((input_file,num_rows_in_file))
                 num_rows_in_desired_files += num_rows_in_file
         print("Due to only_include_md5, filtering down to %d/%d files" % (len(new_desired_input_files),len(desired_input_files)))
