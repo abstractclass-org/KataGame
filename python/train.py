@@ -140,7 +140,7 @@ if __name__ == "__main__":
     # KataGame fork (abscls-xrpd): the sleep before each subepoch, KataGo's 5 s by default, and the load ahead of the
     # next subepoch's first file.
     optional_args.add_argument('-sleep-seconds-per-subepoch', help='Sleep this long after the choice of each subepoch\'s files, before its training (default 5, KataGo\'s)', type=float, default=5.0, required=False)
-    optional_args.add_argument('-data-prefetch-next-subepoch', help='Load the next subepoch\'s first file while this subepoch\'s last files train, if no reload changes it (one GPU only)', required=False, action='store_true')
+    optional_args.add_argument('-data-prefetch-next-subepoch', help='Load the next subepoch\'s first file (with one subepoch an epoch, the next epoch\'s) while this subepoch\'s last files train, if no reload changes it (one GPU only)', required=False, action='store_true')
     optional_args.add_argument('-max-train-bucket-per-new-data', help='When data added, add this many train rows per data row to bucket', type=float, required=False)
     optional_args.add_argument('-max-train-bucket-size', help='Approx total number of train rows allowed if data stops', type=float, required=False)
     optional_args.add_argument('-initial-train-bucket-level', help='Train rows initially in the bucket when the checkpoint has no bucket state yet, default samples-per-epoch. No effect once the checkpoint has a bucket.', type=float, required=False)
@@ -1658,7 +1658,8 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     # Only rank 0 knows that file before the subepoch's start.
     if data_prefetch_next_subepoch and world_size > 1:
         logging.warning("-data-prefetch-next-subepoch has no effect with more than one GPU")
-    subepoch_file_ahead = None
+        data_prefetch_next_subepoch = False
+    first_file_ahead = None
 
     # All ddp threads should be lined up at this point before continuing
     safe_barrier(barrier,rank)
@@ -1740,8 +1741,8 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                 for wpipe in writepipes:
                     wpipe.send(train_files_to_use)
                 # Wait briefly just in case to reduce chance of races with filesystem or anything else
-                # KataGame fork (abscls-xrpd): -sleep-seconds-per-subepoch, KataGo's 5 s by default. A pass of
-                # pipeline/scripts/phase_train.py gives 0: its files do not change while it trains.
+                # KataGame fork (abscls-xrpd): -sleep-seconds-per-subepoch, KataGo's 5 s by default. A pass of the
+                # engine repository's pipeline/scripts/phase_train.py gives 0: its files do not change while it trains.
                 time.sleep(sleep_seconds_per_subepoch)
             else:
                 safe_barrier(barrier,rank)
@@ -1753,15 +1754,10 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
             logging.info("Beginning training subepoch!")
             logging.info("This subepoch, using files: " + str(train_files_to_use))
             logging.info("Currently up to data row " + str(train_state["total_num_data_rows"]))
-            # KataGame fork (abscls-xrpd): -data-prefetch-next-subepoch. This subepoch's reader loads the next
-            # subepoch's first file while its own last files train: the head of the files still to train, which the
-            # next file choice takes first unless a reload of the data changes them. The next reader reads it if it
-            # is its own first file, and loads its first file itself otherwise.
-            next_subepoch_file = None
-            if data_prefetch_next_subepoch and world_size == 1:
-                next_name = trainingdatagenerator.peek_in_pass()
-                if next_name is not None:
-                    next_subepoch_file = data_processing_pytorch.FileAhead(next_name)
+            # KataGame fork (abscls-xrpd): -data-prefetch-next-subepoch (data_processing_pytorch.FileAhead). The next
+            # subepoch's first file is the head of the files still to train, unless a reload of the data changes them.
+            next_name = trainingdatagenerator.peek_in_pass() if data_prefetch_next_subepoch else None
+            next_file_ahead = data_processing_pytorch.FileAhead(next_name) if next_name is not None else None
             lookahead_counter = 0
             for batch in data_processing_pytorch.read_npz_training_data(
                 train_files_to_use,
@@ -1774,8 +1770,8 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                 include_meta=raw_model.get_has_metadata_encoder(),
                 model_config=model_config,
                 prefetch_depth=data_prefetch_depth,
-                first_file=subepoch_file_ahead,
-                next_file=next_subepoch_file,
+                first_file=first_file_ahead,  # KataGame fork (abscls-xrpd)
+                next_file=next_file_ahead,
             ):
                 optimizer.zero_grad(set_to_none=True)
                 extra_outputs = None
@@ -2002,7 +1998,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                         swa_model.update_parameters(raw_model)
 
             logging.info("Finished training subepoch!")
-            subepoch_file_ahead = next_subepoch_file
+            first_file_ahead = next_file_ahead  # KataGame fork (abscls-xrpd): the next subepoch's first file
 
         # END SUB EPOCH LOOP ------------
 

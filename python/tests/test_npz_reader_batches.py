@@ -68,15 +68,16 @@ def write_rows(path, cfg, rows, seed, planes=None, global_inputs=None, global_ta
 
 
 def read(reader, files, cfg, device, seed, monkeypatch, batch_size=16, world_size=1, rank=0, symmetries=True,
-         meta=False, prefetch_depth=1):
+         meta=False, prefetch_depth=1, **ahead):
     """Each batch of the reader, as {key: (dtype, shape, strides, device, values on the CPU)}, for the seed: the
-    reader's generator of symmetries (os.urandom) and torch's (the history dropout)."""
+    reader's generator of symmetries (os.urandom) and torch's (the history dropout). ahead: first_file and next_file,
+    the new reader's only."""
     monkeypatch.setattr(os, "urandom", lambda n: bytes((seed + i) % 256 for i in range(n)))
     torch.manual_seed(seed)
     out = []
     for batch in reader(files, batch_size, world_size, rank, pos_len=modelconfigs.get_game(cfg).MAX_BOARD_LEN,
                         device=device, randomize_symmetries=symmetries, include_meta=meta, model_config=cfg,
-                        prefetch_depth=prefetch_depth):
+                        prefetch_depth=prefetch_depth, **ahead):
         out.append({key: (t.dtype, tuple(t.shape), t.stride(), t.device, t.cpu()) for key, t in batch.items()})
     return out
 
@@ -173,22 +174,6 @@ def test_a_reader_stopped_early_drops_the_files_still_to_load(tmp_path, monkeypa
     assert loaded == files[:2]
 
 
-def seeded(seed, monkeypatch):
-    """The seed of read(): the readers' generators of symmetries (os.urandom) and torch's (the history dropout)."""
-    monkeypatch.setattr(os, "urandom", lambda n: bytes((seed + i) % 256 for i in range(n)))
-    torch.manual_seed(seed)
-
-
-def tensors(batch):
-    return {key: (t.dtype, tuple(t.shape), t.stride(), t.device, t.cpu()) for key, t in batch.items()}
-
-
-def reader_args(cfg, device, batch_size=16, prefetch_depth=1):
-    return dict(batch_size=batch_size, world_size=1, rank=0, pos_len=modelconfigs.get_game(cfg).MAX_BOARD_LEN,
-                device=device, randomize_symmetries=True, include_meta=False, model_config=cfg,
-                prefetch_depth=prefetch_depth)
-
-
 def loads_seen(monkeypatch):
     """The files that np.load opens from now on, in the order of the calls, from any thread."""
     loaded, original = [], np.load
@@ -216,43 +201,43 @@ def test_the_next_readers_first_file_loads_ahead_once_with_the_same_batches(tmp_
     reads that load: each file loads once, and the two readers give the batches of two readers without it."""
     cfg = config("blueprints", 14, "hybrid3")
     files = [write_rows(tmp_path / f"f{i}.npz", cfg, rows, seed=30 + i) for i, rows in enumerate((32, 16, 21, 33, 16))]
-    subepochs, args = [files[:3], files[3:]], reader_args(cfg, device, prefetch_depth=prefetch_depth)
-    seeded(5, monkeypatch)
-    plain = [tensors(b) for part in subepochs for b in read_npz_training_data(part, **args)]
+    plain = [batch for part in (files[:3], files[3:])
+             for batch in read(read_npz_training_data, part, cfg, device, 5, monkeypatch,
+                               prefetch_depth=prefetch_depth)]
 
     loaded = loads_seen(monkeypatch)
-    seeded(5, monkeypatch)
     ahead = FileAhead(files[3])
-    first = [tensors(b) for b in read_npz_training_data(subepochs[0], **args, next_file=ahead)]
+    first = read(read_npz_training_data, files[:3], cfg, device, 5, monkeypatch, prefetch_depth=prefetch_depth,
+                 next_file=ahead)
     assert wait_for(lambda: files[3] in loaded)  # the first reader's thread loads it, as nothing else could
-    second = [tensors(b) for b in read_npz_training_data(subepochs[1], **args, first_file=ahead)]
+    second = read(read_npz_training_data, files[3:], cfg, device, 5, monkeypatch, prefetch_depth=prefetch_depth,
+                  first_file=ahead)
     assert sorted(loaded) == sorted(files)
     assert_equal_batches(first + second, plain)
 
 
-def test_a_load_ahead_of_another_file_or_reader_is_not_read(tmp_path, monkeypatch):
-    """The next reader reads the load ahead only for its own first file and its own arguments, and only once. Else it
-    loads its first file itself (a reload of a live run's data can change the next subepoch's files)."""
+def test_a_load_ahead_is_read_once_and_for_its_own_file_only(tmp_path, monkeypatch):
+    """The next reader reads the load ahead only if it is the load of its own first file, and only once. Else it loads
+    its first file itself (a reload of a live run's data can change the next subepoch's files)."""
     cfg = config("connect4", 9)
     files = [write_rows(tmp_path / f"f{i}.npz", cfg, 32, seed=i) for i in range(4)]
-    args = reader_args(cfg, "cpu")
     loaded = loads_seen(monkeypatch)
-    for first_files, other_args in ((files[3:], {}), (files[2:3], {"batch_size": 8})):
+
+    def reader(part, **ahead):
+        return read(read_npz_training_data, part, cfg, "cpu", 3, monkeypatch, **ahead)
+
+    def loaded_ahead():
+        """A FileAhead of files[2], loaded by a reader of files[:2], and no load seen yet."""
         ahead = FileAhead(files[2])
-        list(read_npz_training_data(files[:2], **args, next_file=ahead))
+        reader(files[:2], next_file=ahead)
         assert wait_for(lambda: files[2] in loaded)
-        del loaded[:]
-        seeded(3, monkeypatch)
-        got = [tensors(b) for b in read_npz_training_data(first_files, **dict(args, **other_args), first_file=ahead)]
-        assert loaded == first_files
-        seeded(3, monkeypatch)
-        assert_equal_batches(got, [tensors(b) for b in read_npz_training_data(first_files, **dict(args, **other_args))])
-        del loaded[:]
-    # A load is read once: a second reader of the same first file loads it again.
-    ahead = FileAhead(files[2])
-    list(read_npz_training_data(files[:2], **args, next_file=ahead))
-    assert wait_for(lambda: files[2] in loaded)
-    list(read_npz_training_data(files[2:], **args, first_file=ahead))
-    del loaded[:]
-    list(read_npz_training_data(files[2:3], **args, first_file=ahead))
-    assert loaded == files[2:3]
+        loaded.clear()
+        return ahead
+
+    reader(files[3:], first_file=loaded_ahead())  # another file: not read
+    assert loaded == files[3:]
+    ahead = loaded_ahead()
+    assert len(reader(files[2:], first_file=ahead)) == 2 + 2  # its own first file: read (2 batches a file)
+    assert loaded == files[3:]
+    reader(files[2:3], first_file=ahead)  # read once: a second reader of the file loads it again
+    assert loaded == files[3:] + files[2:3]

@@ -86,9 +86,8 @@ def read_npz_training_data(
     first_file=None,
     next_file=None,
 ):
-    # KataGame fork (abscls-xrpd): first_file and next_file are FileAhead or None. The reader reads the load of
-    # first_file if it is its first file for the same arguments, and loads next_file after its own files, for the next
-    # reader (FileAhead).
+    # KataGame fork (abscls-xrpd): first_file and next_file are FileAhead or None, the load of a file ahead from one
+    # reader to the next (FileAhead).
     rand = np.random.default_rng(seed=list(os.urandom(12)))
     num_bin_features = modelconfigs.get_num_bin_input_features(model_config)
     num_global_features = modelconfigs.get_num_global_input_features(model_config)
@@ -179,9 +178,6 @@ def read_npz_training_data(
     if not npz_files:
         return
 
-    # What a file's load depends on, beside its name: a FileAhead's load serves the readers of the same arguments only.
-    load_args = (batch_size, world_size, rank, pos_len, include_meta, model_config)
-
     # Prefetch up to prefetch_depth files *ahead* of the one currently being
     # consumed, so the GPU does not stall at a file boundary waiting on disk +
     # decompress for the next shard.
@@ -195,11 +191,12 @@ def read_npz_training_data(
         # and up to prefetch_depth more are loading/loaded behind it.
         pending = deque()
         next_index = 0
-        first_load = first_file.take(npz_files[0], load_args) if first_file is not None else None
+        first_load = first_file.take(npz_files[0]) if first_file is not None else None
         if first_load is not None:
             logging.info(f"Reading {npz_files[0]}, which the reader before loaded ahead")
             pending.append(first_load)
             next_index = 1
+        del first_load  # pending holds it, so its arrays go once the reader moves past the file, as the other files'
         while next_index < len(npz_files) and len(pending) <= prefetch_depth:
             pending.append(executor.submit(load_npz_file, npz_files[next_index]))
             next_index += 1
@@ -219,9 +216,11 @@ def read_npz_training_data(
                 logging.info(f"Preloading {npz_files[next_index]} while processing this file")
                 pending.append(executor.submit(load_npz_file, npz_files[next_index]))
                 next_index += 1
-            elif next_file is not None and next_file.start(executor, load_npz_file, load_args):
+            elif next_file is not None:
                 logging.info(f"Preloading {next_file.npz_file}, the next reader's first file, "
                              "while processing this file")
+                next_file.start(executor, load_npz_file)
+                next_file = None
 
             for n in range(num_whole_steps):
                 rows = slice(n * batch_size, (n + 1) * batch_size)
@@ -247,29 +246,25 @@ def read_npz_training_data(
 # KataGame fork (abscls-xrpd): a file that one reader loads after its own files, for the next reader to read first. The
 # trainer gives it to a subepoch's reader as next_file, which starts its load in its loading thread once it has
 # started the loads of all its own files, as the next file of its prefetch. And it gives it to the next subepoch's
-# reader as first_file, which takes the load if the file is its own first file, for the same arguments. So that file
-# loads while the subepoch before trains, and not between the subepochs with nothing ahead of it
+# reader as first_file, which takes the load if the file is its own first file. The load depends on the reader's
+# arguments too (the batch size, the ranks, the model's inputs), and the trainer gives each of its training readers the
+# same ones. So that file loads while the subepoch before trains, and not between the subepochs with nothing ahead of it
 # (games/blueprints/docs/decisions/training.md in the engine repository, "The trainer's loop between its steps"). A
 # load that no reader takes is dropped.
 class FileAhead:
     def __init__(self, npz_file):
         self.npz_file = npz_file
         self._load = None
-        self._load_args = None
 
-    def start(self, executor, load, load_args):
-        """Starts the load of the file in executor, once. Returns whether it started now."""
-        if self._load is not None:
-            return False
-        self._load_args = load_args
+    def start(self, executor, load):
+        """Starts the load of the file in executor."""
         self._load = executor.submit(load, self.npz_file)
-        return True
 
-    def take(self, npz_file, load_args):
-        """The load (a Future) if it is npz_file's for a reader of load_args, else None: another file, other arguments,
-        or no load started or a load cancelled. It gives its load once."""
+    def take(self, npz_file):
+        """The load (a Future) if it is npz_file's, else None: another file, or no load started or a load cancelled.
+        It gives its load once."""
         load, self._load = self._load, None
-        if load is None or load.cancelled() or npz_file != self.npz_file or load_args != self._load_args:
+        if load is None or load.cancelled() or npz_file != self.npz_file:
             return None
         return load
 
