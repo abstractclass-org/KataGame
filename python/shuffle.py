@@ -34,6 +34,13 @@ EXPECTED_Q_VALUE_TARGETS_NCMOVE_CHANNELS = 3
 GLOBAL_TARGETS_NC_CHANNELS = 80
 GLOBAL_TARGETS_NC_CHANNELS_V14 = GLOBAL_TARGETS_NC_CHANNELS + 4
 
+# KataGame fork (2026-11-03): the shuffle writes its files (the shards and the output files) at zlib's level 1
+# (savez_zlib_level), where np.savez_compressed writes at level 6. Level 6's deflate took 61% of the shuffle's busy
+# samples beside bpj5's self-play. Level 1 cuts the shuffle's CPU by 45%, and bpj5's files grow by 39%. Every reader
+# inflates any level (abscls-d8q6: the measurements are in the engine repository's
+# games/blueprints/docs/decisions/speed.md).
+SHUFFLE_ZLIB_LEVEL = 1
+
 # Empirically measured per-row sizes for 19x19 data, used only for the rough resource-cost
 # estimates printed by -dry-run-print-resource-cost (and informationally on normal runs).
 
@@ -46,11 +53,15 @@ UNCOMPRESSED_BYTES_PER_ROW_META_19 = 768
 # Whole-file (large npz) compressed size as a fraction of uncompressed, measured on
 # python/testdata/benchmark_data_1024.npz: ~0.118 with qvalues, ~0.109 without.
 # Rounded up slightly up so disk estimate errs high rather than low.
-COMPRESSED_FRACTION_LARGE_FILE = 0.12
+# KataGame fork (2026-11-03): the shuffle writes at zlib's level 1 (SHUFFLE_ZLIB_LEVEL), where the fractions above are
+# level 6's. The same file at level 1: 0.143 with qvalues, 0.135 without.
+COMPRESSED_FRACTION_LARGE_FILE = 0.15
 # Small-shard compression "cliff": compressing tiny npz files is less efficient as rows drop.
 # Measured benchmark_data_1024.npz fits well to:
 #   compressed_bytes_per_row ~= asymptote + CLIFF_OVERHEAD_BYTES_PER_FILE / n_rows
 # with asymptote = COMPRESSED_FRACTION_LARGE_FILE * uncompressed_bytes_per_row.
+# KataGame fork (2026-11-03): a fit of files of 1 to 512 rows of this file gives 1,609 at level 6 and 1,571 at level 1
+# (with qvalues), so 1650 stays.
 CLIFF_OVERHEAD_BYTES_PER_FILE = 1650
 
 def assert_keys(npz, include_meta: bool, include_qvalues: bool):
@@ -149,19 +160,11 @@ def save_output_npz(
 
     savez_zlib_level(filename, SHUFFLE_ZLIB_LEVEL, **save_dict)
 
-# KataGame fork (2026-11-02): the shuffle's files (the shards and the output files) are written at zlib's level 1.
-# np.savez_compressed writes at zlib's level 6: its deflate took 61% of the shuffle's busy samples beside bpj5's
-# self-play. A file of 1,367 rows (289 MB in memory) writes in 0.50 s at level 1 against 1.31 s, reads in 0.30 s against
-# 0.60 s, and is 38% larger (7.6 MB against 5.5 MB). The arrays read back are the same, and every reader (np.load,
-# zipfile) reads the files as it read the old ones: a zip file keeps the level of its deflate in no field a reader needs.
-SHUFFLE_ZLIB_LEVEL = 1
-
 def savez_zlib_level(filename: str, compresslevel: int, **arrays: np.ndarray) -> None:
-    """np.savez_compressed(filename, **arrays) with zlib's level compresslevel (np.savez_compressed has no level).
-    It writes what numpy's _savez writes: the zip file of ZIP_DEFLATED with 64-bit sizes, one NAME.npy member for each
-    array, in the order of the arguments, each in numpy's .npy format."""
-    with zipfile.ZipFile(filename, mode="w", compression=zipfile.ZIP_DEFLATED, allowZip64=True,
-                         compresslevel=compresslevel) as zipf:
+    """np.savez_compressed(filename, **arrays) at zlib's level compresslevel. It writes what numpy's _savez writes: a
+    zip of ZIP_DEFLATED, one NAME.npy member with 64-bit sizes for each array, in the order of the arguments. Unlike
+    numpy, it does not add .npz to filename."""
+    with zipfile.ZipFile(filename, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=compresslevel) as zipf:
         for key, arr in arrays.items():
             with zipf.open(key + ".npy", "w", force_zip64=True) as member:
                 np.lib.format.write_array(member, np.asanyarray(arr), allow_pickle=False)
