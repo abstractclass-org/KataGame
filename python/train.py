@@ -137,10 +137,10 @@ if __name__ == "__main__":
     optional_args.add_argument('-max-epochs-this-instance', help='Terminate training after this many more epochs', type=int, required=False)
     optional_args.add_argument('-max-training-samples', help='Terminate training after about this many training steps in samples', type=int, required=False)
     optional_args.add_argument('-sleep-seconds-per-epoch', help='Sleep this long between epochs', type=int, required=False)
-    # KataGame fork (abscls-xrpd): the sleep before each subepoch, KataGo's 5 s by default, and two loads ahead.
+    # KataGame fork (abscls-xrpd): the sleep before each subepoch, KataGo's 5 s by default, and the load ahead of the
+    # next subepoch's first file.
     optional_args.add_argument('-sleep-seconds-per-subepoch', help='Sleep this long after the choice of each subepoch\'s files, before its training (default 5, KataGo\'s)', type=float, default=5.0, required=False)
     optional_args.add_argument('-data-prefetch-next-subepoch', help='Load the next subepoch\'s first file while this subepoch\'s last files train, if no reload changes it (one GPU only)', required=False, action='store_true')
-    optional_args.add_argument('-data-prefetch-batch', help='Prepare the next training batch in a thread of its own, on a second CUDA stream, while the step runs. It takes about 1 GB more of the GPU\'s memory.', required=False, action='store_true')
     optional_args.add_argument('-max-train-bucket-per-new-data', help='When data added, add this many train rows per data row to bucket', type=float, required=False)
     optional_args.add_argument('-max-train-bucket-size', help='Approx total number of train rows allowed if data stops', type=float, required=False)
     optional_args.add_argument('-initial-train-bucket-level', help='Train rows initially in the bucket when the checkpoint has no bucket state yet, default samples-per-epoch. No effect once the checkpoint has a bucket.', type=float, required=False)
@@ -437,7 +437,6 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     sleep_seconds_per_epoch = args["sleep_seconds_per_epoch"]
     sleep_seconds_per_subepoch = args["sleep_seconds_per_subepoch"]
     data_prefetch_next_subepoch = args["data_prefetch_next_subepoch"]
-    data_prefetch_batch = args["data_prefetch_batch"]
     max_train_bucket_per_new_data = args["max_train_bucket_per_new_data"]
     max_train_bucket_size = args["max_train_bucket_size"]
     initial_train_bucket_level = args["initial_train_bucket_level"]
@@ -1655,16 +1654,11 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     else:
         logging.info("float32 matmul precision: default")
 
-    # KataGame fork (abscls-xrpd): the loads ahead. The next subepoch's first file (data_processing_pytorch.FileAhead),
-    # which only rank 0 knows before the subepoch's start. And the stream of the batches prepared ahead
-    # (data_processing_pytorch.batches_ahead): one for the trainer's life, as the caching allocator keeps the memory of
-    # each stream for that stream.
+    # KataGame fork (abscls-xrpd): the load ahead of the next subepoch's first file (data_processing_pytorch.FileAhead).
+    # Only rank 0 knows that file before the subepoch's start.
     if data_prefetch_next_subepoch and world_size > 1:
         logging.warning("-data-prefetch-next-subepoch has no effect with more than one GPU")
     subepoch_file_ahead = None
-    batch_stream = None
-    if data_prefetch_batch and device.type == "cuda":
-        batch_stream = torch.cuda.Stream(device, priority=-1)
 
     # All ddp threads should be lined up at this point before continuing
     safe_barrier(barrier,rank)
@@ -1768,7 +1762,8 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                 next_name = trainingdatagenerator.peek_in_pass()
                 if next_name is not None:
                     next_subepoch_file = data_processing_pytorch.FileAhead(next_name)
-            batches = data_processing_pytorch.read_npz_training_data(
+            lookahead_counter = 0
+            for batch in data_processing_pytorch.read_npz_training_data(
                 train_files_to_use,
                 batch_size,
                 world_size,
@@ -1781,11 +1776,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                 prefetch_depth=data_prefetch_depth,
                 first_file=subepoch_file_ahead,
                 next_file=next_subepoch_file,
-            )
-            if data_prefetch_batch:
-                batches = data_processing_pytorch.batches_ahead(batches, batch_stream)
-            lookahead_counter = 0
-            for batch in batches:
+            ):
                 optimizer.zero_grad(set_to_none=True)
                 extra_outputs = None
                 # if raw_model.get_has_metadata_encoder():
@@ -2011,7 +2002,6 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
                         swa_model.update_parameters(raw_model)
 
             logging.info("Finished training subepoch!")
-            batches = None
             subepoch_file_ahead = next_subepoch_file
 
         # END SUB EPOCH LOOP ------------

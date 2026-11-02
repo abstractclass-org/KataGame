@@ -1,8 +1,5 @@
-import contextlib
 import logging
 import os
-import queue
-import threading
 
 import numpy as np
 from collections import deque
@@ -275,71 +272,6 @@ class FileAhead:
         if load is None or load.cancelled() or npz_file != self.npz_file or load_args != self._load_args:
             return None
         return load
-
-
-# KataGame fork (abscls-xrpd): the batches of a reader (the generator `batches`), each prepared one batch ahead in a
-# thread of its own while the caller trains on the batch before. On a GPU, the thread works on `stream`, a second CUDA
-# stream, and the caller's stream waits for each batch's work before it reads the batch. So the reader's work on each
-# batch (the copies, the unpacking and the game code, whose nonzero calls wait for the GPU) runs beside the step, and
-# not between two steps. The batches are the reader's, in its order: the thread draws the reader's random numbers (the
-# symmetries, the history dropout) in the same order, and the trainer's step draws none. The caching allocator keeps a
-# pool of memory for each stream, so the trainer makes one stream for its life, and the pool takes about 1 GB more of
-# the GPU (training.md, "The trainer's loop between its steps"). stream None: the thread alone, on the CPU.
-def batches_ahead(batches, stream=None):
-    wanted = threading.Semaphore(0)
-    ready = queue.SimpleQueue()
-    stop = threading.Event()
-
-    def prepare():
-        try:
-            if stream is not None:
-                torch.cuda.set_device(stream.device)
-            with torch.cuda.stream(stream) if stream is not None else contextlib.nullcontext():
-                while True:
-                    wanted.acquire()
-                    if stop.is_set():
-                        return
-                    batch = next(batches, None)
-                    if batch is None:
-                        ready.put(("end", None))
-                        return
-                    done = None
-                    if stream is not None:
-                        done = torch.cuda.Event()
-                        done.record(stream)
-                    ready.put(("batch", (batch, done)))
-                    batch = None
-        except BaseException as e:
-            ready.put(("error", e))
-        finally:
-            batches.close()
-
-    thread = threading.Thread(target=prepare, name="batches_ahead", daemon=True)
-    thread.start()
-    wanted.release()
-    try:
-        while True:
-            kind, item = ready.get()
-            if kind == "end":
-                return
-            if kind == "error":
-                raise item
-            batch, done = item
-            item = None
-            wanted.release()  # the next batch, while the caller trains on this one
-            if done is not None:
-                consumer = torch.cuda.current_stream(stream.device)
-                consumer.wait_event(done)
-                # The batch's memory belongs to the second stream's pool. The allocator gives it again only after the
-                # work that the caller's stream holds when the caller frees the batch.
-                for tensor in batch.values():
-                    tensor.record_stream(consumer)
-            yield batch
-            batch = None
-    finally:
-        stop.set()
-        wanted.release()
-        thread.join()
 
 
 # KataGame fork (2026-11-02, abscls-xtoh): the reader's work on each batch, on its device: the game's masks, the history

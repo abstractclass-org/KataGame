@@ -4,9 +4,8 @@ which expands each file to float32 before the copy), bit for bit, for a fixed se
 dropout on, every tensor of every batch, with its dtype, shape and strides. The rows are random, in the dtypes and
 shapes that the self-play writes, for each game, with the old rows' widths that the reader pads or cuts, the ranks of
 a distributed run, the prefetch, the blanked planes, the metadata and the q-value targets. On the CPU, and on a GPU
-when torch sees one. The trainer's loads ahead (abscls-xrpd) keep the batches too: the next reader's first file loaded
-by the reader before it (FileAhead), and the batches prepared ahead in a thread, on a second CUDA stream on a GPU
-(batches_ahead)."""
+when torch sees one. The trainer's load ahead (abscls-xrpd) keeps the batches too: the next reader's first file loaded
+by the reader before it (FileAhead)."""
 import os
 import sys
 import threading
@@ -19,7 +18,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from katago.train import data_processing_pytorch, games, modelconfigs  # noqa: E402
 from katago.train.data_processing_pytorch import (  # noqa: E402
-    GLOBAL_TARGETS_NC_CHANNELS, VALUE_TARGETS_NCHW_CHANNELS, FileAhead, batches_ahead, read_npz_training_data)
+    GLOBAL_TARGETS_NC_CHANNELS, VALUE_TARGETS_NCHW_CHANNELS, FileAhead, read_npz_training_data)
 from katago.train.model_pytorch import policy_len  # noqa: E402
 import reference_npz_reader  # noqa: E402
 
@@ -257,76 +256,3 @@ def test_a_load_ahead_of_another_file_or_reader_is_not_read(tmp_path, monkeypatc
     del loaded[:]
     list(read_npz_training_data(files[2:3], **args, first_file=ahead))
     assert loaded == files[2:3]
-
-
-def ahead_of(stream):
-    """A reader whose batches batches_ahead prepares, as read() calls a reader."""
-    return lambda *a, **kw: batches_ahead(read_npz_training_data(*a, **kw), stream)
-
-
-@pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("game,inputs_version,kind", [("blueprints", 14, "hybrid3"), ("enclosure", 11, "b6c96")])
-def test_the_batches_prepared_ahead_are_the_readers(tmp_path, monkeypatch, device, game, inputs_version, kind):
-    cfg = config(game, inputs_version, kind)
-    files = [write_rows(tmp_path / f"f{i}.npz", cfg, rows, seed=40 + i) for i, rows in enumerate((48, 37, 21))]
-    stream = torch.cuda.Stream(priority=-1) if device == "cuda" else None
-    new = read(ahead_of(stream), files, cfg, device, 7, monkeypatch)
-    assert_equal_batches(new, read(read_npz_training_data, files, cfg, device, 7, monkeypatch))
-
-
-@pytest.mark.skipif("cuda" not in DEVICES, reason="needs a GPU")
-@pytest.mark.parametrize("late", ["the batch", "the caller"])
-def test_batches_prepared_on_a_second_stream_wait_for_their_work_and_keep_their_memory(tmp_path, monkeypatch, late):
-    """On a GPU, the caller's stream waits for each batch's work on the second stream: "the batch", a sleep on that
-    stream before each batch's last work. And the allocator gives a batch's memory to the second stream again only
-    after the caller's work on the batch: "the caller", a sleep on the caller's stream before each read of a batch, by
-    a caller that drops each batch at once and does not wait for the GPU. The caller's copies of the batches, on its
-    stream, are the reader's batches."""
-    cfg = config("blueprints", 14, "hybrid3")
-    files = [write_rows(tmp_path / f"f{i}.npz", cfg, rows, seed=50 + i) for i, rows in enumerate((48, 32))]
-    stream, cycles = torch.cuda.Stream(priority=-1), 100_000_000
-
-    def late_batches(batches):
-        for batch in batches:
-            if late == "the batch":
-                torch.cuda._sleep(cycles)
-            yield {key: t.clone() for key, t in batch.items()}
-
-    def caller(*a, **kw):
-        copies = []
-        for batch in batches_ahead(late_batches(read_npz_training_data(*a, **kw)), stream):
-            if late == "the caller":
-                torch.cuda._sleep(cycles)
-            copies.append({key: t.clone() for key, t in batch.items()})
-        torch.cuda.synchronize()
-        return copies
-
-    new = read(caller, files, cfg, "cuda", 7, monkeypatch)
-    assert_equal_batches(new, read(read_npz_training_data, files, cfg, "cuda", 7, monkeypatch))
-
-
-def test_batches_prepared_ahead_raise_the_readers_error_and_stop_with_their_caller():
-    def failing():
-        yield {"x": torch.zeros(1)}
-        raise ValueError("a bad file")
-
-    batches = batches_ahead(failing())
-    assert next(batches)["x"].shape == (1,)
-    with pytest.raises(ValueError, match="a bad file"):
-        next(batches)
-
-    # A caller that stops early (an error in its step) stops the thread, which closes the reader.
-    closed = threading.Event()
-
-    def endless():
-        try:
-            while True:
-                yield {"x": torch.zeros(1)}
-        finally:
-            closed.set()
-
-    batches = batches_ahead(endless())
-    next(batches)
-    batches.close()
-    assert closed.is_set()
-    assert not any(t.name == "batches_ahead" for t in threading.enumerate())
