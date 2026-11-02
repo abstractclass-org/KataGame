@@ -4,7 +4,9 @@ which expands each file to float32 before the copy), bit for bit, for a fixed se
 dropout on, every tensor of every batch, with its dtype, shape and strides. The rows are random, in the dtypes and
 shapes that the self-play writes, for each game, with the old rows' widths that the reader pads or cuts, the ranks of
 a distributed run, the prefetch, the blanked planes, the metadata and the q-value targets. On the CPU, and on a GPU
-when torch sees one."""
+when torch sees one. The trainer's loads ahead (abscls-xrpd) keep the batches too: the next reader's first file loaded
+by the reader before it (FileAhead), and the batches prepared ahead in a thread, on a second CUDA stream on a GPU
+(batches_ahead)."""
 import os
 import sys
 import threading
@@ -17,7 +19,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from katago.train import data_processing_pytorch, games, modelconfigs  # noqa: E402
 from katago.train.data_processing_pytorch import (  # noqa: E402
-    GLOBAL_TARGETS_NC_CHANNELS, VALUE_TARGETS_NCHW_CHANNELS, read_npz_training_data)
+    GLOBAL_TARGETS_NC_CHANNELS, VALUE_TARGETS_NCHW_CHANNELS, FileAhead, batches_ahead, read_npz_training_data)
 from katago.train.model_pytorch import policy_len  # noqa: E402
 import reference_npz_reader  # noqa: E402
 
@@ -80,15 +82,19 @@ def read(reader, files, cfg, device, seed, monkeypatch, batch_size=16, world_siz
     return out
 
 
-def assert_same_batches(files, cfg, device, monkeypatch, seed=7, **kw):
-    new = read(read_npz_training_data, files, cfg, device, seed, monkeypatch, **kw)
-    old = read(reference_npz_reader.read_npz_training_data, files, cfg, device, seed, monkeypatch, **kw)
+def assert_equal_batches(new, old):
     assert len(new) == len(old) > 0
     for n, (a, b) in enumerate(zip(new, old)):
         assert a.keys() == b.keys(), n
         for key in a:
             assert a[key][:4] == b[key][:4], (n, key)
             assert torch.equal(a[key][4], b[key][4]), (n, key)
+
+
+def assert_same_batches(files, cfg, device, monkeypatch, seed=7, **kw):
+    new = read(read_npz_training_data, files, cfg, device, seed, monkeypatch, **kw)
+    old = read(reference_npz_reader.read_npz_training_data, files, cfg, device, seed, monkeypatch, **kw)
+    assert_equal_batches(new, old)
     return new
 
 
@@ -166,3 +172,161 @@ def test_a_reader_stopped_early_drops_the_files_still_to_load(tmp_path, monkeypa
     time.sleep(0.5)  # a third load, if the reader had kept it, starts now
     assert closed < 2  # a close that waited for the held load would take 5 s
     assert loaded == files[:2]
+
+
+def seeded(seed, monkeypatch):
+    """The seed of read(): the readers' generators of symmetries (os.urandom) and torch's (the history dropout)."""
+    monkeypatch.setattr(os, "urandom", lambda n: bytes((seed + i) % 256 for i in range(n)))
+    torch.manual_seed(seed)
+
+
+def tensors(batch):
+    return {key: (t.dtype, tuple(t.shape), t.stride(), t.device, t.cpu()) for key, t in batch.items()}
+
+
+def reader_args(cfg, device, batch_size=16, prefetch_depth=1):
+    return dict(batch_size=batch_size, world_size=1, rank=0, pos_len=modelconfigs.get_game(cfg).MAX_BOARD_LEN,
+                device=device, randomize_symmetries=True, include_meta=False, model_config=cfg,
+                prefetch_depth=prefetch_depth)
+
+
+def loads_seen(monkeypatch):
+    """The files that np.load opens from now on, in the order of the calls, from any thread."""
+    loaded, original = [], np.load
+
+    def load(path, *args, **kwargs):
+        loaded.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(np, "load", load)
+    return loaded
+
+
+def wait_for(condition, timeout=5):
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return condition()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("prefetch_depth", [1, 3])
+def test_the_next_readers_first_file_loads_ahead_once_with_the_same_batches(tmp_path, monkeypatch, device,
+                                                                           prefetch_depth):
+    """A subepoch's reader loads the next subepoch's first file (FileAhead) beside its own files, and the next reader
+    reads that load: each file loads once, and the two readers give the batches of two readers without it."""
+    cfg = config("blueprints", 14, "hybrid3")
+    files = [write_rows(tmp_path / f"f{i}.npz", cfg, rows, seed=30 + i) for i, rows in enumerate((32, 16, 21, 33, 16))]
+    subepochs, args = [files[:3], files[3:]], reader_args(cfg, device, prefetch_depth=prefetch_depth)
+    seeded(5, monkeypatch)
+    plain = [tensors(b) for part in subepochs for b in read_npz_training_data(part, **args)]
+
+    loaded = loads_seen(monkeypatch)
+    seeded(5, monkeypatch)
+    ahead = FileAhead(files[3])
+    first = [tensors(b) for b in read_npz_training_data(subepochs[0], **args, next_file=ahead)]
+    assert wait_for(lambda: files[3] in loaded)  # the first reader's thread loads it, as nothing else could
+    second = [tensors(b) for b in read_npz_training_data(subepochs[1], **args, first_file=ahead)]
+    assert sorted(loaded) == sorted(files)
+    assert_equal_batches(first + second, plain)
+
+
+def test_a_load_ahead_of_another_file_or_reader_is_not_read(tmp_path, monkeypatch):
+    """The next reader reads the load ahead only for its own first file and its own arguments, and only once. Else it
+    loads its first file itself (a reload of a live run's data can change the next subepoch's files)."""
+    cfg = config("connect4", 9)
+    files = [write_rows(tmp_path / f"f{i}.npz", cfg, 32, seed=i) for i in range(4)]
+    args = reader_args(cfg, "cpu")
+    loaded = loads_seen(monkeypatch)
+    for first_files, other_args in ((files[3:], {}), (files[2:3], {"batch_size": 8})):
+        ahead = FileAhead(files[2])
+        list(read_npz_training_data(files[:2], **args, next_file=ahead))
+        assert wait_for(lambda: files[2] in loaded)
+        del loaded[:]
+        seeded(3, monkeypatch)
+        got = [tensors(b) for b in read_npz_training_data(first_files, **dict(args, **other_args), first_file=ahead)]
+        assert loaded == first_files
+        seeded(3, monkeypatch)
+        assert_equal_batches(got, [tensors(b) for b in read_npz_training_data(first_files, **dict(args, **other_args))])
+        del loaded[:]
+    # A load is read once: a second reader of the same first file loads it again.
+    ahead = FileAhead(files[2])
+    list(read_npz_training_data(files[:2], **args, next_file=ahead))
+    assert wait_for(lambda: files[2] in loaded)
+    list(read_npz_training_data(files[2:], **args, first_file=ahead))
+    del loaded[:]
+    list(read_npz_training_data(files[2:3], **args, first_file=ahead))
+    assert loaded == files[2:3]
+
+
+def ahead_of(stream):
+    """A reader whose batches batches_ahead prepares, as read() calls a reader."""
+    return lambda *a, **kw: batches_ahead(read_npz_training_data(*a, **kw), stream)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("game,inputs_version,kind", [("blueprints", 14, "hybrid3"), ("enclosure", 11, "b6c96")])
+def test_the_batches_prepared_ahead_are_the_readers(tmp_path, monkeypatch, device, game, inputs_version, kind):
+    cfg = config(game, inputs_version, kind)
+    files = [write_rows(tmp_path / f"f{i}.npz", cfg, rows, seed=40 + i) for i, rows in enumerate((48, 37, 21))]
+    stream = torch.cuda.Stream(priority=-1) if device == "cuda" else None
+    new = read(ahead_of(stream), files, cfg, device, 7, monkeypatch)
+    assert_equal_batches(new, read(read_npz_training_data, files, cfg, device, 7, monkeypatch))
+
+
+@pytest.mark.skipif("cuda" not in DEVICES, reason="needs a GPU")
+@pytest.mark.parametrize("late", ["the batch", "the caller"])
+def test_batches_prepared_on_a_second_stream_wait_for_their_work_and_keep_their_memory(tmp_path, monkeypatch, late):
+    """On a GPU, the caller's stream waits for each batch's work on the second stream: "the batch", a sleep on that
+    stream before each batch's last work. And the allocator gives a batch's memory to the second stream again only
+    after the caller's work on the batch: "the caller", a sleep on the caller's stream before each read of a batch, by
+    a caller that drops each batch at once and does not wait for the GPU. The caller's copies of the batches, on its
+    stream, are the reader's batches."""
+    cfg = config("blueprints", 14, "hybrid3")
+    files = [write_rows(tmp_path / f"f{i}.npz", cfg, rows, seed=50 + i) for i, rows in enumerate((48, 32))]
+    stream, cycles = torch.cuda.Stream(priority=-1), 100_000_000
+
+    def late_batches(batches):
+        for batch in batches:
+            if late == "the batch":
+                torch.cuda._sleep(cycles)
+            yield {key: t.clone() for key, t in batch.items()}
+
+    def caller(*a, **kw):
+        copies = []
+        for batch in batches_ahead(late_batches(read_npz_training_data(*a, **kw)), stream):
+            if late == "the caller":
+                torch.cuda._sleep(cycles)
+            copies.append({key: t.clone() for key, t in batch.items()})
+        torch.cuda.synchronize()
+        return copies
+
+    new = read(caller, files, cfg, "cuda", 7, monkeypatch)
+    assert_equal_batches(new, read(read_npz_training_data, files, cfg, "cuda", 7, monkeypatch))
+
+
+def test_batches_prepared_ahead_raise_the_readers_error_and_stop_with_their_caller():
+    def failing():
+        yield {"x": torch.zeros(1)}
+        raise ValueError("a bad file")
+
+    batches = batches_ahead(failing())
+    assert next(batches)["x"].shape == (1,)
+    with pytest.raises(ValueError, match="a bad file"):
+        next(batches)
+
+    # A caller that stops early (an error in its step) stops the thread, which closes the reader.
+    closed = threading.Event()
+
+    def endless():
+        try:
+            while True:
+                yield {"x": torch.zeros(1)}
+        finally:
+            closed.set()
+
+    batches = batches_ahead(endless())
+    next(batches)
+    batches.close()
+    assert closed.is_set()
+    assert not any(t.name == "batches_ahead" for t in threading.enumerate())

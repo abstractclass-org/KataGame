@@ -14,6 +14,7 @@ Note: there is deliberately no byte-for-byte equivalence oracle against the old 
 shuffle algorithm was intentionally changed to add the gap-delay, so the sequences no longer match the old one.
 """
 
+import copy
 import os
 import json
 import random
@@ -186,6 +187,24 @@ def test_peek_does_not_consume_or_mutate(tmp_path):
     assert ts["data_files_used"] == []  # no mutation
     assert g.pop() == first  # pop returns the peeked file
     assert ts["data_files_used"] == [first]  # and only now is it marked used
+
+
+def test_peek_in_pass_gives_the_next_file_and_starts_no_new_pass(tmp_path):
+    """KataGame fork (abscls-xrpd): peek_in_pass gives the file that pop gives next, within a pass. At the pass's end
+    it gives None and changes no train_state, where the peek of a run that repeats its files starts the next pass."""
+    td = make_data_dir(tmp_path, [1000] * 3)
+    ts = fresh_state()
+    g = TrainingDataGenerator(ts, False)
+    g.set_data_dir_if_has_remaining_files(td)
+    for _ in range(3):
+        name = g.peek_in_pass()
+        assert name is not None
+        assert g.pop() == name
+    before = copy.deepcopy(ts)
+    assert g.peek_in_pass() is None
+    assert ts == before
+    assert g.peek() is not None
+    assert ts != before
 
 
 def test_pop_records_usage_order(tmp_path):

@@ -1,5 +1,8 @@
+import contextlib
 import logging
 import os
+import queue
+import threading
 
 import numpy as np
 from collections import deque
@@ -83,7 +86,12 @@ def read_npz_training_data(
     include_meta: bool,
     model_config: modelconfigs.ModelConfig,
     prefetch_depth: int = 1,
+    first_file=None,
+    next_file=None,
 ):
+    # KataGame fork (abscls-xrpd): first_file and next_file are FileAhead or None. The reader reads the load of
+    # first_file if it is its first file for the same arguments, and loads next_file after its own files, for the next
+    # reader (FileAhead).
     rand = np.random.default_rng(seed=list(os.urandom(12)))
     num_bin_features = modelconfigs.get_num_bin_input_features(model_config)
     num_global_features = modelconfigs.get_num_global_input_features(model_config)
@@ -174,6 +182,9 @@ def read_npz_training_data(
     if not npz_files:
         return
 
+    # What a file's load depends on, beside its name: a FileAhead's load serves the readers of the same arguments only.
+    load_args = (batch_size, world_size, rank, pos_len, include_meta, model_config)
+
     # Prefetch up to prefetch_depth files *ahead* of the one currently being
     # consumed, so the GPU does not stall at a file boundary waiting on disk +
     # decompress for the next shard.
@@ -187,6 +198,11 @@ def read_npz_training_data(
         # and up to prefetch_depth more are loading/loaded behind it.
         pending = deque()
         next_index = 0
+        first_load = first_file.take(npz_files[0], load_args) if first_file is not None else None
+        if first_load is not None:
+            logging.info(f"Reading {npz_files[0]}, which the reader before loaded ahead")
+            pending.append(first_load)
+            next_index = 1
         while next_index < len(npz_files) and len(pending) <= prefetch_depth:
             pending.append(executor.submit(load_npz_file, npz_files[next_index]))
             next_index += 1
@@ -206,6 +222,9 @@ def read_npz_training_data(
                 logging.info(f"Preloading {npz_files[next_index]} while processing this file")
                 pending.append(executor.submit(load_npz_file, npz_files[next_index]))
                 next_index += 1
+            elif next_file is not None and next_file.start(executor, load_npz_file, load_args):
+                logging.info(f"Preloading {next_file.npz_file}, the next reader's first file, "
+                             "while processing this file")
 
             for n in range(num_whole_steps):
                 rows = slice(n * batch_size, (n + 1) * batch_size)
@@ -226,6 +245,101 @@ def read_npz_training_data(
         # every load. A reader that stops early (the validation, after its rows) drops the files still to load, and does
         # not wait for the ones in the threads: nothing reads them.
         executor.shutdown(wait=False, cancel_futures=True)
+
+
+# KataGame fork (abscls-xrpd): a file that one reader loads after its own files, for the next reader to read first. The
+# trainer gives it to a subepoch's reader as next_file, which starts its load in its loading thread once it has
+# started the loads of all its own files, as the next file of its prefetch. And it gives it to the next subepoch's
+# reader as first_file, which takes the load if the file is its own first file, for the same arguments. So that file
+# loads while the subepoch before trains, and not between the subepochs with nothing ahead of it
+# (games/blueprints/docs/decisions/training.md in the engine repository, "The trainer's loop between its steps"). A
+# load that no reader takes is dropped.
+class FileAhead:
+    def __init__(self, npz_file):
+        self.npz_file = npz_file
+        self._load = None
+        self._load_args = None
+
+    def start(self, executor, load, load_args):
+        """Starts the load of the file in executor, once. Returns whether it started now."""
+        if self._load is not None:
+            return False
+        self._load_args = load_args
+        self._load = executor.submit(load, self.npz_file)
+        return True
+
+    def take(self, npz_file, load_args):
+        """The load (a Future) if it is npz_file's for a reader of load_args, else None: another file, other arguments,
+        or no load started or a load cancelled. It gives its load once."""
+        load, self._load = self._load, None
+        if load is None or load.cancelled() or npz_file != self.npz_file or load_args != self._load_args:
+            return None
+        return load
+
+
+# KataGame fork (abscls-xrpd): the batches of a reader (the generator `batches`), each prepared one batch ahead in a
+# thread of its own while the caller trains on the batch before. On a GPU, the thread works on `stream`, a second CUDA
+# stream, and the caller's stream waits for each batch's work before it reads the batch. So the reader's work on each
+# batch (the copies, the unpacking and the game code, whose nonzero calls wait for the GPU) runs beside the step, and
+# not between two steps. The batches are the reader's, in its order: the thread draws the reader's random numbers (the
+# symmetries, the history dropout) in the same order, and the trainer's step draws none. The caching allocator keeps a
+# pool of memory for each stream, so the trainer makes one stream for its life, and the pool takes about 1 GB more of
+# the GPU (training.md, "The trainer's loop between its steps"). stream None: the thread alone, on the CPU.
+def batches_ahead(batches, stream=None):
+    wanted = threading.Semaphore(0)
+    ready = queue.SimpleQueue()
+    stop = threading.Event()
+
+    def prepare():
+        try:
+            if stream is not None:
+                torch.cuda.set_device(stream.device)
+            with torch.cuda.stream(stream) if stream is not None else contextlib.nullcontext():
+                while True:
+                    wanted.acquire()
+                    if stop.is_set():
+                        return
+                    batch = next(batches, None)
+                    if batch is None:
+                        ready.put(("end", None))
+                        return
+                    done = None
+                    if stream is not None:
+                        done = torch.cuda.Event()
+                        done.record(stream)
+                    ready.put(("batch", (batch, done)))
+                    batch = None
+        except BaseException as e:
+            ready.put(("error", e))
+        finally:
+            batches.close()
+
+    thread = threading.Thread(target=prepare, name="batches_ahead", daemon=True)
+    thread.start()
+    wanted.release()
+    try:
+        while True:
+            kind, item = ready.get()
+            if kind == "end":
+                return
+            if kind == "error":
+                raise item
+            batch, done = item
+            item = None
+            wanted.release()  # the next batch, while the caller trains on this one
+            if done is not None:
+                consumer = torch.cuda.current_stream(stream.device)
+                consumer.wait_event(done)
+                # The batch's memory belongs to the second stream's pool. The allocator gives it again only after the
+                # work that the caller's stream holds when the caller frees the batch.
+                for tensor in batch.values():
+                    tensor.record_stream(consumer)
+            yield batch
+            batch = None
+    finally:
+        stop.set()
+        wanted.release()
+        thread.join()
 
 
 # KataGame fork (2026-11-02, abscls-xtoh): the reader's work on each batch, on its device: the game's masks, the history

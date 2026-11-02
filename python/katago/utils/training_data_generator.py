@@ -215,6 +215,16 @@ class TrainingDataGenerator:
             return None
         return self.train_state["rev_data_files_remaining"][-1]
 
+    def peek_in_pass(self) -> Optional[str]:
+        """
+        KataGame fork (abscls-xrpd): the next file of the current pass without consuming it, or None at the pass's
+        end. Unlike peek, it starts no new pass, so it changes no train_state (the trainer's load of the next
+        subepoch's first file ahead, train.py's -data-prefetch-next-subepoch).
+        """
+        if not self.train_state["rev_data_files_remaining"]:
+            return None
+        return self.train_state["rev_data_files_remaining"][-1]
+
     def pop(self) -> Optional[str]:
         """
         Consume and return the next file, marking it used in train_state, or None if no more are available.
