@@ -178,6 +178,8 @@ selfplay_key() {  # KEY=VALUE[,...]: added to SELFPLAY_IN_FORCE (nothing for an 
 }
 
 shuffle_env() {  # the NAME=VALUE words of shuffle.sh's environment, from the levers (after run_defaults)
+    # start.sh exports a run's settings (lib.sh's load_run), so shuffle.sh inherits VALIDATION_MIN_ROWS too. The word
+    # makes the shuffle's environment explicit, and start.sh's dry run prints it.
     if [[ "$VALIDATE" == 1 ]]; then
         echo "${VALIDATION_MIN_ROWS:+VALIDATION_MIN_ROWS=$VALIDATION_MIN_ROWS}"
     else

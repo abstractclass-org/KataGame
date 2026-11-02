@@ -758,7 +758,8 @@ def compute_num_rows(filename):
 
 
 def md5_path_in_bounds(filename, lbound, ubound):
-    """Whether the md5 filter (-only-include-md5-path-prop-lbound and -ubound, None for no bound) keeps the file: the
+    """KataGame fork (2026-11-02, abscls-0zrx): upstream's md5 test, shared by its filter and -md5-min-rows.
+    Whether the md5 filter (-only-include-md5-path-prop-lbound and -ubound, None for no bound) keeps the file: the
     md5 of its base name, as a number in [0, 1), is at least lbound and below ubound."""
     hashfloat = int("0x"+hashlib.md5(str(os.path.basename(filename)).encode('utf-8')).hexdigest()[:13],16) / 2 ** 52
     return (lbound is None or hashfloat >= lbound) and (ubound is None or hashfloat < ubound)
@@ -1220,41 +1221,46 @@ if __name__ == '__main__':
 
     print("Finally, using: (%d-%d) (%d/%d desired rows)" % (min_start_row,max_end_row,num_rows_used,desired_num_rows), flush=True)
 
+    # KataGame fork (2026-11-02, abscls-0zrx): keep_prob comes before the md5 window below, which uses it. Upstream
+    # computes it after the shuffle of desired_input_files, from the same values.
+    approx_rows_to_keep = num_rows_used
+    if keep_target_rows is not None:
+        approx_rows_to_keep = min(approx_rows_to_keep, keep_target_rows)
+    keep_prob = approx_rows_to_keep / num_rows_used
+
     # KataGame fork (2026-11-02, abscls-0zrx): -md5-min-rows gives the files that the md5 filter keeps a window of
     # their own, at least as wide as the window above. shuffle.sh's validation shuffle keeps the 1% of the files whose
-    # md5 is in [0.99, 1). A window of about 300 files then holds about 3 of them, and at times none for hours, and the
-    # trainer then has no validation rows: its export gate cannot compare (the engine repository's
+    # md5 is in [0.99, 1). A window of about 300 files then holds about 3 of them, and at times none for hours. Then
+    # the trainer has no validation rows, and its export gate cannot compare (the engine repository's
     # games/blueprints/docs/decisions/port.md, "the validation rows of the export gate"). Past the window, the older
     # files that the filter keeps join, newest first, until the rows that this shuffle keeps of them reach
     # -md5-min-rows. The other side's shuffle (the md5 in [0, 0.99)) never takes such a file, at any age, so their rows
     # stay unseen by the trainer. They keep the window's keep_prob: num_rows_used stays the window's rows.
-    if md5_min_rows is not None and num_rows_used > 0:
+    if md5_min_rows is not None:
         lbound, ubound = only_include_md5_path_prop_lbound, only_include_md5_path_prop_ubound
-        window_keep_prob = (min(num_rows_used, keep_target_rows) if keep_target_rows is not None
-                            else num_rows_used) / num_rows_used
         md5_rows = sum(n for (f, n) in desired_input_files if md5_path_in_bounds(f, lbound, ubound))
-        num_older_files = 0
-        end_row = start_row
-        for j in range(i + 1, len(all_files)):
-            if md5_rows * window_keep_prob >= md5_min_rows:
+        num_window_files = len(desired_input_files)
+        # The window's oldest file is all_files[i], where the loop above stopped, and its rows start at min_start_row.
+        # row: the start row of each older file in turn.
+        row = min_start_row
+        for (filename,mtime,num_rows) in all_files[i + 1:]:
+            if md5_rows * keep_prob >= md5_min_rows:
                 break
-            (filename,mtime,num_rows) = all_files[j]
-            if skip_mtime_range_start is not None and skip_mtime_range_end is not None:
-                if mtime >= skip_mtime_range_start and mtime <= skip_mtime_range_end:
-                    continue
+            if (skip_mtime_range_start is not None and skip_mtime_range_end is not None
+                    and skip_mtime_range_start <= mtime <= skip_mtime_range_end):
+                continue
             if num_rows is None or num_rows <= 0:
                 continue
-            start_row = end_row - num_rows
+            row -= num_rows
             if md5_path_in_bounds(filename, lbound, ubound):
                 desired_input_files.append((filename,num_rows))
                 md5_rows += num_rows
-                num_older_files += 1
-                min_start_row = min(start_row, min_start_row)
-            end_row = start_row
+                min_start_row = row
+        md5_rows_kept = md5_rows * keep_prob
         print("md5 window: %d older files that the md5 filter keeps, from row %d: %d rows in the filter, "
               "%d to keep (-md5-min-rows %d%s)" % (
-                  num_older_files, min_start_row, md5_rows, md5_rows * window_keep_prob, md5_min_rows,
-                  "" if md5_rows * window_keep_prob >= md5_min_rows else ", more than the run holds"), flush=True)
+                  len(desired_input_files) - num_window_files, min_start_row, md5_rows, md5_rows_kept, md5_min_rows,
+                  "" if md5_rows_kept >= md5_min_rows else ", more than the run holds"), flush=True)
 
     print("GC collect", flush=True)
     del all_files
@@ -1262,11 +1268,6 @@ if __name__ == '__main__':
 
     np.random.seed()
     np.random.shuffle(desired_input_files)
-
-    approx_rows_to_keep = num_rows_used
-    if keep_target_rows is not None:
-        approx_rows_to_keep = min(approx_rows_to_keep, keep_target_rows)
-    keep_prob = approx_rows_to_keep / num_rows_used
 
     num_rows_in_desired_files = 0
     if only_include_md5_path_prop_lbound is not None or only_include_md5_path_prop_ubound is not None:
