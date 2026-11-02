@@ -98,7 +98,7 @@ def read_npz_training_data(
     )
 
     # KataGame fork (2026-11-02, abscls-xtoh): the files' arrays stay in their dtypes on disk (the planes' packed bits,
-    # the int8 and int16 targets), about 0.21 MB a row of Blueprints' in place of 2.3 MB in float32. Each batch goes to
+    # the int8 and int16 targets), about 0.21 MB a row of Blueprints in place of 2.3 MB in float32. Each batch goes to
     # the device in them, and the device expands it: unpack_binary_inputs, then float32. Both give the old values
     # exactly (bits and integers in float32), so the batches stay the same. To a GPU, each array goes through pinned
     # memory, and the main thread does not wait for the copy. Before, the loading threads expanded each file to
@@ -106,13 +106,13 @@ def read_npz_training_data(
     # pageable memory (games/blueprints/docs/decisions/training.md in the engine repository, "The trainer's reader
     # feeds the GPU").
     device = torch.device(device)
-    pinned = device.type == "cuda"
-    bit_index = torch.arange(pos_len * pos_len, device=device)
-    bit_bytes, bit_shifts = bit_index // 8, (7 - bit_index % 8).to(torch.uint8)
+    through_pinned_memory = device.type == "cuda"
 
-    def to_device(array, dtype=None):
-        tensor = torch.from_numpy(array)
-        if pinned:
+    def to_device(array, rows, dtype=None):
+        if array is None:
+            return None
+        tensor = torch.from_numpy(array[rows])
+        if through_pinned_memory:
             tensor = tensor.pin_memory().to(device, non_blocking=True)
         else:
             tensor = tensor.to(device)
@@ -208,70 +208,71 @@ def read_npz_training_data(
                 next_index += 1
 
             for n in range(num_whole_steps):
-                start = n * batch_size
-                end = start + batch_size
-
-                batch_binaryInputNCHW = unpack_binary_inputs(
-                    to_device(binaryInputNCHWPacked[start:end]), bit_bytes, bit_shifts, pos_len)
-                batch_globalInputNC = to_device(globalInputNC[start:end])
-                batch_policyTargetsNCMove = to_device(policyTargetsNCMove[start:end], torch.float32)
-                batch_globalTargetsNC = to_device(globalTargetsNC[start:end])
-                batch_scoreDistrN = to_device(scoreDistrN[start:end], torch.float32)
-                batch_valueTargetsNCHW = to_device(valueTargetsNCHW[start:end], torch.float32)
-                if include_meta:
-                    batch_metadataInputNC = to_device(metadataInputNC[start:end], torch.float32)
-                if include_qvalues:
-                    batch_qValueTargetsNCMove = to_device(qValueTargetsNCMove[start:end], torch.float32)
-
-                # KataGame fork: the targets that the game's symmetries cannot map get weight 0, in every batch.
-                batch_globalTargetsNC = games.mask_targets(game, batch_binaryInputNCHW, batch_globalInputNC, batch_valueTargetsNCHW, batch_globalTargetsNC)
-                batch_binaryInputNCHW, batch_globalInputNC = apply_history_dropout(game, batch_binaryInputNCHW, batch_globalInputNC, inputs_version)
-
-                if randomize_symmetries:
-                    # Enclosure fork: one of the game's allowed symmetries, applied by the game (katago/train/games).
-                    # The policy targets map with the row before the symmetry (Enclosure: an edge moves as an edge,
-                    # with each channel's player's nodes, the next mover's from valueTargetsNCHW C7).
-                    symm = symmetries[int(rand.integers(0,len(symmetries)))]
-                    batch_policyTargetsNCMove = game.apply_symmetry_policy_targets(batch_policyTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC, batch_valueTargetsNCHW, batch_globalTargetsNC)
-                    if include_qvalues:
-                        batch_qValueTargetsNCMove = game.apply_symmetry_policy(batch_qValueTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC)
-                    batch_binaryInputNCHW = game.apply_symmetry_inputs(batch_binaryInputNCHW, symm)
-                    # KataGame fork (2026-10-26): the extended global inputs of the inputs version 10 can name points.
-                    batch_globalInputNC = games.apply_symmetry_global_inputs(game, batch_globalInputNC, symm)
-                    batch_valueTargetsNCHW = games.apply_symmetry_points(batch_valueTargetsNCHW, symm)
-
-                batch_binaryInputNCHW = batch_binaryInputNCHW.contiguous()
-                batch_policyTargetsNCMove = batch_policyTargetsNCMove.contiguous()
-                batch_valueTargetsNCHW = batch_valueTargetsNCHW.contiguous()
-                if include_qvalues:
-                    batch_qValueTargetsNCMove = batch_qValueTargetsNCMove.contiguous()
-
-                batch = dict(
-                    binaryInputNCHW = batch_binaryInputNCHW,
-                    globalInputNC = batch_globalInputNC,
-                    policyTargetsNCMove = batch_policyTargetsNCMove,
-                    globalTargetsNC = batch_globalTargetsNC,
-                    scoreDistrN = batch_scoreDistrN,
-                    valueTargetsNCHW = batch_valueTargetsNCHW,
+                rows = slice(n * batch_size, (n + 1) * batch_size)
+                symm = symmetries[int(rand.integers(0,len(symmetries)))] if randomize_symmetries else None
+                yield finish_batch(
+                    game, inputs_version, symm,
+                    binaryInputNCHW=unpack_binary_inputs(to_device(binaryInputNCHWPacked, rows), pos_len),
+                    globalInputNC=to_device(globalInputNC, rows),
+                    policyTargetsNCMove=to_device(policyTargetsNCMove, rows, torch.float32),
+                    globalTargetsNC=to_device(globalTargetsNC, rows),
+                    scoreDistrN=to_device(scoreDistrN, rows, torch.float32),
+                    valueTargetsNCHW=to_device(valueTargetsNCHW, rows, torch.float32),
+                    metadataInputNC=to_device(metadataInputNC, rows, torch.float32),
+                    qValueTargetsNCMove=to_device(qValueTargetsNCMove, rows, torch.float32),
                 )
-                if include_meta:
-                    batch["metadataInputNC"] = batch_metadataInputNC
-                if include_qvalues:
-                    batch["qValueTargetsNCMove"] = batch_qValueTargetsNCMove
-
-                yield batch
     finally:
-        # A reader that stops early (the validation, after its rows) drops the files still to load, and does not wait
-        # for the ones in the threads: nothing reads them.
+        # KataGame fork (2026-11-02, abscls-xtoh): KataGo's reader leaves its executor's with-block, which waits for
+        # every load. A reader that stops early (the validation, after its rows) drops the files still to load, and does
+        # not wait for the ones in the threads: nothing reads them.
         executor.shutdown(wait=False, cancel_futures=True)
+
+
+# KataGame fork (2026-11-02, abscls-xtoh): the reader's work on each batch, on its device: the game's masks, the history
+# dropout and the symmetry symm (one of the game's, or None), then the batch's dict. metadataInputNC and
+# qValueTargetsNCMove are None when the model does not read them. tests/reference_npz_reader.py, the reader before it
+# kept the rows' dtypes, calls it too.
+def finish_batch(game, inputs_version, symm, binaryInputNCHW, globalInputNC, policyTargetsNCMove, globalTargetsNC,
+                 scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove):
+    # KataGame fork: the targets that the game's symmetries cannot map get weight 0, in every batch.
+    globalTargetsNC = games.mask_targets(game, binaryInputNCHW, globalInputNC, valueTargetsNCHW, globalTargetsNC)
+    binaryInputNCHW, globalInputNC = apply_history_dropout(game, binaryInputNCHW, globalInputNC, inputs_version)
+
+    if symm is not None:
+        # Enclosure fork: one of the game's allowed symmetries, applied by the game (katago/train/games).
+        # The policy targets map with the row before the symmetry (Enclosure: an edge moves as an edge,
+        # with each channel's player's nodes, the next mover's from valueTargetsNCHW C7).
+        policyTargetsNCMove = game.apply_symmetry_policy_targets(policyTargetsNCMove, symm, binaryInputNCHW, globalInputNC, valueTargetsNCHW, globalTargetsNC)
+        if qValueTargetsNCMove is not None:
+            qValueTargetsNCMove = game.apply_symmetry_policy(qValueTargetsNCMove, symm, binaryInputNCHW, globalInputNC)
+        binaryInputNCHW = game.apply_symmetry_inputs(binaryInputNCHW, symm)
+        # KataGame fork (2026-10-26): the extended global inputs of the inputs version 10 can name points.
+        globalInputNC = games.apply_symmetry_global_inputs(game, globalInputNC, symm)
+        valueTargetsNCHW = games.apply_symmetry_points(valueTargetsNCHW, symm)
+
+    batch = dict(
+        binaryInputNCHW = binaryInputNCHW.contiguous(),
+        globalInputNC = globalInputNC,
+        policyTargetsNCMove = policyTargetsNCMove.contiguous(),
+        globalTargetsNC = globalTargetsNC,
+        scoreDistrN = scoreDistrN,
+        valueTargetsNCHW = valueTargetsNCHW.contiguous(),
+    )
+    if metadataInputNC is not None:
+        batch["metadataInputNC"] = metadataInputNC
+    if qValueTargetsNCMove is not None:
+        batch["qValueTargetsNCMove"] = qValueTargetsNCMove.contiguous()
+    return batch
 
 
 # KataGame fork (2026-11-02, abscls-xtoh): np.unpackbits(packed, axis=2), cut to the board's points, in torch, on the
 # packed rows' device: the planes (N, C, pos_len, pos_len) in float32 of the rows (N, C, (pos_len^2 + 7) // 8), whose
-# bytes hold their points' bits the highest first. bit_bytes and bit_shifts give each point's byte and its shift.
-def unpack_binary_inputs(packed, bit_bytes, bit_shifts, pos_len):
-    bits = torch.bitwise_and(torch.bitwise_right_shift(packed.index_select(2, bit_bytes), bit_shifts), 1)
-    return bits.view(packed.shape[0], packed.shape[1], pos_len, pos_len).to(torch.float32)
+# bytes hold their points' bits the highest first.
+def unpack_binary_inputs(packed, pos_len):
+    shifts = 7 - torch.arange(8, dtype=torch.uint8, device=packed.device)
+    bits = torch.bitwise_right_shift(packed.unsqueeze(-1), shifts).bitwise_and_(1).flatten(2)
+    # The cast to float32 makes a contiguous tensor, also from a cut that is not contiguous, so the view needs no copy.
+    return bits[:, :, :pos_len * pos_len].to(torch.float32).view(packed.shape[0], packed.shape[1], pos_len, pos_len)
 
 
 def apply_symmetry_policy(tensor, symm, pos_len):

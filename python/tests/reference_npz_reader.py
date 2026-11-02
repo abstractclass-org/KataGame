@@ -1,7 +1,9 @@
 """The trainer's reader of rows as it was before it read the arrays in their dtypes on disk (KataGame 83843fca,
 katago/train/data_processing_pytorch.read_npz_training_data): the reference of test_npz_reader_batches.py, which checks
 that the reader gives its batches, bit for bit. It reads each file's planes to float32 in its loading thread, and copies
-each batch's arrays in float32 to the device. Do not change it: it is the old reader, not a reader to use."""
+each batch's arrays in float32 to the device. The game's work on each batch on the device is the reader's own
+(data_processing_pytorch.finish_batch), so a change of the game's work changes both readers. Do not change the rest: it
+is the old reader's load and copy, not a reader to use."""
 import logging
 import os
 from collections import deque
@@ -12,8 +14,8 @@ import torch
 
 from katago.train import data_processing_pytorch as dpp
 from katago.train import games, modelconfigs
-from katago.train.data_processing_pytorch import (apply_history_dropout, fit_binary_input_nchw, fit_global_input_nc,
-                                                  pad_global_targets_nc, pad_value_targets_nchw)
+from katago.train.data_processing_pytorch import (fit_binary_input_nchw, fit_global_input_nc, pad_global_targets_nc,
+                                                  pad_value_targets_nchw)
 
 
 def read_npz_training_data(
@@ -146,45 +148,15 @@ def read_npz_training_data(
                 batch_globalTargetsNC = torch.from_numpy(globalTargetsNC[start:end]).to(device)
                 batch_scoreDistrN = torch.from_numpy(scoreDistrN[start:end]).to(device)
                 batch_valueTargetsNCHW = torch.from_numpy(valueTargetsNCHW[start:end]).to(device)
+                batch_metadataInputNC = None
                 if include_meta:
                     batch_metadataInputNC = torch.from_numpy(metadataInputNC[start:end]).to(device)
+                batch_qValueTargetsNCMove = None
                 if include_qvalues:
                     batch_qValueTargetsNCMove = torch.from_numpy(qValueTargetsNCMove[start:end]).to(device)
 
-                # KataGame fork: the targets that the game's symmetries cannot map get weight 0, in every batch.
-                batch_globalTargetsNC = games.mask_targets(game, batch_binaryInputNCHW, batch_globalInputNC, batch_valueTargetsNCHW, batch_globalTargetsNC)
-                batch_binaryInputNCHW, batch_globalInputNC = apply_history_dropout(game, batch_binaryInputNCHW, batch_globalInputNC, inputs_version)
-
-                if randomize_symmetries:
-                    # Enclosure fork: one of the game's allowed symmetries, applied by the game (katago/train/games).
-                    # The policy targets map with the row before the symmetry (Enclosure: an edge moves as an edge,
-                    # with each channel's player's nodes, the next mover's from valueTargetsNCHW C7).
-                    symm = symmetries[int(rand.integers(0,len(symmetries)))]
-                    batch_policyTargetsNCMove = game.apply_symmetry_policy_targets(batch_policyTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC, batch_valueTargetsNCHW, batch_globalTargetsNC)
-                    if include_qvalues:
-                        batch_qValueTargetsNCMove = game.apply_symmetry_policy(batch_qValueTargetsNCMove, symm, batch_binaryInputNCHW, batch_globalInputNC)
-                    batch_binaryInputNCHW = game.apply_symmetry_inputs(batch_binaryInputNCHW, symm)
-                    # KataGame fork (2026-10-26): the extended global inputs of the inputs version 10 can name points.
-                    batch_globalInputNC = games.apply_symmetry_global_inputs(game, batch_globalInputNC, symm)
-                    batch_valueTargetsNCHW = games.apply_symmetry_points(batch_valueTargetsNCHW, symm)
-
-                batch_binaryInputNCHW = batch_binaryInputNCHW.contiguous()
-                batch_policyTargetsNCMove = batch_policyTargetsNCMove.contiguous()
-                batch_valueTargetsNCHW = batch_valueTargetsNCHW.contiguous()
-                if include_qvalues:
-                    batch_qValueTargetsNCMove = batch_qValueTargetsNCMove.contiguous()
-
-                batch = dict(
-                    binaryInputNCHW = batch_binaryInputNCHW,
-                    globalInputNC = batch_globalInputNC,
-                    policyTargetsNCMove = batch_policyTargetsNCMove,
-                    globalTargetsNC = batch_globalTargetsNC,
-                    scoreDistrN = batch_scoreDistrN,
-                    valueTargetsNCHW = batch_valueTargetsNCHW,
-                )
-                if include_meta:
-                    batch["metadataInputNC"] = batch_metadataInputNC
-                if include_qvalues:
-                    batch["qValueTargetsNCMove"] = batch_qValueTargetsNCMove
-
-                yield batch
+                # The game's work on the batch, the reader's own (finish_batch).
+                symm = symmetries[int(rand.integers(0,len(symmetries)))] if randomize_symmetries else None
+                yield dpp.finish_batch(game, inputs_version, symm, batch_binaryInputNCHW, batch_globalInputNC,
+                                       batch_policyTargetsNCMove, batch_globalTargetsNC, batch_scoreDistrN,
+                                       batch_valueTargetsNCHW, batch_metadataInputNC, batch_qValueTargetsNCMove)

@@ -7,6 +7,7 @@ a distributed run, the prefetch, the blanked planes, the metadata and the q-valu
 when torch sees one."""
 import os
 import sys
+import threading
 import time
 
 import numpy as np
@@ -17,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from katago.train import data_processing_pytorch, games, modelconfigs  # noqa: E402
 from katago.train.data_processing_pytorch import (  # noqa: E402
     GLOBAL_TARGETS_NC_CHANNELS, VALUE_TARGETS_NCHW_CHANNELS, read_npz_training_data)
+from katago.train.model_pytorch import policy_len  # noqa: E402
 import reference_npz_reader  # noqa: E402
 
 DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
@@ -36,7 +38,7 @@ def write_rows(path, cfg, rows, seed, planes=None, global_inputs=None, global_ta
     game = modelconfigs.get_game(cfg)
     size = game.MAX_BOARD_LEN
     points = size * size
-    moves = points * game.POLICY_CHANNELS + 1
+    moves = policy_len(size, game.POLICY_CHANNELS)
     planes = planes or modelconfigs.get_num_bin_input_features(cfg)
     global_inputs = global_inputs or modelconfigs.get_num_global_input_features(cfg)
     binary = (rng.random((rows, planes, points)) < 0.1).astype(np.uint8)
@@ -55,7 +57,8 @@ def write_rows(path, cfg, rows, seed, planes=None, global_inputs=None, global_ta
         valueTargetsNCHW=rng.integers(-100, 100, size=(rows, value_channels, size, size), dtype=np.int8),
     )
     if meta:
-        arrays["metadataInputNC"] = rng.random((rows, 192), dtype=np.float32)
+        arrays["metadataInputNC"] = rng.random((rows, modelconfigs.get_num_meta_encoder_input_features(1)),
+                                               dtype=np.float32)
     if qvalues:
         arrays["qValueTargetsNCMove"] = rng.integers(-3000, 3000, size=(rows, games.ROW_QVALUE_TARGETS, moves),
                                                      dtype=np.int16)
@@ -140,21 +143,26 @@ def test_a_reader_stopped_early_drops_the_files_still_to_load(tmp_path, monkeypa
     and does not load the next one, which waits in the queue."""
     cfg = config("connect4", 9)
     files = [write_rows(tmp_path / f"f{i}.npz", cfg, 16, seed=i) for i in range(4)]
-    loaded = []
+    loaded, second_started, release = [], threading.Event(), threading.Event()
     original = np.load
 
-    def slow_load(path, *args, **kwargs):
+    def held_load(path, *args, **kwargs):
+        # The thread holds the second file until the test releases it (or 5 s pass).
         loaded.append(path)
-        if path != files[0]:
-            time.sleep(0.3)
+        if path == files[1]:
+            second_started.set()
+            release.wait(timeout=5)
         return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(np, "load", slow_load)
+    monkeypatch.setattr(np, "load", held_load)
     reader = read_npz_training_data(files, 16, 1, 0, pos_len=7, device="cpu", randomize_symmetries=True,
                                     include_meta=False, model_config=cfg, prefetch_depth=1)
-    next(reader)  # the first file's batch, while the thread loads the second, and the third waits
+    next(reader)  # the first file's batch, while the thread holds the second, and the third waits
+    assert second_started.wait(timeout=5)
     start = time.monotonic()
     reader.close()
-    assert time.monotonic() - start < 0.2
-    time.sleep(0.5)  # the second file's load ends
+    closed = time.monotonic() - start
+    release.set()
+    time.sleep(0.5)  # a third load, if the reader had kept it, starts now
+    assert closed < 2  # a close that waited for the held load would take 5 s
     assert loaded == files[:2]
