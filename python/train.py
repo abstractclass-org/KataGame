@@ -144,7 +144,7 @@ if __name__ == "__main__":
     optional_args.add_argument('-stop-when-train-bucket-limited', help='Terminate due to train bucket rather than waiting for more', required=False, action='store_true')
     optional_args.add_argument('-wait-for-data-seconds', help='Seconds to wait before looking again for new data, when the train bucket is spent or too few data files are left to fill a subepoch, default 300', type=float, default=300, required=False)
     optional_args.add_argument('-max-val-samples', help='Approx max of validation samples per epoch', type=int, required=False)
-    optional_args.add_argument('-data-prefetch-depth', help='Number of training data files to prefetch ahead of the one being consumed, to hide disk+decompress latency at file boundaries. Memory scales linearly with this (each in-flight file holds its full expanded arrays in RAM, per rank).', type=int, default=1, required=False)
+    optional_args.add_argument('-data-prefetch-depth', help='Number of training data files to prefetch ahead of the one being consumed, to hide disk+decompress latency at file boundaries. Memory scales linearly with this (each in-flight file holds its arrays in RAM in their on-disk dtypes, about 0.21 MB a Blueprints row, per rank).', type=int, default=1, required=False)
     optional_args.add_argument('-randomize-val', help='Randomize order of validation files', required=False, action='store_true')
     optional_args.add_argument('-no-export', help='Do not export models', required=False, action='store_true')
     optional_args.add_argument('-no-longterm-checkpoints', help='Do not save the periodic archival checkpoints in longterm_checkpoints/', required=False, action='store_true')

@@ -97,11 +97,31 @@ def read_npz_training_data(
         model_config["version"] >= 17 and bool(model_config.get("predict_q_values"))
     )
 
+    # KataGame fork (2026-11-02, abscls-xtoh): the files' arrays stay in their dtypes on disk (the planes' packed bits,
+    # the int8 and int16 targets), about 0.21 MB a row of Blueprints' in place of 2.3 MB in float32. Each batch goes to
+    # the device in them, and the device expands it: unpack_binary_inputs, then float32. Both give the old values
+    # exactly (bits and integers in float32), so the batches stay the same. To a GPU, each array goes through pinned
+    # memory, and the main thread does not wait for the copy. Before, the loading threads expanded each file to
+    # float32 (3.1 GB a file of 1,387 rows of Blueprints), and the main thread copied 290 MB a batch of 128 from
+    # pageable memory (games/blueprints/docs/decisions/training.md in the engine repository, "The trainer's reader
+    # feeds the GPU").
+    device = torch.device(device)
+    pinned = device.type == "cuda"
+    bit_index = torch.arange(pos_len * pos_len, device=device)
+    bit_bytes, bit_shifts = bit_index // 8, (7 - bit_index % 8).to(torch.uint8)
+
+    def to_device(array, dtype=None):
+        tensor = torch.from_numpy(array)
+        if pinned:
+            tensor = tensor.pin_memory().to(device, non_blocking=True)
+        else:
+            tensor = tensor.to(device)
+        return tensor if dtype is None else tensor.to(dtype)
+
     def load_npz_file(npz_file):
         # Select only THIS rank's rows up front, while the arrays are still in
-        # their compact on-disk dtypes (packed bits / int8 / int16), so the
-        # expensive unpackbits + float32 expansion runs on 1/world_size of the
-        # data rather than the whole shard in every rank.
+        # their compact on-disk dtypes (packed bits / int8 / int16). They stay in
+        # them: each batch expands on the device.
         with np.load(npz_file) as npz:
             num_samples = npz["globalInputNC"].shape[0]
             num_whole_steps = num_samples // (batch_size * world_size)
@@ -129,45 +149,40 @@ def read_npz_training_data(
                 raise ValueError(f"{npz_file}: rows of {globalInputNC.shape[1]} global inputs, without the latent of "
                                  f"the inputs version 14 ({num_global_features})")
             globalInputNC = fit_global_input_nc(globalInputNC, num_global_features)
-            policyTargetsNCMove = select_rank_rows(npz["policyTargetsNCMove"]).astype(np.float32)
+            policyTargetsNCMove = select_rank_rows(npz["policyTargetsNCMove"])
             globalTargetsNC = pad_global_targets_nc(select_rank_rows(npz["globalTargetsNC"]))
-            scoreDistrN = select_rank_rows(npz["scoreDistrN"]).astype(np.float32)
-            valueTargetsNCHW = pad_value_targets_nchw(select_rank_rows(npz["valueTargetsNCHW"])).astype(np.float32)
+            scoreDistrN = select_rank_rows(npz["scoreDistrN"])
+            valueTargetsNCHW = pad_value_targets_nchw(select_rank_rows(npz["valueTargetsNCHW"]))
             if include_meta:
-                metadataInputNC = select_rank_rows(npz["metadataInputNC"]).astype(np.float32)
+                metadataInputNC = select_rank_rows(npz["metadataInputNC"])
             else:
                 metadataInputNC = None
             if include_qvalues:
-                qValueTargetsNCMove = select_rank_rows(npz["qValueTargetsNCMove"]).astype(np.float32)
+                qValueTargetsNCMove = select_rank_rows(npz["qValueTargetsNCMove"])
             else:
                 qValueTargetsNCMove = None
         del npz
 
-        binaryInputNCHW = np.unpackbits(binaryInputNCHWPacked,axis=2)
-        assert len(binaryInputNCHW.shape) == 3
-        assert binaryInputNCHW.shape[2] == ((pos_len * pos_len + 7) // 8) * 8
-        binaryInputNCHW = binaryInputNCHW[:,:,:pos_len*pos_len]
-        binaryInputNCHW = np.reshape(binaryInputNCHW, (
-            binaryInputNCHW.shape[0], binaryInputNCHW.shape[1], pos_len, pos_len
-        )).astype(np.float32)
-
-        assert binaryInputNCHW.shape[1] == num_bin_features
+        assert len(binaryInputNCHWPacked.shape) == 3
+        assert binaryInputNCHWPacked.shape[2] == (pos_len * pos_len + 7) // 8
+        assert binaryInputNCHWPacked.shape[1] == num_bin_features
         assert globalInputNC.shape[1] == num_global_features
         if ENCLOSURE_ZERO_INPUT_CHANNELS:
-            binaryInputNCHW[:, ENCLOSURE_ZERO_INPUT_CHANNELS] = 0.0
-        return (npz_file, binaryInputNCHW, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove)
+            binaryInputNCHWPacked[:, ENCLOSURE_ZERO_INPUT_CHANNELS] = 0
+        return (npz_file, binaryInputNCHWPacked, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove)
 
     if not npz_files:
         return
 
     # Prefetch up to prefetch_depth files *ahead* of the one currently being
     # consumed, so the GPU does not stall at a file boundary waiting on disk +
-    # decompress + unpackbits for the next shard.
-    # Each in-flight file holds its full expanded (float32) arrays in RAM,
+    # decompress for the next shard.
+    # Each in-flight file holds its arrays in their on-disk dtypes in RAM,
     # so memory scales linearly with prefetch_depth
     # (times world_size, since every rank loads each file).
     prefetch_depth = max(1, prefetch_depth)
-    with ThreadPoolExecutor(max_workers=prefetch_depth) as executor:
+    executor = ThreadPoolExecutor(max_workers=prefetch_depth)
+    try:
         # Keep a queue of in-flight loads: the head is the file being consumed,
         # and up to prefetch_depth more are loading/loaded behind it.
         pending = deque()
@@ -178,11 +193,11 @@ def read_npz_training_data(
 
         while pending:
             future = pending.popleft()
-            (npz_file, binaryInputNCHW, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove) = future.result()
+            (npz_file, binaryInputNCHWPacked, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove) = future.result()
 
             # The arrays already hold only this rank's rows (selected in load_npz_file),
             # so the first dim is num_whole_steps * batch_size.
-            num_whole_steps = binaryInputNCHW.shape[0] // batch_size
+            num_whole_steps = binaryInputNCHWPacked.shape[0] // batch_size
 
             logging.info(f"Beginning {npz_file} with {num_whole_steps * world_size} usable batches, my rank is {rank}")
 
@@ -196,16 +211,17 @@ def read_npz_training_data(
                 start = n * batch_size
                 end = start + batch_size
 
-                batch_binaryInputNCHW = torch.from_numpy(binaryInputNCHW[start:end]).to(device)
-                batch_globalInputNC = torch.from_numpy(globalInputNC[start:end]).to(device)
-                batch_policyTargetsNCMove = torch.from_numpy(policyTargetsNCMove[start:end]).to(device)
-                batch_globalTargetsNC = torch.from_numpy(globalTargetsNC[start:end]).to(device)
-                batch_scoreDistrN = torch.from_numpy(scoreDistrN[start:end]).to(device)
-                batch_valueTargetsNCHW = torch.from_numpy(valueTargetsNCHW[start:end]).to(device)
+                batch_binaryInputNCHW = unpack_binary_inputs(
+                    to_device(binaryInputNCHWPacked[start:end]), bit_bytes, bit_shifts, pos_len)
+                batch_globalInputNC = to_device(globalInputNC[start:end])
+                batch_policyTargetsNCMove = to_device(policyTargetsNCMove[start:end], torch.float32)
+                batch_globalTargetsNC = to_device(globalTargetsNC[start:end])
+                batch_scoreDistrN = to_device(scoreDistrN[start:end], torch.float32)
+                batch_valueTargetsNCHW = to_device(valueTargetsNCHW[start:end], torch.float32)
                 if include_meta:
-                    batch_metadataInputNC = torch.from_numpy(metadataInputNC[start:end]).to(device)
+                    batch_metadataInputNC = to_device(metadataInputNC[start:end], torch.float32)
                 if include_qvalues:
-                    batch_qValueTargetsNCMove = torch.from_numpy(qValueTargetsNCMove[start:end]).to(device)
+                    batch_qValueTargetsNCMove = to_device(qValueTargetsNCMove[start:end], torch.float32)
 
                 # KataGame fork: the targets that the game's symmetries cannot map get weight 0, in every batch.
                 batch_globalTargetsNC = games.mask_targets(game, batch_binaryInputNCHW, batch_globalInputNC, batch_valueTargetsNCHW, batch_globalTargetsNC)
@@ -244,6 +260,18 @@ def read_npz_training_data(
                     batch["qValueTargetsNCMove"] = batch_qValueTargetsNCMove
 
                 yield batch
+    finally:
+        # A reader that stops early (the validation, after its rows) drops the files still to load, and does not wait
+        # for the ones in the threads: nothing reads them.
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+# KataGame fork (2026-11-02, abscls-xtoh): np.unpackbits(packed, axis=2), cut to the board's points, in torch, on the
+# packed rows' device: the planes (N, C, pos_len, pos_len) in float32 of the rows (N, C, (pos_len^2 + 7) // 8), whose
+# bytes hold their points' bits the highest first. bit_bytes and bit_shifts give each point's byte and its shift.
+def unpack_binary_inputs(packed, bit_bytes, bit_shifts, pos_len):
+    bits = torch.bitwise_and(torch.bitwise_right_shift(packed.index_select(2, bit_bytes), bit_shifts), 1)
+    return bits.view(packed.shape[0], packed.shape[1], pos_len, pos_len).to(torch.float32)
 
 
 def apply_symmetry_policy(tensor, symm, pos_len):
