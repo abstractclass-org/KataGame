@@ -275,27 +275,34 @@ def test_without_a_floor_or_a_scale_nothing_halts(monkeypatch):
 NEW_B6C96 = [65536.0 / 2 ** n for n in (1, 2, 3, 4, 5, 5, 6, 7, 8, 9, 10, 10, 11, 12, 13, 14, 15, 15, 16, 17)]
 
 
+def new_model_watcher():
+    """The watcher of a new model's trainer: bpj5's floor, armed at the scale's first growth from it or above."""
+    return GnormWatcher(grad_scale_floor=FLOOR, grad_scale_floor_armed=False)
+
+
 def test_a_new_models_scale_under_the_floor_in_its_first_steps_does_not_halt():
-    assert first_halt(GnormWatcher(grad_scale_floor=FLOOR), NEW_B6C96) == 19  # a resumed model's floor, as today
-    assert first_halt(GnormWatcher(grad_scale_floor=FLOOR, grad_scale_floor_armed=False),
-                      NEW_B6C96 + [0.5] * 1980) is None
+    assert first_halt(GnormWatcher(grad_scale_floor=FLOOR), NEW_B6C96) == 19  # the floor of a model from a checkpoint
+    assert first_halt(new_model_watcher(), NEW_B6C96 + [0.5] * 1980) is None
 
 
 # hybrid3's new model in the pause's plan (v13's first pass, 2026-11-01), the scale at its first epochs' starts and at
 # each change after: 2 from the first epoch's end, then a growth each 16 epochs of 125 batches, with no fall.
-NEW_HYBRID3 = [65536.0, 2.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+NEW_HYBRID3 = [65536.0, 2.0, 2.0, 4.0, 8.0, 16.0]
 
 
-def test_a_new_models_floor_holds_after_the_scale_grows():
-    new = lambda: GnormWatcher(grad_scale_floor=FLOOR, grad_scale_floor_armed=False)  # noqa: E731
-    assert first_halt(new(), NEW_HYBRID3) is None
-    assert first_halt(new(), NEW_HYBRID3[:4] + [2.0, 1.0, 0.5]) == 6
-    # The b6c96 above, had it trained on: 2,000 finite batches at 0.5, the growth to 1, and a later nonfinite batch.
-    assert first_halt(new(), NEW_B6C96 + [0.5] * 1999 + [1.0] * 5 + [0.5]) == 2024
+def test_a_new_models_floor_holds_after_the_scale_grows_from_it():
+    assert first_halt(new_model_watcher(), NEW_HYBRID3) is None
+    assert first_halt(new_model_watcher(), NEW_HYBRID3[:4] + [2.0, 1.0, 0.5]) == 6
+    # The b6c96 above, had it trained on: 2,000 finite batches at 0.5 and the growth to 1, 2,000 more at 1 and the
+    # growth to 2, which arms the floor, and then two nonfinite batches.
+    assert first_halt(new_model_watcher(), NEW_B6C96 + [0.5] * 1999 + [1.0] * 2000 + [2.0, 1.0, 0.5]) == 4021
 
 
-def test_a_growth_that_leaves_the_scale_under_the_floor_does_not_arm_it():
-    # A new model whose first steps took the scale to 0.25: its growth to 0.5 after 2,000 finite batches is healthy.
-    watcher = GnormWatcher(grad_scale_floor=FLOOR, grad_scale_floor_armed=False)
-    assert first_halt(watcher, [65536.0, 0.25, 0.5, 0.25, 0.5]) is None
-    assert first_halt(watcher, [1.0, 0.5]) == 1
+def test_a_growth_from_under_the_floor_does_not_arm_it():
+    # The b6c96 above at 0.5: its growth to 1 shows only that its gradients fit at 0.5, and the scaler backs off to
+    # 0.5 at its next nonfinite batch, as after hybrid3's growths from 256 to 512 and from 512 to 1024.
+    assert first_halt(new_model_watcher(), NEW_B6C96 + [0.5] * 1999 + [1.0] * 5 + [0.5] * 10) is None
+    # A new model whose first steps took the scale to 0.25 grows to 0.5 and to 1. Only its growth from 1 arms the floor.
+    watcher = new_model_watcher()
+    assert first_halt(watcher, [65536.0, 0.25, 0.5, 0.25, 0.5, 1.0]) is None
+    assert first_halt(watcher, [2.0, 1.0, 0.5]) == 2

@@ -411,11 +411,13 @@ class GnormWatcher:
       then did the norm's triggers fire. A scale below the floor stays below it
       for at least 2000 batches, so one reading below it halts.
       With grad_scale_floor_armed=False (a new model, abscls-8gxv), the floor
-      holds only from the first growth of the scale to the floor or above. A
-      new model's first gradients can be beyond fp16's range at a scale of 1:
-      its first batches took the scale to 0.5-2, and a trained model's restart
-      to 8-512. A growth comes after 2000 finite batches in a row, so the
-      first steps are behind the model when the floor arms.
+      holds only from the first growth of the scale from the floor or above.
+      A new model's first gradients can be beyond fp16's range at a scale of
+      1: its first batches took the scale to 0.5-2, and the restarts of
+      trained models took it to 8-512. A growth from a scale s comes after
+      2000 finite batches in a row at s, so it shows that the model's
+      gradients fit at s. A growth to the floor from under it shows only a
+      fit under the floor, and the scaler often backs off after a growth.
 
     Raises GnormWatcherError so the run cannot silently continue.
     Setting KATAGO_GNORM_WATCHER_HALT=0 makes it warn instead.
@@ -499,17 +501,18 @@ class GnormWatcher:
             + (f" latest gnorm {gnorm:.4g} vs cap {gnorm_cap:.4g}" if extreme else "")
             + ")"
         )
+        below_floor = False
         if self.grad_scale_floor is not None and grad_scale is not None:
             if (not self.grad_scale_floor_armed and self.last_grad_scale is not None
-                    and self.last_grad_scale < grad_scale and grad_scale >= self.grad_scale_floor):
+                    and self.last_grad_scale >= self.grad_scale_floor and grad_scale > self.last_grad_scale):
                 self.grad_scale_floor_armed = True
                 logging.info(
-                    f"GNORM WATCHER: the gradient scaler's scale grew to {grad_scale:g} at batch {self.total_observed}: "
-                    f"the floor {self.grad_scale_floor:g} holds from now on."
+                    f"GNORM WATCHER: the gradient scaler's scale grew from {self.last_grad_scale:g} to {grad_scale:g} "
+                    f"at batch {self.total_observed}: the floor {self.grad_scale_floor:g} holds from now on."
                 )
             self.last_grad_scale = grad_scale
-        if (self.grad_scale_floor is not None and self.grad_scale_floor_armed and grad_scale is not None
-                and grad_scale < self.grad_scale_floor):
+            below_floor = self.grad_scale_floor_armed and grad_scale < self.grad_scale_floor
+        if below_floor:
             self._trigger(
                 f"GNORM WATCHER: the gradient scaler's scale {grad_scale:.4g} is below the floor "
                 f"{self.grad_scale_floor:g}: nonfinite gradients keep coming {detail}."
