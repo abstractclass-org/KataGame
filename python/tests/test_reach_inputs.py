@@ -196,9 +196,9 @@ def test_the_fit_changes_the_count_by_the_planes_of_reach_or_of_closed_areas_onl
     # The rows of version 11 for a model of version 12, as before.
     v11 = np.ones((2, V14_PLANES - 2, 9), dtype=np.uint8)
     assert fit_binary_input_nchw(v11, V14_PLANES, game).shape == (2, V14_PLANES, 9)
-    # Other counts stay as they are (the reader refuses them), and a game without the planes fits nothing.
-    v10 = np.ones((2, 102 - 4, 9), dtype=np.uint8)
-    assert fit_binary_input_nchw(v10, V14_PLANES + REACH, game) is v10
+    # Other counts stay as they are (the reader refuses them): the rows of version 11 for a model of version 15 lack
+    # both groups of planes. A game without the planes fits nothing.
+    assert fit_binary_input_nchw(v11, V14_PLANES + REACH, game) is v11
     assert fit_binary_input_nchw(rows, V14_PLANES + REACH, games.get("enclosure")) is rows
 
 
