@@ -22,6 +22,10 @@ The rows are read as the trainer reads them (data_processing_pytorch.read_npz_tr
 files in the given order, with the history dropout drawn from -seed. So two checkpoints evaluated with the same files,
 batch size and seed see the same inputs. Each file gives its whole batches only (the reader's rule). The forward runs
 in fp32, under no gradient. Run it from katagame/python.
+
+The JSON also holds the measures of each file ("files": the file, the rows read from it, and its measures of each
+weights). The engine repository's pipeline/scripts/phase_train.py measures from them the noise of a difference between
+two checkpoints on the same rows (abscls-ra93.4).
 """
 import argparse
 import json
@@ -69,11 +73,25 @@ def illegal_mass(network_outputs, legal, batch):
 
 def evaluate(networks, npz_files, batch_size, device, seed, max_batches=None):
     """{label: {measure: value}} for each network of networks ({label: model}), on the same batches."""
+    return evaluate_by_file(networks, npz_files, batch_size, device, seed, max_batches)[0]
+
+
+def evaluate_by_file(networks, npz_files, batch_size, device, seed, max_batches=None):
+    """(evaluate's measures, the measures of each file): [{"file": path, "rows": n, label: {measure: value}}], in the
+    files' order, each over the rows that the reader takes from the file (its whole batches, 0 rows for a file with no
+    whole batch or after max_batches)."""
     model = next(iter(networks.values()))
     config = model.config
     game = modelconfigs.get_game(config)
     metrics = validation_metrics(Metrics(1, model))  # the trainer's validation metrics (the export gate's)
+    # The file of each batch: the reader reads the files in their order, each file's whole batches.
+    file_of_batch = []
+    for f, path in enumerate(npz_files):
+        with np.load(path) as npz:
+            file_of_batch += [f] * (npz["globalInputNC"].shape[0] // batch_size)
     sums = {label: {} for label in networks}
+    file_sums = {label: [{} for _ in npz_files] for label in networks}
+    file_rows = [0] * len(npz_files)
     torch.manual_seed(seed)
     np.random.seed(seed)
     rows = 0
@@ -82,7 +100,9 @@ def evaluate(networks, npz_files, batch_size, device, seed, max_batches=None):
             randomize_symmetries=False, include_meta=False, model_config=config)):
         if max_batches is not None and i >= max_batches:
             break
+        f = file_of_batch[i]
         rows += batch["binaryInputNCHW"].shape[0]
+        file_rows[f] += batch["binaryInputNCHW"].shape[0]
         extra = {k: float(v) for k, v in batch_weights(batch).items()}
         legal = games.legal_moves(game, batch["binaryInputNCHW"], batch["globalInputNC"])
         for label, network in networks.items():
@@ -94,7 +114,11 @@ def evaluate(networks, npz_files, batch_size, device, seed, max_batches=None):
                 add["illegal_sum"] = float(illegal_mass(outputs, legal, batch))
             for k, v in add.items():
                 sums[label][k] = sums[label].get(k, 0.0) + v
-    return {label: measures(s, rows) for label, s in sums.items()}
+                file_sums[label][f][k] = file_sums[label][f].get(k, 0.0) + v
+    files = [dict({"file": path, "rows": file_rows[f]},
+                  **{label: measures(file_sums[label][f], file_rows[f]) for label in networks})
+             for f, path in enumerate(npz_files)]
+    return {label: measures(s, rows) for label, s in sums.items()}, files
 
 
 def measures(s, rows):
@@ -123,13 +147,14 @@ def main():
     args = ap.parse_args()
     raw, swa, other = load_model(args.checkpoint, use_swa=True, device=args.device)
     networks = {"raw": raw.eval(), "swa": swa.eval()}
-    result = evaluate(networks, args.npz, args.batch_size, args.device, args.seed, args.max_batches)
+    result, files = evaluate_by_file(networks, args.npz, args.batch_size, args.device, args.seed, args.max_batches)
     step = other.get("train_state", {}).get("global_step_samples") if isinstance(other, dict) else None
     for label, m in result.items():
         print(f"{label}: " + " ".join(f"{k} {v:.6g}" for k, v in m.items()), flush=True)
     if args.json:
         with open(args.json, "w") as f:
-            json.dump({"checkpoint": args.checkpoint, "global_step_samples": step, **result}, f, indent=1)
+            json.dump({"checkpoint": args.checkpoint, "global_step_samples": step, **result, "files": files}, f,
+                      indent=1)
     return 0
 
 

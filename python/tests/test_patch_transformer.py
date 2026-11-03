@@ -12,7 +12,7 @@ and the model config hybrid3, Blueprints' legal moves (games.legal_moves) and ho
 - legal_moves gives the placements on the anchors' planes while no pick waits, the picks and drops on the planes of
   legal hand actions, and no pass.
 - holdout_losses.evaluate gives the same measures for the same network and seed, and the policy's mass outside the
-  legal moves.
+  legal moves. evaluate_by_file gives each file's measures too, over the rows that the reader takes from it.
 - The export (the engine repository's abscls-ra93.3) writes hybrid3 as model version 24 with the patch block's lines
   (neuralnet/desc.cpp, PatchTransformerBlockDesc), and a model without the patch block as before (version 23)."""
 import json
@@ -281,6 +281,29 @@ def test_the_holdouts_measures_repeat_and_count_the_mass_outside_the_legal_moves
     moves = policy_len(SIZE, blueprints.POLICY_CHANNELS)
     assert weight == 2.0
     torch.testing.assert_close(total / weight, torch.tensor(1.0 - 4 * SIZE / moves))
+
+
+def test_the_holdouts_measures_of_each_file(tmp_path):
+    # Files of 8, 6 and 3 rows at batches of 4: the reader takes 8, 4 and 0 rows of them.
+    paths = [str(tmp_path / f"rows{i}.npz") for i in range(3)]
+    for i, (path, n) in enumerate(zip(paths, (8, 6, 3))):
+        write_rows(path, n, i)
+    torch.manual_seed(0)
+    model = Model(config("blueprints", 13, "b1c6nbt"), SIZE)
+    model.initialize()
+    model.eval()
+    with torch.no_grad():
+        whole, files = holdout_losses.evaluate_by_file({"a": model}, paths, 4, "cpu", seed=3)
+        assert json.dumps(whole) == json.dumps(holdout_losses.evaluate({"a": model}, paths, 4, "cpu", seed=3))
+        first = holdout_losses.evaluate({"a": model}, paths[:1], 4, "cpu", seed=3)
+    assert [f["file"] for f in files] == paths
+    assert [f["rows"] for f in files] == [8, 4, 0] and whole["a"]["rows"] == 12
+    # The first file's rows come first, with the same draws of the seed: its measures alone.
+    assert json.dumps(files[0]["a"]) == json.dumps(first["a"])
+    # Every row weighs 1 here, so the whole's mean is the files' means weighted by their rows.
+    for k in ("p0loss", "vloss", "oloss"):
+        assert whole["a"][k] == pytest.approx((8 * files[0]["a"][k] + 4 * files[1]["a"][k]) / 12, rel=1e-6)
+    assert np.isnan(files[2]["a"]["pacc1"]) and "p0loss" not in files[2]["a"]
 
 
 if __name__ == "__main__":
