@@ -853,7 +853,7 @@ struct ScratchBuffers {
   std::unique_ptr<SizedBuf<void*>> attnBiasBuf;
   bool attnBiasBuiltThisForward = false;
 
-  //False for a view of another's buffers (below), which frees none of them.
+  //KataGame fork (2026-11-03, abscls-ra93.3): false for a view of another's buffers (below), which frees none of them.
   const bool ownsBuffers;
 
   ScratchBuffers() = delete;
@@ -3669,14 +3669,10 @@ struct PatchTransformerBlock {
     ScratchBuffers* scratch,
     int batchSize,
     void* trunkBuf,
-    void* trunkScratchBuf,
     void* maskBuf,
-    float* maskSumBuf,
     void* workspaceBuf,
     size_t workspaceBytes
   ) const {
-    (void)trunkScratchBuf;
-    (void)maskSumBuf;
     const int patchChannels = trunkChannels * patchSize * patchSize;
     const int numTokens = batchSize * gridLen * gridLen;
     //Max-batch-sized, as the attention's buffers (see the scratch-sizing note there).
@@ -3994,9 +3990,7 @@ void BlockStack::apply(
         scratch,
         batchSize,
         trunkBuf,
-        trunkScratchBuf,
         maskBuf,
-        maskSumBuf,
         workspaceBuf,
         workspaceBytes
       );

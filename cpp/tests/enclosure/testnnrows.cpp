@@ -29,7 +29,6 @@
 //              the Eigen backend does not compute them)
 //   own        the ownership before tanh (y * len + x)
 
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -41,7 +40,6 @@
 #include "../../core/config_parser.h"
 #include "../../core/logger.h"
 #include "../../core/timer.h"
-#include "../../neuralnet/modelversion.h"
 #include "../../neuralnet/nneval.h"
 #include "../../neuralnet/nninterface.h"
 
@@ -144,7 +142,7 @@ int main(int argc, char** argv) {
         const int r = start + i;
         NNResultBuf& buf = *bufs[i];
         buf.rowSpatialPacked = false;
-        buf.rowSpatialBuf.assign((size_t)channels * area, 0.0f);
+        buf.rowSpatialBuf.resize((size_t)channels * area);  //every entry is written below
         const float* src = spatial.data() + (size_t)r * channels * area;
         for(int c = 0; c < channels; c++)
           for(int p = 0; p < area; p++)

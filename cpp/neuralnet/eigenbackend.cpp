@@ -262,6 +262,7 @@ struct ScratchBuffers {
   const size_t batchBytes;
 
   SimpleAllocator<float*>* allocator;
+  //KataGame fork (2026-11-03, abscls-ra93.3): false for a view of another's allocator (below), which frees nothing.
   const bool ownsAllocator;
 
   ScratchBuffers() = delete;
@@ -2013,10 +2014,15 @@ struct PatchTransformerBlock final : public ResidualBlockIntf {
             for(int dx = 0; dx < P; dx++) {
               const int y = gy * P + dy - padBefore;
               const int x = gx * P + dx - padBefore;
-              const bool onBoard = x >= 0 && x < nnXLen && y >= 0 && y < nnYLen;
-              const float maskVal = onBoard ? (*mask)(x, y, n) : 0.0f;
+              float* point = token + dy * P + dx;
+              if(x < 0 || x >= nnXLen || y < 0 || y >= nnYLen) {
+                for(int c = 0; c < trunkChannels; c++)
+                  point[c * P * P] = 0.0f;
+                continue;
+              }
+              const float maskVal = (*mask)(x, y, n);
               for(int c = 0; c < trunkChannels; c++)
-                token[c * P * P + dy * P + dx] = onBoard ? (*trunk)(c, x, y, n) * maskVal : 0.0f;
+                point[c * P * P] = (*trunk)(c, x, y, n) * maskVal;
             }
           }
         }

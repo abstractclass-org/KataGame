@@ -1013,10 +1013,7 @@ int64_t NestedBottleneckResidualBlockDesc::getNumParameters() const {
 
 static bool blocksContainTransformer(const std::vector<std::pair<int, unique_ptr_void>>& blocks) {
   for(size_t i = 0; i < blocks.size(); i++) {
-    //KataGame fork (2026-11-03): the patch block holds transformer blocks, whose RMSNorms the scalings would undo.
-    if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND ||
-       blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND ||
-       blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND)
+    if(isTransformerBlockKind(blocks[i].first))  //KataGame fork (2026-11-03): the patch block too (desc.h)
       return true;
   }
   return false;
@@ -2178,9 +2175,7 @@ void TrunkDesc::transformToReduceActivations() {
       NestedBottleneckResidualBlockDesc* desc = (NestedBottleneckResidualBlockDesc*)blocks[i].second.get();
       desc->transformToReduceActivations();
     }
-    else if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND ||
-            blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND ||
-            blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+    else if(isTransformerBlockKind(blocks[i].first)) {
       // No internal optimization needed for transformer blocks (nor for the KataGame fork's patch block)
     }
     else {
@@ -2216,9 +2211,7 @@ void TrunkDesc::applyScale8ToReduceActivations() {
       NestedBottleneckResidualBlockDesc* desc = (NestedBottleneckResidualBlockDesc*)blocks[i].second.get();
       desc->applyScale8ToReduceActivations();
     }
-    else if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND ||
-            blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND ||
-            blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+    else if(isTransformerBlockKind(blocks[i].first)) {
       // Should not be reached - ModelDesc::applyScale8 guards against models with transformers
       throw StringError("applyScale8ToReduceActivations called on trunk containing transformer blocks");
     }
@@ -3218,11 +3211,7 @@ void ModelDesc::transformToReduceActivations() {
 
 static bool blocksContainTransformerRecursive(const std::vector<std::pair<int, unique_ptr_void>>& blocks) {
   for(size_t i = 0; i < blocks.size(); i++) {
-    //KataGame fork (2026-11-03): the patch block holds transformer blocks (the CUDA backend then runs NHWC, and the
-    //evaluator warms up the attention's graphs).
-    if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND ||
-       blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND ||
-       blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND)
+    if(isTransformerBlockKind(blocks[i].first))  //KataGame fork (2026-11-03): the patch block too (desc.h)
       return true;
     if(blocks[i].first == NESTED_BOTTLENECK_BLOCK_KIND) {
       NestedBottleneckResidualBlockDesc* desc = (NestedBottleneckResidualBlockDesc*)blocks[i].second.get();

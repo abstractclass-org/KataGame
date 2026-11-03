@@ -419,6 +419,14 @@ constexpr int TRANSFORMER_ATTENTION_BLOCK_KIND = 4;
 constexpr int TRANSFORMER_FFN_BLOCK_KIND = 5;
 constexpr int PATCH_TRANSFORMER_BLOCK_KIND = 6;  //KataGame fork (2026-11-03): PatchTransformerBlockDesc, model version 24
 
+//KataGame fork (2026-11-03, abscls-ra93.3): the block kinds that the code treats as transformer blocks: attention, FFN
+//and the patch block, which holds only these. For the patch block too, its attention and FFN blocks' RMSNorms would
+//undo a scaling of the trunk, the CUDA backend runs it NHWC, and the evaluator warms up its attention's graphs. A
+//nested bottleneck, which may hold transformer blocks, is not one: its callers look inside it.
+constexpr bool isTransformerBlockKind(int kind) {
+  return kind == TRANSFORMER_ATTENTION_BLOCK_KIND || kind == TRANSFORMER_FFN_BLOCK_KIND || kind == PATCH_TRANSFORMER_BLOCK_KIND;
+}
+
 struct TrunkDesc {
   std::string name;
   int modelVersion;
@@ -453,7 +461,7 @@ struct TrunkDesc {
   double getSpatialConvDepth() const;
   int64_t getNumParameters() const;
   //True if any block in the trunk is a transformer (attention or ffn) block, including ones nested
-  //inside nested-bottleneck blocks.
+  //inside nested-bottleneck blocks. KataGame fork: or a patch block (isTransformerBlockKind).
   bool hasAnyTransformerBlocks() const;
 
   void transformToReduceActivations();
@@ -673,6 +681,7 @@ struct ModelDesc {
   int64_t getNumParameters() const;
   //True if the model's trunk contains any transformer (attention or ffn) block. Useful for callers
   //that want to report model stats or special-case transformer-only behavior (e.g. graph warmup).
+  //KataGame fork: or a patch block (isTransformerBlockKind).
   bool hasAnyTransformerBlocks() const;
   bool hasAnyNestedBottleneckBlocks() const;
 

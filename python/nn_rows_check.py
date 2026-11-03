@@ -18,11 +18,14 @@ softplus of the error heads, RGSC's sigmoid), so both sides read as the search r
   without it): the largest difference over the largest probability;
 - value: the win and loss probabilities (the fork's NNEvaluator renormalises them: no result is impossible);
 - score: the score mean and the lead, each over its multiplier (in the network's units);
-- uncertainty: the score's stdev, the time left's variance and the short-term winloss and score errors, which the
-  search's uncertainty weighting reads, each over its multiplier;
+- uncertainty: the score's stdev and the time left's variance, each over its multiplier, and the short-term winloss
+  and score errors, which the search's uncertainty weighting reads, as the search reads them: NNEvaluator takes the
+  square root of the post-processed error (model version 10 and up), so each is a standard deviation, over the
+  square root of its multiplier;
 - intrinsic: AZdb's returns A and B (the members' search), relative to their size (at least 1);
 - regret: RGSC's regret value (0 to 4) over 4 and its ranking relative to its size (at least 1), and the swing
-  regret's, where the engine computes them (self-play's CUDA backend; the Eigen backend does not);
+  regret's (when the model has it), where the engine computes them (self-play's CUDA backend; the Eigen backend does
+  not);
 - own: the ownership after tanh on the board's points (not used to choose a move).
 
 It also prints the largest differences of the raw policy and value logits. Exit code 0 when every row agrees within
@@ -40,6 +43,8 @@ from katago.train import games, modelconfigs
 from katago.train.load_model import load_model
 
 MEASURES = ("policy", "policyopt", "value", "score", "uncertainty", "intrinsic", "regret", "own")
+# The sections that a model or a backend may not compute (testnnrows writes them as NaN).
+OPTIONAL = ("policyopt", "intrinsic", "regret")
 # The post-processed outputs (Model.postprocess_single_heads_output) that the comparison reads, by index.
 SCALARS = {"scoremean": 8, "scorestdev": 9, "lead": 10, "vtime": 11, "stverror": 12, "stserror": 13,
            "regret": 15, "ranking": 16, "swing": 17, "swingranking": 18}
@@ -94,7 +99,7 @@ def softmax(x):
     return e / e.sum()
 
 
-def post(model, value, score, extra):
+def engine_scalars(model, value, score, extra):
     """The post-processed scalars of raw outputs in the engine's layout (score: misc value 0-3 and more-misc 0-1, as
     write_value_head exports them; extra: RGSC's 4 then AZdb's 2), through the model's own post-processing."""
     n = value.shape[0]
@@ -149,18 +154,23 @@ def compare(args):
     ref = torch_outputs(model, game, spatial, global_, args.torch_cache)
     assert ref["policy"].shape == cpp["policy"].shape, (ref["policy"].shape, cpp["policy"].shape)
     # A section that the output lacks, or holds as NaN (a head that the model or the backend does not compute), is
-    # left out of the comparison.
-    present = {k for k in ("policyopt", "intrinsic", "regret") if k in cpp and not np.isnan(cpp[k]).any()}
-    has_regret = "regret" in present
+    # left out of the comparison. RGSC's swing regret (the regret section's last 2) may be absent alone.
+    present = {k for k in OPTIONAL if k in cpp and not np.isnan(cpp[k][:, :2] if k == "regret" else cpp[k]).any()}
+    has_swing = "regret" in present and not np.isnan(cpp["regret"][:, 2:]).any()
     extra = np.zeros((n, 6))
     for k, cut in (("regret", slice(0, 4)), ("intrinsic", slice(4, 6))):
         if k in present:
-            extra[:, cut] = cpp[k]
+            extra[:, cut] = np.nan_to_num(cpp[k])
     with torch.no_grad():
-        mine = post(model, cpp["value"], cpp["score"], extra)
+        cpp_scalars = engine_scalars(model, cpp["value"], cpp["score"], extra)
     mult = {"scoremean": model.scoremean_multiplier, "lead": model.lead_multiplier,
             "scorestdev": model.scorestdev_multiplier, "vtime": model.variance_time_multiplier,
             "stverror": model.shortterm_value_error_multiplier, "stserror": model.shortterm_score_error_multiplier}
+    # The short-term errors as the search reads them (nneval.cpp): the square root of the trainer's post-processed
+    # value, for model version 10 and up, over the square root of its multiplier.
+    if model.config["version"] >= 10:
+        for k in ("stverror", "stserror"):
+            ref[k], cpp_scalars[k], mult[k] = np.sqrt(ref[k]), np.sqrt(cpp_scalars[k]), np.sqrt(mult[k])
     worst = {k: 0.0 for k in MEASURES}
     raw = dict(policy_logit=0.0, policyopt_logit=0.0, value_logit=0.0)
     failures = 0
@@ -168,7 +178,7 @@ def compare(args):
         moves = ref["legal"][r]
         diffs = {}
         for k in ("policy", "policyopt"):
-            if k not in cpp or (k == "policyopt" and k not in present):
+            if k == "policyopt" and k not in present:
                 continue
             t_logits, c_logits = ref[k][r][moves], cpp[k][r][moves]
             t_probs, c_probs = softmax(t_logits), softmax(c_logits)
@@ -176,18 +186,17 @@ def compare(args):
             raw[k + "_logit"] = max(raw[k + "_logit"], np.abs(t_logits - c_logits).max())
         diffs["value"] = np.abs(softmax(ref["value"][r][:2]) - softmax(cpp["value"][r][:2])).max()
         raw["value_logit"] = max(raw["value_logit"], np.abs(ref["value"][r] - cpp["value"][r]).max())
-        rel = lambda k: abs(ref[k][r] - mine[k][r]) / mult[k]  # noqa: E731
+        rel = lambda k: abs(ref[k][r] - cpp_scalars[k][r]) / mult[k]  # noqa: E731
         diffs["score"] = max(rel("scoremean"), rel("lead"))
         diffs["uncertainty"] = max(rel("scorestdev"), rel("vtime"), rel("stverror"), rel("stserror"))
         if "intrinsic" in present:
-            diffs["intrinsic"] = (np.abs(ref["intrinsic"][r] - mine["intrinsic"][r]).max()
+            diffs["intrinsic"] = (np.abs(ref["intrinsic"][r] - cpp_scalars["intrinsic"][r]).max()
                                   / max(1.0, np.abs(ref["intrinsic"][r]).max()))
-        if has_regret:
-            diffs["regret"] = max(abs(ref["regret"][r] - mine["regret"][r]) / 4.0,
-                                  abs(ref["swing"][r] - mine["swing"][r]) / 4.0,
-                                  abs(ref["ranking"][r] - mine["ranking"][r]) / max(1.0, abs(ref["ranking"][r])),
-                                  abs(ref["swingranking"][r] - mine["swingranking"][r])
-                                  / max(1.0, abs(ref["swingranking"][r])))
+        if "regret" in present:
+            pairs = [("regret", "ranking")] + ([("swing", "swingranking")] if has_swing else [])
+            diffs["regret"] = max(max(abs(ref[v][r] - cpp_scalars[v][r]) / 4.0,
+                                      abs(ref[s][r] - cpp_scalars[s][r]) / max(1.0, abs(ref[s][r])))
+                                  for v, s in pairs)
         on_board = spatial[r, 0].reshape(-1) > 0
         own = np.abs(np.tanh(ref["own"][r]) - np.tanh(cpp["own"][r]))[on_board]
         diffs["own"] = own.max() if own.size else 0.0
@@ -197,8 +206,8 @@ def compare(args):
             failures += 1
             if failures <= 10:
                 print(f"FAIL row {r}: " + ", ".join(f"{k} {d:.2e}" for k, d in diffs.items()))
-    shown = [k for k in MEASURES if k not in ("policyopt", "intrinsic", "regret") or k in present]
-    missing = [k for k in ("policyopt", "intrinsic", "regret") if k not in present]
+    shown = [k for k in MEASURES if k not in OPTIONAL or k in present]
+    missing = [k for k in OPTIONAL if k not in present]
     print(f"{n} rows; largest differences: " + ", ".join(f"{k} {worst[k]:.2e}" for k in shown)
           + (f" (not in the output: {', '.join(missing)})" if missing else "")
           + "; raw: " + ", ".join(f"{k} {d:.2e}" for k, d in raw.items()
