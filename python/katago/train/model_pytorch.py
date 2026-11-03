@@ -2753,7 +2753,9 @@ class PatchTransformerBlock(torch.nn.Module):
     The initialization under fixup is the bottleneck's: the input map with KataGo's init_weights at the scale
     fixup_scale ** (1 / (1 + pairs)) (no activation before it, so the identity's gain), the attention and FFN blocks
     with their own initialization, and the output map at 0, so that the block starts as the identity. Only fixup is
-    built: the other norm kinds' scales are not defined for this block. No C++ backend and no export has this block."""
+    built: the other norm kinds' scales are not defined for this block. The export writes it in model version 24
+    (the engine repository's abscls-ra93.3), and the C++ engine's Eigen and CUDA backends run it (neuralnet/desc.h,
+    PatchTransformerBlockDesc)."""
     def __init__(self, name, c_main, config, activation, pos_len):
         super(PatchTransformerBlock, self).__init__()
         self.name = name

@@ -3320,6 +3320,175 @@ void customCudaMaskedResidualAddNHWC(half* trunk, const half* residual, const ha
 }
 
 //--------------------------------------------------------------------------------------------------------------
+//KataGame fork (2026-11-03, the engine repository's abscls-ra93.3): hybrid3's patch block (desc.h,
+//PatchTransformerBlockDesc). The trunk is NHWC [n, y, x, c] on nnYLen x nnXLen points, the mask [n, y, x] (NULL: all
+//ones). The tokens are [n, gy, gx, k] on gridLen x gridLen patches, k = (c * patch + dy) * patch + dx, and the
+//patch's point (dy, dx) is the trunk's point (gy * patch + dy - padBefore, gx * patch + dx - padBefore).
+
+//Each token channel of each token: the trunk times the mask at its point, 0 at a point off the board.
+__global__
+void patchPackNHWCKernel(
+  const float* trunk, const float* mask, float* tokens, int total, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen)
+{
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if(idx >= total)
+    return;
+  int pp = patch * patch;
+  int cp = cSize * pp;
+  int k = idx % cp;
+  int t = idx / cp;
+  int gx = t % gridLen;
+  int gy = (t / gridLen) % gridLen;
+  int n = t / (gridLen * gridLen);
+  int c = k / pp;
+  int dy = (k - c * pp) / patch;
+  int dx = k - c * pp - dy * patch;
+  int y = gy * patch + dy - padBefore;
+  int x = gx * patch + dx - padBefore;
+  float v = 0.0f;
+  if(x >= 0 && x < nnXLen && y >= 0 && y < nnYLen) {
+    int xy = (n * nnYLen + y) * nnXLen + x;
+    v = trunk[xy * cSize + c];
+    if(mask != NULL)
+      v *= mask[xy];
+  }
+  tokens[idx] = v;
+}
+
+__global__
+void patchPackNHWCHalfKernel(
+  const half* trunk, const half* mask, half* tokens, int total, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen)
+{
+#ifdef KATAGO_GPU_SUPPORTS_FP16
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if(idx >= total)
+    return;
+  int pp = patch * patch;
+  int cp = cSize * pp;
+  int k = idx % cp;
+  int t = idx / cp;
+  int gx = t % gridLen;
+  int gy = (t / gridLen) % gridLen;
+  int n = t / (gridLen * gridLen);
+  int c = k / pp;
+  int dy = (k - c * pp) / patch;
+  int dx = k - c * pp - dy * patch;
+  int y = gy * patch + dy - padBefore;
+  int x = gx * patch + dx - padBefore;
+  float v = 0.0f;
+  if(x >= 0 && x < nnXLen && y >= 0 && y < nnYLen) {
+    int xy = (n * nnYLen + y) * nnXLen + x;
+    v = __half2float(trunk[xy * cSize + c]);
+    if(mask != NULL)
+      v *= __half2float(mask[xy]);
+  }
+  tokens[idx] = __float2half(v);
+#else
+  //Do nothing, FP16 not supported
+#endif
+}
+
+//Each trunk channel of each point: its token channel, times the mask, added to the trunk.
+__global__
+void patchUnpackAddNHWCKernel(
+  const float* tokens, const float* mask, float* trunk, int total, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen)
+{
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if(idx >= total)
+    return;
+  int c = idx % cSize;
+  int xy = idx / cSize;
+  int x = xy % nnXLen;
+  int y = (xy / nnXLen) % nnYLen;
+  int n = xy / (nnXLen * nnYLen);
+  int gy = (y + padBefore) / patch;
+  int dy = y + padBefore - gy * patch;
+  int gx = (x + padBefore) / patch;
+  int dx = x + padBefore - gx * patch;
+  int t = (n * gridLen + gy) * gridLen + gx;
+  float m = (mask != NULL) ? mask[xy] : 1.0f;
+  trunk[idx] += tokens[t * cSize * patch * patch + (c * patch + dy) * patch + dx] * m;
+}
+
+__global__
+void patchUnpackAddNHWCHalfKernel(
+  const half* tokens, const half* mask, half* trunk, int total, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen)
+{
+#ifdef KATAGO_GPU_SUPPORTS_FP16
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if(idx >= total)
+    return;
+  int c = idx % cSize;
+  int xy = idx / cSize;
+  int x = xy % nnXLen;
+  int y = (xy / nnXLen) % nnYLen;
+  int n = xy / (nnXLen * nnYLen);
+  int gy = (y + padBefore) / patch;
+  int dy = y + padBefore - gy * patch;
+  int gx = (x + padBefore) / patch;
+  int dx = x + padBefore - gx * patch;
+  int t = (n * gridLen + gy) * gridLen + gx;
+  float m = (mask != NULL) ? __half2float(mask[xy]) : 1.0f;
+  float v = __half2float(tokens[t * cSize * patch * patch + (c * patch + dy) * patch + dx]);
+  trunk[idx] = __float2half(__half2float(trunk[idx]) + v * m);
+#else
+  //Do nothing, FP16 not supported
+#endif
+}
+
+static void checkPatchSizes(int nSize, int nnXLen, int nnYLen, int cSize, int patch, int padBefore, int gridLen, const char* what) {
+  if(patch < 1 || padBefore < 0 || gridLen * patch < nnXLen + padBefore || gridLen * patch < nnYLen + padBefore)
+    throw std::runtime_error(std::string(what) + ": the patches do not cover the board");
+  checkBufferIndexFitsInt(nSize, (int64_t)gridLen * gridLen, (int64_t)cSize * patch * patch, what);
+  checkBufferIndexFitsInt(nSize, (int64_t)nnXLen * nnYLen, cSize, what);
+}
+
+void customCudaPatchPackNHWC(
+  const float* trunk, const float* mask, float* tokens, int nSize, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen, cudaStream_t stream)
+{
+  checkPatchSizes(nSize, nnXLen, nnYLen, cSize, patch, padBefore, gridLen, "customCudaPatchPackNHWC");
+  int total = nSize * gridLen * gridLen * cSize * patch * patch;
+  int blocks = (total + targetNumThreads - 1) / targetNumThreads;
+  patchPackNHWCKernel<<<blocks, targetNumThreads, 0, stream>>>(
+    trunk, mask, tokens, total, nnXLen, nnYLen, cSize, patch, padBefore, gridLen);
+}
+void customCudaPatchPackNHWC(
+  const half* trunk, const half* mask, half* tokens, int nSize, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen, cudaStream_t stream)
+{
+  checkPatchSizes(nSize, nnXLen, nnYLen, cSize, patch, padBefore, gridLen, "customCudaPatchPackNHWC");
+  int total = nSize * gridLen * gridLen * cSize * patch * patch;
+  int blocks = (total + targetNumThreads - 1) / targetNumThreads;
+  patchPackNHWCHalfKernel<<<blocks, targetNumThreads, 0, stream>>>(
+    trunk, mask, tokens, total, nnXLen, nnYLen, cSize, patch, padBefore, gridLen);
+}
+void customCudaPatchUnpackAddNHWC(
+  const float* tokens, const float* mask, float* trunk, int nSize, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen, cudaStream_t stream)
+{
+  checkPatchSizes(nSize, nnXLen, nnYLen, cSize, patch, padBefore, gridLen, "customCudaPatchUnpackAddNHWC");
+  int total = nSize * nnYLen * nnXLen * cSize;
+  int blocks = (total + targetNumThreads - 1) / targetNumThreads;
+  patchUnpackAddNHWCKernel<<<blocks, targetNumThreads, 0, stream>>>(
+    tokens, mask, trunk, total, nnXLen, nnYLen, cSize, patch, padBefore, gridLen);
+}
+void customCudaPatchUnpackAddNHWC(
+  const half* tokens, const half* mask, half* trunk, int nSize, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen, cudaStream_t stream)
+{
+  checkPatchSizes(nSize, nnXLen, nnYLen, cSize, patch, padBefore, gridLen, "customCudaPatchUnpackAddNHWC");
+  int total = nSize * nnYLen * nnXLen * cSize;
+  int blocks = (total + targetNumThreads - 1) / targetNumThreads;
+  patchUnpackAddNHWCHalfKernel<<<blocks, targetNumThreads, 0, stream>>>(
+    tokens, mask, trunk, total, nnXLen, nnYLen, cSize, patch, padBefore, gridLen);
+}
+
+//--------------------------------------------------------------------------------------------------------------
 // RMSNorm with gamma/beta/activation (for trunk tip, non-spatial mode).
 // NHWC: input/output [n, xy, c], gamma/beta [c], mask [n, xy]
 // Each block handles one (n, xy) position.

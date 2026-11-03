@@ -245,6 +245,12 @@ struct ComputeHandleInternal {
     nnXLen(ctx->nnXLen),
     nnYLen(ctx->nnYLen)
   {}
+  //KataGame fork (2026-11-03, abscls-ra93.3): a grid of its own, for the patch block's tokens.
+  ComputeHandleInternal(int nnX, int nnY)
+    :
+    nnXLen(nnX),
+    nnYLen(nnY)
+  {}
 };
 
 
@@ -256,14 +262,25 @@ struct ScratchBuffers {
   const size_t batchBytes;
 
   SimpleAllocator<float*>* allocator;
+  const bool ownsAllocator;
 
   ScratchBuffers() = delete;
   ScratchBuffers(const ScratchBuffers&) = delete;
   ScratchBuffers& operator=(const ScratchBuffers&) = delete;
 
+  //KataGame fork (2026-11-03, abscls-ra93.3): the buffers of a grid of nnXLen x nnYLen points (the patch block's
+  //tokens), from the parent's allocator, for the parent's batch.
+  ScratchBuffers(const ScratchBuffers& parent, int nnXLen, int nnYLen)
+    : batchXYBytes(parent.batchBytes * nnXLen * nnYLen),
+      batchBytes(parent.batchBytes),
+      allocator(parent.allocator),
+      ownsAllocator(false)
+  {}
+
   ScratchBuffers(int maxBatchSize, int nnXLen, int nnYLen)
     : batchXYBytes((size_t)maxBatchSize * nnXLen * nnYLen * sizeof(float)),
-      batchBytes((size_t)maxBatchSize * sizeof(float))
+      batchBytes((size_t)maxBatchSize * sizeof(float)),
+      ownsAllocator(true)
   {
     std::function<float*(size_t)> allocateFunc = [this](size_t size) {
       return new float[size/sizeof(float)];
@@ -275,7 +292,8 @@ struct ScratchBuffers {
     allocator = new SimpleAllocator<float*>(allocateFunc, releaseFunc);
   }
   ~ScratchBuffers() {
-    delete allocator;
+    if(ownsAllocator)
+      delete allocator;
   }
 
   size_t getBufSizeXY(int channels) const {
@@ -1917,6 +1935,140 @@ struct TransformerFFNBlock final : public ResidualBlockIntf {
 
 // --------------------------------------------------------------------------------------------------------------
 
+//KataGame fork (2026-11-03, the engine repository's abscls-ra93.3): hybrid3's patch block (desc.h,
+//PatchTransformerBlockDesc; model_pytorch.PatchTransformerBlock). The trunk's patches become tokens, the transformer
+//attention and FFN blocks above run on the tokens' grid with a mask of ones (the PyTorch block's attention has no
+//mask), and the tokens go back to the trunk's points, added times the mask. The token blocks get a handle and
+//scratch buffers of the tokens' grid, so their sequence and RoPE positions are the grid's.
+struct PatchTransformerBlock final : public ResidualBlockIntf {
+  const string name;
+  const int patchSize;
+  const int padBefore;
+  const int gridLen;
+  const int trunkChannels;
+  const int tokenChannels;
+
+  const MatMulLayer packMul;
+  const BlockStack blocks;
+  const TransformerRMSNormLayer postLN;
+  const MatMulLayer unpackMul;
+
+  PatchTransformerBlock() = delete;
+  PatchTransformerBlock(const PatchTransformerBlock&) = delete;
+  PatchTransformerBlock& operator=(const PatchTransformerBlock&) = delete;
+
+  ~PatchTransformerBlock(){}
+
+  PatchTransformerBlock(const PatchTransformerBlockDesc& desc, int nnX, int nnY)
+    : name(desc.name),
+      patchSize(desc.patchSize),
+      padBefore(desc.padBefore),
+      gridLen(desc.gridLen),
+      trunkChannels(desc.trunkNumChannels),
+      tokenChannels(desc.tokenNumChannels),
+      packMul(desc.packMul),
+      blocks(desc.blocks,desc.numBlocks,desc.gridLen,desc.gridLen),
+      postLN(desc.postLN),
+      unpackMul(desc.unpackMul)
+  {
+    if(nnX != desc.posLen || nnY != desc.posLen)
+      throw StringError(name + Global::strprintf(
+        ": the patch block is built for a board of %d x %d, not %d x %d", desc.posLen, desc.posLen, nnX, nnY));
+  }
+
+  size_t requiredConvWorkspaceElts(size_t maxBatchSize) const override {
+    return blocks.requiredConvWorkspaceElts(maxBatchSize);
+  }
+
+  void apply(
+    ComputeHandleInternal* handle,
+    ScratchBuffers* scratch,
+    TENSORMAP4* trunk,
+    TENSORMAP4* trunkScratch,
+    CONSTTENSORMAP3* mask,
+    const float* maskSum,
+    float* convWorkspace
+  ) const override {
+    (void)trunkScratch;
+    (void)maskSum;
+    const int batchSize = trunk->dimension(3);
+    const int nnXLen = handle->nnXLen;
+    const int nnYLen = handle->nnYLen;
+    const int P = patchSize;
+    const int G = gridLen;
+    const int CP = trunkChannels * P * P;
+    const int numTokens = G * G * batchSize;
+
+    ComputeHandleInternal tokenHandle(G, G);
+    ScratchBuffers tokenScratch(*scratch, G, G);
+
+    // Step 1: each patch of the trunk times the mask as one token's channels, 0 off the board.
+    SizedBuf<float*> packedBuf(scratch->allocator, tokenScratch.getBufSizeXY(CP));
+    float* packed = packedBuf.buf;
+    for(int n = 0; n < batchSize; n++) {
+      for(int gy = 0; gy < G; gy++) {
+        for(int gx = 0; gx < G; gx++) {
+          float* token = packed + ((size_t)(n * G + gy) * G + gx) * CP;
+          for(int dy = 0; dy < P; dy++) {
+            for(int dx = 0; dx < P; dx++) {
+              const int y = gy * P + dy - padBefore;
+              const int x = gx * P + dx - padBefore;
+              const bool onBoard = x >= 0 && x < nnXLen && y >= 0 && y < nnYLen;
+              const float maskVal = onBoard ? (*mask)(x, y, n) : 0.0f;
+              for(int c = 0; c < trunkChannels; c++)
+                token[c * P * P + dy * P + dx] = onBoard ? (*trunk)(c, x, y, n) * maskVal : 0.0f;
+            }
+          }
+        }
+      }
+    }
+
+    // Step 2: the tokens, in the token width.
+    SizedBuf<float*> tokensBuf(scratch->allocator, tokenScratch.getBufSizeXY(tokenChannels));
+    SizedBuf<float*> tokensScratchBuf(scratch->allocator, tokenScratch.getBufSizeXY(tokenChannels));
+    {
+      TENSORMAP2 packedFlat(packed, CP, numTokens);
+      TENSORMAP2 tokensFlat(tokensBuf.buf, tokenChannels, numTokens);
+      packMul.apply(&packedFlat, &tokensFlat);
+    }
+
+    // Step 3: the attention and FFN blocks on the tokens, every token on (a mask of ones).
+    SizedBuf<float*> onesBuf(scratch->allocator, tokenScratch.getBufSizeXY(1));
+    std::fill(onesBuf.buf, onesBuf.buf + numTokens, 1.0f);
+    vector<float> onesSum(batchSize, (float)(G * G));
+    TENSORMAP4 tokens(tokensBuf.buf, tokenChannels, G, G, batchSize);
+    TENSORMAP4 tokensScratch(tokensScratchBuf.buf, tokenChannels, G, G, batchSize);
+    CONSTTENSORMAP3 ones(onesBuf.buf, G, G, batchSize);
+    blocks.apply(&tokenHandle, &tokenScratch, &tokens, &tokensScratch, &ones, onesSum.data(), convWorkspace);
+
+    // Step 4: the RMSNorm, and the map back to each patch's points.
+    postLN.apply(&tokens, &tokensScratch, &ones);
+    {
+      TENSORMAP2 normedFlat(tokensScratchBuf.buf, tokenChannels, numTokens);
+      TENSORMAP2 packedFlat(packed, CP, numTokens);
+      unpackMul.apply(&normedFlat, &packedFlat);
+    }
+
+    // Step 5: each point's channels from its patch, times the mask, added to the trunk.
+    for(int n = 0; n < batchSize; n++) {
+      for(int y = 0; y < nnYLen; y++) {
+        const int gy = (y + padBefore) / P;
+        const int dy = (y + padBefore) % P;
+        for(int x = 0; x < nnXLen; x++) {
+          const int gx = (x + padBefore) / P;
+          const int dx = (x + padBefore) % P;
+          const float maskVal = (*mask)(x, y, n);
+          const float* src = packed + ((size_t)(n * G + gy) * G + gx) * CP + dy * P + dx;
+          for(int c = 0; c < trunkChannels; c++)
+            (*trunk)(c, x, y, n) += src[c * P * P] * maskVal;
+        }
+      }
+    }
+  }
+};
+
+// --------------------------------------------------------------------------------------------------------------
+
 BlockStack::BlockStack(
   const std::vector<std::pair<int, unique_ptr_void>>& descBlocks,
   int nBlocks,
@@ -1950,6 +2102,12 @@ BlockStack::BlockStack(
       TransformerFFNDesc* blockDesc = (TransformerFFNDesc*)descBlocks[i].second.get();
       std::unique_ptr<TransformerFFNBlock> block = std::make_unique<TransformerFFNBlock>(*blockDesc);
       blocks.emplace_back(TRANSFORMER_FFN_BLOCK_KIND, std::move(block));
+    }
+    else if(descBlocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+      //KataGame fork (2026-11-03, abscls-ra93.3): hybrid3's patch block.
+      PatchTransformerBlockDesc* blockDesc = (PatchTransformerBlockDesc*)descBlocks[i].second.get();
+      std::unique_ptr<PatchTransformerBlock> block = std::make_unique<PatchTransformerBlock>(*blockDesc,nnX,nnY);
+      blocks.emplace_back(PATCH_TRANSFORMER_BLOCK_KIND, std::move(block));
     }
     else {
       ASSERT_UNREACHABLE;

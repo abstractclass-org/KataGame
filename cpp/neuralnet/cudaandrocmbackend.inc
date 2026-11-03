@@ -853,15 +853,32 @@ struct ScratchBuffers {
   std::unique_ptr<SizedBuf<void*>> attnBiasBuf;
   bool attnBiasBuiltThisForward = false;
 
+  //False for a view of another's buffers (below), which frees none of them.
+  const bool ownsBuffers;
+
   ScratchBuffers() = delete;
   ScratchBuffers(const ScratchBuffers&) = delete;
   ScratchBuffers& operator=(const ScratchBuffers&) = delete;
+
+  //KataGame fork (2026-11-03, the engine repository's abscls-ra93.3): the buffers of a grid of nnXLen x nnYLen points
+  //(the patch block's tokens), from the parent's allocator and constants, for the parent's batch and precision.
+  ScratchBuffers(const ScratchBuffers& parent, int nnXLen, int nnYLen)
+    : batchXYFloatBytes(parent.batchFloatBytes * nnXLen * nnYLen),
+      batchFloatBytes(parent.batchFloatBytes),
+      batchXYBytes(parent.batchBytes * nnXLen * nnYLen),
+      batchBytes(parent.batchBytes),
+      allocator(parent.allocator),
+      zeroBuf(parent.zeroBuf),
+      oneBuf(parent.oneBuf),
+      ownsBuffers(false)
+  {}
 
   ScratchBuffers(int maxBatchSize, int nnXLen, int nnYLen, bool useFP16)
     : batchXYFloatBytes((size_t)maxBatchSize * nnXLen * nnYLen * sizeof(float)),
       batchFloatBytes((size_t)maxBatchSize * sizeof(float)),
       batchXYBytes((size_t)maxBatchSize * nnXLen * nnYLen * (useFP16 ? sizeof(half_t) : sizeof(float))),
-      batchBytes((size_t)maxBatchSize * (useFP16 ? sizeof(half_t) : sizeof(float)))
+      batchBytes((size_t)maxBatchSize * (useFP16 ? sizeof(half_t) : sizeof(float))),
+      ownsBuffers(true)
   {
     std::function<void*(size_t)> allocateFunc = [](size_t size) {
       void* buf;
@@ -883,6 +900,8 @@ struct ScratchBuffers {
     //Before the allocator: ~SizedBuf hands its buffer back to the allocator, and members are
     //destroyed after this body runs.
     attnBiasBuf.reset();
+    if(!ownsBuffers)
+      return;
     delete allocator;
     free(zeroBuf);
     free(oneBuf);
@@ -3579,6 +3598,118 @@ struct TransformerFFNBlock {
 
 //------------------------------------------------------------------------------
 
+//KataGame fork (2026-11-03, the engine repository's abscls-ra93.3): hybrid3's patch block (desc.h,
+//PatchTransformerBlockDesc; model_pytorch.PatchTransformerBlock), as the Eigen backend's. The trunk's patches become
+//tokens (customCudaPatchPackNHWC), the transformer attention and FFN blocks above run on the tokens' grid with no mask
+//(their unmasked paths, as on a board of exactly the network's size: the PyTorch block's attention has no mask), and
+//the tokens go back to the trunk's points, added times the mask (customCudaPatchUnpackAddNHWC). The token blocks get
+//scratch buffers of the tokens' grid. NHWC only, as the transformer blocks.
+struct PatchTransformerBlock {
+  const string name;
+  const int patchSize;
+  const int padBefore;
+  const int gridLen;
+  const int trunkChannels;
+  const int tokenChannels;
+  const int nnXLen;
+  const int nnYLen;
+  const bool usingFP16;
+
+  const MatMulLayer packMul;
+  const BlockStack blocks;
+  const TransformerRMSNormLayer postLN;
+  const MatMulLayer unpackMul;
+
+  PatchTransformerBlock() = delete;
+  PatchTransformerBlock(const PatchTransformerBlock&) = delete;
+  PatchTransformerBlock& operator=(const PatchTransformerBlock&) = delete;
+
+  PatchTransformerBlock(
+    CudaHandles* cudaHandles,
+    CudnnManager* manager,
+    const PatchTransformerBlockDesc* desc,
+    int nnX,
+    int nnY,
+    bool useFP16,
+    bool useNHWC
+  ) :
+    name(desc->name),
+    patchSize(desc->patchSize),
+    padBefore(desc->padBefore),
+    gridLen(desc->gridLen),
+    trunkChannels(desc->trunkNumChannels),
+    tokenChannels(desc->tokenNumChannels),
+    nnXLen(nnX),
+    nnYLen(nnY),
+    usingFP16(useFP16),
+    packMul(cudaHandles, &desc->packMul, useFP16),
+    blocks(cudaHandles, manager, desc->numBlocks, desc->tokenNumChannels, desc->blocks, desc->gridLen, desc->gridLen, useFP16, useNHWC),
+    postLN(cudaHandles, &desc->postLN, useFP16),
+    unpackMul(cudaHandles, &desc->unpackMul, useFP16)
+  {
+    if(!useNHWC)
+      throw StringError(name + ": the patch block with NCHW layout is not supported by the " KATAGO_GPU_BACKEND_NAME " backend");
+    if(nnX != desc->posLen || nnY != desc->posLen)
+      throw StringError(name + Global::strprintf(
+        ": the patch block is built for a board of %d x %d, not %d x %d", desc->posLen, desc->posLen, nnX, nnY));
+  }
+
+  ~PatchTransformerBlock()
+  {}
+
+  size_t requiredWorkspaceBytes(
+    CudaHandles* cudaHandles,
+    int batchSize
+  ) const {
+    return blocks.requiredWorkspaceBytes(cudaHandles, batchSize);
+  }
+
+  void apply(
+    CudaHandles* cudaHandles,
+    ScratchBuffers* scratch,
+    int batchSize,
+    void* trunkBuf,
+    void* trunkScratchBuf,
+    void* maskBuf,
+    float* maskSumBuf,
+    void* workspaceBuf,
+    size_t workspaceBytes
+  ) const {
+    (void)trunkScratchBuf;
+    (void)maskSumBuf;
+    const int patchChannels = trunkChannels * patchSize * patchSize;
+    const int numTokens = batchSize * gridLen * gridLen;
+    //Max-batch-sized, as the attention's buffers (see the scratch-sizing note there).
+    ScratchBuffers tokenScratch(*scratch, gridLen, gridLen);
+    SizedBuf<void*> packed(scratch->allocator, tokenScratch.getBufSizeXY(patchChannels));
+    SizedBuf<void*> tokens(scratch->allocator, tokenScratch.getBufSizeXY(tokenChannels));
+    SizedBuf<void*> tokensScratch(scratch->allocator, tokenScratch.getBufSizeXY(tokenChannels));
+
+    if(!usingFP16)
+      customCudaPatchPackNHWC((const float*)trunkBuf, (const float*)maskBuf, (float*)packed.buf, batchSize, nnXLen, nnYLen, trunkChannels, patchSize, padBefore, gridLen, cudaHandles->stream);
+    else
+      customCudaPatchPackNHWC((const half*)trunkBuf, (const half*)maskBuf, (half*)packed.buf, batchSize, nnXLen, nnYLen, trunkChannels, patchSize, padBefore, gridLen, cudaHandles->stream);
+    CUDA_ERR(name.c_str(), cudaPeekAtLastError());
+
+    packMul.apply(cudaHandles, &tokenScratch, numTokens, packed.buf, tokens.buf, workspaceBuf, workspaceBytes);
+    blocks.apply(cudaHandles, &tokenScratch, batchSize, NULL, NULL, tokens.buf, tokensScratch.buf, workspaceBuf, workspaceBytes);
+    postLN.apply(cudaHandles, batchSize, gridLen * gridLen, tokens.buf, tokensScratch.buf, NULL);
+    unpackMul.apply(cudaHandles, &tokenScratch, numTokens, tokensScratch.buf, packed.buf, workspaceBuf, workspaceBytes);
+
+    if(!usingFP16)
+      customCudaPatchUnpackAddNHWC((const float*)packed.buf, (const float*)maskBuf, (float*)trunkBuf, batchSize, nnXLen, nnYLen, trunkChannels, patchSize, padBefore, gridLen, cudaHandles->stream);
+    else
+      customCudaPatchUnpackAddNHWC((const half*)packed.buf, (const half*)maskBuf, (half*)trunkBuf, batchSize, nnXLen, nnYLen, trunkChannels, patchSize, padBefore, gridLen, cudaHandles->stream);
+    CUDA_ERR(name.c_str(), cudaPeekAtLastError());
+
+#ifdef DEBUG_INTERMEDIATE_VALUES
+    CudaUtils::debugPrint3D(KATAGO_GPU_BACKEND_NAME " Patch block residual", trunkBuf, batchSize, trunkChannels, nnXLen * nnYLen, true, usingFP16, maskBuf);
+#endif
+  }
+};
+
+//------------------------------------------------------------------------------
+
 BlockStack::BlockStack(
   CudaHandles* cudaHandles,
   CudnnManager* manager,
@@ -3672,6 +3803,22 @@ BlockStack::BlockStack(
       );
       blocks.emplace_back(TRANSFORMER_FFN_BLOCK_KIND, std::move(blockPtr));
     }
+    else if(descBlocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+      //KataGame fork (2026-11-03, abscls-ra93.3): hybrid3's patch block.
+      PatchTransformerBlockDesc* blockDesc = (PatchTransformerBlockDesc*)descBlocks[i].second.get();
+      unique_ptr_void blockPtr = make_unique_void(
+        new PatchTransformerBlock(
+          cudaHandles,
+          manager,
+          blockDesc,
+          nnXLen,
+          nnYLen,
+          useFP16,
+          useNHWC
+        )
+      );
+      blocks.emplace_back(PATCH_TRANSFORMER_BLOCK_KIND, std::move(blockPtr));
+    }
     else {
       ASSERT_UNREACHABLE;
     }
@@ -3710,6 +3857,11 @@ size_t BlockStack::requiredWorkspaceBytes(
     }
     else if(blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
       TransformerFFNBlock* block = (TransformerFFNBlock*)blocks[i].second.get();
+      b = block->requiredWorkspaceBytes(cudaHandles, batchSize);
+      bytes = std::max(bytes, b);
+    }
+    else if(blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+      PatchTransformerBlock* block = (PatchTransformerBlock*)blocks[i].second.get();
       b = block->requiredWorkspaceBytes(cudaHandles, batchSize);
       bytes = std::max(bytes, b);
     }
@@ -3831,6 +3983,22 @@ void BlockStack::apply(
         workspaceBuf,
         workspaceBytes,
         pendingDeltaArg
+      );
+    }
+    else if(blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+      //KataGame fork (2026-11-03): the patch block reads the trunk.
+      flushPendingDelta();
+      PatchTransformerBlock* block = (PatchTransformerBlock*)blocks[i].second.get();
+      block->apply(
+        cudaHandles,
+        scratch,
+        batchSize,
+        trunkBuf,
+        trunkScratchBuf,
+        maskBuf,
+        maskSumBuf,
+        workspaceBuf,
+        workspaceBytes
       );
     }
     else {

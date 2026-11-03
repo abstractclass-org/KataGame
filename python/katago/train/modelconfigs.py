@@ -2206,7 +2206,8 @@ for name, base_config in list(config_of_name.items()):
 # (model_pytorch.PatchTransformerBlock: 3 x 3 patches of hexes as 529 tokens, 4 attention/SwiGLU pairs of width 128,
 # 4 heads, an FFN of 384, the learned 2D RoPE), then one residual block. The patch block's residual is added to the
 # trunk, so the trunk after the two residual blocks is the skip. Fixup only, and outside the variants above: the patch
-# block has no scales for the other norm kinds. No C++ backend reads the patch block yet.
+# block has no scales for the other norm kinds. The export writes it in model version 24, which the C++ engine's Eigen
+# and CUDA backends run (abscls-ra93.3).
 hybrid3 = {
     **b6c96,
     "trunk_num_channels":64,

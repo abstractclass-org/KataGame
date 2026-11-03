@@ -869,6 +869,11 @@ NestedBottleneckResidualBlockDesc::NestedBottleneckResidualBlockDesc(istream& in
   preConv = ConvLayerDesc(in,binaryFloats);
 
   parseResidualBlockStack(in, modelVersion, binaryFloats, name, numBlocks, preConv.outChannels, blocks);
+  //KataGame fork (2026-11-03, abscls-ra93.3): the patch block is a block of the trunk only.
+  for(size_t i = 0; i < blocks.size(); i++) {
+    if(blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND)
+      throw StringError(name + ": a nested bottleneck block cannot hold a patch transformer block");
+  }
 
   postBN = BatchNormLayerDesc(in,binaryFloats);
   postActivation = ActivationLayerDesc(in,modelVersion);
@@ -1008,8 +1013,10 @@ int64_t NestedBottleneckResidualBlockDesc::getNumParameters() const {
 
 static bool blocksContainTransformer(const std::vector<std::pair<int, unique_ptr_void>>& blocks) {
   for(size_t i = 0; i < blocks.size(); i++) {
+    //KataGame fork (2026-11-03): the patch block holds transformer blocks, whose RMSNorms the scalings would undo.
     if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND ||
-       blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND)
+       blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND ||
+       blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND)
       return true;
   }
   return false;
@@ -1515,6 +1522,114 @@ void TransformerFFNDesc::releaseWeights() {
 
 //-----------------------------------------------------------------------------
 
+//KataGame fork (2026-11-03, the engine repository's abscls-ra93.3): hybrid3's patch block (desc.h), as
+//export_model_pytorch.py's write_block writes it.
+PatchTransformerBlockDesc::PatchTransformerBlockDesc()
+  : posLen(0), patchSize(0), padBefore(0), padAfter(0), gridLen(0), trunkNumChannels(0), tokenNumChannels(0),
+    numBlocks(0)
+{}
+
+PatchTransformerBlockDesc::PatchTransformerBlockDesc(istream& in, int modelVersion, bool binaryFloats) {
+  in >> name;
+  if(in.fail())
+    throw StringError(name + ": patch transformer block failed to parse name");
+  in >> posLen;
+  in >> patchSize;
+  in >> padBefore;
+  in >> padAfter;
+  in >> numBlocks;
+  if(in.fail())
+    throw StringError(name + ": patch transformer block failed to parse its header");
+  if(posLen < 1 || patchSize < 1 || padBefore < 0 || padAfter < 0 || numBlocks < 1)
+    throw StringError(name + Global::strprintf(
+      ": patch transformer block: board %d, patch %d, padding %d and %d, %d blocks", posLen, patchSize, padBefore, padAfter, numBlocks));
+  if((posLen + padBefore + padAfter) % patchSize != 0)
+    throw StringError(name + Global::strprintf(
+      ": the padded board (%d + %d + %d) is not a multiple of the patch (%d)", posLen, padBefore, padAfter, patchSize));
+  gridLen = (posLen + padBefore + padAfter) / patchSize;
+
+  packMul = MatMulLayerDesc(in, binaryFloats);
+  const int patchArea = patchSize * patchSize;
+  if(packMul.inChannels % patchArea != 0)
+    throw StringError(name + Global::strprintf(
+      ": packMul.inChannels (%d) is not a multiple of the patch's points (%d)", packMul.inChannels, patchArea));
+  trunkNumChannels = packMul.inChannels / patchArea;
+  tokenNumChannels = packMul.outChannels;
+
+  parseResidualBlockStack(in, modelVersion, binaryFloats, name, numBlocks, tokenNumChannels, blocks);
+  for(size_t i = 0; i < blocks.size(); i++) {
+    if(blocks[i].first != TRANSFORMER_ATTENTION_BLOCK_KIND && blocks[i].first != TRANSFORMER_FFN_BLOCK_KIND)
+      throw StringError(name + ": a patch transformer block holds transformer attention and FFN blocks only");
+  }
+
+  postLN = TransformerRMSNormDesc(in, binaryFloats);
+  unpackMul = MatMulLayerDesc(in, binaryFloats);
+  if(postLN.numChannels != tokenNumChannels)
+    throw StringError(name + Global::strprintf(": postLN.numChannels (%d) != tokenNumChannels (%d)", postLN.numChannels, tokenNumChannels));
+  if(unpackMul.inChannels != tokenNumChannels)
+    throw StringError(name + Global::strprintf(": unpackMul.inChannels (%d) != tokenNumChannels (%d)", unpackMul.inChannels, tokenNumChannels));
+  if(unpackMul.outChannels != packMul.inChannels)
+    throw StringError(name + Global::strprintf(": unpackMul.outChannels (%d) != packMul.inChannels (%d)", unpackMul.outChannels, packMul.inChannels));
+
+  if(in.fail())
+    throw StringError(name + ": patch transformer block parse failure (istream fail() return true)");
+}
+
+PatchTransformerBlockDesc::PatchTransformerBlockDesc(PatchTransformerBlockDesc&& other) {
+  *this = std::move(other);
+}
+
+PatchTransformerBlockDesc& PatchTransformerBlockDesc::operator=(PatchTransformerBlockDesc&& other) {
+  name = std::move(other.name);
+  posLen = other.posLen;
+  patchSize = other.patchSize;
+  padBefore = other.padBefore;
+  padAfter = other.padAfter;
+  gridLen = other.gridLen;
+  trunkNumChannels = other.trunkNumChannels;
+  tokenNumChannels = other.tokenNumChannels;
+  numBlocks = other.numBlocks;
+  packMul = std::move(other.packMul);
+  blocks = std::move(other.blocks);
+  postLN = std::move(other.postLN);
+  unpackMul = std::move(other.unpackMul);
+  return *this;
+}
+
+double PatchTransformerBlockDesc::getSpatialConvDepth() const {
+  //As the trunk counts its transformer blocks: 2 each, a crude idea of the model's size.
+  return 2.0 * (double)blocks.size();
+}
+
+int64_t PatchTransformerBlockDesc::getNumParameters() const {
+  int64_t numParameters = packMul.getNumParameters() + postLN.getNumParameters() + unpackMul.getNumParameters();
+  for(size_t i = 0; i < blocks.size(); i++) {
+    if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND)
+      numParameters += ((const TransformerAttentionDesc*)blocks[i].second.get())->getNumParameters();
+    else if(blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND)
+      numParameters += ((const TransformerFFNDesc*)blocks[i].second.get())->getNumParameters();
+    else
+      ASSERT_UNREACHABLE;
+  }
+  return numParameters;
+}
+
+void PatchTransformerBlockDesc::releaseWeights() {
+  packMul.releaseWeights();
+  for(size_t i = 0; i < blocks.size(); i++) {
+    if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND)
+      ((TransformerAttentionDesc*)blocks[i].second.get())->releaseWeights();
+    else if(blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND)
+      ((TransformerFFNDesc*)blocks[i].second.get())->releaseWeights();
+    else
+      ASSERT_UNREACHABLE;
+  }
+  postLN.releaseWeights();
+  unpackMul.releaseWeights();
+}
+
+//-----------------------------------------------------------------------------
+
 static void parseResidualBlockStack(
   std::istream& in,
   int modelVersion,
@@ -1626,6 +1741,23 @@ static void parseResidualBlockStack(
                    trunkNumChannels));
 
       blocks.emplace_back(TRANSFORMER_FFN_BLOCK_KIND, std::move(descPtr));
+    }
+    else if(kind == "patch_transformer_block") {
+      //KataGame fork (2026-11-03, the engine repository's abscls-ra93.3): hybrid3's patch block, in model version 24.
+      if(modelVersion < 24)
+        throw StringError(name + ": a patch_transformer_block needs model version 24, not " + Global::intToString(modelVersion));
+      unique_ptr_void descPtr = make_unique_void(new PatchTransformerBlockDesc(in, modelVersion, binaryFloats));
+      PatchTransformerBlockDesc& desc = *((PatchTransformerBlockDesc*)descPtr.get());
+
+      if(desc.trunkNumChannels != trunkNumChannels)
+        throw StringError(
+          name + Global::strprintf(
+                   ": %s trunkNumChannels (%d) != trunkNumChannels (%d)",
+                   desc.name.c_str(),
+                   desc.trunkNumChannels,
+                   trunkNumChannels));
+
+      blocks.emplace_back(PATCH_TRANSFORMER_BLOCK_KIND, std::move(descPtr));
     }
     else
       throw StringError(name + ": found unknown block kind: " + kind);
@@ -1904,6 +2036,9 @@ void TrunkDesc::iterConvLayers(const std::function<void(const ConvLayerDesc& des
     else if(blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
       // No conv layers in transformer FFN blocks
     }
+    else if(blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+      // No conv layers in the patch block (KataGame fork)
+    }
     else {
       ASSERT_UNREACHABLE;
     }
@@ -1936,6 +2071,10 @@ double TrunkDesc::getSpatialConvDepth() const {
       // Transformer blocks don't technically contribute spatial conv depth but in practice
       // we count it as 2 for things that want to get a crude idea of model size.
       depth += 2;
+    }
+    else if(blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+      const PatchTransformerBlockDesc* desc = (const PatchTransformerBlockDesc*)blocks[i].second.get();
+      depth += desc->getSpatialConvDepth();
     }
     else {
       ASSERT_UNREACHABLE;
@@ -1970,6 +2109,10 @@ int64_t TrunkDesc::getNumParameters() const {
     }
     else if(blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
       const TransformerFFNDesc* desc = (const TransformerFFNDesc*)blocks[i].second.get();
+      numParameters += desc->getNumParameters();
+    }
+    else if(blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+      const PatchTransformerBlockDesc* desc = (const PatchTransformerBlockDesc*)blocks[i].second.get();
       numParameters += desc->getNumParameters();
     }
     else {
@@ -2036,8 +2179,9 @@ void TrunkDesc::transformToReduceActivations() {
       desc->transformToReduceActivations();
     }
     else if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND ||
-            blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
-      // No internal optimization needed for transformer blocks
+            blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND ||
+            blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+      // No internal optimization needed for transformer blocks (nor for the KataGame fork's patch block)
     }
     else {
       ASSERT_UNREACHABLE;
@@ -2073,7 +2217,8 @@ void TrunkDesc::applyScale8ToReduceActivations() {
       desc->applyScale8ToReduceActivations();
     }
     else if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND ||
-            blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
+            blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND ||
+            blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
       // Should not be reached - ModelDesc::applyScale8 guards against models with transformers
       throw StringError("applyScale8ToReduceActivations called on trunk containing transformer blocks");
     }
@@ -2107,6 +2252,10 @@ void TrunkDesc::releaseWeights() {
     }
     else if(blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
       TransformerFFNDesc* desc = (TransformerFFNDesc*)blocks[i].second.get();
+      desc->releaseWeights();
+    }
+    else if(blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+      PatchTransformerBlockDesc* desc = (PatchTransformerBlockDesc*)blocks[i].second.get();
       desc->releaseWeights();
     }
     else {
@@ -3069,8 +3218,11 @@ void ModelDesc::transformToReduceActivations() {
 
 static bool blocksContainTransformerRecursive(const std::vector<std::pair<int, unique_ptr_void>>& blocks) {
   for(size_t i = 0; i < blocks.size(); i++) {
+    //KataGame fork (2026-11-03): the patch block holds transformer blocks (the CUDA backend then runs NHWC, and the
+    //evaluator warms up the attention's graphs).
     if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND ||
-       blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND)
+       blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND ||
+       blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND)
       return true;
     if(blocks[i].first == NESTED_BOTTLENECK_BLOCK_KIND) {
       NestedBottleneckResidualBlockDesc* desc = (NestedBottleneckResidualBlockDesc*)blocks[i].second.get();

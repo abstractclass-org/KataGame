@@ -181,6 +181,24 @@ void customCudaMaskedResidualAddNCHW(half* trunk, const half* residual, const ha
 void customCudaMaskedResidualAddNHWC(float* trunk, const float* residual, const float* mask, int nSize, int xySize, int cSize, cudaStream_t stream);
 void customCudaMaskedResidualAddNHWC(half* trunk, const half* residual, const half* mask, int nSize, int xySize, int cSize, cudaStream_t stream);
 
+//KataGame fork (2026-11-03, the engine repository's abscls-ra93.3): hybrid3's patch block (desc.h,
+//PatchTransformerBlockDesc). NHWC trunk [n, y, x, c] on nnYLen x nnXLen points, mask [n, y, x] (can be null), tokens
+//[n, gy, gx, k] on gridLen x gridLen patches, k = (c * patch + dy) * patch + dx at the trunk's point
+//(gy * patch + dy - padBefore, gx * patch + dx - padBefore). Pack: tokens = trunk * mask, 0 off the board.
+//UnpackAdd: trunk += tokens * mask.
+void customCudaPatchPackNHWC(
+  const float* trunk, const float* mask, float* tokens, int nSize, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen, cudaStream_t stream);
+void customCudaPatchPackNHWC(
+  const half* trunk, const half* mask, half* tokens, int nSize, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen, cudaStream_t stream);
+void customCudaPatchUnpackAddNHWC(
+  const float* tokens, const float* mask, float* trunk, int nSize, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen, cudaStream_t stream);
+void customCudaPatchUnpackAddNHWC(
+  const half* tokens, const half* mask, half* trunk, int nSize, int nnXLen, int nnYLen, int cSize, int patch,
+  int padBefore, int gridLen, cudaStream_t stream);
+
 //Fused masked residual add + RMSNorm: trunk += delta * mask (in place), then RMSNorm of the
 //updated trunk into out. Numerically identical to customCudaMaskedResidualAddNHWC followed by
 //customCudaRMSNormGammaBetaNHWC. out may alias delta.

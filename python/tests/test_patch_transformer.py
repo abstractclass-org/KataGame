@@ -11,7 +11,9 @@ and the model config hybrid3, Blueprints' legal moves (games.legal_moves) and ho
 - legal_moves gives the placements on the anchors' planes while no pick waits, the picks and drops on the planes of
   legal hand actions, and no pass.
 - holdout_losses.evaluate gives the same measures for the same network and seed, and the policy's mass outside the
-  legal moves."""
+  legal moves.
+- The export (the engine repository's abscls-ra93.3) writes hybrid3 as model version 24 with the patch block's lines
+  (neuralnet/desc.cpp, PatchTransformerBlockDesc), and a model without the patch block as before (version 23)."""
 import json
 import os
 import sys
@@ -29,7 +31,7 @@ from katago.train.data_processing_pytorch import GLOBAL_TARGETS_NC_CHANNELS, VAL
 from katago.train.games import blueprints  # noqa: E402
 from katago.train.metrics_pytorch import Metrics  # noqa: E402
 from katago.train.model_pytorch import Model, PatchTransformerBlock, patch_padding, policy_len  # noqa: E402
-from test_diversity_members import latent, outputs_without_intrinsic  # noqa: E402
+from test_diversity_members import export_header, latent, outputs_without_intrinsic  # noqa: E402
 from test_extended_inputs import checkpoint, config, flat, inputs, networks  # noqa: E402
 from test_game_module import random_batch  # noqa: E402
 
@@ -152,6 +154,27 @@ def test_a_checkpoint_of_hybrid3_of_version_13_converts_with_member_0_as_it_was(
             got = outputs_without_intrinsic(new, new(binary, torch.cat([global_13, latent(2, 0)], dim=1)))
             for e, o in zip(expected, got):
                 torch.testing.assert_close(o, e, rtol=1e-3, atol=1e-2)
+
+
+def test_the_export_writes_hybrid3_as_model_version_24(tmp_path):
+    """The header of version 23's format, version 24, and the patch block's lines in the order that
+    PatchTransformerBlockDesc reads them: the board, the patch and its padding, the stack's length, the input map, the
+    attention and FFN blocks, the RMSNorm and the output map. A b6c96 of the same inputs keeps version 23."""
+    lines = export_header(tmp_path / "hybrid3", checkpoint(14, "hybrid3"))
+    assert lines[1] == b"24"
+    i = lines.index(b"patch_transformer_block")
+    assert lines[i + 1] == b"model.blocks.2"
+    assert [int(x) for x in lines[i + 2:i + 7]] == [SIZE, 3, 1, 1, 8]  # the board, the patch, padding, 4 pairs
+    assert lines[i + 7] == b"model.blocks.2.pack" and [int(x) for x in lines[i + 8:i + 10]] == [64 * 9, 128]
+    kinds = [x for x in lines if x in (b"transformer_attention_block", b"transformer_ffn_block")]
+    assert kinds == [b"transformer_attention_block", b"transformer_ffn_block"] * 4
+    assert b"model.blocks.2.blockstack.7" in lines
+    n = lines.index(b"model.blocks.2.norm")
+    assert [float(x) for x in lines[n + 1:n + 3]] == [128, 1e-6]
+    u = next(j for j in range(n, len(lines)) if lines[j] == b"model.blocks.2.unpack")
+    assert [int(x) for x in lines[u + 1:u + 3]] == [128, 64 * 9]
+    old = export_header(tmp_path / "b6c96", checkpoint(14))
+    assert old[1] == b"23" and b"patch_transformer_block" not in old
 
 
 def blank_rows(n, planes, globals_):

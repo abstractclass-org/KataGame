@@ -303,6 +303,9 @@ swift::Array<BlockDescriptor> residualBlocksToSwift(const vector<pair<int, uniqu
     } else if(blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
       BlockDescriptor descriptor = transformerFFNBlockDescToSwift((TransformerFFNDesc*)blockDesc);
       builder.enque(descriptor);
+    } else if(blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+      //KataGame fork (2026-11-03, abscls-ra93.3): hybrid3's patch block runs in the CUDA and Eigen backends only.
+      throw StringError("Metal backend: the patch transformer block (model version 24) is not supported; use the CUDA or Eigen backend");
     } else {
       BlockDescriptor descriptor = residualBlockDescToSwift((ResidualBlockDesc*)blockDesc);
       builder.enque(descriptor);

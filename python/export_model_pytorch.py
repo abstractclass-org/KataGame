@@ -22,6 +22,7 @@ from katago.train.model_pytorch import RMSNormMask
 from katago.train import games
 from katago.train import modelconfigs
 from katago.train.model_pytorch import Model, ResBlock, NestedBottleneckResBlock, TransformerAttentionBlock, TransformerFFNBlock, NestedBottleneckTransformerBlock
+from katago.train.model_pytorch import PatchTransformerBlock
 from katago.train.model_pytorch import compute_attn_logit_dataless_bounds
 from katago.train.load_model import load_model
 
@@ -344,6 +345,13 @@ def main(args):
     if inputs_model_version is not None:
         assert version == 17, version
         version = inputs_model_version
+    # KataGame fork (2026-11-03, the engine repository's abscls-ra93.3): a model with hybrid3's patch block
+    # (model_pytorch.PatchTransformerBlock) is version 24: version 23's format, whose trunk may hold the patch block
+    # (write_block). A binary from before refuses it. Every other model keeps its version, and its file stays the same.
+    if any(isinstance(block, PatchTransformerBlock) for block in model.blocks):
+        if version != 23:
+            raise Exception(f"the patch block is exported with the V14 inputs only (model version 23's format), not as version {version}")
+        version = 24
 
     # Enclosure fork: the model's game, in the header's model option H (below): 0 for Enclosure, as in every file from
     # before, so that every binary loads its networks; another game's name for another game.
@@ -693,6 +701,26 @@ def main(args):
             for i,subblock in enumerate(block.blockstack):
                 write_block(name+".blockstack."+str(i), subblock)
             write_normactconv(name+".normactconvq", block.normactconvq)
+        elif isinstance(block,PatchTransformerBlock):
+            # KataGame fork (2026-11-03, the engine repository's abscls-ra93.3): hybrid3's patch block, in model
+            # version 24 only (main above), in the order that neuralnet/desc.cpp's PatchTransformerBlockDesc reads it:
+            # the board that the block was built for, the patch and its padding before and after, the stack's length,
+            # the map of each token's channels (channel c * patch * patch + dy * patch + dx, F.pixel_unshuffle's) to
+            # the token width, the attention and FFN blocks on the tokens, the RMSNorm, and the map back.
+            assert version >= 24, version
+            writeln("patch_transformer_block")
+            writeln(name)
+            writeln(block.pos_len)
+            writeln(block.patch)
+            writeln(block.padding[0])
+            writeln(block.padding[1])
+            writeln(len(block.blockstack))
+            write_matmul(name+".pack", block.pack.weight)
+            assert block.pack.bias is None and block.unpack.bias is None
+            for i,subblock in enumerate(block.blockstack):
+                write_block(name+".blockstack."+str(i), subblock)
+            write_transformer_norm(name+".norm", block.norm)
+            write_matmul(name+".unpack", block.unpack.weight)
         else:
             assert False, f"This kind of block is not supported for export right now: {type(block)}"
 

@@ -585,6 +585,9 @@ struct ModelParser {
         throw StringError(
           "TensorRT backend: transformer blocks are not supported by the non-ONNX ModelParser path. "
           "Remove trtDisableOnnx (or set it to false) to use the ONNX path, which supports them.");
+      } else if(blocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+        //KataGame fork (2026-11-03, abscls-ra93.3): hybrid3's patch block runs in the CUDA and Eigen backends only.
+        throw StringError("TensorRT backend: the patch transformer block (model version 24) is not supported; use the CUDA or Eigen backend");
       } else {
         ASSERT_UNREACHABLE;
       }

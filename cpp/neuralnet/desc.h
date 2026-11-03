@@ -345,6 +345,46 @@ struct TransformerFFNDesc {
   void releaseWeights();
 };
 
+//KataGame fork (2026-11-03, the engine repository's abscls-ra93.3): hybrid3's patch block (model_pytorch.PatchTransformerBlock),
+//in model version 24 only, a block of the trunk (not of a nested bottleneck). Its branch runs attention on patches of
+//the board, and the trunk adds the branch's output:
+//  - the trunk times the mask, padded by padBefore and padAfter on each axis to gridLen patches of patchSize x patchSize,
+//    each patch one token, whose channel c * patchSize^2 + dy * patchSize + dx is the trunk's channel c at the patch's
+//    row dy and column dx (torch's pixel_unshuffle);
+//  - packMul to the token width, the transformer attention and FFN blocks of `blocks` on the gridLen x gridLen tokens
+//    (row-major, so that RoPE's x and y are the token's column and row) with no mask, postLN, unpackMul back;
+//  - the inverse of the packing (pixel_shuffle) with the padding cut off, times the mask.
+//The block is built for one board, posLen x posLen (the network's), whose tokens and RoPE positions training used.
+struct PatchTransformerBlockDesc {
+  std::string name;
+  int posLen;
+  int patchSize;
+  int padBefore;
+  int padAfter;
+  int gridLen;           //(posLen + padBefore + padAfter) / patchSize
+  int trunkNumChannels;  //packMul.inChannels / patchSize^2
+  int tokenNumChannels;  //packMul.outChannels
+  int numBlocks;
+
+  MatMulLayerDesc packMul;
+  std::vector<std::pair<int, unique_ptr_void>> blocks;  //TRANSFORMER_ATTENTION_BLOCK_KIND or TRANSFORMER_FFN_BLOCK_KIND
+  TransformerRMSNormDesc postLN;
+  MatMulLayerDesc unpackMul;
+
+  PatchTransformerBlockDesc();
+  PatchTransformerBlockDesc(std::istream& in, int modelVersion, bool binaryFloats);
+  PatchTransformerBlockDesc(PatchTransformerBlockDesc&& other);
+
+  PatchTransformerBlockDesc(const PatchTransformerBlockDesc&) = delete;
+  PatchTransformerBlockDesc& operator=(const PatchTransformerBlockDesc&) = delete;
+
+  PatchTransformerBlockDesc& operator=(PatchTransformerBlockDesc&& other);
+
+  double getSpatialConvDepth() const;
+  int64_t getNumParameters() const;
+  void releaseWeights();
+};
+
 struct SGFMetadataEncoderDesc {
   std::string name;
   int metaEncoderVersion;
@@ -377,6 +417,7 @@ constexpr int GLOBAL_POOLING_BLOCK_KIND = 2;
 constexpr int NESTED_BOTTLENECK_BLOCK_KIND = 3;
 constexpr int TRANSFORMER_ATTENTION_BLOCK_KIND = 4;
 constexpr int TRANSFORMER_FFN_BLOCK_KIND = 5;
+constexpr int PATCH_TRANSFORMER_BLOCK_KIND = 6;  //KataGame fork (2026-11-03): PatchTransformerBlockDesc, model version 24
 
 struct TrunkDesc {
   std::string name;

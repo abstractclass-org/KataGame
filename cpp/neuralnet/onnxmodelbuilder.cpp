@@ -968,6 +968,11 @@ struct Builder {
       else if(kind == NESTED_BOTTLENECK_BLOCK_KIND) {
         cur = buildNestedBottleneckResidualBlock(cur, *static_cast<const NestedBottleneckResidualBlockDesc*>(bp), useNHWC);
       }
+      else if(kind == PATCH_TRANSFORMER_BLOCK_KIND) {
+        //KataGame fork (2026-11-03, abscls-ra93.3): hybrid3's patch block has no ONNX graph yet (the browser's WebGPU,
+        //the ONNX and TensorRT backends): it runs in the CUDA and Eigen backends only.
+        throw StringError("OnnxModelBuilder: the patch transformer block (model version 24) is not supported; use the CUDA or Eigen backend");
+      }
       else {
         throw StringError("OnnxModelBuilder: unexpected block kind " + Global::intToString(kind));
       }

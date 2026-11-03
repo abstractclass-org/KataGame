@@ -2887,6 +2887,10 @@ BlockStack::BlockStack(
       );
       blocks.emplace_back(TRANSFORMER_FFN_BLOCK_KIND, std::move(blockPtr));
     }
+    else if(descBlocks[i].first == PATCH_TRANSFORMER_BLOCK_KIND) {
+      //KataGame fork (2026-11-03, abscls-ra93.3): hybrid3's patch block runs in the CUDA and Eigen backends only.
+      throw StringError("OpenCL backend: the patch transformer block (model version 24) is not supported; use the CUDA or Eigen backend");
+    }
     else {
       ASSERT_UNREACHABLE;
     }
