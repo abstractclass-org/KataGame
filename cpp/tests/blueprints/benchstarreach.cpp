@@ -50,19 +50,16 @@ double percentile(vector<double> v, double p) {
   return v[i];
 }
 
-void show(const string& name, const vector<double>& v) {
-  double sum = 0;
-  for(double x : v)
-    sum += x;
-  printf("  %-36s mean %7.2f  median %7.2f  p99 %8.2f  max %8.2f\n", name.c_str(), sum / double(v.size()),
-         percentile(v, 0.5), percentile(v, 0.99), *max_element(v.begin(), v.end()));
-}
-
 double mean(const vector<double>& v) {
   double sum = 0;
   for(double x : v)
     sum += x;
   return sum / double(v.size());
+}
+
+void show(const string& name, const vector<double>& v) {
+  printf("  %-36s mean %7.2f  median %7.2f  p99 %8.2f  max %8.2f\n", name.c_str(), mean(v), percentile(v, 0.5),
+         percentile(v, 0.99), *max_element(v.begin(), v.end()));
 }
 
 }  // namespace
