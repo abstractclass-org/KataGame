@@ -94,14 +94,12 @@ def evaluate_by_file(networks, npz_files, batch_size, device, seed, max_batches=
     file_rows = [0] * len(npz_files)
     torch.manual_seed(seed)
     np.random.seed(seed)
-    rows = 0
     for i, batch in enumerate(data_processing_pytorch.read_npz_training_data(
             list(npz_files), batch_size, world_size=1, rank=0, pos_len=model.pos_len, device=device,
             randomize_symmetries=False, include_meta=False, model_config=config)):
         if max_batches is not None and i >= max_batches:
             break
         f = file_of_batch[i]
-        rows += batch["binaryInputNCHW"].shape[0]
         file_rows[f] += batch["binaryInputNCHW"].shape[0]
         extra = {k: float(v) for k, v in batch_weights(batch).items()}
         legal = games.legal_moves(game, batch["binaryInputNCHW"], batch["globalInputNC"])
@@ -115,10 +113,15 @@ def evaluate_by_file(networks, npz_files, batch_size, device, seed, max_batches=
             for k, v in add.items():
                 sums[label][k] = sums[label].get(k, 0.0) + v
                 file_sums[label][f][k] = file_sums[label][f].get(k, 0.0) + v
+    batches = len(file_of_batch) if max_batches is None else min(len(file_of_batch), max_batches)
+    if sum(file_rows) != batches * batch_size:
+        raise RuntimeError(f"the reader gave {sum(file_rows)} rows, not the {batches} whole batches of {batch_size} "
+                           "rows that file_of_batch counts: its rule of batches changed, so the files' measures "
+                           "would go to other files")
     files = [dict({"file": path, "rows": file_rows[f]},
                   **{label: measures(file_sums[label][f], file_rows[f]) for label in networks})
              for f, path in enumerate(npz_files)]
-    return {label: measures(s, rows) for label, s in sums.items()}, files
+    return {label: measures(s, sum(file_rows)) for label, s in sums.items()}, files
 
 
 def measures(s, rows):
