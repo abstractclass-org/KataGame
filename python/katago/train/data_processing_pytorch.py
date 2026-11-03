@@ -50,10 +50,14 @@ def fit_global_input_nc(globalInputNC: np.ndarray, num_global_features: int) -> 
 # a run switches versions with a converted checkpoint (add_extended_inputs.py) while its window holds rows of both. The
 # converted weights of those planes start at 0, and a plane at 0 gives its weights no gradient, so the rows of version
 # 11 train them not at all. Any other count of planes stays, and the reader refuses it (the shuffle refuses the files
-# of other versions too: shuffle.pad_planes_to_widest). The planes are on dimension 1, packed or not.
+# of other versions too: shuffle.pad_planes_to_widest). The planes are on dimension 1, packed or not. KataGame fork
+# (2026-11-03): the rows of the inputs version 15 are version 14's with the game's planes of reach after them
+# (games.reach_spatial_inputs), which fit in the same way: a model of version 15 reads a row of version 14 with those
+# planes at 0, and a model of version 14 reads the first planes of a row of version 15. A model of version 15 refuses
+# the rows of the versions before 14 for their global inputs (read_npz_training_data).
 def fit_binary_input_nchw(binaryInputNCHWPacked: np.ndarray, num_bin_features: int, game) -> np.ndarray:
-    areas = games.area_spatial_inputs(game)
-    if areas == 0 or abs(binaryInputNCHWPacked.shape[1] - num_bin_features) != areas:
+    fits = {games.area_spatial_inputs(game), games.reach_spatial_inputs(game)} - {0}
+    if abs(binaryInputNCHWPacked.shape[1] - num_bin_features) not in fits:
         return binaryInputNCHWPacked
     return fit_global_input_nc(binaryInputNCHWPacked, num_bin_features)
 

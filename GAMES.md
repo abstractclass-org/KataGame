@@ -508,8 +508,9 @@ game's labels in their canonical order (`CanonicalActionMap`, below), and the po
 14 (model version 23) is V13's with AZdb's latent after its global inputs, for every game: 5 inputs, 1 at the member's
 (`MiscNNInputParams::diversityMember`, 0 by default) and 0 elsewhere. The network's cache folds the member into its
 key (`NNInputs::getHash`), as KataGo folds the playout doubling advantage: member 0 keeps the key of an evaluation
-without a member ("AZdb's members", below). Self-play writes its rows in V9 unless its config sets `inputsVersion` (10,
-11, 12, 13 or 14).
+without a member ("AZdb's members", below). Input version 15 (model version 25) is V14's with the game's planes of
+reach (`NUM_REACH_SPATIAL_INPUTS`, below) after its planes. Self-play writes its rows in V9 unless its config sets
+`inputsVersion` (10 to 15).
 
 | Member | Meaning | Enclosure |
 |---|---|---|
@@ -551,6 +552,7 @@ KataGo's code (`testgameareas` and `testkomi` pin them), and the front computes 
 | `NUM_TURN_GLOBAL_INPUTS` | The game's turn inputs, which input version 11 adds to version 10's, for a game whose history planes count actions, not turns. With `options.turnHistory`, the history planes show the game's last turns in place of its last actions, and `global_inputs` writes the turn inputs after its extended global inputs: what the planes do not show of those turns. The front puts them after V10's global inputs. Without `options.history` they are 0, as the history planes. | 0: V11 is V10 (`turnGlobalInputs`), as its history planes already count turns | 8: for each of the 4 turns of the history planes (the turn in progress, then the 3 whole turns before it) and each of its 2 moves, 1 when the move was an edit, a pick and its drop (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `NUM_AREA_SPATIAL_INPUTS` | The game's planes of closed areas, which input version 12 adds to version 11's: areas that the rules close to a player for the rest of the game. Whether a point is closed depends on cells beyond the convolutions' reach, so the game computes it, as KataGo gives Go's pass-alive areas as input planes. With `options.areas`, `spatial_inputs` also sets the planes after the extended ones, and the front puts them after V11's planes. They are points of the board: the symmetries move them as pixels. | 0: V12 is V11 (`areaSpatialInputs`) | 2: the hexes of the areas closed by the mover's walls and by the opponent's walls, which the other player can never fill (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `CanonicalActionMap` | A type, for a game whose position holds labels that no rule reads: input version 13 reads the labels in an order that depends only on what they label, so that two positions that differ only in their labels give the same inputs. With `options.canonical`, `spatial_inputs` and `global_inputs` write each label's inputs at its place in that order. `CanonicalActionMap(p)` gives the network's frame of p's actions: `operator()` maps each legal action and pass to its policy index in that order, and `listed(action)` says whether the search lists the action. An action that gives the same position as a listed action, up to the labels, is not listed, and it maps to that action's index: the two are one edge of the search, with one prior. The order must not depend on the symmetries, so the front maps an action through `SymActionMap`, then through this (`NNInputs`' `NetActionMap`), and the network's evaluation lists the listed actions only. The training rows of V13 write the policy targets at these indices, the next move's in the next position's frame. The trainer reads that target with the row's inputs, so wherever it weighs that target (the game's `mask_targets`), the next position's order of the next mover's labels must be the row's. The rules keep every action legal. | None: every action listed at its own index, and V13 is V12 (`CanonicalActions`) | Each hand in the order of its blueprints' cells: more cells first, then more stars, then more walls, then the lesser shape up to the hex grid's 12 symmetries, then the lowest number of the blueprint's equal blueprints, then the blueprint with the pick, then the lower number. Of equal blueprints, the lowest-numbered one's actions are listed (the engine repository's `games/blueprints/README.md`, "The network"). |
+| `NUM_REACH_SPATIAL_INPUTS` | The game's planes of reach, which input version 15 adds to version 14's: how far each player's pieces are from a capture by the other player, a graded measure that depends on cells beyond the convolutions' reach. With `options.reach`, `spatial_inputs` also sets the planes after its planes of closed areas, and the front puts them after V14's planes. They are points of the board: the symmetries move them as pixels. | 0: V15 is V14 (`reachSpatialInputs`) | 9: on each star of the view, whether the other player needs more than 1, 2, 3 and 6 placements to capture it (`game/blueprints/starreach.h`), the mover's stars, then the opponent's, and the stars whose reach is not known (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `Diversity` | A type, for AZdb's reward ("AZdb's members", below): the statistics of a position, φ before its normalization. `NUM_STATISTICS` counts them, `statistics(p, player, out)` writes them from the player's side for the position after a move of that player, `MOVES` is each player's moves in a game (the reward's divisor), and `Normalizer`, built from each statistic's mean and standard deviation, gives the normalized statistics (`z(x, out)`), moves its running estimates by one finished side (`update(x, positions)`) and gives them (`mean(i)`, `sd(i)`) for self-play's league. | None: 0 statistics, 1 move, and every reward is 0 (`diversityStatistics`, `diversityMoves`, `diversityStatisticsOf`, `DiversityNormalizer`) | Its 57 statistics, standardized with a floor of 0.1 on the standard deviation, clipped to [-3, 3] and weighted by group (`game/blueprints/diversity.h`), and 60 moves |
 
 `InputOptions` holds what the front gives the input members:
@@ -564,6 +566,7 @@ KataGo's code (`testgameareas` and `testkomi` pin them), and the front computes 
 | `turnHistory` | True: the history of the game's last turns in place of its last actions, and the game's turn inputs (input version 11). |
 | `areas` | True: the game's planes of closed areas too (input version 12). |
 | `canonical` | True: the game's labels in their canonical order (`CanonicalActionMap`, input version 13). |
+| `reach` | True: the game's planes of reach too (input version 15). |
 
 **AZdb's members** (Zahavy et al., arXiv 2308.09175, and the engine repository's
 `games/blueprints/docs/research/diversity-players.md`): a team of 5 policies in one network, which reads the member as
@@ -678,9 +681,9 @@ row's player to move.
 The trainer reads a game's facts from the game's module, `python/katago/train/games/<game>.py`, which mirrors the
 encoding part. `python/katago/train/games/__init__.py` lists the members, and `games.get(name)` refuses a module that
 lacks one. A model config names its game (`"game"`, Enclosure's without it), and `modelconfigs.get_game(config)` gives
-its module. The config's `"inputs_version"` (8 without it, 9, 10, 11, 12, 13 or 14) gives the game's global inputs,
-V9 adds KataGo's two playout inputs, V10 the game's extended inputs, V11 its turn inputs, V12 its planes of closed
-areas, V13 the canonical order of its labels, and V14 AZdb's latent after V13's global inputs. The config's
+its module. The config's `"inputs_version"` (8 without it, 9 to 15) gives the game's global inputs, V9 adds KataGo's
+two playout inputs, V10 the game's extended inputs, V11 its turn inputs, V12 its planes of closed areas, V13 the
+canonical order of its labels, V14 AZdb's latent after V13's global inputs, and V15 its planes of reach. The config's
 `"intrinsic_head"` gives the model AZdb's intrinsic value head, whose loss is the squared error on the rows' C80-83,
 weighted as the value's loss.
 `train.py -inputs-version 9` gives a new model V9's inputs (Connect-4's run). A checkpoint keeps its version.
@@ -705,8 +708,11 @@ KataGo's initialization, except its last layer, which starts at 0 so that the tr
 until it has learned (`-random-last-layer` keeps KataGo's initialization there). The reader pads rows of 80 global
 targets with zeros to 84. A run of V14 trains on its own rows only: the shuffle refuses to mix files of 84 global
 targets with files of 80, and the reader refuses rows of an earlier version for a model of V14, because those rows
-hold no member's latent. For a new
-`SCORE_SCALE`, `-old-score-scale S`, run with the new code, multiplies by S over the new `SCORE_SCALE` the outputs that
+hold no member's latent. `python/add_extended_inputs.py CHECKPOINT OUT -inputs-version 15` gives a checkpoint of V14
+the planes of reach as zero input channels of the first convolution, as for V12. Rows of V14 and V15 have the same
+global inputs: the shuffle merges them at V15's planes, and the reader fits a row's planes to its model, as for V11
+and V12. A model of V15 refuses the rows before V14, which hold no latent. For a new `SCORE_SCALE`,
+`-old-score-scale S`, run with the new code, multiplies by S over the new `SCORE_SCALE` the outputs that
 a plain multiplier puts in points: the score mean, the lead and the TD scores. These outputs keep their values in
 points. Training moves the score's standard deviation and the score belief.
 
@@ -723,6 +729,7 @@ points. Training moves the score's standard deviation and the score belief.
 | `apply_symmetry_extended_global_inputs(extended, symmetry)` (optional) | The extended global inputs of V10's rows at the symmetry, for a game whose extended global inputs name points. The trainer applies it to every batch at its symmetry (`games.apply_symmetry_global_inputs`). Blueprints gives it: its window boxes' corners. | None: as they are | None |
 | `NUM_TURN_GLOBAL_INPUTS`, `NUM_HISTORY_TURNS` (optional) | As in C++, and the turns that V11's history planes and turn inputs show, newest first: each turn has `NUM_HISTORY_PLANES` // `NUM_HISTORY_TURNS` planes and `NUM_TURN_GLOBAL_INPUTS` // `NUM_HISTORY_TURNS` turn inputs. The turn inputs name no point. In V11's rows the history dropout draws once for each turn, as KataGo draws once for each history move, and clears the turn's planes and turn inputs together, as KataGo's pass inputs go with their moves. A game with turn inputs gives `NUM_HISTORY_TURNS`, which divides both counts (`games.get` checks it). Blueprints: 4 turns, each 2 planes and 2 turn inputs. | None: 0 (`games.turn_global_inputs`) | None |
 | `NUM_AREA_SPATIAL_INPUTS` (optional) | As in C++. The planes are points of the board, so `apply_symmetry_inputs` moves them as pixels. Blueprints: 2. | None: 0 (`games.area_spatial_inputs`) | None |
+| `NUM_REACH_SPATIAL_INPUTS` (optional) | As in C++. The planes are points of the board, so `apply_symmetry_inputs` moves them as pixels. Blueprints: 9. | None: 0 (`games.reach_spatial_inputs`) | None |
 | `CANONICAL_LABELS` (optional) | True for a game with a canonical order of its labels (C++ `CanonicalActionMap`), which V13's rows hold. The order does not depend on the symmetries, so the augmentation maps V13's rows as V12's. Blueprints: True. | None: False, V13 is V12 (`games.canonical_labels`) | None |
 | `legal_moves(binary_inputs, global_inputs)` (optional) | The moves that the rows' inputs make legal, as booleans in the policy's order, from the rows as read (no symmetry), or None for rows without the planes it reads (`games.legal_moves`). Only `python/holdout_losses.py` reads it: the policy's mass outside these moves is an error that the search hides. Blueprints gives a placement on its plane of anchors that fit while no pick waits, a pick or a drop on its plane of legal hand actions, and no pass. | None | None |
 

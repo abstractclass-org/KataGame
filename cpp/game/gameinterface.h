@@ -285,6 +285,17 @@
  *                           (game/blueprints/diversity.h) and 60 moves. Default: none, 0 statistics, 1 move, and
  *                           every member's reward is 0 (diversityStatistics, diversityMoves, diversityStatisticsOf,
  *                           DiversityNormalizer).
+ *   NUM_REACH_SPATIAL_INPUTS
+ *                           int: the game's planes of reach, which the inputs version 15 adds to version 14's (NNInputs
+ *                           V15, model version 25): how far each player's pieces are from a capture by the other
+ *                           player, a graded measure that the network's convolutions cannot see from the view alone.
+ *                           With options.reach, spatial_inputs also sets the planes after its planes of closed areas,
+ *                           NUM_SPATIAL_INPUTS + NUM_EXTENDED_SPATIAL_INPUTS + NUM_AREA_SPATIAL_INPUTS to that +
+ *                           NUM_REACH_SPATIAL_INPUTS - 1, and the front puts them after V14's planes. They move as
+ *                           pixels under the symmetries. Blueprints: for each star of the mover and of the opponent,
+ *                           whether the other player needs more than 1, 2, 3 and 6 placements to capture it
+ *                           (game/blueprints/starreach.h), and the stars whose reach is not known. Default: 0, and V15
+ *                           is V14 (reachSpatialInputs).
  */
 
 #include <algorithm>
@@ -311,6 +322,7 @@ struct InputOptions {
   bool areas = false;  //True: the game's planes of closed areas too (NUM_AREA_SPATIAL_INPUTS), the inputs version 12.
   //True: the game's labels in their canonical order (CanonicalActionMap), the inputs version 13.
   bool canonical = false;
+  bool reach = false;  //True: the game's planes of reach too (NUM_REACH_SPATIAL_INPUTS), the inputs version 15.
 };
 
 //The optional training targets: the slots of KataGo's spatial targets (its training rows' valueTargetsNCHW) and the
@@ -844,6 +856,7 @@ namespace encoding {
   GAMEINTERFACE_DETECT(HasExtendedGlobalInputs, int, std::integral_constant<int, G::NUM_EXTENDED_GLOBAL_INPUTS>::value)
   GAMEINTERFACE_DETECT(HasTurnGlobalInputs, int, std::integral_constant<int, G::NUM_TURN_GLOBAL_INPUTS>::value)
   GAMEINTERFACE_DETECT(HasAreaSpatialInputs, int, std::integral_constant<int, G::NUM_AREA_SPATIAL_INPUTS>::value)
+  GAMEINTERFACE_DETECT(HasReachSpatialInputs, int, std::integral_constant<int, G::NUM_REACH_SPATIAL_INPUTS>::value)
   template<class G, class = void> struct HasCanonicalActionMap : std::false_type {};
   template<class G> struct HasCanonicalActionMap<G, std::enable_if_t<std::is_convertible<
     decltype(std::declval<const typename G::CanonicalActionMap&>()(0)), int>::value &&
@@ -883,6 +896,13 @@ template<class E> constexpr int turnGlobalInputs() {
 template<class E> constexpr int areaSpatialInputs() {
   if constexpr(encoding::HasAreaSpatialInputs<E>::value)
     return E::NUM_AREA_SPATIAL_INPUTS;
+  else
+    return 0;
+}
+//The game's planes of reach (NUM_REACH_SPATIAL_INPUTS): the game's, else none.
+template<class E> constexpr int reachSpatialInputs() {
+  if constexpr(encoding::HasReachSpatialInputs<E>::value)
+    return E::NUM_REACH_SPATIAL_INPUTS;
   else
     return 0;
 }
@@ -1025,6 +1045,7 @@ template<class E> constexpr bool checkEncoding() {
                 "game interface, encoding part: the extended inputs are 0 or more");
   static_assert(turnGlobalInputs<E>() >= 0, "game interface, encoding part: the turn inputs are 0 or more");
   static_assert(areaSpatialInputs<E>() >= 0, "game interface, encoding part: the planes of closed areas are 0 or more");
+  static_assert(reachSpatialInputs<E>() >= 0, "game interface, encoding part: the planes of reach are 0 or more");
   return true;
 }
 

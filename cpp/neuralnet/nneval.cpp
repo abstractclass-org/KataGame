@@ -573,13 +573,13 @@ void NNEvaluator::fillRowBufs(
   int symmetry
 ) const {
   const int rowSpatialLen = NNModelVersion::getNumSpatialFeatures(modelVersion) * nnXLen * nnYLen;
-  //Enclosure fork (owner, 2026-10-06): symmetry, the image's row written from board, for V8 to V14 only. KataGame
-  //fork: V8 to V14 are the game's inputs (NNInputs::NUM_FEATURES_SPATIAL_V8, V10 with its extended inputs, V11 with
+  //Enclosure fork (owner, 2026-10-06): symmetry, the image's row written from board, for V8 to V15 only. KataGame
+  //fork: V8 to V15 are the game's inputs (NNInputs::NUM_FEATURES_SPATIAL_V8, V10 with its extended inputs, V11 with
   //its turns too, V12 with its planes of closed areas too, V13 with its labels in their canonical order, V14 with
-  //AZdb's latent too).
-  const bool gameInputs = inputsVersion >= 8 && inputsVersion <= 14;
+  //AZdb's latent too, V15 with its planes of reach too).
+  const bool gameInputs = inputsVersion >= 8 && inputsVersion <= 15;
   testAssert(symmetry == 0 || gameInputs);
-  //V8 to V14 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
+  //V8 to V15 rows are packed (NNResultBuf::rowSpatialBits); the float row is sized only for the other versions.
   if(!gameInputs && buf.rowSpatialBuf.size() < rowSpatialLen)
     buf.rowSpatialBuf.resize(rowSpatialLen);
   const int rowGlobalLen = NNModelVersion::getNumGlobalFeatures(modelVersion);
@@ -589,20 +589,23 @@ void NNEvaluator::fillRowBufs(
   if(buf.rowMetaBuf.size() < rowMetaLen)
     buf.rowMetaBuf.resize(rowMetaLen);
 
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 14, "");
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 15, "");
   //Enclosure fork (owner, 2026-10-06): V8 rows packed, one bit per entry (NNResultBuf::rowSpatialBits). This replaces
   //the float row cleared by its last entries (2026-10-05): the packed row is 9.7 KB, cleared whole. V9 rows are V8's
   //with two more global inputs (2026-10-13), V10 rows V9's with the game's extended inputs (2026-10-26), V11 rows
   //V10's planes with the game's turns (2026-10-27), V12 rows V11's with the game's planes of closed areas
-  //(2026-10-27), V13 rows V12's with the game's labels in their canonical order (2026-10-29), and V14 rows V13's with
-  //AZdb's latent after their global inputs (2026-10-29).
+  //(2026-10-27), V13 rows V12's with the game's labels in their canonical order (2026-10-29), V14 rows V13's with
+  //AZdb's latent after their global inputs (2026-10-29), and V15 rows V14's with the game's planes of reach
+  //(2026-11-03).
   buf.rowSpatialPacked = gameInputs;
   if(gameInputs) {
     testAssert(rowSpatialLen == NNInputs::gameSpatialFeatures(inputsVersion) * NNPos::MAX_BOARD_AREA);
     const size_t words = NNInputs::gameSpatialWords(inputsVersion);
     if(buf.rowSpatialBits.size() < words)
       buf.rowSpatialBits.resize(words);
-    if(inputsVersion == 14)
+    if(inputsVersion == 15)
+      NNInputs::fillRowV15Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
+    else if(inputsVersion == 14)
       NNInputs::fillRowV14Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);
     else if(inputsVersion == 13)
       NNInputs::fillRowV13Packed(board, history, nextPlayer, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatialBits.data(), buf.rowGlobalBuf.data(), symmetry);

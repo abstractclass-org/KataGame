@@ -2950,16 +2950,18 @@ void NNInputs::fillRowV7(
 //INPUTSVERSION 8 (Enclosure fork)
 //===========================================================================================
 
-//The spatial planes of the inputs versions 8 to 14: V9 has V8's, V10 the game's extended planes too, V11 V10's, V12
-//the game's planes of closed areas too, V13 and V14 V12's.
+//The spatial planes of the inputs versions 8 to 15: V9 has V8's, V10 the game's extended planes too, V11 V10's, V12
+//the game's planes of closed areas too, V13 and V14 V12's, V15 the game's planes of reach too.
 int NNInputs::gameSpatialFeatures(int inputsVersion) {
-  return inputsVersion >= 12 ? NNInputs::NUM_FEATURES_SPATIAL_V12
+  return inputsVersion >= 15 ? NNInputs::NUM_FEATURES_SPATIAL_V15
+    : inputsVersion >= 12 ? NNInputs::NUM_FEATURES_SPATIAL_V12
     : inputsVersion >= 10 ? NNInputs::NUM_FEATURES_SPATIAL_V10 : NNInputs::NUM_FEATURES_SPATIAL_V8;
 }
 
-//The words of a packed row of the inputs versions 8 to 14 (gameSpatialFeatures).
+//The words of a packed row of the inputs versions 8 to 15 (gameSpatialFeatures).
 int NNInputs::gameSpatialWords(int inputsVersion) {
-  return inputsVersion >= 12 ? NNInputs::NUM_SPATIAL_WORDS_V12
+  return inputsVersion >= 15 ? NNInputs::NUM_SPATIAL_WORDS_V15
+    : inputsVersion >= 12 ? NNInputs::NUM_SPATIAL_WORDS_V12
     : inputsVersion >= 10 ? NNInputs::NUM_SPATIAL_WORDS_V10 : NNInputs::NUM_SPATIAL_WORDS_V8;
 }
 
@@ -2975,7 +2977,8 @@ int NNInputs::gameSpatialWords(int inputsVersion) {
 //(2026-10-27): the game's planes of closed areas too, after V11's planes (NUM_FEATURES_SPATIAL_V12). 13 (2026-10-29):
 //V12's inputs with the game's labels in their canonical order (InputOptions::canonical). 14 (2026-10-29): V13's with
 //AZdb's latent after its global inputs, a one-hot of the member (MiscNNInputParams::diversityMember,
-//NUM_FEATURES_GLOBAL_V14).
+//NUM_FEATURES_GLOBAL_V14). 15 (2026-11-03): the game's planes of reach too, after V14's planes
+//(NUM_FEATURES_SPATIAL_V15).
 template<typename SetEntry>
 static void fillRowV8Entries(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
@@ -2987,7 +2990,7 @@ static void fillRowV8Entries(
   assert(board.x_size <= nnXLen && board.y_size <= nnYLen);
   assert(SymmetryHelpers::isAllowed(symmetry));
   assert(!SymmetryHelpers::isTranspose(symmetry) || board.x_size == board.y_size);
-  assert(inputsVersion >= 8 && inputsVersion <= 14);
+  assert(inputsVersion >= 8 && inputsVersion <= 15);
   //The inputs are the position's, which gives the player to move.
   assert(nextPlayer == board.nextPla());
   (void)nextPlayer;
@@ -2999,10 +3002,12 @@ static void fillRowV8Entries(
   const bool areas = inputsVersion >= 12;
   const bool canonical = inputsVersion >= 13;
   const bool latent = inputsVersion >= 14;
+  const bool reach = inputsVersion >= 15;
   static_assert(NNInputs::NUM_FEATURES_GLOBAL_V12 == NNInputs::NUM_FEATURES_GLOBAL_V11, "V12 adds planes only");
   static_assert(NNInputs::NUM_FEATURES_SPATIAL_V13 == NNInputs::NUM_FEATURES_SPATIAL_V12 &&
                 NNInputs::NUM_FEATURES_GLOBAL_V13 == NNInputs::NUM_FEATURES_GLOBAL_V12, "V13 adds no input");
   static_assert(NNInputs::NUM_FEATURES_SPATIAL_V14 == NNInputs::NUM_FEATURES_SPATIAL_V13, "V14 adds no plane");
+  static_assert(NNInputs::NUM_FEATURES_GLOBAL_V15 == NNInputs::NUM_FEATURES_GLOBAL_V14, "V15 adds planes only");
   const int numGlobal =
     latent ? NNInputs::NUM_FEATURES_GLOBAL_V14 :
     turnHistory ? NNInputs::NUM_FEATURES_GLOBAL_V11 :
@@ -3039,6 +3044,7 @@ static void fillRowV8Entries(
   options.turnHistory = turnHistory;
   options.areas = areas;
   options.canonical = canonical;
+  options.reach = reach;
   GameEncoding::spatial_inputs(board.pos, options, [&](int x, int y, int plane) {
     setOne(NNPos::xyToPos(x, y, nnXLen), NNInputs::V8_GAME_PLANES_START + plane);
   });
@@ -3213,6 +3219,22 @@ void NNInputs::fillRowV14Packed(
   int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry
 ) {
   fillRowV8Bits(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBits, rowGlobal, symmetry, 14);
+}
+
+void NNInputs::fillRowV15(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal, std::vector<int>* setEntries
+) {
+  fillRowV8Floats(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBin, rowGlobal, setEntries, 15);
+}
+
+void NNInputs::fillRowV15Packed(
+  const Board& board, const BoardHistory& hist, Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal, int symmetry
+) {
+  fillRowV8Bits(board, hist, nextPlayer, nnInputParams, nnXLen, nnYLen, useNHWC, rowBits, rowGlobal, symmetry, 15);
 }
 
 void NNInputs::unpackSpatialBits(const uint32_t* rowBits, float* out, int n) {

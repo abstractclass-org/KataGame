@@ -571,8 +571,8 @@ void TrainingWriteBuffers::addRow(
   int diversityMember,
   const Board* nextFrame
 ) {
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 14, "");
-  if(inputsVersion < 3 || inputsVersion > 14)
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 15, "");
+  if(inputsVersion < 3 || inputsVersion > 15)
     throw StringError("Training write buffers: Does not support input version: " + Global::intToString(inputsVersion));
 
   int posArea = dataXLen*dataYLen;
@@ -596,8 +596,13 @@ void TrainingWriteBuffers::addRow(
     bool inputsUseNHWC = false;
     float* rowBin = binaryInputNCHWUnpacked;
     float* rowGlobal = globalInputNC.data + curRows * numGlobalChannels;
-    static_assert(NNModelVersion::latestInputsVersionImplemented == 14, "");
-    if(inputsVersion == 14) {
+    static_assert(NNModelVersion::latestInputsVersionImplemented == 15, "");
+    if(inputsVersion == 15) {
+      testAssert(NNInputs::NUM_FEATURES_SPATIAL_V15 == numBinaryChannels);
+      testAssert(NNInputs::NUM_FEATURES_GLOBAL_V15 == numGlobalChannels);
+      NNInputs::fillRowV15(board, hist, nextPlayer, nnInputParams, dataXLen, dataYLen, inputsUseNHWC, rowBin, rowGlobal);
+    }
+    else if(inputsVersion == 14) {
       testAssert(NNInputs::NUM_FEATURES_SPATIAL_V14 == numBinaryChannels);
       testAssert(NNInputs::NUM_FEATURES_GLOBAL_V14 == numGlobalChannels);
       NNInputs::fillRowV14(board, hist, nextPlayer, nnInputParams, dataXLen, dataYLen, inputsUseNHWC, rowBin, rowGlobal);
@@ -1168,8 +1173,12 @@ TrainingDataWriter::TrainingDataWriter(const string& outDir, ostream* dbgOut, in
   int numGlobalChannels;
   //Note that this inputsVersion is for data writing, it might be different than the inputsVersion used
   //to feed into a model during selfplay
-  static_assert(NNModelVersion::latestInputsVersionImplemented == 14, "");
-  if(inputsVersion == 14) {
+  static_assert(NNModelVersion::latestInputsVersionImplemented == 15, "");
+  if(inputsVersion == 15) {
+    numBinaryChannels = NNInputs::NUM_FEATURES_SPATIAL_V15;
+    numGlobalChannels = NNInputs::NUM_FEATURES_GLOBAL_V15;
+  }
+  else if(inputsVersion == 14) {
     numBinaryChannels = NNInputs::NUM_FEATURES_SPATIAL_V14;
     numGlobalChannels = NNInputs::NUM_FEATURES_GLOBAL_V14;
   }

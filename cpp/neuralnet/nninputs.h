@@ -178,6 +178,12 @@ namespace NNInputs {
   const int NUM_DIVERSITY_MEMBERS = 5;
   const int NUM_FEATURES_SPATIAL_V14 = NUM_FEATURES_SPATIAL_V13;
   const int NUM_FEATURES_GLOBAL_V14 = NUM_FEATURES_GLOBAL_V13 + NUM_DIVERSITY_MEMBERS;
+  //KataGame fork (2026-11-03): V15, V14 with the game's planes of reach (InputOptions::reach, GameInterface:
+  //NUM_REACH_SPATIAL_INPUTS) after V14's planes. Blueprints: for each star of the mover and of the opponent, whether
+  //the other player needs more than 1, 2, 3 and 6 placements to capture it, and the stars whose reach is not known. A
+  //game without them has V15 equal to its V14. Model version 25.
+  const int NUM_FEATURES_SPATIAL_V15 = NUM_FEATURES_SPATIAL_V14 + GameInterface::reachSpatialInputs<GameEncoding>();
+  const int NUM_FEATURES_GLOBAL_V15 = NUM_FEATURES_GLOBAL_V14;
 
   Hash128 getHash(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
@@ -300,7 +306,21 @@ namespace NNInputs {
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
     int symmetry = 0
   );
-  //The planes of the inputs versions 8 to 14 (NUM_FEATURES_SPATIAL_V8, V10 or V12) and the words of a packed row.
+  //V15: the rows of NUM_FEATURES_SPATIAL_V15 planes (NUM_SPATIAL_WORDS_V15 words packed), with rowGlobal holding
+  //NUM_FEATURES_GLOBAL_V15 values (V14's).
+  const int NUM_SPATIAL_ELTS_V15 = NUM_FEATURES_SPATIAL_V15 * NNPos::MAX_BOARD_AREA;
+  const int NUM_SPATIAL_WORDS_V15 = (NUM_SPATIAL_ELTS_V15 + 31) / 32;
+  void fillRowV15(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal,
+    std::vector<int>* setEntries = NULL
+  );
+  void fillRowV15Packed(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, uint32_t* rowBits, float* rowGlobal,
+    int symmetry = 0
+  );
+  //The planes of the inputs versions 8 to 15 (NUM_FEATURES_SPATIAL_V8, V10, V12 or V15) and the words of a packed row.
   int gameSpatialFeatures(int inputsVersion);
   int gameSpatialWords(int inputsVersion);
   //The packed row's first n entries as floats (0 or 1) into out.

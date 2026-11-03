@@ -83,6 +83,12 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         inputs as the rows of version 12, but other meanings: a run that switches to version 13
                         (add_extended_inputs.py) trains on the rows of version 13 only. Default: False, and version 13
                         is version 12 (canonical_labels).
+  NUM_REACH_SPATIAL_INPUTS
+                        the game's planes of reach (C++ GameInterface), which the inputs version 15 adds after version
+                        14's planes. They are points of the board, so apply_symmetry_inputs moves them as pixels. A
+                        model of version 15 reads the rows of version 14 with these planes at 0, and a model of version
+                        14 reads the rows of version 15 without them (data_processing_pytorch.fit_binary_input_nchw), as
+                        with the planes of closed areas. Default: 0 (reach_spatial_inputs).
   legal_moves(binary_inputs, global_inputs)
                         the moves that the rows' inputs make legal (N, policy) as booleans, in the policy's order (the
                         point's index * POLICY_CHANNELS + the channel, then pass), from the rows as read (no symmetry).
@@ -151,6 +157,11 @@ def area_spatial_inputs(game):
     return getattr(game, "NUM_AREA_SPATIAL_INPUTS", 0)
 
 
+def reach_spatial_inputs(game):
+    """The game's planes of reach, which the inputs version 15 adds after version 14's (0 for a game without them)."""
+    return getattr(game, "NUM_REACH_SPATIAL_INPUTS", 0)
+
+
 def canonical_labels(game):
     """Whether the game's inputs version 13 reads its labels in a canonical order (False: version 13 is version 12)."""
     return getattr(game, "CANONICAL_LABELS", False)
@@ -158,7 +169,8 @@ def canonical_labels(game):
 
 def num_global_inputs(game, inputs_version):
     """The global inputs of a row of the game at the inputs version, in their order: the game's, version 9's playout
-    inputs, version 10's extended inputs, version 11's turn inputs, version 14's latent (versions 12 and 13 add none).
+    inputs, version 10's extended inputs, version 11's turn inputs, version 14's latent (versions 12, 13 and 15 add
+    none).
     A group starts where the version before the one that adds it ends: the turn inputs at num_global_inputs(game, 10),
     the latent at num_global_inputs(game, 13)."""
     n = game.NUM_GLOBAL_INPUTS
@@ -176,8 +188,8 @@ def num_global_inputs(game, inputs_version):
 def row_bytes(game, inputs_version=9):
     """The bytes of one training row of the game, uncompressed: the row writer's arrays (ROW_ above) on the game's
     largest board, without the metadata inputs, which the shuffle leaves out. Self-play writes rows of the inputs
-    version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads, and of version 10, 11,
-    12, 13 or 14 with its config's inputsVersion."""
+    version 9 by default (C++ NNModelVersion::defaultModelVersion), whatever its network reads, and of version 10 to
+    15 with its config's inputsVersion."""
     points = game.MAX_BOARD_LEN ** 2
     moves = points * game.POLICY_CHANNELS + 1  # the policy: every point's channels, then pass
     global_inputs = num_global_inputs(game, inputs_version)
@@ -186,6 +198,8 @@ def row_bytes(game, inputs_version=9):
         planes += extended_spatial_inputs(game)
     if inputs_version >= 12:
         planes += area_spatial_inputs(game)
+    if inputs_version >= 15:
+        planes += reach_spatial_inputs(game)
     global_targets = ROW_GLOBAL_TARGETS + (ROW_DIVERSITY_TARGETS if inputs_version >= 14 else 0)
     return (
         # binaryInputNCHWPacked: KataGo's on-board plane, then the game's planes, a bit a point

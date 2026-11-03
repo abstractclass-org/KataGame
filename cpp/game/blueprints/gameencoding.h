@@ -25,6 +25,9 @@
 // - The planes of closed areas, which the inputs version 12 adds after the extended planes (GameInterface): the points
 //   of the view in the areas closed by the mover's walls and by the opponent's walls, where the other player can never
 //   place (for_each_closed).
+// - The planes of reach, which the inputs version 15 adds after the planes of closed areas (GameInterface): on each
+//   star of the view, whether the other player needs more than 1, 2, 3 and 6 placements to capture it (starreach.h),
+//   for the mover's stars, then for the opponent's, and a plane of the stars whose reach is not known (write_reach).
 // - The hand's canonical order, which the inputs version 13 reads (GameInterface, CanonicalActionMap): the same inputs
 //   as version 12, with each hand's blueprints in an order of their cells (HandOrder) in place of their numbers'. So
 //   are the policy's channels, and of equal blueprints the search lists the lowest-numbered one's actions only.
@@ -63,6 +66,7 @@
 #include "../../core/hash.h"
 #include "../gameinterface.h"
 #include "gamerules.h"
+#include "starreach.h"
 
 namespace blueprints {
 
@@ -327,6 +331,14 @@ struct GameEncoding {
   // area closed by the mover's walls, then by the opponent's walls (for_each_closed).
   static constexpr int MY_CLOSED = THEIR_WINDOW + 1, THEIR_CLOSED = MY_CLOSED + 1;  // 101, 102
   static constexpr int NUM_AREA_SPATIAL_INPUTS = 2;
+  // The planes of reach (GameInterface: the inputs version 15), after the planes of closed areas (write_reach): + i
+  // marks each star of the mover (MY_REACH) or of the opponent (THEIR_REACH) that the other player needs more than
+  // REACH_LEVELS[i] placements to capture (starreach.h's k), and REACH_UNKNOWN each star whose reach is not known.
+  static constexpr int NUM_REACH_LEVELS = 4;
+  static constexpr int REACH_LEVELS[NUM_REACH_LEVELS] = {1, 2, 3, StarReach::CAP};
+  static constexpr int MY_REACH = THEIR_CLOSED + 1, THEIR_REACH = MY_REACH + NUM_REACH_LEVELS;  // 103, 107
+  static constexpr int REACH_UNKNOWN = THEIR_REACH + NUM_REACH_LEVELS;                         // 111
+  static constexpr int NUM_REACH_SPATIAL_INPUTS = REACH_UNKNOWN + 1 - MY_REACH;                // 9
   // The minimap's bins: 5 x 5 points, 67 x 67 of them around the minimap's middle (|u|, |v| <= MINIMAP_REACH). The
   // points within 127 of the middle are 51 x 51 of them, in the middle. A point beyond MINIMAP_REACH is in the bin at
   // the edge (minimap_bin).
@@ -344,8 +356,8 @@ struct GameEncoding {
       order.emplace(p);
     const HandOrder* slots = order ? &*order : nullptr;
     write_inputs(image, options, slots, set);
-    // The threats, the minimap and the closed areas read cells far from the view, which the image near the view does
-    // not hold. They move as pixels (the trainer maps them so), so they come from p, at the image's points.
+    // The threats, the minimap, the closed areas and the reach read cells far from the view, which the image near the
+    // view does not hold. They move as pixels (the trainer maps them so), so they come from p, at the image's points.
     auto pixel = [&](int x, int y, int plane) {
       GameInterface::symPoint(x, y, options.symmetry, VIEW, VIEW);
       set(x, y, plane);
@@ -357,6 +369,8 @@ struct GameEncoding {
     }
     if(options.areas)
       write_closed_areas(p, pixel);
+    if(options.reach)
+      write_reach(p, pixel);
   }
 
   // A player's blueprint k's slot in the planes: k, or its slot of the hand's order (order, the inputs version 13).
@@ -772,6 +786,36 @@ struct GameEncoding {
         if(on_view(x, y))
           set(x, y, side == 0 ? MY_CLOSED : THEIR_CLOSED);
       });
+  }
+
+  // The planes of reach (MY_REACH, THEIR_REACH, REACH_UNKNOWN), from the reach of each player's stars on the whole
+  // board (starreach.h: the other player's placements to capture each star, capped at StarReach::CAP), on the stars of
+  // the view, in the view's orientation. A star of value k is marked on the levels i with k > REACH_LEVELS[i]: BEYOND
+  // (the cap's steps do not reach it) and NEVER (the reach stops growing first) on all of them, k = 1 on none. A star
+  // whose reach is UNKNOWN (the budget ran out) or UNAVAILABLE (the mover's pick waits for its drop, so its hand lacks
+  // the picked cell: the opponent's stars) is marked on REACH_UNKNOWN alone. budget: the kernel's, a test's.
+  template<class Set>
+  static void write_reach(const Position& p, Set& set, int64_t budget = StarReach::BUDGET) {
+    static_assert(REACH_LEVELS[NUM_REACH_LEVELS - 1] == StarReach::CAP && StarReach::BEYOND > StarReach::CAP &&
+                  StarReach::NEVER > StarReach::CAP && StarReach::UNKNOWN < 1 && StarReach::UNAVAILABLE < 1,
+                  "BEYOND and NEVER pass every level, a value that is not known passes none");
+    static thread_local StarReach reach;  // its lists of stars, reused
+    star_reach(p, reach, budget);
+    const int mover = GameRules::next_player(p);
+    const View view = view_of(p);
+    for(int player = 0; player < 2; player++) {
+      const int levels = player == mover ? MY_REACH : THEIR_REACH;
+      for(const StarReach::Star& s : reach.stars[player]) {
+        int x, y;
+        view.view_point(s.x, s.y, x, y);
+        if(!on_view(x, y))
+          continue;
+        if(s.k == StarReach::UNKNOWN || s.k == StarReach::UNAVAILABLE)
+          set(x, y, REACH_UNKNOWN);
+        for(int i = 0; i < NUM_REACH_LEVELS && s.k > REACH_LEVELS[i]; i++)
+          set(x, y, levels + i);
+      }
+    }
   }
 
   // A score on a log scale, log10(1 + |points| / 10) / 2 with the score's sign: 100 points give 0.52, 1,000 give 1.00

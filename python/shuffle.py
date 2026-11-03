@@ -186,12 +186,15 @@ def pad_inputs_to_widest(inputList: list[np.ndarray]) -> None:
 # 11 with those planes at 0, as the trainer reads them (data_processing_pytorch.fit_binary_input_nchw). Files whose
 # planes differ and whose global inputs differ too are of other versions (V9's 90 planes and 24 global inputs against
 # V10's 102 and 44, or V10's against V12's), whose rows differ in more than these planes: they stay refused, as
-# before the planes merged. Call it before the global inputs merge.
+# before the planes merged. Call it before the global inputs merge. KataGame fork (2026-11-03): the rows of the inputs
+# version 15 have the game's planes of reach after version 14's planes, and version 14's global inputs, so files of
+# versions 14 and 15 merge in the same way (the trainer: data_processing_pytorch.fit_binary_input_nchw).
 def pad_planes_to_widest(binaryInputNCHWPackedList: list[np.ndarray], globalInputNCList: list[np.ndarray]) -> None:
     widths = sorted({(b.shape[1], g.shape[1]) for b, g in zip(binaryInputNCHWPackedList, globalInputNCList)})
     if len({planes for planes, _ in widths}) > 1 and len({inputs for _, inputs in widths}) > 1:
         raise ValueError(f"files of other inputs versions, (planes, global inputs) {widths}: files of other counts "
-                         "of planes merge only with the same global inputs (the inputs versions 11 and 12)")
+                         "of planes merge only with the same global inputs (the inputs versions 11 and 12, or 14 and "
+                         "15)")
     pad_inputs_to_widest(binaryInputNCHWPackedList)
 
 def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:

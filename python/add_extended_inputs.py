@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""KataGame fork: give a training checkpoint the inputs version 10, 11, 12 or 13, and scale its outputs in points.
+"""KataGame fork: give a training checkpoint the inputs version 10, 11, 12, 13 or 15, and scale its outputs in points.
 
     python add_extended_inputs.py CHECKPOINT OUT -inputs-version VERSION [-old-score-scale S]
 
@@ -18,7 +18,7 @@ the model, the SWA model and the optimizer's state, so that the network computes
 moves them, whatever the new inputs hold. The optimizer keeps every state by position (no parameter is added): the new
 channels and columns start at 0 in each state tensor of the widened weights (SGD's momentum, Adam's moments). A
 checkpoint without an optimizer or an SWA model (a network alone) gets the rest. The checkpoint's inputs must be the
-version before VERSION: 9 for 10, 10 for 11, 11 for 12, 12 for 13.
+version before VERSION: 9 for 10, 10 for 11, 11 for 12, 12 for 13, 14 for 15.
 
 -inputs-version 12 gives a checkpoint of the inputs version 11 the version 12 (2026-10-27; C++ NNInputs V12, model
 version 21): version 11's inputs with the game's planes of closed areas after its planes (katago/train/games:
@@ -35,6 +35,12 @@ computes what it did wherever that order is the labels' own. Blueprints: each ha
 cells, which is the order of their numbers in 97% of bpj4's self-play hands (the engine repository's
 games/blueprints/docs/decisions/training.md). The rows of version 12 have the same shapes with the labels in their
 own order, so a run that switches trains on the rows of version 13 only.
+
+-inputs-version 15 gives a checkpoint of the inputs version 14 the version 15 (2026-11-03; C++ NNInputs V15, model
+version 25): version 14's inputs with the game's planes of reach after its planes (katago/train/games:
+NUM_REACH_SPATIAL_INPUTS), as zero input channels of conv_spatial, as version 12 adds its planes. Version 15 adds no
+global input. The trainer reads the rows of version 14 with those planes at 0
+(data_processing_pytorch.fit_binary_input_nchw), and the shuffle merges the files of both versions.
 
 -old-score-scale S names the game's SCORE_SCALE that trained the checkpoint, and this code's SCORE_SCALE s replaces it.
 It multiplies by F = S / s the outputs that become points through a plain factor, KataGo's score multiplier of 20
@@ -64,8 +70,9 @@ from enclosure_add_regret_heads import group_names
 from katago.train import games, modelconfigs
 from katago.train.model_pytorch import Model
 
-# Each inputs version that this gives, and the version that it needs.
-PREVIOUS = {10: 9, 11: 10, 12: 11, 13: 12}
+# Each inputs version that this gives, and the version that it needs. Version 14 adds AZdb's latent and its head
+# (add_diversity_members.py).
+PREVIOUS = {10: 9, 11: 10, 12: 11, 13: 12, 15: 14}
 # The outputs that become points through a plain factor (Model.postprocess_output): rows of each value head's last
 # linear layers, the score mean and the lead, then the 3 TD scores.
 SCORE_ROWS = {"linear_miscvaluehead": [0, 2], "linear_moremiscvaluehead": [5, 6, 7]}
@@ -116,8 +123,8 @@ def optimizer_states(ckpt, names):
 
 
 def convert(ckpt, inputs_version):
-    """ckpt (a loaded checkpoint) with the inputs version inputs_version (10, 11, 12 or 13), in place. Returns what
-    it widened, one line each: nothing for 13, which adds no input."""
+    """ckpt (a loaded checkpoint) with the inputs version inputs_version (10, 11, 12, 13 or 15), in place. Returns
+    what it widened, one line each: nothing for 13, which adds no input."""
     if inputs_version not in PREVIOUS:
         raise ValueError(f"the inputs version {inputs_version}: this gives {' or '.join(map(str, PREVIOUS))}")
     config = ckpt["config"]
@@ -198,7 +205,7 @@ def main():
     parser.add_argument("out", help="the new checkpoint, which must not exist")
     parser.add_argument("-inputs-version", type=int, choices=sorted(PREVIOUS), required=True,
                         help="the inputs version to give: 10 to a checkpoint of 9, 11 to a checkpoint of 10, "
-                             "12 to a checkpoint of 11, 13 to a checkpoint of 12")
+                             "12 to a checkpoint of 11, 13 to a checkpoint of 12, 15 to a checkpoint of 14")
     parser.add_argument("-old-score-scale", type=float,
                         help="the game's SCORE_SCALE that trained the checkpoint: give its outputs in points this "
                              "code's SCORE_SCALE")

@@ -340,18 +340,22 @@ def main(args):
     # inputs (V10's with the game's turns, 2026-10-27), version 20, NNInputs V11. With the V12 inputs (V11's with the
     # game's planes of closed areas, 2026-10-27), version 21, NNInputs V12. With the V13 inputs (V12's with the game's
     # labels in their canonical order, 2026-10-29), version 22, NNInputs V13. With the V14 inputs (V13's with AZdb's
-    # latent, 2026-10-29), version 23, NNInputs V14.
-    inputs_model_version = {9: 18, 10: 19, 11: 20, 12: 21, 13: 22, 14: 23}.get(modelconfigs.get_inputs_version(model_config))
+    # latent, 2026-10-29), version 23, NNInputs V14. With the V15 inputs (V14's with the game's planes of reach,
+    # 2026-11-03), version 25, NNInputs V15: version 24's format, so its trunk may hold the patch block.
+    inputs_model_version = {9: 18, 10: 19, 11: 20, 12: 21, 13: 22, 14: 23, 15: 25}.get(
+        modelconfigs.get_inputs_version(model_config))
     if inputs_model_version is not None:
         assert version == 17, version
         version = inputs_model_version
     # KataGame fork (2026-11-03, the engine repository's abscls-ra93.3): a model with hybrid3's patch block
     # (model_pytorch.PatchTransformerBlock) is version 24: version 23's format, whose trunk may hold the patch block
     # (write_block). A binary from before refuses it. Every other model keeps its version, and its file stays the same.
+    # A model of the V15 inputs is version 25 with or without the patch block (2026-11-03).
     if any(isinstance(block, PatchTransformerBlock) for block in model.blocks):
-        if version != 23:
-            raise Exception(f"the patch block is exported with the V14 inputs only (model version 23's format), not as version {version}")
-        version = 24
+        if version not in (23, 25):
+            raise Exception(f"the patch block is exported with the V14 or V15 inputs only (model version 23's or 25's format), not as version {version}")
+        if version == 23:
+            version = 24
 
     # Enclosure fork: the model's game, in the header's model option H (below): 0 for Enclosure, as in every file from
     # before, so that every binary loads its networks; another game's name for another game.

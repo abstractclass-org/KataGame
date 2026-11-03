@@ -1,5 +1,6 @@
 // Blueprints (abscls-gml5.3): the CPU's cost of the reach of the stars (game/blueprints/starreach.h, both players)
-// beside the network's input fill of the inputs version 14 (NNInputs), on the same positions, on one thread.
+// beside the network's input fill of the inputs versions 14 and 15 (NNInputs), on the same positions, on one thread.
+// Version 15 (abscls-gml5.4) is version 14 with the planes of reach, which the reach computes.
 //
 //   benchstarreach STATES [PASSES]
 //
@@ -14,10 +15,12 @@
 // pass calls the function on the chunk's other positions, as a search reads another position each time.
 //
 // The functions: the reach of both players' stars (star_reach, with its budget), the packed fill that each network
-// evaluation calls (NNInputs::fillRowV14Packed, nneval.cpp) and the float fill that the training rows call
-// (NNInputs::fillRowV14, trainingwrite.cpp), at the identity. It prints, for each source and for all the positions:
-// their count, then for each function the mean, the median, the 99th percentile and the most microseconds a
-// position, and the mean of the reach over the mean of the packed fill. Then the reach's values (all its stars) and
+// evaluation calls (NNInputs::fillRowV14Packed and fillRowV15Packed, nneval.cpp) and the float fill that the training
+// rows call (NNInputs::fillRowV14 and fillRowV15, trainingwrite.cpp), at the identity. It prints, for each source and
+// for all the positions: their count, then for each function the mean, the median, the 99th percentile and the most
+// microseconds a position, the mean of the reach over the mean of version 14's packed fill, each fill of version 15
+// over version 14's (means), and the mean and the 99th percentile of version 15's packed fill less version 14's, from
+// each position's least times. Then the reach's values (all its stars) and
 // its work units (both players' sum: the mean and the most), and a sum of the results, so that the compiler keeps the
 // work. Built by tests/enclosure/build.sh with TESTS=blueprints/benchstarreach, against a Blueprints build.
 
@@ -41,7 +44,7 @@ namespace {
 constexpr int CHUNK = 64;
 
 struct Times {
-  vector<double> reach, packed, floats;  // microseconds, one a position
+  vector<double> reach, packed, floats, packed15, floats15, extra;  // microseconds, one a position
 };
 
 double percentile(vector<double> v, double p) {
@@ -84,8 +87,8 @@ int main(int argc, char** argv) {
   }
   const int S = NNPos::MAX_BOARD_LEN;
   MiscNNInputParams params;
-  vector<uint32_t> bits(NNInputs::gameSpatialWords(14));
-  vector<float> floats(size_t(NNInputs::NUM_FEATURES_SPATIAL_V14) * S * S), global(NNInputs::NUM_FEATURES_GLOBAL_V14);
+  vector<uint32_t> bits(NNInputs::gameSpatialWords(15));
+  vector<float> floats(size_t(NNInputs::NUM_FEATURES_SPATIAL_V15) * S * S), global(NNInputs::NUM_FEATURES_GLOBAL_V15);
   blueprints::StarReach out;
   map<string, Times> bySource;
   map<int, long long> values;
@@ -99,7 +102,7 @@ int main(int argc, char** argv) {
   hists.reserve(CHUNK);
   auto timeChunk = [&]() {
     const size_t n = boards.size();
-    vector<double> reach(n, 1e300), packed(n, 1e300), flt(n, 1e300);
+    vector<double> reach(n, 1e300), packed(n, 1e300), flt(n, 1e300), packed15(n, 1e300), flt15(n, 1e300);
     auto runReach = [&](size_t i) {
       blueprints::star_reach(boards[i].pos, out);
       for(int pl = 0; pl < 2; pl++)
@@ -116,6 +119,16 @@ int main(int argc, char** argv) {
       NNInputs::fillRowV14(boards[i], hists[i], pla, params, S, S, false, floats.data(), global.data());
       sink += floats[(i * 7919) % floats.size()];
     };
+    auto runPacked15 = [&](size_t i) {
+      const Player pla = boards[i].nextPla();
+      NNInputs::fillRowV15Packed(boards[i], hists[i], pla, params, S, S, false, bits.data(), global.data(), 0);
+      sink += bits[i % bits.size()] & 1;
+    };
+    auto runFloats15 = [&](size_t i) {
+      const Player pla = boards[i].nextPla();
+      NNInputs::fillRowV15(boards[i], hists[i], pla, params, S, S, false, floats.data(), global.data());
+      sink += floats[(i * 7919) % floats.size()];
+    };
     auto timeAll = [&](auto&& f, vector<double>& best) {
       for(size_t i = 0; i < n; i++)
         f(i);  // untimed
@@ -129,7 +142,9 @@ int main(int argc, char** argv) {
     };
     timeAll(runReach, reach);
     timeAll(runPacked, packed);
+    timeAll(runPacked15, packed15);
     timeAll(runFloats, flt);
+    timeAll(runFloats15, flt15);
     for(size_t i = 0; i < n; i++) {
       blueprints::star_reach(boards[i].pos, out);
       long long work = 0;
@@ -145,6 +160,9 @@ int main(int argc, char** argv) {
         t.reach.push_back(reach[i]);
         t.packed.push_back(packed[i]);
         t.floats.push_back(flt[i]);
+        t.packed15.push_back(packed15[i]);
+        t.floats15.push_back(flt15[i]);
+        t.extra.push_back(packed15[i] - packed[i]);
       }
     }
     positions += (long long)n;
@@ -186,8 +204,14 @@ int main(int argc, char** argv) {
     printf("%s: %zu positions\n", name.c_str(), t.reach.size());
     show("the reach, both players", t.reach);
     show("the packed fill (fillRowV14Packed)", t.packed);
+    show("the packed fill (fillRowV15Packed)", t.packed15);
     show("the float fill (fillRowV14)", t.floats);
-    printf("  the reach / the packed fill: %.2f (means)\n", mean(t.reach) / mean(t.packed));
+    show("the float fill (fillRowV15)", t.floats15);
+    printf("  the reach / the packed fill of version 14: %.2f (means)\n", mean(t.reach) / mean(t.packed));
+    printf("  version 15 / version 14: packed %.2f, floats %.2f (means)\n", mean(t.packed15) / mean(t.packed),
+           mean(t.floats15) / mean(t.floats));
+    printf("  version 15's packed fill less version 14's: mean %.2f, p99 %.2f\n", mean(t.extra),
+           percentile(t.extra, 0.99));
   }
   printf("The reach's values:");
   for(const auto& [k, count] : values)

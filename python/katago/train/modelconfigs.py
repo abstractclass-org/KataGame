@@ -72,10 +72,12 @@ def with_game(config: ModelConfig, game_name: Union[str,None]) -> ModelConfig:
 # (2026-10-29) has V12's inputs with the game's labels in their canonical order, and the policy in that order too (C++
 # NNInputs V13, exported as model version 22; games.canonical_labels). 14 (2026-10-29) adds AZdb's latent after V13's
 # global inputs, for every game: DIVERSITY_MEMBERS inputs, 1 at the member's and 0 elsewhere (C++ NNInputs V14,
-# exported as model version 23; the engine repository's games/blueprints/docs/research/diversity-players.md).
+# exported as model version 23; the engine repository's games/blueprints/docs/research/diversity-players.md). 15
+# (2026-11-03) adds the game's planes of reach after V14's planes (C++ NNInputs V15, exported as model version 25;
+# games.reach_spatial_inputs).
 PLAYOUT_GLOBAL_INPUTS = 2
 DIVERSITY_MEMBERS = games.ROW_DIVERSITY_INPUTS
-INPUTS_VERSIONS = (8, 9, 10, 11, 12, 13, 14)
+INPUTS_VERSIONS = (8, 9, 10, 11, 12, 13, 14, 15)
 
 def get_inputs_version(config: ModelConfig):
     return config.get("inputs_version", 8)
@@ -110,7 +112,8 @@ def get_num_bin_input_features(config: ModelConfig):
         game = get_game(config)
         extended = games.extended_spatial_inputs(game) if get_inputs_version(config) >= 10 else 0
         areas = games.area_spatial_inputs(game) if get_inputs_version(config) >= 12 else 0
-        return 1 + game.NUM_SPATIAL_INPUTS + extended + areas
+        reach = games.reach_spatial_inputs(game) if get_inputs_version(config) >= 15 else 0
+        return 1 + game.NUM_SPATIAL_INPUTS + extended + areas + reach
     else:
         assert(False)
 

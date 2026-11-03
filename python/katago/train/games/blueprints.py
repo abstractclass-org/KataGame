@@ -34,7 +34,8 @@ the rules board map to bins). The legal hand actions move as the hand's points o
 boxes are global inputs: each box's two corners move as offsets by the symmetry's linear part, and the turn by 180
 degrees and the second reflection (3 and 7) swap the corners (apply_symmetry_extended_global_inputs). The rows of the
 older versions have none of these. The planes of closed areas of the inputs version 12 (the areas closed by each
-player's walls) are points of the board, so they move as pixels too.
+player's walls) and the planes of reach of the inputs version 15 (marks on each player's stars) are points of the
+board, so they move as pixels too.
 
 The inputs version 13 has each hand in a canonical order (the C++ gameencoding.h, HandOrder): each blueprint's planes,
 its policy channels and the pick's global input are at its slot of an order of the blueprints' cells, not at its
@@ -114,6 +115,13 @@ NUM_HISTORY_TURNS = 4
 # mover's walls and by the opponent's walls. They move as pixels.
 NUM_AREA_SPATIAL_INPUTS = 2
 MY_CLOSED, THEIR_CLOSED = 101, 102
+# The planes of reach (the inputs version 15), after the planes of closed areas: MY_REACH + i marks each of the mover's
+# stars that the opponent needs more than REACH_LEVELS[i] placements to capture, THEIR_REACH + i each of the opponent's
+# stars by the mover's placements, and REACH_UNKNOWN each star whose reach is not known (the C++ write_reach). They move
+# as pixels.
+NUM_REACH_SPATIAL_INPUTS = 9
+REACH_LEVELS = (1, 2, 3, 6)
+MY_REACH, THEIR_REACH, REACH_UNKNOWN = 103, 107, 111
 # The inputs version 13 reads each hand in an order of its blueprints' cells (the module's docstring).
 CANONICAL_LABELS = True
 _KEY = 1000                        # a cell's (r, q) as one integer, for the lowest cell: (r + 100) * _KEY + q + 100
@@ -191,8 +199,9 @@ def _remap_planes(out, inputs, first, count, image, symmetry, shifts):
 
 
 def apply_symmetry_inputs(binary_inputs, symmetry):
-    """The input planes (N, C, y, x), with the extended planes in the rows of the inputs versions 10 to 12, and the
-    planes of closed areas, pixels, in the rows of version 12."""
+    """The input planes (N, C, y, x), with the extended planes in the rows of the inputs versions 10 and later, the
+    planes of closed areas, pixels, in the rows of version 12 and later, and the planes of reach, pixels, in the rows
+    of version 15."""
     if symmetry == 0:
         return binary_inputs
     out = apply_symmetry_points(binary_inputs, symmetry).clone()

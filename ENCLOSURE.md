@@ -202,6 +202,8 @@ Input version **V8** (`NNInputs::fillRowV8`) is the input of the Enclosure netwo
   Enclosure's position holds no label that its rules leave unread, so its V13 is its V12.
 - **V14** (model version 23, 2026-10-29) adds AZdb's latent after V13's global inputs, for every game (GAMES.md,
   "AZdb's members"). Enclosure gives no statistics of a position (`Diversity`), so every member's reward is 0 there.
+- **V15** (model version 25, 2026-11-03) adds a game's planes of reach to V14's (GAMES.md,
+  `NUM_REACH_SPATIAL_INPUTS`). Enclosure has none, so its V15 is its V14.
 - **Absolute colours,** as in the Enclosure network: plane k is Blue's for k = 0. The player to move is a global
   input. (KataGo's Go inputs are relative to the mover. The choice was "our feature planes, as KataGo uses its Go
   features".)
