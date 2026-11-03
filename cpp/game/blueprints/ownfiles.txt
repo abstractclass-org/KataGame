@@ -11,3 +11,4 @@ command/blueprintsengine.cpp    # the protocol's native command, katago blueprin
 command/blueprintspractice.cpp  # the practice bot's session, also in WebAssembly (the engine repository's games/blueprints/wasm/practice.cpp)
 command/blueprintspractice.h
 command/blueprintspracticeengine.cpp  # the practice bot's native command, katago blueprints-practice
+tests/blueprints/               # its standalone tests and benchmarks: tests/enclosure/build.sh, TESTS=blueprints/NAME
