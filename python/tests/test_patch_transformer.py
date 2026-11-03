@@ -7,7 +7,8 @@ and the model config hybrid3, Blueprints' legal moves (games.legal_moves) and ho
   (its output map at 0). One step of SGD on the trainer's loss reaches the block, and then its attention.
 - Every parameter is in one of the optimizer's groups, once.
 - add_diversity_members.py converts a checkpoint of hybrid3 of the inputs version 13: it keeps every tensor but
-  linear_global's, whose new columns hold member 0's at 0, and member 0 computes what it did within fp32's rounding.
+  linear_global's, whose new columns hold member 0's at 0: linear_global gives member 0 what it did (in fp64),
+  and from it the network computes every old output to the bit.
 - legal_moves gives the placements on the anchors' planes while no pick waits, the picks and drops on the planes of
   legal hand actions, and no pass.
 - holdout_losses.evaluate gives the same measures for the same network and seed, and the policy's mass outside the
@@ -21,6 +22,8 @@ import sys
 import numpy as np
 import pytest
 import torch
+import torch.nn.functional as F
+from torch.optim.swa_utils import AveragedModel
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import add_diversity_members  # noqa: E402
@@ -49,6 +52,11 @@ def hybrid3(inputs_version=14, heads=BPJ5_HEADS, seed=0):
 def patch_block(model):
     (block,) = [b for b in model.blocks if isinstance(b, PatchTransformerBlock)]
     return block
+
+
+def model_of(net):
+    """The Model of a network or of an SWA network."""
+    return net.module if isinstance(net, AveragedModel) else net
 
 
 def test_the_padding_is_symmetric_for_3_and_one_sided_for_2():
@@ -130,9 +138,13 @@ def test_every_parameter_is_in_one_group_once():
 
 def test_a_checkpoint_of_hybrid3_of_version_13_converts_with_member_0_as_it_was():
     """The conversion changes linear_global's columns and adds the head only: the patch block's tensors and every
-    other one stay, and member 0's column is 0. The outputs then agree within fp32's rounding: the wider linear_global
-    sums in another order, and a deep random network carries that difference to the heads (a b6c96 converted the
-    same way differs as much; test_diversity_members.py checks 1e-5 on the small b1c6nbt)."""
+    other one stay, and member 0's column is 0. So linear_global gives member 0 what it gave before, and from there
+    the converted network computes every output but the new head's as the old one did, to the bit.
+
+    The two parts are checked apart. In fp32 the wider linear_global sums in another order, and this random network's
+    activations reach 1e7 (one SGD step of the checkpoint helper): the score belief's log-probabilities then cancel
+    numbers whose rounding is about 1, so an end-to-end comparison in fp32 fails at some thread counts (0.856 at
+    OMP_NUM_THREADS=4). linear_global is compared in fp64, where the products of fp32 values are exact."""
     ckpt = checkpoint(13, "hybrid3")
     before = {part: {k: v.clone() for k, v in ckpt[part].items()} for part in ("model", "swa_model")}
     olds = networks(ckpt)
@@ -148,12 +160,23 @@ def test_a_checkpoint_of_hybrid3_of_version_13_converts_with_member_0_as_it_was(
         assert any("blocks.2.blockstack." in k for k in new)
     news = networks(ckpt)
     binary, global_13 = inputs(config("blueprints", 13, "hybrid3"), 2)
+    global_14 = torch.cat([global_13, latent(2, 0)], dim=1)
     with torch.no_grad():
         for old, new in zip(olds, news):
+            old_global, new_global = model_of(old).linear_global, model_of(new).linear_global
+            torch.testing.assert_close(F.linear(global_14.double(), new_global.weight.double()),
+                                       F.linear(global_13.double(), old_global.weight.double()),
+                                       rtol=1e-12, atol=1e-12)
             expected = outputs_without_intrinsic(old, old(binary, global_13))
-            got = outputs_without_intrinsic(new, new(binary, torch.cat([global_13, latent(2, 0)], dim=1)))
-            for e, o in zip(expected, got):
-                torch.testing.assert_close(o, e, rtol=1e-3, atol=1e-2)
+            # The old linear_global's own fp32 output in place of the new one's, which sums in another order.
+            hook = new_global.register_forward_hook(lambda module, args, out: old_global(global_13))
+            try:
+                got = outputs_without_intrinsic(new, new(binary, global_14))
+            finally:
+                hook.remove()
+            assert len(got) == len(expected)
+            for i, (e, o) in enumerate(zip(expected, got)):
+                assert torch.equal(o, e), (i, (o - e).abs().max().item())
 
 
 def test_the_export_writes_hybrid3_as_model_version_24(tmp_path):
