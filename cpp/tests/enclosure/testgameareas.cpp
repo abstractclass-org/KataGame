@@ -9,7 +9,8 @@
 // (KataGo's: 1 minus the weight of the row's own search value, 1 / (1 + A * c) on the look-ahead area A, as
 // trainingwrite.cpp writes it) and its mean look-ahead in moves, and the komi draw's standard deviation for one
 // configured as 100 points, each beside its value with the board's area. Then the score table's side, its reach in
-// units of the score utility and its memory, beside those of the network's board side.
+// units of the score utility and its memory, beside those of the network's board side. It checks the side in the
+// table that the search reads (ScoreValue::expectedWhiteScoreValue).
 
 #include <cmath>
 #include <cstdio>
@@ -43,45 +44,33 @@ static_assert(GameInterface::komiArea<NoAreas>(67, 67) == 4489.0, "the default i
 static_assert(GameInterface::lookaheadArea<BothAreas>(67, 67) == 100.0, "a game's own area");
 static_assert(GameInterface::komiArea<BothAreas>(67, 67) == 49.0, "a game's own area");
 //A game that gives no score table's side, and one that gives it.
+struct NoTableSide {};
 struct OwnTableSide {
   static constexpr int SCORE_TABLE_SIDE = 19;
 };
-static_assert(GameInterface::scoreTableSide<NoAreas>(67) == 67, "the default is the network's board side");
-static_assert(GameInterface::scoreTableSide<NoAreas>(7) == 7, "the default is the network's board side");
+static_assert(GameInterface::scoreTableSide<NoTableSide>(67) == 67, "the default is the network's board side");
+static_assert(GameInterface::scoreTableSide<NoTableSide>(7) == 7, "the default is the network's board side");
 static_assert(GameInterface::scoreTableSide<OwnTableSide>(67) == 19, "a game's own side");
 
-//The side of each game's score table. Enclosure and Connect-4 give none, so they keep KataGo's rule, the network's
-//board side, and their tables stay as they were. Blueprints gives Go's 19: the view's 67 made a table of 331 MB.
-static bool pinnedTableSide(int& side) {
-  if(strcmp(GameRules::NAME, "blueprints") == 0) {
-    side = 19;
-    return true;
-  }
-  if(strcmp(GameRules::NAME, "enclosure") == 0) {
-    side = 19;
-    return true;
-  }
-  if(strcmp(GameRules::NAME, "connect4") == 0) {
-    side = 7;
-    return true;
-  }
-  return false;
-}
-
-//The areas of each game of KataGame on its standard board: the look-ahead area, then the komi area. Blueprints gives
-//Go's 361 for both (its 67 x 67 view holds the window, and its moves do not reach that far). The other games give
-//none, so they keep their board's area, as before the areas were the game's.
-static bool pinnedAreas(double& lookahead, double& komi) {
+//The areas of each game of KataGame on its standard board, the look-ahead area and the komi area, and the side of its
+//score table. Blueprints gives Go's 361 for both areas (its 67 x 67 view holds the window, and its moves do not reach
+//that far) and Go's 19 for the side (the view's 67 made a table of 331 MB). The other games give none, so they keep
+//their board's area, as before the areas were the game's, and the network's board side, so their tables stay as they
+//were.
+static bool pinnedValues(double& lookahead, double& komi, int& tableSide) {
   if(strcmp(GameRules::NAME, "blueprints") == 0) {
     lookahead = komi = 361.0;
+    tableSide = 19;
     return true;
   }
   if(strcmp(GameRules::NAME, "enclosure") == 0) {
     lookahead = komi = 19.0 * 19.0;
+    tableSide = 19;
     return true;
   }
   if(strcmp(GameRules::NAME, "connect4") == 0) {
     lookahead = komi = 7.0 * 6.0;
+    tableSide = 7;
     return true;
   }
   return false;
@@ -95,7 +84,8 @@ int main() {
          board.x_size, board.y_size, board.lookaheadArea(), board.komiArea(), boardArea);
 
   double lookahead = 0.0, komi = 0.0;
-  check(pinnedAreas(lookahead, komi), "the build's game has pinned areas");
+  int tableSide = 0;
+  check(pinnedValues(lookahead, komi, tableSide), "the build's game has pinned areas and a pinned side");
   check(board.lookaheadArea() == lookahead, "the game's look-ahead area");
   check(board.komiArea() == komi, "the game's komi area");
 
@@ -119,17 +109,21 @@ int main() {
   printf("komi standard deviation configured as 100 points: drawn with %.2f points (the board's area: %.2f)\n",
          drawn.komiStdev, 100.0 * sqrt(boardArea) / 19.0);
 
-  //The score table (ScoreValue::initTables): S cells a unit of the utility, a radius of S * S + 60 cells for the mean
-  //and as many for the standard deviation, so a reach of S + 60 / S units, and 2 (S * S + 60)^2 doubles.
-  const int side = GameInterface::scoreTableSide<GameEncoding>(NNPos::MAX_BOARD_LEN);
-  int pinnedSide = 0;
-  check(pinnedTableSide(pinnedSide), "the build's game has a pinned score table's side");
-  check(side == pinnedSide, "the game's score table's side");
-  auto describe = [](int s) {
-    const double radius = (double)s * s + NNPos::EXTRA_SCORE_DISTR_RADIUS;
-    return Global::strprintf("side %d, reach %.1f units, %.1f MB", s, radius / s, 2.0 * radius * radius * 8 / 1e6);
+  //The score table (ScoreValue::initTables): S cells a unit of the utility, a radius of R = S * S + 60 cells for the
+  //mean and as many for the standard deviation, so a reach of S + 60 / S units, and 2 R^2 doubles. The check reads the
+  //table that the search reads: a mean far beyond the reach, with no spread, reads the last cell, whose mean is
+  //R - 1.5 cells, so its value is atan((R - 1.5) / S) * 2 / pi.
+  auto radius = [](int s) { return (double)s * s + NNPos::EXTRA_SCORE_DISTR_RADIUS; };
+  ScoreValue::initTables();
+  const double edge = ScoreValue::expectedWhiteScoreValue(1000.0, 0.0, 0.0, 1.0, 1.0);
+  ScoreValue::freeTables();
+  check(fabs(edge - atan((radius(tableSide) - 1.5) / tableSide) * 2.0 / M_PI) < 1e-12,
+        "the search's score table has the game's side");
+  auto describe = [&](int s) {
+    const double r = radius(s);
+    return Global::strprintf("side %d, reach %.1f units, %.1f MB", s, r / s, 2.0 * r * r * 8 / 1e6);
   };
-  printf("score table: %s (the network's board side: %s)\n", describe(side).c_str(),
+  printf("score table: %s (the network's board side: %s)\n", describe(tableSide).c_str(),
          describe(NNPos::MAX_BOARD_LEN).c_str());
 
   if(failures > 0) {
