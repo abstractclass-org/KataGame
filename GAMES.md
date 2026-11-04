@@ -534,17 +534,18 @@ reach (`NUM_REACH_SPATIAL_INPUTS`, below) after its planes. Self-play writes its
 | `GAME_LENGTH` | A game's mean length in actions (the front's moves), for KataGo's game-phase constants ("The game's length"). | 120 |
 
 The encoding part's optional members work as the rules part's ("Optional members"): `gameinterface.h` has a detector
-and a helper for each. The front calls the helpers of the two areas through `Board`, and the row writer calls
-`ownTargets`. The encoding part's check requires each area to be positive, the bracket's two members to come
-together, the lead's step to be 0 or on the half-point grid, and `OWN_TARGETS` to hold the slots that the table gives.
-Enclosure and Connect-4 give none. So their areas, their bracket with its rule, and their lead's step are those of
-KataGo's code (`testgameareas` and `testkomi` pin them), and the front computes each slot of `FRONT_TARGETS` in their
-`TARGETS`.
+and a helper for each. The front calls the helpers of the two areas through `Board`, the score utility's table calls
+`scoreTableSide`, and the row writer calls `ownTargets`. The encoding part's check requires each area and the table's
+side to be positive, the bracket's two members to come together, the lead's step to be 0 or on the half-point grid, and
+`OWN_TARGETS` to hold the slots that the table gives. Enclosure and Connect-4 give none. So their areas, their score
+table, their bracket with its rule, and their lead's step are those of KataGo's code (`testgameareas` and `testkomi`
+pin them), and the front computes each slot of `FRONT_TARGETS` in their `TARGETS`.
 
 | Member | Meaning | Default (helper) | Blueprints |
 |---|---|---|---|
 | `LOOKAHEAD_AREA` | The area A that KataGo's look-ahead horizons read where KataGo reads the board's area ("The game's length"). The short-term value targets C4-7, C8-11 and C12-15 have lambda = 1 - 1 / (1 + A × c), for c = 0.176, 0.056 and 0.016: a mean look-ahead of A × c moves. Value-surprise weighting uses c = 0.016. | The board's area, `x_size * y_size` (`lookaheadArea`, `Board::lookaheadArea`) | 361, Go's: its 67 × 67 view holds the window, and its moves do not reach that far. The look-ahead is about 64, 20 and 6 actions, against 790, 251 and 72 with the view's 4,489, in a game of about 132 actions. |
 | `KOMI_AREA` | The area A that KataGo's komi sampler reads where KataGo reads the board's area (`PlayUtils::chooseExtraBlackAndKomi`): each configured standard deviation times √A / 19, and the number of handicap stones. The two spreads of `fancyKomiVarying` (`play.cpp`) still read the board's area. | The board's area (`komiArea`, `Board::komiArea`) | 361: the sampler draws a komi in the points that the config gives. The view's 4,489 multiplied each standard deviation by 67 / 19. |
+| `SCORE_TABLE_SIDE` | The side S that KataGo's table of the expected score utility (`ScoreValue::initTables`) reads where KataGo reads the board's side. The table has S cells for each unit of the score utility (`SCORE_UNIT` times the utility's scale), and S² + 60 cells for the mean on each side of the centre and for the standard deviation: it reaches S + 60 / S units, and beyond that the lookup reads the table's edge. So S sets the table's resolution and its reach, not its values. Its memory and its start time grow as S⁴: 2.8 MB at 19, 331 MB at 67. | The network's board side, `MAX_BOARD_LEN` (`scoreTableSide`) | 19, Go's: its cells are `SCORE_SCALE` points apart (times the utility's scale), as KataGo's are 1 point apart on Go's board, and its reach of 22.2 units holds bpj5's searches 5.7 times over. The view's 67 made a table that took seconds at each start. |
 | `KOMI_BRACKET_STEP`, `KOMI_BRACKET_LIMIT` | The bracket of KataGo's even-komi search (`PlayUtils::evenKomiOffset`, for `adjustKomiToEven` and `computeLead`), in points. Around its guess, the search tries the offsets step, 2 × step and so on up to the limit, until White's win-loss value changes sign, then bisects on the half-point grid. Whole or half points. When the value keeps its sign up to the limit, a game that gives its bracket has no even komi: the search stops after the bracket's offsets, the lead's search gives the position no lead target, and the compensation of an uneven game keeps the game's komi. | KataGo's 1 and 32: the offsets 1, 2, 4, 8, 16 and 32, and KataGo's rule, which bisects to the bracket's end and takes it as the even komi (`komiBracketStep`, `komiBracketLimit`, `komiBracketEndIsEven`) | 20 (`SCORE_SCALE`) and 3,000: the offsets 20, 40, 80 and so on to 2,560, then 3,000, the reach of self-play's widest komi. KataGo's 32 points are less than 2 of Go's points at this score scale. Beyond 3,000 points from the guess, no even komi. |
 | `KOMI_LEAD_STEP` | The step of `computeLead`'s smoothing over a coarse score, in points. When the even komi is not a multiple of 2 × step, the lead reads the win-loss value at the 4 komis step apart around it, averages each pair 2 × step apart, and interpolates. KataGo's half point is for Go's area scoring, where the margins of a full board have one parity, so the result changes every 2 points of komi. 0, or whole or half points. 0: no smoothing, the lead is the search's even komi (KataGo's rule for territory scoring). | KataGo's half point times `SCORE_SCALE` (`komiLeadStep`): Enclosure's 6 points, Connect-4's half point | 0: Blueprints' margins are whole points of both parities (426 even and 311 odd in the site's 737 finished games), so each half point of komi can change the result. |
 | `OWN_TARGETS` | The slots of `TARGETS` that the game computes itself (`training_targets`). It holds every slot of `TARGETS` that is not one of the `FRONT_TARGETS`, and it can hold those too: the front then leaves that slot to the game. The check requires both. | `TARGETS` without the `FRONT_TARGETS` (`ownTargets`) | All of its `TARGETS`, C2-3 too: the front's future positions read each later position's own view at the row's points, and Blueprints' view moves with the mover's window. |
@@ -836,11 +837,12 @@ OUT_DIR/testgameinterface tests/data/enclosure_games.txt
 ```
 
 **The areas of KataGo's constants:** `testgameareas` runs on a build of any game. It checks the defaults of
-`LOOKAHEAD_AREA` and `KOMI_AREA` with stub games, and the build's game on its standard board: both areas against the
-values that the test pins for each game, and the komi sampler's standard deviation for one configured as 100 points.
-It prints the lambdas of the short-term value targets beside their values with the board's area. A new game fails it
-until the test pins the game's areas. It builds and runs as `testgameinterface` does, with no argument. In the engine
-repository, `games/blueprints/tools/td_lambdas.py` checks the lambdas in Blueprints' rows.
+`LOOKAHEAD_AREA`, `KOMI_AREA` and `SCORE_TABLE_SIDE` with stub games, and the build's game on its standard board: both
+areas and the score table's side against the values that the test pins for each game, and the komi sampler's standard
+deviation for one configured as 100 points. It prints the lambdas of the short-term value targets beside their values
+with the board's area, and the score table's reach and memory beside those of the network's board side. A new game
+fails it until the test pins the game's areas and side. It builds and runs as `testgameinterface` does, with no
+argument. In the engine repository, `games/blueprints/tools/td_lambdas.py` checks the lambdas in Blueprints' rows.
 
 **Komi:** `testkomi` runs on a build of any game, with a self-play config as an optional argument. It plays a random
 game to its end and checks the history's result at komis of both signs, at 0, and at the komis that decide the game
@@ -940,9 +942,10 @@ code and the work that remains for a third game.
    pipeline").
 4. **The encoding part.** Add `cpp/game/<game>/gameencoding.h` (`struct GameEncoding`), ending with
    `static_assert(GameInterface::checkEncoding<GameEncoding>(), "...")`. Connect-4's is a short example. A board
-   larger than the reach of the game's moves gives `LOOKAHEAD_AREA` and `KOMI_AREA` ("The network encoding part"), and
-   `tests/enclosure/testgameareas.cpp` pins the game's areas in any case. A game whose margins are much larger than
-   Go's gives `KOMI_BRACKET_STEP` and `KOMI_BRACKET_LIMIT`, a game whose margins have no parity gives
+   larger than the reach of the game's moves gives `LOOKAHEAD_AREA` and `KOMI_AREA` ("The network encoding part"). A
+   network's board much larger than Go's gives `SCORE_TABLE_SIDE`: the score utility's table grows as the side's 4th
+   power. `tests/enclosure/testgameareas.cpp` pins the game's areas and side in any case. A game whose margins are
+   much larger than Go's gives `KOMI_BRACKET_STEP` and `KOMI_BRACKET_LIMIT`, a game whose margins have no parity gives
    `KOMI_LEAD_STEP` 0, and `tests/enclosure/testkomi.cpp` pins the game's bracket, its rule and its lead's step in any
    case. Build with
    `-DGAME=<game>`, in a build folder for that game and backend: `pipeline/scripts/build_game.sh <game>` builds both

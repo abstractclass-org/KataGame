@@ -1,13 +1,15 @@
 // KataGame fork: the areas that KataGo's look-ahead horizons and its komi sampler read where KataGo reads the board's
-// area (GameInterface::lookaheadArea and komiArea, gameinterface.h), through the front: the defaults with stub games,
-// and the build's game on its standard board, against the values pinned below.
+// area (GameInterface::lookaheadArea and komiArea, gameinterface.h), through the front, and the side that the table
+// of the expected score utility reads where KataGo reads the board's side (GameInterface::scoreTableSide): the
+// defaults with stub games, and the build's game on its standard board, against the values pinned below.
 //
 //   testgameareas
 //
 // It prints the build's game, its standard board and both areas, then for each short-term value target its lambda
 // (KataGo's: 1 minus the weight of the row's own search value, 1 / (1 + A * c) on the look-ahead area A, as
 // trainingwrite.cpp writes it) and its mean look-ahead in moves, and the komi draw's standard deviation for one
-// configured as 100 points, each beside its value with the board's area.
+// configured as 100 points, each beside its value with the board's area. Then the score table's side, its reach in
+// units of the score utility and its memory, beside those of the network's board side.
 
 #include <cmath>
 #include <cstdio>
@@ -15,6 +17,7 @@
 
 #include "../../core/rand.h"
 #include "../../game/board.h"
+#include "../../neuralnet/nninputs.h"
 #include "../../program/playutils.h"
 
 using namespace std;
@@ -39,6 +42,31 @@ static_assert(GameInterface::lookaheadArea<NoAreas>(7, 6) == 42.0, "the default 
 static_assert(GameInterface::komiArea<NoAreas>(67, 67) == 4489.0, "the default is the board's area");
 static_assert(GameInterface::lookaheadArea<BothAreas>(67, 67) == 100.0, "a game's own area");
 static_assert(GameInterface::komiArea<BothAreas>(67, 67) == 49.0, "a game's own area");
+//A game that gives no score table's side, and one that gives it.
+struct OwnTableSide {
+  static constexpr int SCORE_TABLE_SIDE = 19;
+};
+static_assert(GameInterface::scoreTableSide<NoAreas>(67) == 67, "the default is the network's board side");
+static_assert(GameInterface::scoreTableSide<NoAreas>(7) == 7, "the default is the network's board side");
+static_assert(GameInterface::scoreTableSide<OwnTableSide>(67) == 19, "a game's own side");
+
+//The side of each game's score table. Enclosure and Connect-4 give none, so they keep KataGo's rule, the network's
+//board side, and their tables stay as they were. Blueprints gives Go's 19: the view's 67 made a table of 331 MB.
+static bool pinnedTableSide(int& side) {
+  if(strcmp(GameRules::NAME, "blueprints") == 0) {
+    side = 19;
+    return true;
+  }
+  if(strcmp(GameRules::NAME, "enclosure") == 0) {
+    side = 19;
+    return true;
+  }
+  if(strcmp(GameRules::NAME, "connect4") == 0) {
+    side = 7;
+    return true;
+  }
+  return false;
+}
 
 //The areas of each game of KataGame on its standard board: the look-ahead area, then the komi area. Blueprints gives
 //Go's 361 for both (its 67 x 67 view holds the window, and its moves do not reach that far). The other games give
@@ -90,6 +118,19 @@ int main() {
   check(drawn.extraBlack == 0 && drawn.komiMean == 0.0f, "the komi draw's mean and handicap");
   printf("komi standard deviation configured as 100 points: drawn with %.2f points (the board's area: %.2f)\n",
          drawn.komiStdev, 100.0 * sqrt(boardArea) / 19.0);
+
+  //The score table (ScoreValue::initTables): S cells a unit of the utility, a radius of S * S + 60 cells for the mean
+  //and as many for the standard deviation, so a reach of S + 60 / S units, and 2 (S * S + 60)^2 doubles.
+  const int side = GameInterface::scoreTableSide<GameEncoding>(NNPos::MAX_BOARD_LEN);
+  int pinnedSide = 0;
+  check(pinnedTableSide(pinnedSide), "the build's game has a pinned score table's side");
+  check(side == pinnedSide, "the game's score table's side");
+  auto describe = [](int s) {
+    const double radius = (double)s * s + NNPos::EXTRA_SCORE_DISTR_RADIUS;
+    return Global::strprintf("side %d, reach %.1f units, %.1f MB", s, radius / s, 2.0 * radius * radius * 8 / 1e6);
+  };
+  printf("score table: %s (the network's board side: %s)\n", describe(side).c_str(),
+         describe(NNPos::MAX_BOARD_LEN).c_str());
 
   if(failures > 0) {
     fprintf(stderr, "%d failures\n", failures);

@@ -1369,6 +1369,13 @@ struct GameEncoding {
   // it draws a komi in the points that the config gives (GAMES.md, the encoding part's optional members).
   static constexpr double LOOKAHEAD_AREA = 19 * 19;
   static constexpr double KOMI_AREA = 19 * 19;
+  // KataGo's table of the expected score utility reads Go's side of 19, not the view's 67 (GameInterface::
+  // scoreTableSide). Its cells are then SCORE_SCALE points apart (times the utility's scale), as KataGo's are 1 point
+  // apart on Go's board, and it reaches 22.2 units of the utility, 8,420 points times the utility's scale. bpj5's
+  // searches reach at most 3.9 units: a standard deviation of 742 points at self-play's scale of 0.5. The view's 67 made
+  // a table of 331 MB that took seconds at each start (the engine repository's games/blueprints/docs/decisions/port.md,
+  // "The score utility's table").
+  static constexpr int SCORE_TABLE_SIDE = 19;
   // The even-komi search's bracket: offsets of 20, 40, 80 and so on around its guess, up to 3,000 points, the reach of
   // the widest komi of a new game in self-play (3 standard deviations of 1,000 points). KataGo's offsets of 1 to 32
   // points are less than 2 of Go's points at this SCORE_SCALE, and Blueprints' margins are hundreds of points. Beyond

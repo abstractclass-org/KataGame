@@ -206,6 +206,13 @@
  *                           the handicap's stones). With 361, the sampler draws a komi in the points that the config
  *                           gives. The spreads of fancyKomiVarying still read the board's area. Default: the board's
  *                           area, x_size * y_size (komiArea).
+ *   SCORE_TABLE_SIDE        int: the side S that KataGo's table of the expected score utility reads where KataGo reads
+ *                           the board's side (ScoreValue::initTables). The table has S cells for each unit of the
+ *                           utility (SCORE_UNIT times the utility's scale), and S * S + 60 cells for the mean on each
+ *                           side of the centre and for the standard deviation, so it reaches S + 60 / S units. Beyond
+ *                           that, the lookup reads the table's edge. Its memory and its start time grow as S^4: 2.8 MB
+ *                           for Go's 19, 331 MB for Blueprints' view of 67. Default: the network's board side,
+ *                           MAX_BOARD_LEN (scoreTableSide).
  *   KOMI_BRACKET_STEP, KOMI_BRACKET_LIMIT
  *                           double, double: the bracket of KataGo's even-komi search (PlayUtils::evenKomiOffset), in
  *                           points. Around its guess, the search tries the offsets KOMI_BRACKET_STEP, twice that, and
@@ -847,6 +854,7 @@ namespace encoding {
   //The optional members.
   GAMEINTERFACE_DETECT(HasLookaheadArea, double, G::LOOKAHEAD_AREA)
   GAMEINTERFACE_DETECT(HasKomiArea, double, G::KOMI_AREA)
+  GAMEINTERFACE_DETECT(HasScoreTableSide, int, std::integral_constant<int, G::SCORE_TABLE_SIDE>::value)
   GAMEINTERFACE_DETECT(HasKomiBracketStep, double, G::KOMI_BRACKET_STEP)
   GAMEINTERFACE_DETECT(HasKomiBracketLimit, double, G::KOMI_BRACKET_LIMIT)
   GAMEINTERFACE_DETECT(HasKomiLeadStep, double, G::KOMI_LEAD_STEP)
@@ -1026,6 +1034,8 @@ template<class E> constexpr bool checkEncoding() {
     static_assert(E::LOOKAHEAD_AREA > 0, "game interface, encoding part: LOOKAHEAD_AREA is positive");
   if constexpr(HasKomiArea<E>::value)
     static_assert(E::KOMI_AREA > 0, "game interface, encoding part: KOMI_AREA is positive");
+  if constexpr(HasScoreTableSide<E>::value)
+    static_assert(E::SCORE_TABLE_SIDE > 0, "game interface, encoding part: SCORE_TABLE_SIDE is positive");
   static_assert(HasKomiBracketStep<E>::value == HasKomiBracketLimit<E>::value,
                 "game interface, encoding part: the game gives both KOMI_BRACKET_STEP and KOMI_BRACKET_LIMIT, or "
                 "neither");
@@ -1069,6 +1079,17 @@ template<class E> constexpr double komiArea(int xSize, int ySize) {
   }
   else
     return (double)xSize * ySize;
+}
+
+//The side of KataGo's table of the expected score utility, for a network's board of side boardLen: the game's, else
+//the board's.
+template<class E> constexpr int scoreTableSide(int boardLen) {
+  if constexpr(encoding::HasScoreTableSide<E>::value) {
+    (void)boardLen;
+    return E::SCORE_TABLE_SIDE;
+  }
+  else
+    return boardLen;
 }
 
 //The bracket of KataGo's even-komi search, in points: its first offset and its largest. The game's, else KataGo's.

@@ -102,10 +102,10 @@ double ScoreValue::whiteScoreMeanSqOfScoreGridded(double finalWhiteMinusBlackSco
   return lowerSq + (upperSq - lowerSq) * drawEquivalentWinsForWhite;
 }
 
-
+//KataGame fork: the table's side is the game's (gameinterface.h, SCORE_TABLE_SIDE), by default the network's side.
 static bool scoreValueTablesInitialized = false;
 static double* expectedSVTable = NULL;
-static const int svTableAssumedBSize = NNPos::MAX_BOARD_LEN;
+static const int svTableAssumedBSize = GameInterface::scoreTableSide<GameEncoding>(NNPos::MAX_BOARD_LEN);
 static const int svTableMeanRadius = svTableAssumedBSize*svTableAssumedBSize + NNPos::EXTRA_SCORE_DISTR_RADIUS;
 static const int svTableMeanLen = svTableMeanRadius*2;
 static const int svTableStdevLen = svTableAssumedBSize*svTableAssumedBSize + NNPos::EXTRA_SCORE_DISTR_RADIUS;
