@@ -107,8 +107,16 @@ struct Process {
 };
 Process P;
 
+// A network that the caller holds and lends through a reader (modelReader): its size, SHA-256 and reader.
+struct PendingReader {
+  size_t len = 0;
+  string sha256;
+  std::function<size_t(size_t, char*, size_t)> read;
+};
+
 struct Engine {
   vector<char> pending;  // a network's bytes, written by the caller (modelBuffer), until load_model reads them
+  PendingReader pendingReader;  // or the caller's reader of them (modelReader)
   string modelName, modelSha;
   size_t modelBytes = 0;
   Logger* logger = nullptr;
@@ -576,7 +584,7 @@ json loadModel(const json& q) {
   }
   else {
 #ifdef MODEL_FROM_MEMORY
-    if(E.pending.empty())
+    if(E.pending.empty() && !E.pendingReader.read)
       return errorReply(q["id"], {"", "no network: give a path, or fill the model buffer first"});
 #else
     return errorReply(q["id"], {"path", "this build loads a network from a file: give its path"});
@@ -604,6 +612,16 @@ json loadModel(const json& q) {
     E.modelSha = sha256(fileBytes);
     E.modelBytes = fileBytes.size();
     file = path->get<string>();
+  }
+  else if(E.pendingReader.read) {
+    // The caller's bytes, read where it holds them: the module never copies the whole network.
+    E.modelSha = E.pendingReader.sha256;
+    E.modelBytes = E.pendingReader.len;
+#ifdef MODEL_FROM_MEMORY
+    ModelDesc::registerInMemoryModelReader("engine", E.pendingReader.len, E.pendingReader.read);
+#endif
+    E.pendingReader = PendingReader();
+    file = "memory:engine";
   }
   else {
     E.modelSha = sha256(E.pending);
@@ -1226,8 +1244,18 @@ void BlueprintsProtocol::setup(const string& configText, const string& build) {
 }
 
 char* BlueprintsProtocol::modelBuffer(size_t len) {
+  E.pendingReader = PendingReader();
   E.pending.assign(std::max<size_t>(len, 1), 0);
   return E.pending.data();
+}
+
+void BlueprintsProtocol::modelReader(
+  size_t len, const string& sha256, const std::function<size_t(size_t, char*, size_t)>& read
+) {
+  vector<char>().swap(E.pending);
+  E.pendingReader.len = len;
+  E.pendingReader.sha256 = sha256;
+  E.pendingReader.read = read;
 }
 
 string BlueprintsProtocol::handle(const string& request) {

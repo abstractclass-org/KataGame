@@ -24,6 +24,10 @@
 //                                          (white's view where it has one, as NNEvaluator reports them; the lead
 //                                          and the time-left variance are only reported)
 //   policy <count> <action>:<probability> ...   (the move policy at the legal actions and pass)
+//   netpolicy <count> <action>:<index> ...      (KataGame fork, 2026-11-06: in a game with labels, from the inputs
+//                                               version 13, each action's index in the network's policy, the labels'
+//                                               frame (SymmetryHelpers::NetActionMap at symmetry 0), for a check of
+//                                               the network's raw outputs against this dump)
 //   intrinsic <A> <B>                      (KataGame fork, 2026-10-29: AZdb's intrinsic value head, for a model that
 //                                          has it, returns of the member that need no view)
 // KataGame fork (2026-10-29): MEMBER (default 0) is AZdb's member of the evaluations (MiscNNInputParams::diversityMember),
@@ -182,6 +186,16 @@ int main(int argc, char** argv) {
       for(int i : actions)
         out << " " << i << ":" << policy[i];
       out << "\n";
+      if constexpr(GameInterface::hasCanonicalActions<GameEncoding>()) {
+        const int inputsVersion = NNModelVersion::getInputsVersion(nnEval->getModelVersion());
+        const SymmetryHelpers::NetActionMap netAction(board, 0, inputsVersion);
+        if(netAction.labels) {
+          out << "netpolicy " << actions.size();
+          for(int i : actions)
+            out << " " << i << ":" << (i == NNPos::PASS_POS ? i : netAction(i));
+          out << "\n";
+        }
+      }
       if(o.hasIntrinsic)
         out << "intrinsic " << o.intrinsicA << " " << o.intrinsicB << "\n";
     }

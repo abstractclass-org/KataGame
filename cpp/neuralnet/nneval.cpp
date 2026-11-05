@@ -1264,10 +1264,10 @@ static Rand& clientSymmetryRand(const string& randSeed) {
 }
 
 //KataGame fork (2026-10-29): the moves that the network's search lists: board's legal moves, less, from the inputs
-//version 13, those that another listed move stands for (NetActionMap::listed: Blueprints' actions of a blueprint equal
-//to a lower-numbered one). A reference to board's own list, or to this thread's copy until its next call.
-static const std::bitset<GameRules::NUM_ACTIONS>& listedMoves(const Board& board,
-                                                             const SymmetryHelpers::NetActionMap& netAction) {
+//version 13, those that another listed move stands for (NetActionMap::listed): board's own list, or this thread's.
+using ActionBits = std::bitset<GameRules::NUM_ACTIONS>;
+using ListedMoves = std::conditional_t<GameInterface::hasCanonicalActions<GameEncoding>(), ActionBits, const ActionBits&>;
+static const ActionBits& listedMoves(const Board& board, const SymmetryHelpers::NetActionMap& netAction) {
   const std::bitset<GameRules::NUM_ACTIONS>& legal = board.legalActions();
   if(!netAction.labels)
     return legal;
@@ -1532,13 +1532,13 @@ void NNEvaluator::evaluate(
       symmetry = currentDefaultSymmetry.load(std::memory_order_acquire);
   }
   testAssert(SymmetryHelpers::isAllowed(symmetry));
-  //Enclosure fork (owner, 2026-10-06): no image board: the inputs are the image's, written from board
-  //(fillRowBufs' symmetry), and moves map through symAction (SymmetryHelpers::SymActionMap). KataGame fork
-  //(2026-10-29): from the inputs version 13, through the network's frame of the game's labels too (NetActionMap), and
-  //the network gives a policy over the moves that its search lists only (listedMoves): legalBits stands for
-  //board.legalActions() below.
+  //Enclosure fork (owner, 2026-10-06): no image board: the inputs are the image's, written from board (fillRowBufs'
+  //symmetry), and moves map through symAction. KataGame fork (2026-10-29): from the inputs version 13, through the
+  //game's labels too (NetActionMap), and the policy is over the listed moves only (listedMoves): legalBits stands for
+  //board.legalActions() below, a copy in a game with labels (2026-11-06): the threaded practice bot's search threads
+  //are coroutines of one thread, and another one rewrites listedMoves' list while this evaluation waits for the net.
   const SymmetryHelpers::NetActionMap netAction(board, symmetry, inputsVersion);
-  const std::bitset<GameRules::NUM_ACTIONS>& legalBits = listedMoves(board, netAction);
+  const ListedMoves legalBits = listedMoves(board, netAction);
 
   if(!debugSkipNeuralNet) {
     fillRowBufs(board, history, nextPlayer, sgfMeta, nnInputParams, buf, symmetry);
