@@ -2229,3 +2229,44 @@ hybrid3 = {
     "learnable_rope":True,
 }
 config_of_name["hybrid3"] = hybrid3
+
+
+# KataGame fork (2026-11-05, the engine repository's abscls-ra93.9): three shapes of the shape speed screen
+# (abscls-ra93.7, games/blueprints/docs/decisions/training.md, "a speed screen of network shapes in the engine"), as
+# model kinds for the learning test (abscls-ra93.8). Each is b6c96 with only the keys below changed, so the heads, the
+# gpool width and the fixup norm are b6c96's. The names have no hyphen: a hyphen starts a variant suffix above.
+# reg6c128m64: b6c96's six blocks at the trunk 128 and the middle 64.
+reg6c128m64 = {
+    **b6c96,
+    "trunk_num_channels":128,
+    "mid_num_channels":64,
+}
+config_of_name["reg6c128m64"] = reg6c128m64
+
+# nbt5c128m64: five nested bottleneck blocks (two residual blocks inside each) at the trunk 128 and the inner 64, with
+# global pooling in blocks 2 and 4, as b5c192nbt's sites.
+nbt5c128m64 = {
+    **b6c96,
+    "trunk_num_channels":128,
+    "mid_num_channels":64,
+    "gpool_num_channels":32,
+    "block_kind": [
+        ["rconv1","bottlenest2"],
+        ["rconv2","bottlenest2gpool"],
+        ["rconv3","bottlenest2"],
+        ["rconv4","bottlenest2gpool"],
+        ["rconv5","bottlenest2"],
+    ],
+}
+config_of_name["nbt5c128m64"] = nbt5c128m64
+
+# hybrid3l8d256: hybrid3 with 8 attention/SwiGLU pairs of width 256, 8 heads of 32 and an FFN of 768. The stem, the
+# patch and the decoder are hybrid3's.
+hybrid3l8d256 = {
+    **hybrid3,
+    "patch_channels":256,
+    "patch_pairs":8,
+    "transformer_heads":8,
+    "transformer_ffn_channels":768,
+}
+config_of_name["hybrid3l8d256"] = hybrid3l8d256
