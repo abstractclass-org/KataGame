@@ -6,6 +6,7 @@
 //   {"edges": [[blue edges], [red edges]], "protected": [...], "placed": [...], "scores": [blue, red],
 //    "player": 0 (Blue) or 1, "movesLeft": 0-2, "moveCount": 0-MAX_MOVES, "history": [[edges of a turn], ...]},
 // an edge as [ax, ay, bx, by]; "history" newest first (Position::history), at most HISTORY_TURNS turns of 2 edges.
+// "protected" keeps the protocol's word (design 04): it holds the invincible edges (Position::invincible).
 //
 // A template on the JSON type (nlohmann::json in the analysis engine), so that the rules part needs no JSON library.
 // It reads the value with the JSON library's checked accessors, which throw on a missing field or a wrong type: the

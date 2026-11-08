@@ -86,7 +86,7 @@ def main():
     es = entries(args.buffer)
     bad = [e for e in es if e["moves"] and (decode_action(e["moves"][0][0] - MOVE_LOC_BASE)[0] not in ((0, 9), (3, 9)))]
     if bad:
-        raise SystemExit(f"{len(bad)} entries whose first move does not start at a blue start node: wrong MOVE_LOC_BASE?")
+        raise SystemExit(f"{len(bad)} entries whose first move does not start at a blue start point: wrong MOVE_LOC_BASE?")
     es.sort(key=lambda e: (-e[args.by], -e["regret"]))
     cards = []
     for e in es[:args.top]:

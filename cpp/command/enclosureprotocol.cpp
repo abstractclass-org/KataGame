@@ -31,7 +31,8 @@
 // the end, the scores). Enclosure's own parts stay Enclosure's: the history planes' edges, the describe action's edges,
 // points and regions, the cut edge, the outcome's text and the position check.
 // The protocol's names stay as design 04 gives them, also where the code takes the glossary's words: "protected" holds
-// the invincible edges, and "nodes", "removedNodes" and "futureNodes" hold points.
+// the invincible edges, and "nodes", "removedNodes", "futureNodes" and "includeFutureNodes" name points. The position
+// check's codes and texts (position_check.h) and the notation's errors (notation.h) keep these words too.
 // Results are reproducible: each evaluation's symmetry comes from its cache key (nnSymmetryFromHash), and the search's
 // random numbers (root noise) from the query's "seed" and the position, so the same request gives the same reply
 // whatever came before, and a search in slices equals one whole search (with one search
@@ -625,8 +626,8 @@ void dropGoFields(json& j) {
 //                  one of Red's: Blue's side, as the ownership.
 json rootMaps(const json& q, const Board& board, Player pla) {
   json maps = json::object();
-  const bool walls = flag(q, "includeWeakWalls"), points = flag(q, "includeFutureNodes");
-  if(!walls && !points)
+  const bool walls = flag(q, "includeWeakWalls"), future = flag(q, "includeFutureNodes");
+  if(!walls && !future)
     return maps;
   NNResultBuf buf;
   buf.includeAuxOutputs = true;
@@ -663,7 +664,7 @@ json rootMaps(const json& q, const Board& board, Player pla) {
     }
     maps["weakWalls"] = std::move(map);
   }
-  if(points) {
+  if(future) {
     json map = json::object();
     const double sign = mover == 0 ? 1.0 : -1.0;
     const char* horizons[2] = {"8", "32"};

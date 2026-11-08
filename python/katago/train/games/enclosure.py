@@ -44,7 +44,7 @@ POLICY_CHANNELS = NUM_OFFSETS   # a move is an edge: its source point and its of
 NUM_SPATIAL_INPUTS = NUM_EDGE_GROUPS * NUM_OFFSETS + NUM_FEATURE_PLANES   # 214, 215 with the on-board plane
 NUM_GLOBAL_INPUTS = 5
 # The last 4 feature planes mark the edges placed 2-5 turns ago, newest first. The observation's current- and
-# previous-turn edge planes carry the rules' protection and are not history.
+# previous-turn edge planes carry the invincible and placed edges and are not history.
 NUM_HISTORY_PLANES = 4
 HISTORY_PLANE = NUM_SPATIAL_INPUTS - NUM_HISTORY_PLANES
 SYMMETRIES = 0xFF
@@ -158,17 +158,16 @@ def apply_symmetry_policy(policy, symmetry, binary_inputs, global_inputs, points
     """Policy-shaped targets (N, C, NUM_ACTIONS + 1), pass last, for the positions of binary_inputs (before
     the symmetry). A move between two of its player's points is listed from its lower end, so its image is
     listed from the image's lower end; any other move from the image of its source (the player's point).
-    The player is the mover, whose points the inputs hold; points (N, points) bool gives another player's."""
+    The player is the mover, whose points the inputs hold; points, an (N, 361) bool, gives another player's."""
     if symmetry == 0:
         return policy
     n, c, _ = policy.shape
     forward, canonical, _, dest = tables(symmetry, policy.device)
     if points is None:
         points = player_points(binary_inputs, global_inputs[:, 0].round().long())  # the mover: 0 blue, 1 red
-    mover_points = points
     valid = forward >= 0
     dest_is_point = torch.zeros(n, NUM_ACTIONS, dtype=torch.bool, device=policy.device)
-    dest_is_point[:, valid] = mover_points[:, dest[valid]]
+    dest_is_point[:, valid] = points[:, dest[valid]]
     target = torch.where(dest_is_point, canonical, forward)  # N, actions; -1 where off the board
     moves = policy[:, :, :NUM_ACTIONS]
     index = torch.where(target >= 0, target, torch.full_like(target, NUM_ACTIONS))  # dump slot for off-board

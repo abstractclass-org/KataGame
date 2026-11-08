@@ -415,12 +415,12 @@ struct Position {
     if (terminal()) return;
     const auto& own = edges[player];
     const auto& enemy = edges[1 - player];
-    bool point[SIZE][SIZE] = {};
+    bool own_point[SIZE][SIZE] = {};
     bool inside_own[SIZE][SIZE] = {};
     static thread_local std::vector<uint64_t> own_dir;  // bitmask of offsets per point
     own_dir.assign(SIZE * SIZE, 0);
     for (const Edge& e : own) {
-      point[e.ax][e.ay] = point[e.bx][e.by] = true;
+      own_point[e.ax][e.ay] = own_point[e.bx][e.by] = true;
       int k = OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
       int kr = OFF_INDEX[e.ax - e.bx + 3][e.ay - e.by + 3];
       own_dir[e.ax * SIZE + e.ay] |= 1ull << k;
@@ -440,7 +440,7 @@ struct Position {
       bool guarded = contains(invincible, e);
       for (const CrossingGroup& g : CROSSING_GROUPS[oe]) {
         const int sx = e.ax + g.dx, sy = e.ay + g.dy;
-        if (sx < 0 || sx >= SIZE || sy < 0 || sy >= SIZE || !point[sx][sy]) continue;
+        if (sx < 0 || sx >= SIZE || sy < 0 || sy >= SIZE || !own_point[sx][sy]) continue;
         const int start = ((sx + PAD) * GRID + sy + PAD) * NOFF;
         for (int oc : g.ocs) {
           int idx = start + oc;
@@ -452,17 +452,17 @@ struct Position {
     }
     for (int ax = 0; ax < SIZE; ++ax)
       for (int ay = 0; ay < SIZE; ++ay) {
-        if (!point[ax][ay] || inside_own[ax][ay]) continue;
+        if (!own_point[ax][ay] || inside_own[ax][ay]) continue;
         for (int k = 0; k < NOFF; ++k) {
           int bx = ax + OFFS[k].dx, by = ay + OFFS[k].dy;
           if (bx < 0 || bx >= SIZE || by < 0 || by >= SIZE) continue;
           bool b_first = bx < ax || (bx == ax && by < ay);
-          if (point[bx][by] && b_first) continue;
+          if (own_point[bx][by] && b_first) continue;
           if (own_dir[ax * SIZE + ay] >> k & 1) continue;
           if (inside_own[bx][by]) continue;
           bool blocked_point = false;
           for (int s = 0; s < INTERIOR_N[k]; ++s)
-            if (point[ax + INTERIOR[k][s].dx][ay + INTERIOR[k][s].dy]) blocked_point = true;
+            if (own_point[ax + INTERIOR[k][s].dx][ay + INTERIOR[k][s].dy]) blocked_point = true;
           if (blocked_point) continue;
           int idx = ((ax + PAD) * GRID + ay + PAD) * NOFF + k;
           if (hits[idx] > 1 || blocked[idx] > 0) continue;
@@ -487,14 +487,14 @@ struct Position {
     action_source(action, ax, ay, k);
     const int bx = ax + OFFS[k].dx, by = ay + OFFS[k].dy;
     if (bx < 0 || bx >= SIZE || by < 0 || by >= SIZE) return false;
-    bool a_point = false, b_point = false, a_inside = false, b_inside = false, mid_point = false;
+    bool a_point = false, b_point = false, a_inside = false, b_inside = false, blocked_point = false;
     const Edge self = make_edge(ax, ay, bx, by);
     for (const Edge& e : edges[player]) {
       if (e == self) return false;  // own_dir: the edge exists
       auto at = [&](int x, int y) { return (e.ax == x && e.ay == y) || (e.bx == x && e.by == y); };
       a_point |= at(ax, ay);
       b_point |= at(bx, by);
-      for (int s = 0; s < INTERIOR_N[k]; ++s) mid_point |= at(ax + INTERIOR[k][s].dx, ay + INTERIOR[k][s].dy);
+      for (int s = 0; s < INTERIOR_N[k]; ++s) blocked_point |= at(ax + INTERIOR[k][s].dx, ay + INTERIOR[k][s].dy);
       const int ke = OFF_INDEX[e.bx - e.ax + 3][e.by - e.ay + 3];
       for (int s = 0; s < INTERIOR_N[ke]; ++s) {
         const int px = e.ax + INTERIOR[ke][s].dx, py = e.ay + INTERIOR[ke][s].dy;
@@ -502,7 +502,7 @@ struct Position {
         b_inside |= px == bx && py == by;
       }
     }
-    if (!a_point || a_inside || b_inside || mid_point) return false;
+    if (!a_point || a_inside || b_inside || blocked_point) return false;
     if (b_point && (bx < ax || (bx == ax && by < ay))) return false;  // listed from b's side
     int hits = 0;
     for (const Edge& e : edges[1 - player])

@@ -1,7 +1,8 @@
 // Enclosure fork: whether a position could occur in a game of the site's rules (learn-enclosure's request 16;
 // docs/design/04-notation-and-protocol.md, "The position check"). The same checks as the Python reference,
 // games/enclosure/position_check.py, in the same order and with the same words; its docstring gives why each holds in every
-// game. Only what every game makes certain: a board that a game reaches in a rare way passes.
+// game. Only what every game makes certain: a board that a game reaches in a rare way passes. The codes and texts are
+// protocol output, so they keep design 04's words ("protected", "node") where the code says invincible and point.
 #pragma once
 
 #include "engine.h"
@@ -140,10 +141,10 @@ inline std::vector<Reason> check(const Position& p) {
 
   std::vector<Edge> invincible = p.invincible;
   std::sort(invincible.begin(), invincible.end(), edge_less);
-  const int mostInvincible = previous_turn_size(n);
-  if ((int)invincible.size() > mostInvincible)
+  const int maxInvincible = previous_turn_size(n);
+  if ((int)invincible.size() > maxInvincible)
     reason("protected", "After " + plural(n, "edge") + ", " + NAME[opponent] + "'s last turn placed at most " +
-                        plural(mostInvincible, "edge") + ", not " + std::to_string(invincible.size()) + " protected.",
+                        plural(maxInvincible, "edge") + ", not " + std::to_string(invincible.size()) + " protected.",
            invincible);
   else if (!invincible.empty() && (n % 2 == 1 || n >= MAX_MOVES)) {
     // No edge of the opponent's has been cut since its last turn: each of that turn's edges started at an end of an

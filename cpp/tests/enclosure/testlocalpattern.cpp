@@ -4,7 +4,7 @@
 //   testlocalpattern
 //
 // The window is 7x7 around the source point of the move, and hashes the edges
-// that reach into it and whether each is protected (ENCLOSURE.md, "Subtree
+// that reach into it and whether each is invincible (ENCLOSURE.md, "Subtree
 // value bias"). Positions are built by setting the engine's edge lists
 // directly: the hasher reads nothing else.
 
@@ -91,7 +91,8 @@ int main() {
   check(hasher.getHash(invincibleWall, st, P_WHITE) != closed, "an invincible edge in the window keeps the bucket");
   Board invincibleFar = boardWith(wallAndFar, redNet);
   invincibleFar.pos.invincible.push_back(edge(1, 1, 3, 2));
-  check(hasher.getHash(invincibleFar, st, P_WHITE) == closed, "an invincible edge outside the window changes the bucket");
+  check(hasher.getHash(invincibleFar, st, P_WHITE) == closed,
+        "an invincible edge outside the window changes the bucket");
 
   //The mover matters, and the window follows the move's source point.
   check(hasher.getHash(boardWith(wall, redNet), st, P_BLACK) != closed, "the mover is not in the key");

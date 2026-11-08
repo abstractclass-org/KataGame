@@ -12,7 +12,8 @@
 //
 // A position holds the rules' state only: its history planes come back empty. Header only, so the game layer, the
 // tests and the WebAssembly bot need no build change. No exceptions (the WebAssembly build has none): the parsers
-// return false (or -1) and say why.
+// return false (or -1) and say why. The protocol sends these texts, so they keep design 04's word "protected" for an
+// invincible edge.
 #pragma once
 
 #include "engine.h"

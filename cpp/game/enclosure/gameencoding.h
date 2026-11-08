@@ -131,10 +131,10 @@ struct GameEncoding {
   // is listed from its far end exactly when that end is one of the mover's points and comes first.
   struct SymActionMap {
     int symmetry;
-    bool point[SIZE][SIZE];
-    SymActionMap(const Position& p, int sym) : symmetry(sym), point() {
+    bool moverPoint[SIZE][SIZE];
+    SymActionMap(const Position& p, int sym) : symmetry(sym), moverPoint() {
       for(const Edge& e : p.edges[p.player])
-        point[e.ax][e.ay] = point[e.bx][e.by] = true;
+        moverPoint[e.ax][e.ay] = moverPoint[e.bx][e.by] = true;
     }
     int operator()(int action) const {
       if(action == PASS || symmetry == 0)
@@ -142,7 +142,7 @@ struct GameEncoding {
       int ax, ay, k;
       action_point(action, ax, ay, k);
       int bx = ax + OFFS[k].dx, by = ay + OFFS[k].dy;
-      const bool farPoint = point[bx][by];
+      const bool farPoint = moverPoint[bx][by];
       sym_point(ax, ay, symmetry);
       sym_point(bx, by, symmetry);
       const bool fromB = farPoint && (bx < ax || (bx == ax && by < ay));
