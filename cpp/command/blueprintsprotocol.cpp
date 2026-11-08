@@ -12,8 +12,8 @@
 //   {"action": "describe", "position", "moves"}      the position for a board (its cells, hands, scores, mover, moves
 //                                                     left, move count, outcome, view, the views of its cover),
 //                                                     every legal move, and "check": whether a game can reach
-//                                                     "position", with reasons (game/blueprints/positioncheck.h); an
-//                                                     analysis of a position that no game reaches is refused
+//                                                     "position", with reasons (game/blueprints/positioncheck.h).
+//                                                     The analysis refuses a position that no game reaches
 //   {"action": "describe_game", "position", "moves", "from"?}
 //                                                     every position of the game from "from" on, with the moves played
 //                                                     once: the board's fields, and what the move to each position did
@@ -277,12 +277,8 @@ bool buildPosition(const json& q, Game& g, Fail& f, const std::function<void(con
   Pos& start = scratch(1);
   if(const json* p = field(q, "position")) {
     string why;
-    if(!p->is_string() || !GameRules::parse_position(p->get<string>(), start, why)) {
+    if(!p->is_string() || !bp::position_check::read_start(p->get<string>(), start, why)) {
       f = {"position", p->is_string() ? why : "a position is a string"};
-      return false;
-    }
-    if(start.picked >= 0) {
-      f = {"position", "a pick waits for its drop: the site's positions are between moves, and an edit is one move"};
       return false;
     }
     g.reasons = bp::position_check::check(start);
@@ -469,12 +465,13 @@ void legalMoves(const Pos& p, vector<string>& legal, vector<string>& outsideView
 
 // The position check of a query's start (design 04, "The position check"; games/blueprints/README.md, "The position
 // check"): {"possible", "reasons"}, each reason {"code", "text", "hexes"}, the hexes in the site's coordinates.
-json positionCheck(const Game& g) {
+json reasonsJson(const Game& g) {
   json reasons = json::array();
   for(const auto& r : g.reasons)
     reasons.push_back({{"code", r.code}, {"text", r.text}, {"hexes", r.hexes}});
-  return {{"possible", g.reasons.empty()}, {"reasons", reasons}};
+  return reasons;
 }
+json positionCheck(const Game& g) { return {{"possible", g.reasons.empty()}, {"reasons", reasonsJson(g)}}; }
 
 json describe(const json& q) {
   std::unique_ptr<Game> g(new Game());
@@ -1078,14 +1075,15 @@ json analyze(const json& q) {
   Fail f;
   if(!buildPosition(q, *g, f))
     return errorReply(q["id"], f);
-  // A position that no game reaches gives numbers that mean nothing: refused, with its reasons (design 04).
-  if(!g->reasons.empty()) {
-    json reply = errorReply(q["id"], {"position", g->reasons[0].text});
-    reply["reasons"] = positionCheck(*g)["reasons"];
-    return reply;
-  }
   if(g->board.isGameOver())
     return errorReply(q["id"], {"position", "the game is over"});
+  // A position that no game reaches gives numbers that mean nothing: refused, with its reasons (design 04), after a
+  // finished game as in Enclosure's protocol.
+  if(!g->reasons.empty()) {
+    json reply = errorReply(q["id"], {"position", g->reasons[0].text});
+    reply["reasons"] = reasonsJson(*g);
+    return reply;
+  }
   if(flag(q, "includeMovesOwnership"))
     return errorReply(q["id"], {"includeMovesOwnership", "Blueprints' build gives the root's ownership only: each "
                                                          "candidate's position has its own view"});

@@ -482,15 +482,10 @@ string setGame(const vector<string>& args) {
 string setPosition(const vector<string>& args) {
   if(args.size() < 2)
     return fail("usage: blueprints-set-position POSITION");
-  string text = args[1];
-  for(size_t i = 2; i < args.size(); i++)
-    text += " " + args[i];
   bp::Position& start = scratch(0);
   string why;
-  if(!GameRules::parse_position(text, start, why))
+  if(!bp::position_check::read_start(Global::concat(args, " ", 1, args.size()), start, why))
     return fail(why);
-  if(start.picked >= 0)
-    return fail("a pick waits for its drop: the site's positions are between moves, and an edit is one move");
   const vector<bp::position_check::Reason> reasons = bp::position_check::check(start);
   if(!reasons.empty())
     return fail(reasons[0].text);
