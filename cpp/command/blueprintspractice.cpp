@@ -17,6 +17,11 @@
 // - blueprints-set-game [MOVE ...]: a new game from the start with the moves played, as clear_board and then play for
 //   each move, for a page that reloads its game or a client that joins a game. undo takes them back as any other
 //   moves. A refused move leaves the game as it was.
+// - blueprints-set-position POSITION: a new game from a set-up start, the engine's one-line position (as the engine
+//   protocol's queries take it), as clear_board starts one from the standard start. undo stops at the start, and the
+//   early phase of the move temperature counts the start's moves played. A position that no game reaches is refused
+//   with the position check's first reason (game/blueprints/positioncheck.h), a pick that waits for its drop too. A
+//   refused position leaves the game as it was.
 // - kata-set-param SETTING VALUE: maxVisits and the chosen move's settings (chosenMoveTemperature and the other
 //   chosenMove* settings), each in the range of KataGo's config reader.
 // - kata-time_settings ... and time_left COLOR TIME STONES, with a host that takes the clock (the native engine):
@@ -40,6 +45,7 @@
 #include "../command/blueprintssite.h"
 #include "../command/gtpsession.h"
 #include "../core/global.h"
+#include "../game/blueprints/positioncheck.h"
 #include "../game/board.h"
 #include "../external/nlohmann_json/json.hpp"
 
@@ -62,13 +68,13 @@ static_assert(std::is_same<GameRules, bp::GameRules>::value, "Blueprints' build 
 namespace {
 
 // The interface's version, by the engine protocol's rules (design 04). Its versions: the README's "The practice bot".
-const char* INTERFACE_VERSION = "0.1.2";
+const char* INTERFACE_VERSION = "0.1.3";
 
 // The commands of every host (the head of this file), and those of a host with a clock. Every other command is refused
 // before the engine.
 const vector<string> COMMANDS = {
   "protocol_version", "name", "version", "known_command", "list_commands", "quit",
-  "blueprints-start", "blueprints-bot-info", "blueprints-set-game",
+  "blueprints-start", "blueprints-bot-info", "blueprints-set-game", "blueprints-set-position",
   "clear_board", "komi", "play", "genmove", "undo", "kata-get-param", "kata-get-params", "kata-set-param",
 };
 const vector<string> CLOCK_COMMANDS = {"kata-time_settings", "time_left"};
@@ -112,7 +118,8 @@ GTPSession* SESSION = nullptr;
 BlueprintsPractice::Network NETWORK;
 uint64_t SEED = 0;
 int THREADS = 1;
-vector<Move> MOVES;  // the session's game since the start
+vector<Move> MOVES;  // the session's game since START
+bp::Position* START = nullptr;  // the session's start: the standard start, or a set-up start (blueprints-set-position)
 bp::Position* POS = nullptr;  // the position after MOVES, as GTP has it
 ClockReading CLOCK[2];  // by GTP's colour: 0 Black (Blue), 1 White (Red)
 
@@ -221,16 +228,17 @@ bool actionsOf(const bp::Position& p, const string& text, Move& out, string& why
   return false;
 }
 
-// POS after MOVES, from the start.
+// POS after MOVES, from START.
 void replay() {
-  GameRules::new_game(bp::VIEW, bp::VIEW, *POS);
+  *POS = *START;
   for(const Move& m : MOVES)
     for(const Action& a : m)
       playAction(*POS, a);
 }
 
-// The session's game from the start, with no moves.
+// The session's game from the standard start, with no moves.
 void newGame() {
+  GameRules::new_game(bp::VIEW, bp::VIEW, *START);
   MOVES.clear();
   replay();
 }
@@ -284,6 +292,7 @@ string start(const vector<string>& args) {
     {"nnRandSeed", "practice:" + std::to_string(seed)},
   });
   NETWORK = HOST->network(SESSION);
+  START = new bp::Position();
   POS = new bp::Position();
   newGame();
   return ok("");
@@ -467,6 +476,31 @@ string setGame(const vector<string>& args) {
   return ok("");
 }
 
+// blueprints-set-position POSITION: the position's fields follow the command's name. The start is read and checked
+// first, so that a refused position changes nothing. GTP's game then starts from it (GTPSessions::setStart): its turn
+// number is the start's moves played, and undo stops there.
+string setPosition(const vector<string>& args) {
+  if(args.size() < 2)
+    return fail("usage: blueprints-set-position POSITION");
+  string text = args[1];
+  for(size_t i = 2; i < args.size(); i++)
+    text += " " + args[i];
+  bp::Position& start = scratch(0);
+  string why;
+  if(!GameRules::parse_position(text, start, why))
+    return fail(why);
+  if(start.picked >= 0)
+    return fail("a pick waits for its drop: the site's positions are between moves, and an edit is one move");
+  const vector<bp::position_check::Reason> reasons = bp::position_check::check(start);
+  if(!reasons.empty())
+    return fail(reasons[0].text);
+  GTPSessions::setStart(SESSION, start);
+  *START = start;
+  MOVES.clear();
+  replay();
+  return ok("");
+}
+
 }  // namespace
 
 void BlueprintsPractice::setHost(Host* host) { HOST = host; }
@@ -500,6 +534,8 @@ std::string BlueprintsPractice::handle(const std::string& line, bool& quit) {
     return fail("no session: send blueprints-start SEED first");
   if(command == "blueprints-set-game")
     return setGame(args);
+  if(command == "blueprints-set-position")
+    return setPosition(args);
   if(command == "play")
     return play(args);
   if(command == "genmove")

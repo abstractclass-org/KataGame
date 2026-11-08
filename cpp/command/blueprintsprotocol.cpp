@@ -10,8 +10,10 @@
 //                                                     a network: the file at "path" (the native engine), else the
 //                                                     model buffer; settings override the base settings
 //   {"action": "describe", "position", "moves"}      the position for a board (its cells, hands, scores, mover, moves
-//                                                     left, move count, outcome, view, the views of its cover) and
-//                                                     every legal move
+//                                                     left, move count, outcome, view, the views of its cover),
+//                                                     every legal move, and "check": whether a game can reach
+//                                                     "position", with reasons (game/blueprints/positioncheck.h); an
+//                                                     analysis of a position that no game reaches is refused
 //   {"action": "describe_game", "position", "moves", "from"?}
 //                                                     every position of the game from "from" on, with the moves played
 //                                                     once: the board's fields, and what the move to each position did
@@ -61,6 +63,7 @@
 #include "../game/board.h"
 #include "../game/boardhistory.h"
 #include "../game/blueprints/gamerules.h"
+#include "../game/blueprints/positioncheck.h"
 #include "../neuralnet/nneval.h"
 #include "../program/rootviews.h"
 #include "../program/setup.h"
@@ -92,13 +95,15 @@ namespace {
 
 // The interface's version (design 04, "Versioning"). Blueprints' build took 0.7.0 for the search of the root's views
 // (rootViews on by default, no raw values in a reply of more views), which breaks a 0.6 client. 0.7.1 accepts the query
-// whose passes find no candidate, which 0.7.0 refused: its move is the first pass's policy move. Enclosure's engine
-// stays 0.6.x (0.6.2 adds its own maps).
-const char* PROTOCOL = "0.7.1";
+// whose passes find no candidate, which 0.7.0 refused: its move is the first pass's policy move. 0.8.0 refuses the
+// analysis of a position that no game reaches (the position check, game/blueprints/positioncheck.h), which 0.7.1
+// accepted, and describe gives the check. Enclosure's engine stays 0.6.x (0.6.2 adds its own maps).
+const char* PROTOCOL = "0.8.0";
 // The first build that searched as this one does (design 04, "The same search"), given as each reply's "search". A
 // change that can alter an analysis reply sets it to "", and the build then names itself. After that build's release,
-// it takes the released build's name.
-const char* SEARCH_SINCE = "";
+// it takes the released build's name. 91ab0b7d: engine-91ab0b7d, Stamp Duty 0.2's release. The position check refuses
+// only positions that no game reaches, and changes nothing else in an analysis.
+const char* SEARCH_SINCE = "91ab0b7d";
 const int DEFAULT_VISITS = 500;
 const char* KINDS[3] = {"plain", "star", "wall"};  // the site's names of a cell's kinds, bp::PLAIN to bp::WALL
 
@@ -166,6 +171,9 @@ struct Game {
   BoardHistory hist;
   int moves = 0;
   vector<int> outside;
+  // The position check of the start, the position before the moves (which are checked as legal moves): none for the
+  // standard start.
+  vector<bp::position_check::Reason> reasons;
   Player pla() const { return board.nextPla(); }  // the player to move, as the history takes it
 };
 
@@ -277,6 +285,7 @@ bool buildPosition(const json& q, Game& g, Fail& f, const std::function<void(con
       f = {"position", "a pick waits for its drop: the site's positions are between moves, and an edit is one move"};
       return false;
     }
+    g.reasons = bp::position_check::check(start);
   }
   else
     GameRules::new_game(bp::VIEW, bp::VIEW, start);
@@ -458,6 +467,15 @@ void legalMoves(const Pos& p, vector<string>& legal, vector<string>& outsideView
   std::inplace_merge(legal.begin(), legal.begin() + inView, legal.end());
 }
 
+// The position check of a query's start (design 04, "The position check"; games/blueprints/README.md, "The position
+// check"): {"possible", "reasons"}, each reason {"code", "text", "hexes"}, the hexes in the site's coordinates.
+json positionCheck(const Game& g) {
+  json reasons = json::array();
+  for(const auto& r : g.reasons)
+    reasons.push_back({{"code", r.code}, {"text", r.text}, {"hexes", r.hexes}});
+  return {{"possible", g.reasons.empty()}, {"reasons", reasons}};
+}
+
 json describe(const json& q) {
   std::unique_ptr<Game> g(new Game());
   Fail f;
@@ -468,6 +486,7 @@ json describe(const json& q) {
   vector<string> legal, outside;
   legalMoves(p, legal, outside);
   reply["id"] = q["id"];
+  reply["check"] = positionCheck(*g);
   reply["view"] = viewJson(p);
   reply["views"] = viewsJson(p, GameRules::terminal(p) ? vector<string>{""} : RootViews::cover(g->board));
   reply["legal"] = legal;
@@ -1059,6 +1078,12 @@ json analyze(const json& q) {
   Fail f;
   if(!buildPosition(q, *g, f))
     return errorReply(q["id"], f);
+  // A position that no game reaches gives numbers that mean nothing: refused, with its reasons (design 04).
+  if(!g->reasons.empty()) {
+    json reply = errorReply(q["id"], {"position", g->reasons[0].text});
+    reply["reasons"] = positionCheck(*g)["reasons"];
+    return reply;
+  }
   if(g->board.isGameOver())
     return errorReply(q["id"], {"position", "the game is over"});
   if(flag(q, "includeMovesOwnership"))
