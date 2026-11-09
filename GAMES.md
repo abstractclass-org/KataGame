@@ -44,7 +44,7 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/game/<game>/ownfiles.txt` | The game's own code outside the game layer (optional): the files that only the game's binary compiles, and that may name the game. |
 | `cpp/tests/checkgamelayer.py` | The check that no code outside the game layer names a game. Each build of `katago` and `tests/enclosure/build.sh` run it. |
 | `cpp/tests/checkgamelayer_test.py` | The test of the check, on temporary trees with planted uses (Enclosure, Connect-4 and a made-up game with a short name). |
-| `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, and the defaults of the optional members with a stub game. |
+| `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, the next player after each action (no player has two turns in a row), and the defaults of the optional members with a stub game. |
 | `cpp/tests/enclosure/testgameareas.cpp` | The look-ahead area and the komi area (optional members of the encoding part) through the front, for the build's game: the short-term value targets' lambdas and the komi draw's standard deviation, against each game's pinned areas, and the defaults with stub games. |
 | `cpp/tests/enclosure/testcheapsearch.cpp` | Self-play's full and cheap searches (`play.cpp`'s `GameRunner`), for the build's game: the share of full searches among the actions that draw one, with `cheapSearchPerMove`, the search of an action that continues a move, and with `cheapSearchPerTurn`, the search of an action in the turn of the action before it. |
 | `cpp/tests/enclosure/testselfplayviews.cpp` | Self-play's search of the root's views (`PlaySettings::rootViews`), for a game with views: each move in its view, the replay, the full searches' visits, `view_action`, RGSC's played entries, and the rows and records for `check_rows.py --records`. |
@@ -431,7 +431,7 @@ parser `core/global.h`: a program that calls them links `core/rand.cpp`, `core/h
 | `PASS_ACTION` | Pass: `NUM_ACTIONS - 1`. | `PASS` = 17,328 |
 | `new_game(xSize, ySize, p)` | Sets the start position on a board of that size. False when the game is not played on it. | 19 × 19 only |
 | `x_size(p)`, `y_size(p)` | The board's size. | 19 |
-| `next_player(p)` | The player to move, from the position. A turn can have several moves. | `p.player` |
+| `next_player(p)` | The player to move, from the position. A turn can have several moves. Self-play's `cheapSearchPerTurn` reads one player's actions in a row as one turn, so no player may have two turns in a row (`testcheapsearch` checks it for the build's game). | `p.player` |
 | `turn_moves_left(p)` | The moves left in the mover's turn, this one included. 1 in a game that alternates. | `p.moves_left` (1-2-2) |
 | `moves_played(p)` | The moves since the start: the game's progress. | `p.move_count` |
 | `terminal(p)` | Whether the game is over. | after 120 edges |
@@ -802,6 +802,8 @@ each member has one copy. At each position the test checks:
 - the rules part against itself: the player to move and the edges left (against the 1-2-2 turn order), `is_legal`
   against the legal actions (every action at each 200th position), the moves and the position in the notation and the
   engine protocol's moves (each read back), and the result at the end.
+- after each action, the next player in the history: the same player exactly while the turn has an edge left, so no
+  player has two turns in a row (self-play's `cheapSearchPerTurn` reads a turn as one player's actions in a row).
 - the encoding part through the front: the inputs (`fillRowV8` with and without history and at the game's komi, and
   `fillRowV8Packed` at each symmetry) against the on-board plane and the members, the history planes (the only planes
   that the history changes, and empty without it), and the policy index (`NNPos::locToPos`).
@@ -869,18 +871,23 @@ games one after the other as self-play does (`play.cpp`'s `GameRunner`), with fi
 the config with the overrides (`key=value,...`, as `-override-config`). For each game it prints a digest of the
 actions, their full or cheap searches and their weights, so that two builds or two settings that draw the same
 searches in the same order print the same digests. It checks that the share of full searches among the actions that
-draw their own is `1 - cheapSearchProb` within 4 standard deviations. With `cheapSearchPerMove`, it checks that each
-action that continues a move (`continues_move`: Blueprints' drop) has the decision and the weight of the action before
-it. With `cheapSearchPerTurn`, it checks the same for each action in the turn of the action before it (the same player
-moves again: Enclosure's second edge, Blueprints' drop and second move). Without the settings, those actions draw
-their own. It prints, for each kind, the share of full searches among the actions before and among the actions that
-follow them: the choice of a pick depends on its search, so with a setting the drops' share is the picks', which can
-differ from `1 - cheapSearchProb`. Enclosure's turns do not depend on the search, so its second edges' share stays
-near `1 - cheapSearchProb`. Two runs play the same games only with the same config and overrides: the size of
-the network's cache (`nnCacheSizePowerOfTwo`) changes the games once the cache is full. KataGo's asymmetric playouts
-(`normalAsymmetricPlayoutProb`) need at least 5 visits in each search. In a game with them, a cheap search of fewer
-visits stops the test with an error ("asymmetric playout doubling resulted in fewer than 5 visits"). So with very few
-visits, set that probability to 0, or use a set of games that has no such game.
+draw their own is `1 - cheapSearchProb` within 4 standard deviations. It sorts each action after the loop's first by
+how it follows the action before it, its leader: a drop continues the leader's move (`continues_move`: Blueprints'
+drop), a later move of the leader's turn comes from the same player again (Enclosure's second edge, Blueprints' second
+move), and a turn's first action comes after the other player's turn. With `cheapSearchPerMove`, it checks that each
+drop has the decision and the weight of its leader. With `cheapSearchPerTurn`, it checks the same for the drops and the
+later moves of a turn, and that `1 - cheapSearchProb` of the turns with a later move have two full searches. The
+followers that no setting binds, and every turn's first action, draw their own, apart from their leader's: the test
+checks their share of full searches, also among those after a full search. It also checks that the same player moves
+again only to continue a move or while the turn had another move left (`turn_moves_left`): `cheapSearchPerTurn` reads
+a turn as one player's actions in a row, so no player may have two turns in a row. It prints, for each kind, the share
+of full searches among the leaders and among the followers: the choice of a pick depends on its search, so with a
+setting the drops' share is the picks', which can differ from `1 - cheapSearchProb`. Enclosure's turns do not depend
+on the search, so its second edges' share stays near `1 - cheapSearchProb`. Two runs play the same games only with the
+same config and overrides: the size of the network's cache (`nnCacheSizePowerOfTwo`) changes the games once the cache
+is full. KataGo's asymmetric playouts (`normalAsymmetricPlayoutProb`) need at least 5 visits in each search. In a game
+with them, a cheap search of fewer visits stops the test with an error ("asymmetric playout doubling resulted in fewer
+than 5 visits"). So with very few visits, set that probability to 0, or use a set of games that has no such game.
 
 **Self-play's root views:** `testselfplayviews SELFPLAY_CONFIG MODEL GAMES [OVERRIDES [OUT_DIR]]` runs on a build of a
 game with views (Blueprints). It plays the games as `testcheapsearch` does, with `rootViews` on, no reduced or

@@ -2115,7 +2115,7 @@ FinishedGameData* Play::runGame(
     //even when the moves before the loop (policy init, a fork) left a move or a turn to continue.
     const bool takesLastLimits =
       i > 0 && ((playSettings.cheapSearchPerMove && GameInterface::continuesMove<GameRules>(board.pos)) ||
-                (playSettings.cheapSearchPerTurn && !hist.moveHistory.empty() && hist.moveHistory.back().pla == pla));
+                (playSettings.cheapSearchPerTurn && hist.moveHistory.back().pla == pla));
     SearchLimitsThisMove limits = getSearchLimitsThisMove(
       toMoveBot, pla, playSettings, gameRand, historicalMctsWinLossValues, historicalMctsWinLossValues.size(),
       clearBotBeforeSearch, otherGameProps, false, takesLastLimits ? &lastLimits : NULL

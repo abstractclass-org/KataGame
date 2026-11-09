@@ -10,22 +10,28 @@
 // valueSurpriseDataWeight to 0, so that each action's recorded weight is the weight of its search's limits.
 // For each action of the game's loop (after the moves of policy init or of a fork), the test reads the decision that
 // the game recorded: cheap or full (wasCheapSearchByTurn), and the weight (targetWeightByTurnUnrounded). It replays
-// the game to know the actions that follow the action before them, of two kinds: the actions that continue its move
-// (GameInterface::continuesMove: Blueprints' drops, after their picks), and the actions in its turn (the same player
-// moves again: Enclosure's second edges, and Blueprints' drops and second moves).
+// the game to know how each action after the loop's first follows the action before it (its leader), in one of three
+// kinds: it continues the leader's move (GameInterface::continuesMove: Blueprints' drops, after their picks), it starts
+// a later move of the leader's turn (the same player moves again: Enclosure's second edges, Blueprints' second moves),
+// or it starts a turn after the other player's.
 // - A digest of each game: its actions, decisions and weights, and its final margin. Two builds, or two settings, that
 //   draw the same searches in the same order give the same digests.
+// - The turns: the same player moves again only to continue a move, or while the turn had another move left
+//   (turn_moves_left), so no player has two turns in a row. cheapSearchPerTurn requires it.
 // - The draws: the actions that draw their decision (with both settings off, all of them; with cheapSearchPerMove on,
-//   all but the actions that continue a move; with cheapSearchPerTurn on, all but the actions in the turn of the
-//   action before them; the loop's first action draws too). A draw comes before its search, so the share of full
-//   searches among the draws is 1 - cheapSearchProb, within 4 standard deviations.
-// - With a setting on: each action that it binds to the action before it has that action's decision and weight. With
-//   both off, the actions of each kind draw their own.
-// - The test prints, for each kind, the share of full searches among the actions before (the leaders) and among the
-//   actions that follow them. Whether an action is a pick depends on its search (a cheap search can choose picks more
-//   or less often than a full one), so with a setting on, the followers' share is their leaders', which can differ
-//   from 1 - cheapSearchProb, and so can the share among all the actions. Enclosure's turns do not depend on the
-//   search: a turn's first edge is a leader whatever its search.
+//   all but the drops; with cheapSearchPerTurn on, all but the drops and the later moves of a turn; the loop's first
+//   action draws too). A draw comes before its search, so the share of full searches among the draws is
+//   1 - cheapSearchProb, within 4 standard deviations.
+// - Each follower that a setting binds has its leader's decision and weight: with cheapSearchPerMove the drops, with
+//   cheapSearchPerTurn the drops and the later moves of a turn. The followers of a kind that no setting binds, and
+//   every turn's first action, draw their own, apart from their leader's: the share of full searches among them, and
+//   among those after a full search, is 1 - cheapSearchProb. With cheapSearchPerTurn, the share of the turns with a
+//   later move whose two searches are full is 1 - cheapSearchProb: a turn's moves come by the turn order, whatever its
+//   searches.
+// - The test prints, for each kind, the share of full searches among the leaders and among the followers. Whether an
+//   action is a pick depends on its search (a cheap search can choose picks more or less often than a full one), so
+//   with a setting on, the drops' share is their picks', which can differ from 1 - cheapSearchProb, and so can the
+//   share among all the actions.
 
 #include <algorithm>
 #include <cmath>
@@ -79,12 +85,14 @@ struct Followers {
   }
 };
 
-//The counts over the games: the actions of the loops, and how many of them had a full search.
+//The counts over the games: the actions of the loops, and how many of them had a full search. Each action after the
+//loop's first follows the action before it in one of three ways.
 struct Counts {
   int actions = 0, actionsFull = 0;
   int draws = 0, drawsFull = 0;          //the actions that drew their decision
-  Followers moves;                       //the actions that continue the move of the action before them (drops)
-  Followers turns;                       //the actions in the turn of the action before them (the same player again)
+  Followers drops;                       //the actions that continue the move of the action before them
+  Followers laterMoves;                  //the actions that start a later move of the turn of the action before them
+  Followers turnStarts;                  //the actions that start a turn after the other player's
 };
 
 static void readGame(int gameIdx, const FinishedGameData& data, bool perMove, bool perTurn, Counts& counts) {
@@ -98,7 +106,9 @@ static void readGame(int gameIdx, const FinishedGameData& data, bool perMove, bo
   Player pla = data.startPla;
   const size_t startIdx = data.startHist.moveHistory.size();
   Digest digest;
-  int full = 0, drops = 0, inTurn = 0;
+  int full = 0;
+  const int dropsBefore = counts.drops.n, laterMovesBefore = counts.laterMoves.n;
+  int leaderMovesLeft = 0;  //turn_moves_left before the action before this one: its move and the turn's moves after it
   for(size_t t = 0; t < numMoves; t++) {
     const Move move = data.endHist.moveHistory[startIdx + t];
     check(move.pla == pla && hist.isLegal(board, move.loc, move.pla), "the game replays");
@@ -112,28 +122,27 @@ static void readGame(int gameIdx, const FinishedGameData& data, bool perMove, bo
     const bool drop = t > 0 && GameInterface::continuesMove<GameRules>(board.pos);
     const bool sameTurn = t > 0 && data.endHist.moveHistory[startIdx + t - 1].pla == pla;
     check(!drop || sameTurn, "an action that continues a move is in its turn");
-    const bool leaderCheap = t > 0 && data.wasCheapSearchByTurn[t - 1];
-    const float leaderWeight = t > 0 ? data.targetWeightByTurnUnrounded[t - 1] : 0.0f;
-    if(drop) {
-      drops++;
-      counts.moves.add(cheap, weight, leaderCheap, leaderWeight);
-    }
-    if(sameTurn) {
-      inTurn++;
-      counts.turns.add(cheap, weight, leaderCheap, leaderWeight);
+    //cheapSearchPerTurn reads the same player again as one turn: a player moves again only to continue a move, or
+    //while the turn had another move left.
+    check(!sameTurn || drop || leaderMovesLeft > 1, "no player has two turns in a row");
+    if(t > 0) {
+      Followers& kind = drop ? counts.drops : sameTurn ? counts.laterMoves : counts.turnStarts;
+      kind.add(cheap, weight, data.wasCheapSearchByTurn[t - 1], data.targetWeightByTurnUnrounded[t - 1]);
     }
     if(!(perMove && drop) && !(perTurn && sameTurn)) {
       counts.draws++;
       counts.drawsFull += !cheap;
     }
+    leaderMovesLeft = GameRules::turn_moves_left(board.pos);
     hist.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL);
     pla = hist.presumedNextMovePla;
   }
   counts.actions += (int)numMoves;
   counts.actionsFull += full;
   digest.add(data.endHist.finalWhiteMinusBlackScore);
-  printf("game %d: digest %016llx, %d actions after %d before the loop, %d full, %d drops, %d in a turn's\n", gameIdx,
-         (unsigned long long)digest.h, (int)numMoves, (int)startIdx, full, drops, inTurn);
+  printf("game %d: digest %016llx, %d actions after %d before the loop, %d full, %d drops, %d later moves of a turn\n",
+         gameIdx, (unsigned long long)digest.h, (int)numMoves, (int)startIdx, full, counts.drops.n - dropsBefore,
+         counts.laterMoves.n - laterMovesBefore);
 }
 
 static double share(int hits, int n) { return n > 0 ? (double)hits / n : 0.0; }
@@ -203,25 +212,34 @@ int main(int argc, char** argv) {
   printf("draws: %d of %d actions, %d full (%.4f, expected %.4f)\n", c.draws, c.actions, c.drawsFull,
          share(c.drawsFull, c.draws), q);
   printf("full searches: %.4f of the actions\n", share(c.actionsFull, c.actions));
-  //A follower's leader is the action before it: a drop's pick, a second edge's first edge.
+  //A follower's leader is the action before it: a drop's pick, a second edge's first edge, a turn's first edge the
+  //other player's last edge.
   const auto print = [&](const char* what, const Followers& f) {
-    printf("%s: %d; full searches: %.4f of their leaders, %.4f of them; %d with both full (%.4f); %d differ from "
-           "their leader\n", what, f.n, share(f.leadersFull, f.n), share(f.full, f.n), f.bothFull,
-           share(f.bothFull, f.n), f.differ);
+    printf("%s: %d; full searches: %.4f of their leaders, %.4f of them, %.4f of those after a full search; %d with "
+           "both full (%.4f); %d differ from their leader\n", what, f.n, share(f.leadersFull, f.n), share(f.full, f.n),
+           share(f.bothFull, f.leadersFull), f.bothFull, share(f.bothFull, f.n), f.differ);
   };
-  print("actions that continue a move (drops)", c.moves);
-  print("actions in the turn of the action before them", c.turns);
+  print("actions that continue a move (drops)", c.drops);
+  print("actions that start a later move of a turn (second edges)", c.laterMoves);
+  print("actions that start a turn", c.turnStarts);
   check(nearShare(c.drawsFull, c.draws, q), "the share of full searches among the draws");
-  //With a setting on, the actions that it binds take their leader's search. Each action that continues a move is in
-  //its turn, so cheapSearchPerTurn binds the drops too.
-  if(perMove || perTurn)
-    check(c.moves.differ == 0, "each drop takes its pick's decision and weight");
-  else if(c.moves.n > 0)
-    check(nearShare(c.moves.full, c.moves.n, q), "the drops draw their own");
-  if(perTurn)
-    check(c.turns.differ == 0, "each action in the turn of the action before it takes that action's search");
-  else if(c.turns.n > 0 && !(perMove && c.moves.n > 0))
-    check(nearShare(c.turns.full, c.turns.n, q), "the actions in a turn draw their own");
+  //The followers that a setting binds take their leader's search: cheapSearchPerMove binds the drops, and
+  //cheapSearchPerTurn binds the drops and the later moves of a turn. The others draw their own, apart from their
+  //leader's: 1 - cheapSearchProb of them have a full search, also among those after a full search.
+  const auto checkKind = [&](const Followers& f, bool bound, const string& what) {
+    if(bound)
+      check(f.differ == 0, what + " take their leader's decision and weight");
+    else
+      check((f.n == 0 || nearShare(f.full, f.n, q)) && (f.leadersFull == 0 || nearShare(f.bothFull, f.leadersFull, q)),
+            what + " draw their own");
+  };
+  checkKind(c.drops, perMove || perTurn, "the drops");
+  checkKind(c.laterMoves, perTurn, "the later moves of a turn");
+  checkKind(c.turnStarts, false, "the turns' first actions");
+  //With one draw a turn, a turn with a later move has two full searches as often as it draws one: a turn's moves
+  //come by the turn order, whatever its searches.
+  if(perTurn && c.laterMoves.n > 0)
+    check(nearShare(c.laterMoves.bothFull, c.laterMoves.n, q), "the share of the turns with two full searches");
 
   delete forkData;
   delete gameRunner;

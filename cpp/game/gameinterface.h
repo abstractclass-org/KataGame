@@ -38,7 +38,9 @@
  *                           bool: sets the start position on a board of that size, or returns false when the game
  *                           is not played on it.
  *   x_size(p), y_size(p)    int: the board's size.
- *   next_player(p)          int: the player to move, from the position (a turn can have several moves).
+ *   next_player(p)          int: the player to move, from the position (a turn can have several moves). Self-play's
+ *                           cheapSearchPerTurn reads one player's actions in a row as one turn, so it requires that
+ *                           no player has two turns in a row (testcheapsearch checks it for the build's game).
  *   turn_moves_left(p)      int: the moves left in the mover's turn, this one included (1 in a game that alternates).
  *   moves_played(p)         int: the moves played since the start, a measure of the game's progress.
  *   terminal(p)             bool: whether the game is over.

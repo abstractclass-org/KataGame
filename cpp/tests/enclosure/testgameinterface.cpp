@@ -48,18 +48,19 @@ static void fail(const string& what) {
 static int checkedPositions = 0, inputChecks = 0, symmetryChecks = 0, allActionChecks = 0;
 static int turnChecks = 0, turnsGoOn = 0;
 
-//After an action of mover, from a position with leftBefore edges left in the turn. Self-play's cheapSearchPerTurn
-//reads a turn as the actions of one player in a row (an action is in the turn of the action before it when the same
-//player moves again). In Enclosure the same player moves again exactly when the action was an edge and the turn had
-//another edge left: a pass (a timeout's, or the search's when no edge is legal) and a turn's last edge give the next
-//turn to the other player, so no player has two turns in a row.
-static void checkTurnGoesOn(const Board& board, Player mover, int leftBefore, bool passed, const string& where) {
+//After an action, from a position with leftBefore edges left in the turn. Self-play's cheapSearchPerTurn reads a turn
+//as the actions of one player in a row: an action is in the turn of the action before it when the same player moves
+//again (the history's last mover and next player, as play.cpp reads them). In Enclosure the same player moves again
+//exactly when the action was an edge and the turn had another edge left: a pass (a timeout's, or the search's when no
+//edge is legal) and a turn's last edge give the next turn to the other player, so no player has two turns in a row.
+static void checkTurnGoesOn(const Board& board, const BoardHistory& hist, int leftBefore, const string& where) {
   if(board.isGameOver())
     return;
   turnChecks++;
-  const bool goesOn = board.nextPla() == mover;
+  const Move& last = hist.moveHistory.back();
+  const bool goesOn = hist.presumedNextMovePla == last.pla;
   turnsGoOn += goesOn;
-  if(goesOn != (!passed && leftBefore > 1))
+  if(goesOn != (last.loc != Board::PASS_LOC && leftBefore > 1))
     fail(where + ": the next player is not the turn's (the same while the turn has an edge left, else the other)");
 }
 
@@ -602,15 +603,14 @@ int main(int argc, char** argv) {
       istringstream row(line);
       int action;
       row >> action;
-      checkPosition(board, hist, label + " move " + Global::intToString(i + 1), passed ? -1 : i);
+      const string where = label + " move " + Global::intToString(i + 1);
+      checkPosition(board, hist, where, passed ? -1 : i);
       if(games == 1)
         checkPinnedHashes(board, hist, i);
       positions.push_back(board.pos);
-      const Player mover = board.nextPla();
       const int leftBefore = R::turn_moves_left(board.pos);
-      hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(action), mover, NULL);
-      checkTurnGoesOn(board, mover, leftBefore, action == R::PASS_ACTION,
-                      label + " move " + Global::intToString(i + 1));
+      hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(action), board.nextPla(), NULL);
+      checkTurnGoesOn(board, hist, leftBefore, where);
       passed = passed || action == R::PASS_ACTION;
     }
     checkPosition(board, hist, label + " end", passed ? -1 : n);
@@ -638,21 +638,18 @@ int main(int argc, char** argv) {
       hist.setKomi(komis[g % (sizeof(komis) / sizeof(komis[0]))]);
       int ply = 0;
       while(!board.isGameOver()) {
-        checkPosition(board, hist, "random game " + Global::intToString(g) + " ply " + Global::intToString(ply), -1);
+        const string where = "random game " + Global::intToString(g) + " ply " + Global::intToString(ply);
+        checkPosition(board, hist, where, -1);
         vector<int> legal;
         R::legal_actions(board.pos, legal);
         const Player pla = board.nextPla();
         const int leftBefore = R::turn_moves_left(board.pos);
-        bool passes = rand.nextBool(0.05);
-        if(passes)
+        if(rand.nextBool(0.05))
           hist.makeBoardMoveTolerant(board, Board::PASS_LOC, pla);
-        else {
-          const int action = legal[rand.nextUInt((uint32_t)legal.size())];
-          passes = action == R::PASS_ACTION;  //the only legal action when no edge is
-          hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(action), pla, NULL);
-        }
-        checkTurnGoesOn(board, pla, leftBefore, passes,
-                        "random game " + Global::intToString(g) + " ply " + Global::intToString(ply));
+        else
+          hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(legal[rand.nextUInt((uint32_t)legal.size())]),
+                                        pla, NULL);
+        checkTurnGoesOn(board, hist, leftBefore, where);
         ply++;
       }
       checkPosition(board, hist, "random game " + Global::intToString(g) + " end", -1);
