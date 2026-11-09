@@ -99,7 +99,8 @@
  *                           The search still plays the legal actions only. Default: none (replayTolerates).
  *   continues_move(p)       bool: whether the next action continues the move of the action before it, by the same
  *                           player: Blueprints' drop, the second action of an edit, after its pick. Self-play's
- *                           cheapSearchPerMove reads it. Default: false, each action is a move (continuesMove).
+ *                           cheapSearchPerMove, the time controls (no share of the increment), RGSC's regret by kind
+ *                           and AZdb's rewards read it. Default: false, each action is a move (continuesMove).
  *   SETTINGS, set_setting(name, value, why)
  *                           a list of const char* (std::array), bool: the game's own settings, which every command
  *                           reads from its config before its first game (Setup::initializeSession): each one's key in

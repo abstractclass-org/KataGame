@@ -50,6 +50,12 @@ struct PlaySettings {
   //search limits (cheap or full, the visits, the weight, the root noise). A hint's search and a forced full search
   //keep their own. Reanalysis (useReanalyze) still redoes each action alone.
   bool cheapSearchPerMove;
+  //KataGame fork (abscls-7fdd): one draw of the cheap search for each turn. An action in the turn of the action before
+  //it takes that action's search limits, as with cheapSearchPerMove: Enclosure's second edge takes its first edge's.
+  //An action is in the turn of the action before it when the same player moves again: in a game whose turns go from
+  //one player to the other (Enclosure, Blueprints), no player has two turns in a row. It includes the actions that
+  //continue a move (Blueprints' drop is in its pick's turn), so it needs no game code (GameInterface::continuesMove).
+  bool cheapSearchPerTurn;
 
   //Attenuate the number of visits used in positions where one player or the other is extremely winning
   bool reduceVisits;

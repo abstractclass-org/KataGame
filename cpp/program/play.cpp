@@ -1137,8 +1137,8 @@ struct SearchLimitsThisMove {
 //turn - during the game that is all of them, while post-game reanalysis of a cheap-search position passes the
 //turn index so as to reproduce the state as of that turn.
 //KataGame fork: moveLimits, when not NULL, are the limits of the action before this one, whose move this action
-//continues (PlaySettings::cheapSearchPerMove). This action takes them in place of its own draw, unless it is the
-//hint's turn or they were the hint's.
+//continues (PlaySettings::cheapSearchPerMove) or whose turn it is in (cheapSearchPerTurn). This action takes them in
+//place of its own draw, unless it is the hint's turn or they were the hint's.
 static SearchLimitsThisMove getSearchLimitsThisMove(
   const Search* toMoveBot, Player pla, const PlaySettings& playSettings, Rand& gameRand,
   const vector<double>& historicalMctsWinLossValues,
@@ -2058,7 +2058,8 @@ FinishedGameData* Play::runGame(
   vector<double> historicalMctsScoreStdevs;
   vector<ReportedSearchValues> rawNNValues;
   vector<bool> wasCheapSearchByTurn;
-  //KataGame fork: the last action's search limits, for an action that continues its move (cheapSearchPerMove).
+  //KataGame fork: the last action's search limits, for an action that continues its move (cheapSearchPerMove) or is
+  //in its turn (cheapSearchPerTurn).
   SearchLimitsThisMove lastLimits = SearchLimitsThisMove();
 
   //KataGame fork (abscls-il4e.11): self-play's search of the root's views (PlaySettings::rootViews). The moves before
@@ -2109,14 +2110,15 @@ FinishedGameData* Play::runGame(
       toMoveBot->setKomiIfNew((float)(plaFactor * currentKomiBonus + hist.rules.komi));
     }
 
-    //KataGame fork (cheapSearchPerMove): an action that continues the last action's move takes its limits. The
-    //loop's first action draws its own, even when the moves before the loop (policy init, a fork) left a move to
-    //continue.
-    const bool continuesMove =
-      playSettings.cheapSearchPerMove && i > 0 && GameInterface::continuesMove<GameRules>(board.pos);
+    //KataGame fork (cheapSearchPerMove, cheapSearchPerTurn): an action that continues the last action's move, or one
+    //in the last action's turn (the same player moves again), takes its limits. The loop's first action draws its own,
+    //even when the moves before the loop (policy init, a fork) left a move or a turn to continue.
+    const bool takesLastLimits =
+      i > 0 && ((playSettings.cheapSearchPerMove && GameInterface::continuesMove<GameRules>(board.pos)) ||
+                (playSettings.cheapSearchPerTurn && !hist.moveHistory.empty() && hist.moveHistory.back().pla == pla));
     SearchLimitsThisMove limits = getSearchLimitsThisMove(
       toMoveBot, pla, playSettings, gameRand, historicalMctsWinLossValues, historicalMctsWinLossValues.size(),
-      clearBotBeforeSearch, otherGameProps, false, continuesMove ? &lastLimits : NULL
+      clearBotBeforeSearch, otherGameProps, false, takesLastLimits ? &lastLimits : NULL
     );
     lastLimits = limits;
     //KataGame fork (abscls-il4e.11): with the root's views, the cover of the position. The rules' view alone gives the

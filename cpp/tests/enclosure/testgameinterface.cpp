@@ -8,7 +8,8 @@
 // komi. At each position:
 // - the rules part, against itself: the player to move and the edges left (against the 1-2-2 turn order), is_legal
 //   against legal_actions, the move and the position in the notation (each read back), the engine protocol's moves
-//   (each read back), and at the end the result;
+//   (each read back), and at the end the result; after each action, the next player: the same player exactly while
+//   the turn has an edge left (self-play's cheapSearchPerTurn reads a turn as one player's actions in a row);
 // - the encoding part: the front's rows against the members (NNInputs::fillRowV8, and fillRowV8Packed at each
 //   symmetry), with and without the history planes and at several komis; the history planes (the only planes that
 //   the history changes); the policy layout (NNPos); and the symmetries: the action map onto the image's legal
@@ -45,6 +46,22 @@ static void fail(const string& what) {
 }
 
 static int checkedPositions = 0, inputChecks = 0, symmetryChecks = 0, allActionChecks = 0;
+static int turnChecks = 0, turnsGoOn = 0;
+
+//After an action of mover, from a position with leftBefore edges left in the turn. Self-play's cheapSearchPerTurn
+//reads a turn as the actions of one player in a row (an action is in the turn of the action before it when the same
+//player moves again). In Enclosure the same player moves again exactly when the action was an edge and the turn had
+//another edge left: a pass (a timeout's, or the search's when no edge is legal) and a turn's last edge give the next
+//turn to the other player, so no player has two turns in a row.
+static void checkTurnGoesOn(const Board& board, Player mover, int leftBefore, bool passed, const string& where) {
+  if(board.isGameOver())
+    return;
+  turnChecks++;
+  const bool goesOn = board.nextPla() == mover;
+  turnsGoOn += goesOn;
+  if(goesOn != (!passed && leftBefore > 1))
+    fail(where + ": the next player is not the turn's (the same while the turn has an edge left, else the other)");
+}
 
 //The entries of the front's row (V8, NHWC) that are 1, as the game's members give them: the on-board plane first,
 //then the game's planes.
@@ -431,7 +448,9 @@ static void checkOptionalMembers() {
        GameInterface::replayTolerates<R>(start, -1) ||
        GameInterface::replayTolerates<S>(stub::Position(), S::PASS_ACTION))
       fail("the replay's tolerance: Enclosure's pass at any time, nothing else, and none for the stub game");
-    //Each action is a move of its own, by default: Enclosure's edges too.
+    //Each action is a move of its own, by default: Enclosure's edges too. Enclosure keeps the default: the time
+    //controls and RGSC read continues_move, and each edge is a move. Its second edge takes its first edge's search
+    //through cheapSearchPerTurn (the next player's checks, checkTurnGoesOn).
     static_assert(!GameInterface::rules::HasContinuesMove<R>::value &&
                   !GameInterface::rules::HasContinuesMove<S>::value, "Enclosure's and the stub game's actions are moves");
     if(GameInterface::continuesMove<S>(stub::Position()))
@@ -587,7 +606,11 @@ int main(int argc, char** argv) {
       if(games == 1)
         checkPinnedHashes(board, hist, i);
       positions.push_back(board.pos);
-      hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(action), board.nextPla(), NULL);
+      const Player mover = board.nextPla();
+      const int leftBefore = R::turn_moves_left(board.pos);
+      hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(action), mover, NULL);
+      checkTurnGoesOn(board, mover, leftBefore, action == R::PASS_ACTION,
+                      label + " move " + Global::intToString(i + 1));
       passed = passed || action == R::PASS_ACTION;
     }
     checkPosition(board, hist, label + " end", passed ? -1 : n);
@@ -619,11 +642,17 @@ int main(int argc, char** argv) {
         vector<int> legal;
         R::legal_actions(board.pos, legal);
         const Player pla = board.nextPla();
-        if(rand.nextBool(0.05))
+        const int leftBefore = R::turn_moves_left(board.pos);
+        bool passes = rand.nextBool(0.05);
+        if(passes)
           hist.makeBoardMoveTolerant(board, Board::PASS_LOC, pla);
-        else
-          hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(legal[rand.nextUInt((uint32_t)legal.size())]),
-                                        pla, NULL);
+        else {
+          const int action = legal[rand.nextUInt((uint32_t)legal.size())];
+          passes = action == R::PASS_ACTION;  //the only legal action when no edge is
+          hist.makeBoardMoveAssumeLegal(board, Board::moveLocOfAction(action), pla, NULL);
+        }
+        checkTurnGoesOn(board, pla, leftBefore, passes,
+                        "random game " + Global::intToString(g) + " ply " + Global::intToString(ply));
         ply++;
       }
       checkPosition(board, hist, "random game " + Global::intToString(g) + " end", -1);
@@ -637,8 +666,12 @@ int main(int argc, char** argv) {
      pinnedGameChecks != (int)(sizeof(PINNED_IMAGES) / sizeof(PINNED_IMAGES[0]) +
                                sizeof(PINNED_TARGETS) / sizeof(PINNED_TARGETS[0])))
     fail("the fixture's first game did not reach every pinned ply");
+  if(turnsGoOn == 0 || turnsGoOn == turnChecks)
+    fail("the games reached no turn that goes on, or no turn that ends");
   printf("%d fixture games and %d random games: %d positions, %d with the inputs checked, %d symmetry checks, "
-         "%d with every action checked, %d with pinned hashes, %d failures\n",
-         games, randomGames, checkedPositions, inputChecks, symmetryChecks, allActionChecks, pinnedChecks, failures);
+         "%d with every action checked, %d with pinned hashes, %d actions with the next player checked (%d in a turn "
+         "that goes on), %d failures\n",
+         games, randomGames, checkedPositions, inputChecks, symmetryChecks, allActionChecks, pinnedChecks, turnChecks,
+         turnsGoOn, failures);
   return failures == 0 ? 0 : 1;
 }
