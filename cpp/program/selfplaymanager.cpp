@@ -1,5 +1,7 @@
 #include "../program/selfplaymanager.h"
 
+#include <algorithm>
+
 #include "../core/test.h"
 #include "../core/timer.h"
 
@@ -20,6 +22,9 @@ SelfplayManager::ModelData::ModelData(
   gameStartedCount(0),
   gamesFinishedCount(0),
   movesPlayedCount(0),
+  fullSearchesMoreViewsCount(0),
+  cheapSearchesMoreViewsCount(0),
+  movesInViewCount(0),
   lastReleaseTime(initialTime),
   hasDataWriteLoop(hasDataLoop),
   finishedGameQueue(maxDQueueSize),
@@ -388,6 +393,13 @@ void SelfplayManager::runDataWriteLoopImpl(ModelData* modelData) {
       (int64_t)(gameData->endHist.moveHistory.size() - gameData->startHist.moveHistory.size()),
       std::memory_order_relaxed
     );
+    //KataGame fork (abscls-lne9): the root's views.
+    modelData->fullSearchesMoreViewsCount.fetch_add(gameData->numFullSearchesMoreViews, std::memory_order_relaxed);
+    modelData->cheapSearchesMoreViewsCount.fetch_add(gameData->numCheapSearchesMoreViews, std::memory_order_relaxed);
+    modelData->movesInViewCount.fetch_add(
+      (int64_t)std::count_if(gameData->moveViews.begin(), gameData->moveViews.end(),
+                             [](const string& view) { return !view.empty(); }),
+      std::memory_order_relaxed);
 
     if(modelData->sgfOut != NULL) {
       testAssert(gameData->startHist.moveHistory.size() <= gameData->endHist.moveHistory.size());
@@ -432,6 +444,15 @@ void SelfplayManager::runDataWriteLoopImpl(ModelData* modelData) {
         "Final data rows with the next policy in the row's view: " +
         Global::int64ToString(modelData->tdataWriter->numRowsNextPolicyTranslated()) + ", without it: " +
         Global::int64ToString(modelData->tdataWriter->numRowsNextPolicyLost()));
+    //KataGame fork (abscls-lne9): the root's views, when the games searched a view other than the rules'.
+    const int64_t fullMore = modelData->fullSearchesMoreViewsCount.load(std::memory_order_relaxed);
+    const int64_t cheapMore = modelData->cheapSearchesMoreViewsCount.load(std::memory_order_relaxed);
+    const int64_t movesInView = modelData->movesInViewCount.load(std::memory_order_relaxed);
+    if(fullMore + cheapMore + movesInView > 0)
+      logger->write(
+        "Final searches with more than one view: " + Global::int64ToString(fullMore) + " full, " +
+        Global::int64ToString(cheapMore) + " cheap; moves in another view than the rules': " +
+        Global::int64ToString(movesInView));
     logger->write("Final NN rows: " + Global::int64ToString(modelData->nnEval->numRowsProcessed()));
     logger->write("Final NN batches: " + Global::int64ToString(modelData->nnEval->numBatchesProcessed()));
     logger->write("Final NN avg batch size: " + Global::doubleToString(modelData->nnEval->averageProcessedBatchSize()));

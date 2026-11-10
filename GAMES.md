@@ -47,7 +47,7 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, the next player after each action (no player has two turns in a row), and the defaults of the optional members with a stub game. |
 | `cpp/tests/enclosure/testgameareas.cpp` | The look-ahead area and the komi area (optional members of the encoding part) through the front, for the build's game: the short-term value targets' lambdas and the komi draw's standard deviation, against each game's pinned areas, and the defaults with stub games. |
 | `cpp/tests/enclosure/testcheapsearch.cpp` | Self-play's full and cheap searches (`play.cpp`'s `GameRunner`), for the build's game: the share of full searches among the actions that draw one, with `cheapSearchPerMove`, the search of an action that continues a move, and with `cheapSearchPerTurn`, the search of an action in the turn of the action before it. |
-| `cpp/tests/enclosure/testselfplayviews.cpp` | Self-play's search of the root's views (`PlaySettings::rootViews`), for a game with views: each move in its view, the replay, the full searches' visits, `view_action`, RGSC's played entries, and the rows and records for `check_rows.py --records`. |
+| `cpp/tests/enclosure/testselfplayviews.cpp` | Self-play's search of the root's views (`PlaySettings::rootViews`), for a game with views: each move in its view, the replay, the full searches' visits, `view_action`, RGSC's played entries, the rows and records for `check_rows.py --records`, and the passes of a full search with `rootViewsCheapPasses`. |
 | `cpp/tests/enclosure/testdiversityinputs.cpp` | AZdb's latent in the network's inputs and cache, for any game: member 0 keeps the cache's hash of an evaluation without a member and the members' hashes differ, the rows of V14 are V13's with the member's one-hot after V13's global inputs (the float rows and the packed rows at each allowed symmetry), the rows of V13 do not read the member, and the training rows have 80 global targets before V14 and 84 in its rows. |
 | `cpp/tests/enclosure/testdiversitysearch.cpp` | AZdb's diversity term in the search, for a build's game that gives AZdb's statistics (Blueprints): member 0's search against KataGo's, D on chains, a transposition, the member's choice by its reward, each member's evaluations, the refusals and the tree's clear. |
 | `cpp/tests/enclosure/testkomi.cpp` | Komi through the front, for the build's game: the result and the value targets at komis that decide a game, the global inputs at the history's komi, the even-komi search's bracket (an optional member of the encoding part) against KataGo's code and each game's pinned bracket, the two rules where the win-loss value keeps its sign up to the limit (no even komi, or KataGo's bracket end), each game's pinned lead step, and a self-play config's komi draws. |
@@ -393,7 +393,14 @@ search takes its share of the clock's time for the move, and a move that the pos
 and a side position's) computes its cover. A cover of the rules' view alone gives the usual search, and a cover of one other view gives the search in
 that view. With more views, a full search gives each view a pass with the whole of the action's limits, and the move
 is the move of the pass whose most visited move has the best value of its child for the player to move, chosen in that
-pass as self-play chooses. The passes take the first pass's score centre. A cheap search splits its limits as the
+pass as self-play chooses. The passes take the first pass's score centre. With `rootViewsCheapPasses` (off unless a
+config sets it), a full search of the game gives each pass the action's limits with at most the cheap search's visits
+and playouts (`cheapSearchVisits`). The best pass gives the view only: the bot searches the root in that view again
+with the whole of the action's limits, at the passes' score centre, and the turn takes that search (its move, its
+policy target and its row). Self-play's full searches clear the bot first (`clearBotBeforeSearch`), so that search
+starts a new tree, also after the last pass. When the action's limits are no larger than the passes', the passes take
+the whole of them. The cheap searches, a cover of one view and the side positions do not change, and AZdb's members 1
+to 4 take the same rule in their full searches. A cheap search splits its limits as the
 analysis engine does (`rootViewsPassShare`, `rootViewsCandidates` and `rootViewsFinalists`), but for a player with a
 diversity term (AZdb's members 1 to 4): its passes share the limits, with no checks, as a check searches for the next
 player to move. A cheap search's move is the analysis engine's choice, with no temperature. RGSC's tree candidate at a
@@ -407,7 +414,9 @@ the game's first move in a view. The rows' writer moves the second policy target
 view that the row gives the next position (`view_in_frame`, each move by `view_action`). A move that this view does
 not hold drops out. A row whose next policy keeps no move, or keeps only moves of target 0 (KataGo's policy target
 pruning and the rounding to whole targets can give a child 0), has no second policy target. The log counts both kinds
-of rows. The setting does not combine with `useReanalyze`.
+of rows. The setting does not combine with `useReanalyze`. Self-play's log gives, for each network at its cleanup, the
+searches of the games' loops whose cover has more than one view, full and cheap, and the moves in another view than
+the rules' ("Final searches with more than one view").
 
 `RootViews::Searches` holds the passes and the checks one at a time, for a caller that runs each search. `next()`
 gives each search's root and its share of the limits. `done()` takes the search at its end. `result()` gives the
@@ -889,13 +898,15 @@ is full. KataGo's asymmetric playouts (`normalAsymmetricPlayoutProb`) need at le
 with them, a cheap search of fewer visits stops the test with an error ("asymmetric playout doubling resulted in fewer
 than 5 visits"). So with very few visits, set that probability to 0, or use a set of games that has no such game.
 
-**Self-play's root views:** `testselfplayviews SELFPLAY_CONFIG MODEL GAMES [OVERRIDES [OUT_DIR]]` runs on a build of a
+**Self-play's root views:** `testselfplayviews SELFPLAY_CONFIG MODEL GAMES [OVERRIDES [OUT_DIR [PASSES_OVERRIDES]]]`
+runs on a build of a
 game with views (Blueprints). It plays the games as `testcheapsearch` does, with `rootViews` on, no reduced or
 asymmetric visits and one search thread. `MODEL` can be `/dev/null`, KataGo's evaluator without a network. With
 `diversityMember` 1 to 4 in the overrides, both players are that member with a fixed state, and the network needs the
 intrinsic value head. It checks that each game replays to its end with each move in its view, that each move of the
-loop is in a view of its position's cover and its turn's policy target in the move's view, that each full search has
-the config's visits with one view or more, that `view_action` gives the action with the same child between the views
+loop is in a view of its position's cover and its turn's policy target in the move's view, that the search that gave
+each full search's move has the config's visits with one view or more, that `view_action` gives the action with the
+same child between the views
 of a cover, that RGSC's played entry after a move in a view restores to the replayed position, and that RGSC's tree
 candidate at a root in a set view restores with its key to the position in the rules' view. The games must hold a move
 in another view and a full search whose cover has more views: a run whose games lack either fails, as it did not
@@ -906,6 +917,18 @@ keeps of a next policy. So the test takes each next policy that the row's view m
 leaves out a move of target above 0, and sets the kept moves' targets to 0. A second writer writes each game again,
 without its side positions, to no file. Each row whose next policy then keeps only moves of target 0 must have no
 second policy target, the writer must count it in `numRowsNextPolicyLost`, and the games must give such a row.
+After the games, their rows and their records, so that the rows and the records stay those of the games, the test
+checks the passes (`Play::searchRootViewsForTests`) on the first two positions of each game's loop whose cover has more
+views, each with a new bot of the config's settings. A full search with `rootViewsCheapPasses` has a pass for each view
+of the cover with the cheap search's visits, the move's view is the first pass of the best value, and the move's
+search has the config's visits, all of its own (the full search starts a new tree). A full search without it has a
+pass of the config's visits for each view, and the same choice. A cheap search and a side position take the rules
+that do not change with the setting. The positions must hold a best pass before the last and one at the last.
+`rootViewsCheapPasses=true` in the overrides gives the games themselves the passes of the cheap search's visits.
+`PASSES_OVERRIDES` gives the bots of these checks other settings than the games' (`OUT_DIR` "" for no files), such as
+bpj5's `maxVisits=600,cheapSearchVisits=100` on the positions of short games. The test prints the network's rows of
+the full search with the setting and without it on each position, each from an empty cache of the network (its size
+is `nnCacheSizePowerOfTwo` of the overrides): the setting's cost on the same positions.
 
 **AZdb's latent:** `testdiversityinputs POSITIONS_FILE` names no game, so it runs on any game's build, with the game's
 positions (Blueprints': `tests/data/blueprints_positions.txt`). It needs no network. It checks the cache's hash of each

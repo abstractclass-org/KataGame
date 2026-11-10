@@ -110,7 +110,8 @@ struct PlaySettings {
   //computes its cover. A cover of the rules' view alone gives the usual search. A cover of one other view gives the
   //search in that view, with the action's limits. With more views, a full search gives each view a search of the root
   //with the whole of the action's limits (a pass), and the move comes from the pass whose most visited move has the
-  //best value of its child for the player to move (the passes share the first pass's score centre). A cheap search
+  //best value of its child for the player to move (the passes share the first pass's score centre), unless
+  //rootViewsCheapPasses gives the passes fewer visits (below). A cheap search
   //splits its limits as the analysis engine's rootViews does (rootViewsPassShare, rootViewsCandidates and
   //rootViewsFinalists, with the analysis engine's defaults), but for a player with a diversity term (AZdb's members 1
   //to 4): its passes take the limits between them, with no checks, as a check searches for the next player to move. The
@@ -120,6 +121,14 @@ struct PlaySettings {
   double rootViewsPassShare;
   int rootViewsCandidates;
   int rootViewsFinalists;
+  //KataGame fork (abscls-lne9): with rootViews, a full search of the game's loop whose cover has more views gives each
+  //pass the action's limits with at most the cheap search's visits and playouts (cheapSearchVisits). The best pass, by
+  //the rule above, gives the view. The bot then searches the position in that view again with the whole of the
+  //action's limits, and the turn takes that search: its move, its policy target and its row. The search starts a new
+  //tree when the limits clear the bot, as self-play's full searches do (clearBotBeforeSearch). When the action's limits
+  //have no more visits and playouts than the passes, the rule above applies. The cheap searches, a cover of one view
+  //and the side positions do not change, and AZdb's members 1 to 4 take the same rule as member 0. Off by default.
+  bool rootViewsCheapPasses;
 
   //Don't stochastically integerify target weights
   bool noResolveTargetWeights;

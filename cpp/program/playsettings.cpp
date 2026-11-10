@@ -18,7 +18,7 @@ PlaySettings::PlaySettings()
    reanalyzePolicySurpriseWeight(1.0),reanalyzeValueSurpriseWeight(1.0),reanalyzeSurpriseExponent(1.0),
    reanalyzeUseOutcomeTargets(true),
    recordTreePositions(false),recordTreeThreshold(0),recordTreeTargetWeight(0.0f),
-   rootViews(false),rootViewsPassShare(0.5),rootViewsCandidates(2),rootViewsFinalists(3),
+   rootViews(false),rootViewsPassShare(0.5),rootViewsCandidates(2),rootViewsFinalists(3),rootViewsCheapPasses(false),
    noResolveTargetWeights(false),
    allowResignation(false),resignThreshold(0.0),resignConsecTurns(1),
    forSelfPlay(false),
@@ -138,6 +138,8 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg, bool isDistributed
     playSettings.rootViewsCandidates = rootViewSettings.candidates;
     playSettings.rootViewsFinalists = rootViewSettings.finalists;
   }
+  //KataGame fork (abscls-lne9): a full search's passes at the cheap search's visits.
+  playSettings.rootViewsCheapPasses = cfg.contains("rootViewsCheapPasses") ? cfg.getBool("rootViewsCheapPasses") : false;
   if(playSettings.rootViews && playSettings.useReanalyze)
     throw StringError("rootViews does not combine with useReanalyze: a reanalysis searches a turn again in one view");
   playSettings.forSelfPlay = true;

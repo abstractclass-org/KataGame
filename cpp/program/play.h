@@ -304,6 +304,30 @@ namespace Play {
     std::vector<double>& playSelectionValuesBuf
   );
 
+  //KataGame fork (abscls-lne9): self-play's search of the root's views (PlaySettings::rootViews) of one position, for
+  //its tests (tests/enclosure/testselfplayviews.cpp).
+  struct RootViewsPass {
+    std::string view;  //the view of the pass's root, "" the rules'
+    int64_t visits;    //the root's visits at the pass's end
+    double value;      //the pass's value for the player to move: the utility of the child of its most visited move
+  };
+  struct RootViewsSearch {
+    std::vector<RootViewsPass> passes;  //each search of a root in a view of the cover, in the cover's order
+    std::string view;  //the view of the search that gave the move
+    Loc loc;           //the move, in that view
+    int64_t visits;    //the visits of that search (its policy target's unreducedNumVisits)
+    bool treeKept;     //whether the bot holds that search's tree
+  };
+  enum class RootViewsLimits { FULL, CHEAP, SIDE_POSITION };
+  //bot searches board (in the rules' view, after hist, pla to move), whose cover must have a view other than the rules'
+  //view, as self-play's game searches it: with the limits of a full search (FULL; with clearBotBeforeSearch, and
+  //without reduced visits, asymmetric playouts or a hint), of a cheap search (CHEAP), or with the bot's own limits, as
+  //a side position (SIDE_POSITION).
+  RootViewsSearch searchRootViewsForTests(
+    Search* bot, const Board& board, const BoardHistory& hist, Player pla, const PlaySettings& playSettings,
+    RootViewsLimits limits
+  );
+
 }
 
 

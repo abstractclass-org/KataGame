@@ -1455,7 +1455,7 @@ static double passValue(const Search* bot, Player pla) {
 //view, from hist (the bots' history, which starts again after a move in a view: Play::runGame), with the action's
 //limits (runBotWithLimits), or with NULL limits with its own (a side position's search, runWholeSearchAndGetMove).
 //turn takes the search whose move the action plays, turnBoard its root. Returns whether bot still holds that search's
-//tree.
+//tree. record, when not NULL, takes each search of a root in a view of the cover (a pass) as it ends.
 //- One view: the search in that view, with the action's limits.
 //- More views, in a full search, or in a cheap search of a player with a diversity term (AZdb's members 1 to 4): a
 //  pass for each view of the cover, with the whole of the action's limits in a full search and an even share of them
@@ -1463,6 +1463,13 @@ static double passValue(const Search* bot, Player pla) {
 //  player to move (passValue, the first such pass), chosen within that pass as self-play chooses (the temperature over
 //  its visits). Every pass searches for the same player, with the same diversity term, and a move's reward is a
 //  constant of its child, the same position from every view. The passes take the first pass's score centre.
+//- More views, in a full search of the game with PlaySettings::rootViewsCheapPasses (abscls-lne9): the passes as above,
+//  each with the action's limits at most at the cheap search's visits and playouts. The best pass gives the view only:
+//  the bot searches the root in that view again with the whole of the action's limits, at the passes' score centre,
+//  and the turn takes that search. After the last pass, the bot holds that view's root, so the search continues the
+//  pass's tree unless the limits clear the bot (runBotWithLimits), as self-play's full searches do
+//  (clearBotBeforeSearch). When the action's limits have no more visits and playouts than the passes, the passes take
+//  the whole of them, as above.
 //- More views, in a cheap search otherwise: the analysis engine's split (RootViews::Searches), passes then checks with
 //  shares of the action's limits. A check searches the next position for its player to move, so a diversity term
 //  would be that player's (abscls-e0gz): the cheap searches with a term take the passes above. The move is the
@@ -1470,7 +1477,8 @@ static double passValue(const Search* bot, Player pla) {
 static bool searchRootViews(
   Search* bot, const Board& board, const BoardHistory& hist, Player pla, const vector<string>& views,
   const PlaySettings& playSettings, const SearchLimitsThisMove* limits,
-  vector<Loc>& locsBuf, vector<double>& playSelectionValuesBuf, TurnSearch& turn, Board& turnBoard
+  vector<Loc>& locsBuf, vector<double>& playSelectionValuesBuf, TurnSearch& turn, Board& turnBoard,
+  Play::RootViewsSearch* record
 ) {
   const int numViews = (int)views.size();
   struct CenterReset {
@@ -1481,11 +1489,16 @@ static bool searchRootViews(
     return searchLimits == NULL ? bot->runWholeSearchAndGetMove(movePla)
       : runBotWithLimits(bot, movePla, playSettings, *searchLimits);
   };
+  auto recordPass = [&](const string& view) {
+    if(record != NULL)
+      record->passes.push_back(Play::RootViewsPass{view, bot->getRootVisits(), passValue(bot, pla)});
+  };
   if(numViews == 1) {
     turnBoard = board;
     FinishedGameData::setBoardView(turnBoard, views[0]);
     bot->setPosition(pla, turnBoard, hist);
     const Loc loc = run(pla, limits);
+    recordPass(views[0]);
     takeTurnSearch(turn, bot, turnBoard, hist, pla, loc, playSettings, false, locsBuf, playSelectionValuesBuf);
     turn.view = views[0];
     return true;
@@ -1493,27 +1506,51 @@ static bool searchRootViews(
 
   const bool cheap = limits != NULL && limits->isCheapSearch;
   if(!cheap || Search::resolveDiversityWeight(bot->searchParams) != 0.0) {
-    const SearchLimitsThisMove passLimits = cheap ? shareOfLimits(*limits, 1.0 / numViews) : SearchLimitsThisMove();
+    SearchLimitsThisMove passLimits = cheap ? shareOfLimits(*limits, 1.0 / numViews) : SearchLimitsThisMove();
+    //KataGame fork (abscls-lne9): rootViewsCheapPasses. A full search's limits hold its visits and playouts in
+    //numAlterVisits and numAlterPlayouts, altered or not (getSearchLimitsThisMove).
+    bool searchAgain = false;
+    if(!cheap && limits != NULL && playSettings.rootViewsCheapPasses) {
+      passLimits = *limits;
+      passLimits.doAlterVisitsPlayouts = true;
+      passLimits.numAlterVisits = std::min(limits->numAlterVisits, (int64_t)playSettings.cheapSearchVisits);
+      passLimits.numAlterPlayouts = std::min(limits->numAlterPlayouts, (int64_t)playSettings.cheapSearchVisits);
+      searchAgain = passLimits.numAlterVisits < limits->numAlterVisits ||
+        passLimits.numAlterPlayouts < limits->numAlterPlayouts;
+    }
+    const SearchLimitsThisMove* passesLimits = cheap || searchAgain ? &passLimits : limits;
     double best = 0.0;
     int bestPass = -1;
     for(int i = 0; i<numViews; i++) {
       Board root(board);
       FinishedGameData::setBoardView(root, views[i]);
       bot->setPosition(pla, root, hist);
-      const Loc loc = run(pla, cheap ? &passLimits : limits);
+      const Loc loc = run(pla, passesLimits);
       if(i == 0)
         bot->fixedScoreCenter = bot->recentScoreCenter;
+      recordPass(views[i]);
       const double value = passValue(bot, pla);
       if(bestPass < 0 || value > best) {
         best = value;
         bestPass = i;
-        takeTurnSearch(
-          turn, bot, root, hist, pla, loc, playSettings, i + 1 < numViews, locsBuf, playSelectionValuesBuf);
-        turn.view = views[i];
-        turnBoard = root;
+        if(!searchAgain) {
+          takeTurnSearch(
+            turn, bot, root, hist, pla, loc, playSettings, i + 1 < numViews, locsBuf, playSelectionValuesBuf);
+          turn.view = views[i];
+          turnBoard = root;
+        }
       }
     }
-    return bestPass == numViews - 1;
+    if(!searchAgain)
+      return bestPass == numViews - 1;
+    turnBoard = board;
+    FinishedGameData::setBoardView(turnBoard, views[bestPass]);
+    if(bestPass != numViews - 1)
+      bot->setPosition(pla, turnBoard, hist);
+    const Loc loc = run(pla, limits);
+    takeTurnSearch(turn, bot, turnBoard, hist, pla, loc, playSettings, false, locsBuf, playSelectionValuesBuf);
+    turn.view = views[bestPass];
+    return true;
   }
 
   RootViews::Settings settings;
@@ -1532,6 +1569,7 @@ static bool searchRootViews(
     const Loc chosen = run(searches->pla(), &shareLimits);
     if(n < numViews) {
       //A pass: the turn can take it, with its moves' values.
+      recordPass(views[n]);
       passes.emplace_back(new TurnSearch());
       TurnSearch& pass = *passes.back();
       takeTurnSearch(
@@ -1569,6 +1607,50 @@ static bool searchRootViews(
   }
   turnBoard = searches->viewBoard(choice.pass);
   return false;
+}
+
+//KataGame fork (abscls-lne9): searchRootViews for its tests, with the limits that getSearchLimitsThisMove gives
+//self-play's full or cheap search of an action when no reduced visits, asymmetric playouts or hint apply.
+Play::RootViewsSearch Play::searchRootViewsForTests(
+  Search* bot, const Board& board, const BoardHistory& hist, Player pla, const PlaySettings& playSettings,
+  RootViewsLimits limitsKind
+) {
+  const vector<string> views = searchedViews(playSettings, board);
+  testAssert(!views.empty());
+  SearchLimitsThisMove limits;
+  limits.doAlterVisitsPlayouts = false;
+  limits.numAlterVisits = bot->searchParams.maxVisits;
+  limits.numAlterPlayouts = bot->searchParams.maxPlayouts;
+  limits.clearBotBeforeSearchThisMove = true;  //self-play's (runGame's check)
+  limits.removeRootNoise = false;
+  limits.targetWeight = 1.0f;
+  limits.isCheapSearch = false;
+  limits.playoutDoublingAdvantage = 0.0;
+  limits.playoutDoublingAdvantagePla = C_EMPTY;
+  limits.hintLoc = Board::NULL_LOC;
+  if(limitsKind == RootViewsLimits::CHEAP) {
+    limits.doAlterVisitsPlayouts = true;
+    limits.isCheapSearch = true;
+    limits.numAlterVisits = std::min(limits.numAlterVisits, (int64_t)playSettings.cheapSearchVisits);
+    limits.numAlterPlayouts = std::min(limits.numAlterPlayouts, (int64_t)playSettings.cheapSearchVisits);
+    limits.targetWeight *= playSettings.cheapSearchTargetWeight;
+    if(playSettings.cheapSearchTargetWeight <= 0.0) {
+      limits.clearBotBeforeSearchThisMove = false;
+      limits.removeRootNoise = true;
+    }
+  }
+  RootViewsSearch record;
+  TurnSearch turn;
+  Board turnBoard(board);
+  vector<Loc> locsBuf;
+  vector<double> playSelectionValuesBuf;
+  record.treeKept = searchRootViews(
+    bot, board, hist, pla, views, playSettings, limitsKind == RootViewsLimits::SIDE_POSITION ? NULL : &limits,
+    locsBuf, playSelectionValuesBuf, turn, turnBoard, &record);
+  record.view = turn.view;
+  record.loc = turn.loc;
+  record.visits = turn.targets.unreducedNumVisits;
+  return record;
 }
 
 //KL divergence of a win/loss/noresult distribution from the raw neural net value prediction, capped at 1.
@@ -2139,8 +2221,11 @@ FinishedGameData* Play::runGame(
       viewBoard.reset(new Board(board));
       treeKept = searchRootViews(
         toMoveBot, board, searchHist, pla, views, playSettings, &limits, locsBuf, playSelectionValuesBuf, turn,
-        *viewBoard);
+        *viewBoard, NULL);
       loc = turn.loc;
+      //KataGame fork (abscls-lne9): the searches with more views, for self-play's log.
+      if(views.size() > 1)
+        (limits.isCheapSearch ? gameData->numCheapSearchesMoreViews : gameData->numFullSearchesMoreViews)++;
     }
     if(playSettings.recordTimePerMove) {
       double t1 = timer.getSeconds();
@@ -2623,7 +2708,7 @@ FinishedGameData* Play::runGame(
         Board spRoot(sp->board);
         searchRootViews(
           toMoveBot, sp->board, sp->hist, sp->pla, spViews, playSettings, NULL, locsBuf, playSelectionValuesBuf, spTurn,
-          spRoot);
+          spRoot, NULL);
         responseLoc = spTurn.loc;
         responseView = spTurn.view;
         sp->board = spRoot;

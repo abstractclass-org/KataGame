@@ -171,6 +171,10 @@ struct FinishedGameData {
   //row are in that view too. Empty without it: every move is in the rules' view. Replays play each move in its view
   //(playMove), and the records name a move in a view as GTP does (MOVE/VIEW, WriteSgf).
   std::vector<std::string> moveViews;
+  //KataGame fork (abscls-lne9): the searches of the game's loop whose cover has more than one view, full and cheap
+  //(Play::runGame with the root's views), for self-play's log.
+  int64_t numFullSearchesMoreViews = 0;
+  int64_t numCheapSearchesMoreViews = 0;
 
   Color* finalFullArea;
   Color* finalOwnership;
