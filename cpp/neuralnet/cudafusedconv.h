@@ -11,7 +11,8 @@
 //   - runConvAddScaleBiasRelu: trunk = trunk + conv(in), and next = relu(scale * trunk + bias), both from the float
 //     sum before its rounding (a block's last convolution, which also writes the next block's normalised, activated
 //     input, or the trunk's final normalisation).
-// The scale and bias are per output channel, given as packed words (packScaleBias).
+// The scale and bias are per output channel, given as packed words (packScaleBias). addNCBiasScaleBiasRelu is the
+// fused trunk's one pass that is not a convolution.
 
 #ifndef NEURALNET_CUDAFUSEDCONV_H_
 #define NEURALNET_CUDAFUSEDCONV_H_
@@ -26,8 +27,9 @@ namespace CudaFusedConv {
   // that runs and writes the expected values. Synchronous: call once per handle creation.
   bool supportedOnCurrentDevice();
 
-  // Whether a convolution of these sizes is supported: channels multiples of 8, an odd square or rectangular kernel
-  // of at most 32 a side, padded to the same size. The batch and the board do not change it.
+  // Whether a convolution of these sizes is supported: channels multiples of 8 and a 3 x 3 kernel (every residual
+  // block's convolutions, the shape that testfusedconv checks), padded to the same size. The batch and the board do
+  // not change it.
   bool supportsShape(int inChannels, int outChannels, int convYSize, int convXSize);
 
   // The word for one channel that the epilogues read: the FP16 bits of the scale in the low half and those of the bias
@@ -53,6 +55,16 @@ namespace CudaFusedConv {
     const half* in, const half* filter, half* trunk, const uint32_t* scaleBias, half* next,
     int batchSize, int ySize, int xSize, int inChannels, int outChannels, int convYSize, int convXSize,
     cudaStream_t stream
+  );
+
+  // out = relu(scale * (in + rowBias) + bias), computed in float, and when sumOut is not null, also
+  // sumOut = in + rowBias (sumOut may be in). in, sumOut and out: [batch, xy, channels]; rowBias: [batch, channels] (a
+  // bias for each row of the batch, such as a global pooling block's pooled bias); scale and bias: [channels], FP16 (a
+  // BatchNormLayer's merged buffers). No mask. channels a multiple of 8, every buffer 16-byte aligned: else it throws
+  // std::runtime_error.
+  void addNCBiasScaleBiasRelu(
+    const half* in, half* sumOut, const half* rowBias, const half* scale, const half* bias, half* out,
+    int batchSize, int xySize, int channels, cudaStream_t stream
   );
 }
 

@@ -1244,9 +1244,9 @@ These name Enclosure but hold no game code. Each stays, for its reason:
   code with Enclosure's name. `verify_build.sh` calls them by these names, and the WebAssembly build includes
   `testnnoutputs.cpp` by its path.
 - The options of the fork's speed work: `ENCLOSURE_FUSED_CONV`, `ENCLOSURE_FUSED_TRUNK` (`cudaandrocmbackend.inc`),
-  `ENCLOSURE_EIGEN_SIMD`, `ENCLOSURE_WINOGRAD_NV`, `ENCLOSURE_WINOGRAD_NT`, `ENCLOSURE_DIRECT_CONV`, `ENCLOSURE_EVAL_RAW`
-  (`eigenbackend.cpp`), `ENCLOSURE_COOP_THREADS` (`nneval.*`), `ENCLOSURE_NO_POLICY_GATHER` (`nneval.cpp`). The build
-  scripts and the runs' settings set them. A rename needs the old names as fallbacks, as the pipeline's renames have
+  `ENCLOSURE_EIGEN_SIMD`, `ENCLOSURE_WINOGRAD_NV`, `ENCLOSURE_WINOGRAD_NT`, `ENCLOSURE_DIRECT_CONV`,
+  `ENCLOSURE_EVAL_RAW` (`eigenbackend.cpp`), `ENCLOSURE_COOP_THREADS` (`nneval.*`), `ENCLOSURE_NO_POLICY_GATHER`
+  (`nneval.cpp`). The build scripts and the runs' settings set them. A rename needs the old names as fallbacks, as the pipeline's renames have
   (`ENGINES_*`, with `ENCLOSURE_*` and `V2*` as fallbacks).
 
 ### Changes of the fork that are already generic

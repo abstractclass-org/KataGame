@@ -49,7 +49,6 @@
 #endif
 
 #include <atomic>
-#include <cstring>
 #include <map>
 #include <mutex>
 #include <tuple>
@@ -572,7 +571,7 @@ struct CudaHandles {
   // Whether large read-only weight buffers are shared between the handles of multiple NN
   // server threads on the same GPU. Must be set before Model construction.
   bool shareModelWeights;
-  // KataGame fork (2026-11-10, abscls-rvu1): the fused trunk (ENCLOSURE_FUSED_TRUNK=1, see fusedTrunkOn) is asked
+  // KataGame fork (2026-11-10, abscls-rvu1): the fused trunk (ENCLOSURE_FUSED_TRUNK=1, see FusedTrunkConv) is asked
   // for, the build has its kernels, the handle runs FP16 in NHWC, and the kernels work on this GPU. Must be set
   // before Model construction: the layers build the fused path's buffers from it.
   bool fusedTrunkEnabled;
@@ -692,18 +691,15 @@ struct CudaHandles {
 // normalisation joins the add of the global inputs' bias. The same function as the unfused path, but not bit for bit
 // in FP16: the scale and bias act on the float accumulator before its single rounding (the unfused path rounds the
 // convolution's output to FP16 first, and scales it in FP16), and the trunk's normalisation reads the trunk before
-// its rounding. FP16 and NHWC only, ReLU normalisations, convolutions whose channels are multiples of 8, and no mask
-// (full boards, requireExactNNLen): else a layer runs as before. It replaces ENCLOSURE_FUSED_CONV in the blocks
-// that it runs.
+// its rounding. FP16 and NHWC only, ReLU normalisations, 3 x 3 convolutions whose channels are multiples of 8, and no
+// mask (full boards, requireExactNNLen): else a layer runs as before. It replaces ENCLOSURE_FUSED_CONV in the blocks
+// that it runs. Every piece that runs a kernel is inside KATAGO_GPU_CUDA and USE_CUTLASS_FUSED_CONV (FusedTrunkConv,
+// the BatchNormLayer's packed words): on ROCm, and in a CUDA build without CUTLASS, no layer is ever fused.
+#ifdef KATAGO_GPU_CUDA
 static bool enclosureFusedTrunkRequested() {
   static const bool requested = [] { const char* e = std::getenv("ENCLOSURE_FUSED_TRUNK"); return e != NULL && e[0] == '1'; }();
   return requested;
 }
-
-#ifdef USE_CUTLASS_FUSED_CONV
-static bool fusedTrunkOn(const CudaHandles* cudaHandles) { return cudaHandles->fusedTrunkEnabled; }
-#else
-static bool fusedTrunkOn(const CudaHandles* cudaHandles) { (void)cudaHandles; return false; }
 #endif
 
 //---------------------------------------------------------------------------------
@@ -1748,9 +1744,9 @@ struct BatchNormLayer {
 
   OwnedDeviceBuf mergedScaleBuf;
   OwnedDeviceBuf mergedBiasBuf;
-  // KataGame fork (2026-11-10, abscls-rvu1): for a ReLU normalisation of the fused trunk (fusedTrunkOn), the merged
-  // scale and bias as the words that CudaFusedConv's epilogues read (CudaFusedConv::packScaleBias), from the same
-  // FP16 values as mergedScaleBuf and mergedBiasBuf. NULL otherwise.
+  // KataGame fork (2026-11-10, abscls-rvu1): for a ReLU normalisation of the fused trunk (fusedTrunkEnabled), the
+  // merged scale and bias as the words that CudaFusedConv's epilogues read (CudaFusedConv::packScaleBias): the FP16
+  // values of mergedScaleBuf and mergedBiasBuf, interleaved. NULL otherwise.
   OwnedDeviceBuf packedScaleBiasBuf;
 
   BatchNormLayer() = delete;
@@ -1785,21 +1781,15 @@ struct BatchNormLayer {
     testAssert(desc->mergedBias.size() == numChannels);
     CudaUtils::mallocAndCopyToDevice(name,desc->mergedScale,mergedScaleBuf.buf,useFP16);
     CudaUtils::mallocAndCopyToDevice(name,desc->mergedBias,mergedBiasBuf.buf,useFP16);
-#ifdef USE_CUTLASS_FUSED_CONV
-    if(fusedTrunkOn(cudaHandles) && useFP16 && useNHWC && activation == ACTIVATION_RELU) {
-      vector<uint32_t> packed(numChannels);
-      for(int c = 0; c < numChannels; c++) {
-        // The FP16 bits of half_cast's rounding, as mallocAndCopyToDevice uploads mergedScaleBuf and mergedBiasBuf.
-        half_t scale = half_float::half_cast<half_t>(desc->mergedScale[c]);
-        half_t bias = half_float::half_cast<half_t>(desc->mergedBias[c]);
-        uint16_t scaleBits, biasBits;
-        static_assert(sizeof(half_t) == sizeof(uint16_t), "half_t is FP16");
-        std::memcpy(&scaleBits, &scale, sizeof(scaleBits));
-        std::memcpy(&biasBits, &bias, sizeof(biasBits));
-        packed[c] = CudaFusedConv::packScaleBias(scaleBits, biasBits);
-      }
-      CUDA_ERR(name.c_str(),cudaMalloc(&packedScaleBiasBuf.buf, packed.size() * sizeof(uint32_t)));
-      CUDA_ERR(name.c_str(),cudaMemcpy(packedScaleBiasBuf.buf, packed.data(), packed.size() * sizeof(uint32_t), cudaMemcpyHostToDevice));
+#if defined(KATAGO_GPU_CUDA) && defined(USE_CUTLASS_FUSED_CONV)
+    if(cudaHandles->fusedTrunkEnabled && useFP16 && activation == ACTIVATION_RELU) {
+      // packScaleBias's word in little-endian memory: the scale's 2 bytes, then the bias's.
+      const size_t word = sizeof(uint32_t), value = sizeof(half);
+      CUDA_ERR(name.c_str(),cudaMalloc(&packedScaleBiasBuf.buf, numChannels * word));
+      CUDA_ERR(name.c_str(),cudaMemcpy2D(packedScaleBiasBuf.buf, word, mergedScaleBuf.buf, value, value, numChannels, cudaMemcpyDeviceToDevice));
+      CUDA_ERR(name.c_str(),cudaMemcpy2D((char*)packedScaleBiasBuf.buf + value, word, mergedBiasBuf.buf, value, value, numChannels, cudaMemcpyDeviceToDevice));
+      // As CudaUtils' weight uploads: the copies run on the default stream, which the handle's stream does not wait for.
+      CUDA_ERR(name.c_str(),cudaStreamSynchronize(0));
     }
 #endif
   }
@@ -2243,7 +2233,8 @@ struct FusedConvBiasRelu {
 
 // KataGame fork (2026-11-10, the engine repository's abscls-rvu1): a convolution of the fused trunk
 // (enclosureFusedTrunkRequested), run by CudaFusedConv with the normalisation after it in its epilogue. It reads the
-// ConvLayer's own NHWC filter.
+// ConvLayer's own NHWC filter. addBiasNorm is the fused trunk's one pass that is not a convolution. Outside a CUDA
+// build with CUTLASS, applicable is false, so the rest never runs.
 struct FusedTrunkConv {
   const ConvLayer& conv;
   const int convYSize;
@@ -2259,13 +2250,24 @@ struct FusedTrunkConv {
     : conv(convLayer), convYSize(desc->convYSize), convXSize(desc->convXSize), nnXLen(nnX), nnYLen(nnY)
   {}
 
-#ifdef USE_CUTLASS_FUSED_CONV
+#if defined(KATAGO_GPU_CUDA) && defined(USE_CUTLASS_FUSED_CONV)
   // Whether the convolution can run on the fused trunk: the handle has it on (FP16, NHWC), no dilation (the NHWC
-  // filter), and a shape the kernels support.
+  // filter), and a shape the kernels support (3 x 3).
   static bool applicable(CudaHandles* cudaHandles, const ConvLayer& conv, const ConvLayerDesc* desc) {
-    return fusedTrunkOn(cudaHandles) && conv.usingFP16 && !conv.use1x1Matmul
+    return cudaHandles->fusedTrunkEnabled && !conv.use1x1Matmul
       && desc->dilationY == 1 && desc->dilationX == 1
       && CudaFusedConv::supportsShape(desc->inChannels, desc->outChannels, desc->convYSize, desc->convXSize);
+  }
+
+  // out = relu(norm(in + rowBias)), and sumOut = in + rowBias when sumOut is not NULL: rowBias [batch, channels] is
+  // added to every point.
+  static void addBiasNorm(CudaHandles* cudaHandles, int batchSize, int xySize, int channels, const void* inBuf,
+                          void* sumOut, const void* rowBiasBuf, const BatchNormLayer& norm, void* outBuf) {
+    testAssert(norm.activation == ACTIVATION_RELU && norm.numChannels == channels);
+    CudaFusedConv::addNCBiasScaleBiasRelu(
+      (const half*)inBuf, (half*)sumOut, (const half*)rowBiasBuf, (const half*)norm.mergedScaleBuf.buf,
+      (const half*)norm.mergedBiasBuf.buf, (half*)outBuf, batchSize, xySize, channels, cudaHandles->stream);
+    CUDA_ERR(norm.name.c_str(),cudaPeekAtLastError());
   }
 
   // out = relu(norm(conv(in))): norm's scale and bias in the convolution's epilogue.
@@ -2288,13 +2290,26 @@ struct FusedTrunkConv {
       conv.outChannels, convYSize, convXSize, cudaHandles->stream);
   }
 #else
-  static bool applicable(CudaHandles* cudaHandles, const ConvLayer& conv, const ConvLayerDesc* desc) {
-    (void)conv; (void)desc;
-    return fusedTrunkOn(cudaHandles);  // false: a build without the kernels
+  static bool applicable(CudaHandles*, const ConvLayer&, const ConvLayerDesc*) { return false; }
+  static void addBiasNorm(CudaHandles*, int, int, int, const void*, void*, const void*, const BatchNormLayer&, void*) {
+    ASSERT_UNREACHABLE;
   }
   void applyNorm(CudaHandles*, int, const void*, const BatchNormLayer&, void*) const { ASSERT_UNREACHABLE; }
   void applyAddNorm(CudaHandles*, int, const void*, void*, const BatchNormLayer&, void*) const { ASSERT_UNREACHABLE; }
 #endif
+
+  // A block's last convolution: trunk = trunk + conv(in), and when nextNorm is not NULL, also next =
+  // relu(nextNorm(trunk)) (applyAddNorm), else the ConvLayer's own accumulating convolution. Returns whether it wrote
+  // next.
+  bool applyAdd(CudaHandles* cudaHandles, ScratchBuffers* scratch, int batchSize, void* inBuf, void* trunkBuf,
+                const BatchNormLayer* nextNorm, void* nextBuf, void* workspaceBuf, size_t workspaceBytes) const {
+    if(nextNorm == NULL) {
+      conv.apply(cudaHandles,scratch,batchSize,true,inBuf,trunkBuf,workspaceBuf,workspaceBytes);
+      return false;
+    }
+    applyAddNorm(cudaHandles,batchSize,inBuf,trunkBuf,*nextNorm,nextBuf);
+    return true;
+  }
 };
 
 struct ResidualBlock {
@@ -2360,19 +2375,16 @@ struct ResidualBlock {
     return bytes;
   }
 
-  // KataGame fork (2026-11-10, abscls-rvu1): whether the block runs on the fused trunk for this mask.
-  bool runsFused(const void* maskBuf) const {
-    return trunkConv1 != nullptr && maskBuf == NULL;
-  }
-  // The normalisation that the stage before this block can apply for it on the fused trunk (its pre-activation, if
-  // a ReLU), NULL if the block computes its input itself.
+  // KataGame fork (2026-11-10, abscls-rvu1): the normalisation that the stage before this block can apply for it on
+  // the fused trunk (its pre-activation, if a ReLU), NULL if the block computes its input itself.
   const BatchNormLayer* fusedInputNorm() const {
     return trunkConv1 != nullptr && normActConv1.norm.packedScaleBiasBuf.buf != NULL ? &normActConv1.norm : NULL;
   }
 
-  // inputNormed: trunkScratchBuf already holds the block's normalised, activated input. nextNorm: when not NULL, the
-  // last convolution also writes relu(nextNorm(trunk)) into trunkScratchBuf. Both only when runsFused(maskBuf).
-  void apply(
+  // The fused trunk (trunkConv1, without a mask): inputNormed, trunkScratchBuf already holds the block's normalised,
+  // activated input (only when fusedInputNorm is not NULL). nextNorm, when not NULL, the last convolution also writes
+  // relu(nextNorm(trunk)) into trunkScratchBuf. Returns whether it did: never off the fused trunk.
+  bool apply(
     CudaHandles* cudaHandles,
     ScratchBuffers* scratch,
     int batchSize,
@@ -2385,17 +2397,14 @@ struct ResidualBlock {
     const BatchNormLayer* nextNorm = NULL
   ) const {
     SizedBuf<void*> midIn(scratch->allocator, scratch->getBufSizeXY(normActConv1.outChannels));
-    if(runsFused(maskBuf)) {
+    if(trunkConv1 != nullptr && maskBuf == NULL) {
       if(!inputNormed)
         normActConv1.norm.apply(cudaHandles,batchSize,trunkBuf,maskBuf,trunkScratchBuf);
       trunkConv1->applyNorm(cudaHandles,batchSize,trunkScratchBuf,normActConv2.norm,midIn.buf);
-      if(nextNorm != NULL)
-        trunkConv2->applyAddNorm(cudaHandles,batchSize,midIn.buf,trunkBuf,*nextNorm,trunkScratchBuf);
-      else
-        normActConv2.conv.apply(cudaHandles,scratch,batchSize,true,midIn.buf,trunkBuf,workspaceBuf,workspaceBytes);
-      return;
+      return trunkConv2->applyAdd(cudaHandles,scratch,batchSize,midIn.buf,trunkBuf,nextNorm,trunkScratchBuf,
+                                  workspaceBuf,workspaceBytes);
     }
-    testAssert(!inputNormed && nextNorm == NULL);
+    testAssert(!inputNormed);
 #ifdef KATAGO_GPU_CUDA
     if(fusedConv1 != nullptr && maskBuf == NULL) {
       // The trunk's normalisation as before; the first convolution writes the normalised, activated middle
@@ -2403,12 +2412,13 @@ struct ResidualBlock {
       normActConv1.norm.apply(cudaHandles,batchSize,trunkBuf,maskBuf,trunkScratchBuf);
       fusedConv1->apply(cudaHandles,batchSize,trunkScratchBuf,midIn.buf,workspaceBuf,workspaceBytes);
       normActConv2.conv.apply(cudaHandles,scratch,batchSize,true,midIn.buf,trunkBuf,workspaceBuf,workspaceBytes);
-      return;
+      return false;
     }
 #endif
     SizedBuf<void*> midScratch(scratch->allocator, scratch->getBufSizeXY(normActConv1.outChannels));
     normActConv1.apply(cudaHandles,scratch,batchSize,false,trunkBuf,trunkScratchBuf,midIn.buf,maskBuf,workspaceBuf,workspaceBytes);
     normActConv2.apply(cudaHandles,scratch,batchSize,true,midIn.buf,midScratch.buf,trunkBuf,maskBuf,workspaceBuf,workspaceBytes);
+    return false;
   }
 
 };
@@ -2462,8 +2472,10 @@ struct GlobalPoolingResidualBlock {
      usingFP16(useFP16),
      usingNHWC(useNHWC)
   {
+    // The pooled bias's pass reads the middle normalisation's FP16 buffers, of finalConv's input channels (a multiple of
+    // 8 when applicable).
     if(FusedTrunkConv::applicable(cudaHandles,normActConv2.conv,&desc->finalConv)
-       && normActConv2.norm.packedScaleBiasBuf.buf != NULL && regularChannels % 8 == 0) {
+       && normActConv2.norm.activation == ACTIVATION_RELU) {
       trunkFinalConv = std::make_unique<FusedTrunkConv>(normActConv2.conv,&desc->finalConv,nnX,nnY);
     }
   }
@@ -2472,9 +2484,6 @@ struct GlobalPoolingResidualBlock {
   }
 
   // KataGame fork (2026-11-10, abscls-rvu1): as ResidualBlock's.
-  bool runsFused(const void* maskBuf) const {
-    return trunkFinalConv != nullptr && maskBuf == NULL;
-  }
   const BatchNormLayer* fusedInputNorm() const {
     return trunkFinalConv != nullptr && preBN.packedScaleBiasBuf.buf != NULL ? &preBN : NULL;
   }
@@ -2498,7 +2507,8 @@ struct GlobalPoolingResidualBlock {
     return bytes;
   }
 
-  void apply(
+  // inputNormed, nextNorm and the return: as ResidualBlock::apply's, on the fused trunk (trunkFinalConv, no mask).
+  bool apply(
     CudaHandles* cudaHandles,
     ScratchBuffers* scratch,
     int batchSize,
@@ -2518,8 +2528,8 @@ struct GlobalPoolingResidualBlock {
     SizedBuf<void*> gpoolConcat(scratch->allocator, scratch->getBufSize(gpoolChannels*3));
     SizedBuf<void*> gpoolBias(scratch->allocator, scratch->getBufSize(regularChannels));
 
-    const bool fused = runsFused(maskBuf);
-    testAssert(fused || (!inputNormed && nextNorm == NULL));
+    const bool fused = trunkFinalConv != nullptr && maskBuf == NULL;
+    testAssert(fused || !inputNormed);
     if(!inputNormed)
       preBN.apply(cudaHandles,batchSize,trunkBuf,maskBuf,trunkScratchBuf);
     regularConv.apply(cudaHandles,scratch,batchSize,false,trunkScratchBuf,regularOut.buf,workspaceBuf,workspaceBytes);
@@ -2544,17 +2554,10 @@ struct GlobalPoolingResidualBlock {
 
     if(fused) {
       // The fused trunk (ResidualBlock::apply): the pooled bias and the middle normalisation in one pass.
-      const BatchNormLayer& midBN = normActConv2.norm;
-      customCudaAddNCBiasApplyCScaleBiasReluNHWC(
-        (const half*)regularOut.buf,NULL,(const half*)gpoolBias.buf,(const half*)midBN.mergedScaleBuf.buf,
-        (const half*)midBN.mergedBiasBuf.buf,(half*)regularScratch.buf,batchSize,nnXLen*nnYLen,regularChannels,
-        cudaHandles->stream);
-      CUDA_ERR(name.c_str(),cudaPeekAtLastError());
-      if(nextNorm != NULL)
-        trunkFinalConv->applyAddNorm(cudaHandles,batchSize,regularScratch.buf,trunkBuf,*nextNorm,trunkScratchBuf);
-      else
-        normActConv2.conv.apply(cudaHandles,scratch,batchSize,true,regularScratch.buf,trunkBuf,workspaceBuf,workspaceBytes);
-      return;
+      FusedTrunkConv::addBiasNorm(cudaHandles,batchSize,nnXLen*nnYLen,regularChannels,regularOut.buf,NULL,
+                                  gpoolBias.buf,normActConv2.norm,regularScratch.buf);
+      return trunkFinalConv->applyAdd(cudaHandles,scratch,batchSize,regularScratch.buf,trunkBuf,nextNorm,
+                                      trunkScratchBuf,workspaceBuf,workspaceBytes);
     }
 
     if(!usingFP16) {
@@ -2572,6 +2575,7 @@ struct GlobalPoolingResidualBlock {
     CUDA_ERR(name.c_str(),cudaPeekAtLastError());
 
     normActConv2.apply(cudaHandles,scratch,batchSize,true,regularOut.buf,regularScratch.buf,trunkBuf,maskBuf,workspaceBuf,workspaceBytes);
+    return false;
   }
 
 };
@@ -2629,6 +2633,8 @@ struct BlockStack {
 
   // The normalisation that the stage before block i can apply for it on the fused trunk, NULL if none.
   const BatchNormLayer* fusedInputNorm(size_t i, const void* maskBuf) const;
+  // Whether any block runs on the fused trunk (without a mask).
+  bool anyBlockFused() const;
 
 };
 
@@ -4067,6 +4073,17 @@ const BatchNormLayer* BlockStack::fusedInputNorm(size_t i, const void* maskBuf) 
   return NULL;
 }
 
+bool BlockStack::anyBlockFused() const {
+  for(const auto& block: blocks) {
+    if(block.first == ORDINARY_BLOCK_KIND && ((const ResidualBlock*)block.second.get())->trunkConv1 != nullptr)
+      return true;
+    if(block.first == GLOBAL_POOLING_BLOCK_KIND
+       && ((const GlobalPoolingResidualBlock*)block.second.get())->trunkFinalConv != nullptr)
+      return true;
+  }
+  return false;
+}
+
 bool BlockStack::apply(
   CudaHandles* cudaHandles,
   ScratchBuffers* scratch,
@@ -4082,12 +4099,11 @@ bool BlockStack::apply(
 ) const {
   testAssert(!inputNormed || fusedInputNorm(0,maskBuf) != NULL);
   // The fused trunk: whether trunkScratchBuf holds block i's normalised, activated input, and the normalisation that
-  // block i's last convolution applies for the stage after it (the next block's input or tipNorm), NULL if none.
+  // block i's last convolution can apply for the stage after it (the next block's input or tipNorm), NULL if none. A
+  // block off the fused trunk ignores it and says that it did not apply it.
   bool normed = inputNormed;
   auto nextNorm = [&](size_t i) -> const BatchNormLayer* {
-    if(i + 1 < blocks.size())
-      return fusedInputNorm(i + 1, maskBuf);
-    return maskBuf == NULL ? tipNorm : NULL;
+    return i + 1 < blocks.size() ? fusedInputNorm(i + 1, maskBuf) : tipNorm;
   };
 
   // Consecutive transformer blocks on the masked path defer each block's residual add and fuse
@@ -4122,8 +4138,7 @@ bool BlockStack::apply(
     if(blocks[i].first == ORDINARY_BLOCK_KIND) {
       flushPendingDelta();
       ResidualBlock* block = (ResidualBlock*)blocks[i].second.get();
-      const BatchNormLayer* next = block->runsFused(maskBuf) ? nextNorm(i) : NULL;
-      block->apply(
+      normed = block->apply(
         cudaHandles,
         scratch,
         batchSize,
@@ -4133,15 +4148,13 @@ bool BlockStack::apply(
         workspaceBuf,
         workspaceBytes,
         inputWasNormed,
-        next
+        nextNorm(i)
       );
-      normed = next != NULL;
     }
     else if(blocks[i].first == GLOBAL_POOLING_BLOCK_KIND) {
       flushPendingDelta();
       GlobalPoolingResidualBlock* block = (GlobalPoolingResidualBlock*)blocks[i].second.get();
-      const BatchNormLayer* next = block->runsFused(maskBuf) ? nextNorm(i) : NULL;
-      block->apply(
+      normed = block->apply(
         cudaHandles,
         scratch,
         batchSize,
@@ -4152,12 +4165,10 @@ bool BlockStack::apply(
         workspaceBuf,
         workspaceBytes,
         inputWasNormed,
-        next
+        nextNorm(i)
       );
-      normed = next != NULL;
     }
     else if(blocks[i].first == NESTED_BOTTLENECK_BLOCK_KIND) {
-      testAssert(!inputWasNormed);
       flushPendingDelta();
       NestedBottleneckResidualBlock* block = (NestedBottleneckResidualBlock*)blocks[i].second.get();
       block->apply(
@@ -4487,11 +4498,8 @@ struct Trunk {
     if(firstNorm != NULL) {
       SizedBuf<void*> globalBias(scratch->allocator, scratch->getBufSize(trunkNumChannels));
       initialMatMul->apply(cudaHandles,scratch,batchSize,inputGlobalBuf,globalBias.buf,workspaceBuf,workspaceBytes);
-      customCudaAddNCBiasApplyCScaleBiasReluNHWC(
-        (const half*)trunkScratch.buf,(half*)trunkScratch.buf,(const half*)globalBias.buf,
-        (const half*)firstNorm->mergedScaleBuf.buf,(const half*)firstNorm->mergedBiasBuf.buf,(half*)trunkBuf,
-        batchSize,nnXLen*nnYLen,trunkNumChannels,cudaHandles->stream);
-      CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+      FusedTrunkConv::addBiasNorm(cudaHandles,batchSize,nnXLen*nnYLen,trunkNumChannels,trunkScratch.buf,
+                                  trunkScratch.buf,globalBias.buf,*firstNorm,trunkBuf);
     }
     else {
       //Feed the matmul into trunkBuf
@@ -4510,29 +4518,29 @@ struct Trunk {
           customCudaAddNCBiasInplaceNHWC((half*)trunkScratch.buf,(const half*)trunkBuf,batchSize,nnXLen*nnYLen,trunkNumChannels,cudaHandles->stream);
       }
       CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+    }
 
-      if(sgfMetadataEncoder != nullptr) {
-        testAssert(inputMetaBuf != NULL);
-        //Feed the result into trunkBuf
-        sgfMetadataEncoder->apply(cudaHandles,scratch,batchSize,inputMetaBuf,trunkBuf,workspaceBuf,workspaceBytes);
-        //Then accumulate it into trunkScratch.buf, broadcasting during the process
-        if(!usingFP16) {
-          if(!usingNHWC)
-            customCudaAddNCBiasInplaceNCHW((float*)trunkScratch.buf,(const float*)trunkBuf,batchSize,trunkNumChannels,nnXLen*nnYLen,cudaHandles->stream);
-          else
-            customCudaAddNCBiasInplaceNHWC((float*)trunkScratch.buf,(const float*)trunkBuf,batchSize,nnXLen*nnYLen,trunkNumChannels,cudaHandles->stream);
-        }
-        else {
-          if(!usingNHWC)
-            customCudaAddNCBiasInplaceNCHW((half*)trunkScratch.buf,(const half*)trunkBuf,batchSize,trunkNumChannels,nnXLen*nnYLen,cudaHandles->stream);
-          else
-            customCudaAddNCBiasInplaceNHWC((half*)trunkScratch.buf,(const half*)trunkBuf,batchSize,nnXLen*nnYLen,trunkNumChannels,cudaHandles->stream);
-        }
-        CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+    if(sgfMetadataEncoder != nullptr) {
+      testAssert(inputMetaBuf != NULL);
+      //Feed the result into trunkBuf
+      sgfMetadataEncoder->apply(cudaHandles,scratch,batchSize,inputMetaBuf,trunkBuf,workspaceBuf,workspaceBytes);
+      //Then accumulate it into trunkScratch.buf, broadcasting during the process
+      if(!usingFP16) {
+        if(!usingNHWC)
+          customCudaAddNCBiasInplaceNCHW((float*)trunkScratch.buf,(const float*)trunkBuf,batchSize,trunkNumChannels,nnXLen*nnYLen,cudaHandles->stream);
+        else
+          customCudaAddNCBiasInplaceNHWC((float*)trunkScratch.buf,(const float*)trunkBuf,batchSize,nnXLen*nnYLen,trunkNumChannels,cudaHandles->stream);
       }
       else {
-        testAssert(inputMetaBuf == NULL);
+        if(!usingNHWC)
+          customCudaAddNCBiasInplaceNCHW((half*)trunkScratch.buf,(const half*)trunkBuf,batchSize,trunkNumChannels,nnXLen*nnYLen,cudaHandles->stream);
+        else
+          customCudaAddNCBiasInplaceNHWC((half*)trunkScratch.buf,(const half*)trunkBuf,batchSize,nnXLen*nnYLen,trunkNumChannels,cudaHandles->stream);
       }
+      CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+    }
+    else {
+      testAssert(inputMetaBuf == NULL);
     }
 
     //Flip trunkBuf and trunkScratch.buf so that the result gets accumulated in trunkScratch.buf
@@ -4552,11 +4560,13 @@ struct Trunk {
 
     //And now with the final norm port it from trunkScratch.buf to trunkBuf, unless the fused trunk's last
     //convolution wrote it.
-    if(!tipDone && trunkNormKind == TRUNK_NORM_KIND_STANDARD) {
-      trunkTipBN->apply(cudaHandles,batchSize,trunkScratch.buf,maskBuf,trunkBuf);
-    }
-    else if(!tipDone) {
-      trunkTipRMSNorm->apply(cudaHandles,scratch,batchSize,trunkScratch.buf,trunkBuf,maskBuf,maskSumBuf);
+    if(!tipDone) {
+      if(trunkNormKind == TRUNK_NORM_KIND_STANDARD) {
+        trunkTipBN->apply(cudaHandles,batchSize,trunkScratch.buf,maskBuf,trunkBuf);
+      }
+      else {
+        trunkTipRMSNorm->apply(cudaHandles,scratch,batchSize,trunkScratch.buf,trunkBuf,maskBuf,maskSumBuf);
+      }
     }
 
     #ifdef DEBUG_INTERMEDIATE_VALUES
@@ -5801,6 +5811,10 @@ struct ComputeHandle {
       cudaHandles.get(), &(loadedModel->modelDesc), maxBatchSize,
       nnXLen, nnYLen, inputsUseNHWC, useFP16, useNHWC
     );
+    if(cudaHandles->fusedTrunkEnabled && !model->trunk->blocks.anyBlockFused() && logger != NULL)
+      logger->write(
+        "WARNING: Cuda backend: ENCLOSURE_FUSED_TRUNK=1 but no block of this network can run on the fused trunk (it "
+        "needs ReLU normalisations and 3x3 convolutions without dilation, of channels multiples of 8): the trunk runs unfused");
     scratch = std::make_unique<ScratchBuffers>(maxBatchSize, nnXLen, nnYLen, useFP16);
     buffers = std::make_unique<Buffers>(cudaHandles.get(), *model, *scratch);
 

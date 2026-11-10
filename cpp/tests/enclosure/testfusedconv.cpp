@@ -2,10 +2,11 @@
 // (ENCLOSURE_FUSED_TRUNK) against a direct convolution in float on the CPU, on random data:
 //   - CudaFusedConv::runConvScaleBiasRelu: out = relu(scale * conv(in) + bias);
 //   - CudaFusedConv::runConvAddScaleBiasRelu: trunk += conv(in), next = relu(scale * trunk + bias);
-//   - customCudaAddNCBiasApplyCScaleBiasReluNHWC: out = relu(scale * (in + nb) + bias), and in + nb.
+//   - CudaFusedConv::addNCBiasScaleBiasRelu: out = relu(scale * (in + rowBias) + bias), and in + rowBias.
 // Each at several batches and boards (an 11 x 7 board for the borders and partial tiles, the 67 x 67 view), with 128
-// and 96 input channels. The inputs, filters, scales and biases are rounded to FP16 first, so the reference sees the
-// GPU's inputs, and a value passes within 2e-3 + 2e-3 * |reference| (FP16's rounding of the output is 4.9e-4 of it).
+// and 96 input channels. supportsShape takes 3 x 3 convolutions only. The inputs, filters, scales and biases are
+// rounded to FP16 first, so the reference sees the GPU's inputs, and a value passes within 2e-3 + 2e-3 * |reference|
+// (FP16's rounding of the output is 4.9e-4 of it).
 // Builds against a CUDA build of KataGame that has CUTLASS (tests/enclosure/build.sh BUILD_DIR, with
 // TESTS=testfusedconv), and runs on the GPU:
 //   testfusedconv            (exit 0: every case passed)
@@ -19,7 +20,6 @@
 #include <cuda_runtime.h>
 
 #include "../../neuralnet/cudafusedconv.h"
-#include "../../neuralnet/cudahelpers.h"
 
 using namespace std;
 
@@ -172,11 +172,11 @@ void testAddNCBias(mt19937& rng, int n, int xy, int c) {
   printf("batch %d, %d points, %d channels: add the biases of each row, then scale, bias and ReLU\n", n, xy, c);
   const size_t size = (size_t)n * xy * c;
   vector<float> in = randomHalfs(rng, size, -3.0f, 3.0f);
-  vector<float> nb = randomHalfs(rng, (size_t)n * c, -1.0f, 1.0f);
+  vector<float> rowBias = randomHalfs(rng, (size_t)n * c, -1.0f, 1.0f);
   vector<float> scale = randomHalfs(rng, c, -0.5f, 1.5f);
   vector<float> bias = randomHalfs(rng, c, -0.5f, 0.5f);
   half* dIn = upload(in);
-  half* dNb = upload(nb);
+  half* dRowBias = upload(rowBias);
   half* dScale = upload(scale);
   half* dBias = upload(bias);
   half* dOut = upload(vector<float>(size, 7.0f));
@@ -184,17 +184,17 @@ void testAddNCBias(mt19937& rng, int n, int xy, int c) {
   for(size_t i = 0; i < size; i++) {
     int ch = (int)(i % c);
     size_t b = i / ((size_t)xy * c);
-    wantSum[i] = in[i] + nb[b * c + ch];
+    wantSum[i] = in[i] + rowBias[b * c + ch];
     want[i] = max(0.0f, scale[ch] * wantSum[i] + bias[ch]);
   }
-  customCudaAddNCBiasApplyCScaleBiasReluNHWC(dIn, nullptr, dNb, dScale, dBias, dOut, n, xy, c, 0);
-  compare("relu(scale * (x + nb) + bias)", download(dOut, size), want);
-  compare("x unchanged without the sum's output", download(dIn, size), in);
-  customCudaAddNCBiasApplyCScaleBiasReluNHWC(dIn, dIn, dNb, dScale, dBias, dOut, n, xy, c, 0);
-  compare("x + nb, in place", download(dIn, size), wantSum);
-  compare("relu(scale * (x + nb) + bias), in place", download(dOut, size), want);
+  CudaFusedConv::addNCBiasScaleBiasRelu(dIn, nullptr, dRowBias, dScale, dBias, dOut, n, xy, c, 0);
+  compare("relu(scale * (in + rowBias) + bias)", download(dOut, size), want);
+  compare("in unchanged without the sum's output", download(dIn, size), in);
+  CudaFusedConv::addNCBiasScaleBiasRelu(dIn, dIn, dRowBias, dScale, dBias, dOut, n, xy, c, 0);
+  compare("in + rowBias, in place", download(dIn, size), wantSum);
+  compare("relu(scale * (in + rowBias) + bias), in place", download(dOut, size), want);
   cudaFree(dIn);
-  cudaFree(dNb);
+  cudaFree(dRowBias);
   cudaFree(dScale);
   cudaFree(dBias);
   cudaFree(dOut);
@@ -208,7 +208,8 @@ int main() {
     return 1;
   }
   const bool shapes = CudaFusedConv::supportsShape(128, 128, 3, 3) && CudaFusedConv::supportsShape(96, 128, 3, 3)
-    && !CudaFusedConv::supportsShape(100, 128, 3, 3) && !CudaFusedConv::supportsShape(128, 100, 3, 3);
+    && !CudaFusedConv::supportsShape(100, 128, 3, 3) && !CudaFusedConv::supportsShape(128, 100, 3, 3)
+    && !CudaFusedConv::supportsShape(128, 128, 1, 1) && !CudaFusedConv::supportsShape(128, 128, 5, 5);
   printf("supportsShape: %s\n", shapes ? "as expected" : "FAIL");
   if(!shapes)
     failures++;

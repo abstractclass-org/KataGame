@@ -159,6 +159,10 @@ bool implementable(typename Conv<AddSource>::Arguments const& args) {
     && Conv<AddSource>::get_workspace_size(args) == 0;
 }
 
+// Builds the kernel's Params (initialize) on every call, as cudafusedffn.cu does: a few microseconds of host time,
+// while the launch stays asynchronous, against about 0.6 ms of GPU time for each convolution. A cache of the Params
+// for each layer and batch would have to patch the epilogue's vector and T pointers itself (update() keeps the old
+// ones).
 template <bool AddSource>
 cutlass::Status runConv(typename Conv<AddSource>::Arguments const& args, cudaStream_t stream) {
   Conv<AddSource> op;
@@ -184,6 +188,39 @@ void throwIfFailed(cutlass::Status status, const char* what, int batchSize, int 
     cutlass::cutlassGetStatusString(status) + ", batch " + std::to_string(batchSize) + ", board " +
     std::to_string(xSize) + "x" + std::to_string(ySize) + ", channels " + std::to_string(inChannels) + " -> " +
     std::to_string(outChannels));
+}
+
+// addNCBiasScaleBiasRelu's kernel: each thread works on 8 channels of one point (16-byte loads and stores), in float.
+// sumOut may be in: each thread reads its 8 values before it writes them.
+__global__ void addNCBiasScaleBiasReluKernel(
+  const half* in, half* sumOut, const half* rowBias, const half* scale, const half* bias, half* out,
+  int xySize, int c8Size, int total8
+) {
+  for(int i = blockIdx.x * blockDim.x + threadIdx.x; i < total8; i += gridDim.x * blockDim.x) {
+    const int c8 = i % c8Size;
+    const int n = i / (c8Size * xySize);
+    const uint4 xv = ((const uint4*)in)[i];
+    const uint4 rowBiasV = ((const uint4*)rowBias)[n * c8Size + c8];
+    const uint4 sv = ((const uint4*)scale)[c8];
+    const uint4 bv = ((const uint4*)bias)[c8];
+    const half* x = (const half*)&xv;
+    const half* rowBiasH = (const half*)&rowBiasV;
+    const half* s = (const half*)&sv;
+    const half* b = (const half*)&bv;
+    uint4 sumv, outv;
+    half* sum = (half*)&sumv;
+    half* o = (half*)&outv;
+    #pragma unroll
+    for(int j = 0; j < 8; j++) {
+      const float t = __half2float(x[j]) + __half2float(rowBiasH[j]);
+      const float z = __half2float(s[j]) * t + __half2float(b[j]);
+      sum[j] = __float2half(t);
+      o[j] = __float2half(z > 0.0f ? z : 0.0f);
+    }
+    if(sumOut != nullptr)
+      ((uint4*)sumOut)[i] = sumv;
+    ((uint4*)out)[i] = outv;
+  }
 }
 
 }  // namespace
@@ -258,7 +295,7 @@ bool supportedOnCurrentDevice() {
 bool supportsShape(int inChannels, int outChannels, int convYSize, int convXSize) {
   if(inChannels <= 0 || outChannels <= 0 || inChannels % 8 != 0 || outChannels % 8 != 0)
     return false;
-  if(convYSize <= 0 || convXSize <= 0 || convYSize % 2 != 1 || convXSize % 2 != 1)
+  if(convYSize != 3 || convXSize != 3)
     return false;
   // can_implement depends on the channels, the kernel's size and the operands' alignment, not on the batch or the
   // board. The dummy pointers carry the alignment that the backend's device allocations give.
@@ -295,6 +332,28 @@ void runConvAddScaleBiasRelu(
                              convYSize, convXSize);
   throwIfFailed(runConv<true>(args, stream), "runConvAddScaleBiasRelu", batchSize, ySize, xSize, inChannels,
                 outChannels);
+}
+
+void addNCBiasScaleBiasRelu(
+  const half* in, half* sumOut, const half* rowBias, const half* scale, const half* bias, half* out,
+  int batchSize, int xySize, int channels, cudaStream_t stream
+) {
+  if(channels % 8 != 0)
+    throw std::runtime_error("CudaFusedConv::addNCBiasScaleBiasRelu: channels must be a multiple of 8");
+  if((uintptr_t(in) | uintptr_t(sumOut) | uintptr_t(rowBias) | uintptr_t(scale) | uintptr_t(bias) | uintptr_t(out))
+     & 15)
+    throw std::runtime_error("CudaFusedConv::addNCBiasScaleBiasRelu: buffers must be 16-byte aligned");
+  // The kernel indexes the elements in int.
+  if((int64_t)batchSize * xySize * channels > INT32_MAX)
+    throw std::runtime_error("CudaFusedConv::addNCBiasScaleBiasRelu: more elements than an int indexes");
+  const int c8Size = channels / 8;
+  const int total8 = batchSize * xySize * c8Size;
+  if(total8 <= 0)
+    return;
+  const int threads = 256;
+  const int blocks = (total8 + threads - 1) / threads;
+  addNCBiasScaleBiasReluKernel<<<blocks, threads, 0, stream>>>(
+    in, sumOut, rowBias, scale, bias, out, xySize, c8Size, total8);
 }
 
 }  // namespace CudaFusedConv
