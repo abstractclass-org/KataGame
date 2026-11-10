@@ -76,6 +76,9 @@ namespace CudaFusedConv {
   // holds x / s: s is the tensor's scale (one for each tensor of activations, one for each output channel of a
   // filter). Bytes of FP8 are passed as uint8_t.
 
+  // E4M3's largest value: a scale is a tensor's largest |x| / fp8Max.
+  constexpr float fp8Max = 448.0f;
+
   // Whether the FP8 kernels work on the current device: compute capability 8.9 or more, and a real tiny convolution of
   // each kernel that writes the expected values. Synchronous: call once per handle creation.
   bool fp8SupportedOnCurrentDevice();
@@ -84,9 +87,9 @@ namespace CudaFusedConv {
   // of 8, a 3 x 3 kernel.
   bool fp8SupportsShape(int inChannels, int outChannels, int convYSize, int convXSize);
 
-  // What an FP8 convolution's epilogue reads for each output channel (8 bytes, 8-byte aligned in an array): dequant,
-  // the factor that turns the FP8 accumulator into the convolution's value (the input's scale times the channel's
-  // weight scale), and scaleBias, the normalisation after it (packScaleBias's word).
+  // What an FP8 convolution's epilogue reads for each output channel (8 bytes each, the array 64-byte aligned):
+  // dequant, the factor that turns the FP8 accumulator into the convolution's value (the input's scale times the
+  // channel's weight scale), and scaleBias, the normalisation after it (packScaleBias's word).
   struct Fp8Channel {
     float dequant;
     uint32_t scaleBias;
@@ -97,7 +100,7 @@ namespace CudaFusedConv {
   float fp8ToFloat(uint8_t x);
 
   // out = fp8(outScale * relu(scale * dequant * conv(in, filter) + bias)): in, filter and out in FP8, the layouts of
-  // runConvScaleBiasRelu. channels: outChannels words (8-byte aligned), outScale: 1 / out's scale. All other pointers
+  // runConvScaleBiasRelu. channels: outChannels words (64-byte aligned), outScale: 1 / out's scale. All other pointers
   // 16-byte aligned. Throws std::runtime_error on a CUDA or CUTLASS failure.
   void runFp8ConvScaleBiasRelu(
     const uint8_t* in, const uint8_t* filter, const Fp8Channel* channels, float outScale, uint8_t* out,

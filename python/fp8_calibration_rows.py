@@ -26,22 +26,25 @@ def main():
     parser.add_argument("-rows", type=int, default=256, help="the rows to take in all (default 256)")
     parser.add_argument("-skip", type=int, default=0, help="the rows to leave out at the start of each file")
     args = parser.parse_args()
+    if args.rows < 1 or args.skip < 0 or args.size < 1:
+        parser.error("-rows and -size must be at least 1, and -skip at least 0")
 
     area = args.size * args.size
     per = -(-args.rows // len(args.npz))
     spatial, global_ = [], []
     for path in args.npz:
+        # Only the taken rows stay in memory, one file's arrays at a time.
         with np.load(path) as z:
             packed = z["binaryInputNCHWPacked"]
-            glob = z["globalInputNC"]
-        if packed.shape[2] != (area + 7) // 8:
-            sys.exit(f"{path}: {packed.shape[2]} bytes a channel, a board of {args.size} needs {(area + 7) // 8}")
-        n = packed.shape[0] - args.skip
-        if n < 1:
-            sys.exit(f"{path}: {packed.shape[0]} rows, none after the first {args.skip}")
-        take = np.unique(np.linspace(args.skip, packed.shape[0] - 1, min(per, n)).round().astype(int))
-        spatial.append(packed[take])
-        global_.append(glob[take].astype("<f4"))
+            if packed.shape[2] != (area + 7) // 8:
+                sys.exit(f"{path}: {packed.shape[2]} bytes a channel, a board of {args.size} needs {(area + 7) // 8}")
+            n = packed.shape[0] - args.skip
+            if n < 1:
+                sys.exit(f"{path}: {packed.shape[0]} rows, none after the first {args.skip}")
+            take = np.unique(np.linspace(args.skip, packed.shape[0] - 1, min(per, n)).round().astype(int))
+            spatial.append(packed[take])
+            del packed
+            global_.append(z["globalInputNC"][take].astype("<f4"))
     spatial = np.ascontiguousarray(np.concatenate(spatial)[:args.rows], dtype=np.uint8)
     global_ = np.ascontiguousarray(np.concatenate(global_)[:args.rows])
     rows, channels = spatial.shape[0], spatial.shape[1]

@@ -421,6 +421,19 @@ void requireFp8Aligned(const void* in, const void* filter, const void* trunk, co
     throw std::runtime_error("CudaFusedConv: FP8 operand pointers must be 16-byte aligned (the channels' words 64-byte)");
 }
 
+// One FP8 convolution (makeFp8Args's operands): the pointers' alignment check, the launch, and on a failure an
+// exception that names what.
+template <bool AddSource, typename ElementNext>
+void launchFp8Conv(const char* what, const uint8_t* in, const uint8_t* filter, half* trunk, const Fp8Channel* channels,
+                   float outScale, void* next, int batchSize, int ySize, int xSize, int inChannels, int outChannels,
+                   int convYSize, int convXSize, cudaStream_t stream) {
+  requireFp8Aligned(in, filter, AddSource ? (const void*)trunk : next, next, channels);
+  auto args = makeFp8Args<AddSource, ElementNext>(in, filter, trunk, channels, outScale, next, batchSize, ySize, xSize,
+                                                  inChannels, outChannels, convYSize, convXSize);
+  throwIfFailed(runFp8Conv<AddSource, ElementNext>(args, stream), what, batchSize, ySize, xSize, inChannels,
+                outChannels);
+}
+
 // addNCBiasScaleBiasReluKernel with out in FP8: each thread works on 8 channels of one point.
 __global__ void addNCBiasScaleBiasReluFp8Kernel(
   const half* in, half* sumOut, const half* rowBias, const half* scale, const half* bias, float outScale, uint8_t* out,
@@ -717,11 +730,8 @@ void runFp8ConvScaleBiasRelu(
   int batchSize, int ySize, int xSize, int inChannels, int outChannels, int convYSize, int convXSize,
   cudaStream_t stream
 ) {
-  requireFp8Aligned(in, filter, out, out, channels);
-  auto args = makeFp8Args<false, Fp8>(in, filter, nullptr, channels, outScale, out, batchSize, ySize, xSize,
-                                      inChannels, outChannels, convYSize, convXSize);
-  throwIfFailed(runFp8Conv<false, Fp8>(args, stream), "runFp8ConvScaleBiasRelu", batchSize, ySize, xSize, inChannels,
-                outChannels);
+  launchFp8Conv<false, Fp8>("runFp8ConvScaleBiasRelu", in, filter, nullptr, channels, outScale, out, batchSize, ySize,
+                            xSize, inChannels, outChannels, convYSize, convXSize, stream);
 }
 
 void runFp8ConvAddScaleBiasRelu(
@@ -729,19 +739,12 @@ void runFp8ConvAddScaleBiasRelu(
   bool nextFp8, int batchSize, int ySize, int xSize, int inChannels, int outChannels, int convYSize, int convXSize,
   cudaStream_t stream
 ) {
-  requireFp8Aligned(in, filter, trunk, next, channels);
-  if(nextFp8) {
-    auto args = makeFp8Args<true, Fp8>(in, filter, trunk, channels, outScale, next, batchSize, ySize, xSize,
-                                       inChannels, outChannels, convYSize, convXSize);
-    throwIfFailed(runFp8Conv<true, Fp8>(args, stream), "runFp8ConvAddScaleBiasRelu", batchSize, ySize, xSize,
-                  inChannels, outChannels);
-  }
-  else {
-    auto args = makeFp8Args<true, Half>(in, filter, trunk, channels, 1.0f, next, batchSize, ySize, xSize, inChannels,
-                                        outChannels, convYSize, convXSize);
-    throwIfFailed(runFp8Conv<true, Half>(args, stream), "runFp8ConvAddScaleBiasRelu", batchSize, ySize, xSize,
-                  inChannels, outChannels);
-  }
+  if(nextFp8)
+    launchFp8Conv<true, Fp8>("runFp8ConvAddScaleBiasRelu", in, filter, trunk, channels, outScale, next, batchSize,
+                             ySize, xSize, inChannels, outChannels, convYSize, convXSize, stream);
+  else
+    launchFp8Conv<true, Half>("runFp8ConvAddScaleBiasRelu", in, filter, trunk, channels, 1.0f, next, batchSize, ySize,
+                              xSize, inChannels, outChannels, convYSize, convXSize, stream);
 }
 
 void addNCBiasScaleBiasReluFp8(

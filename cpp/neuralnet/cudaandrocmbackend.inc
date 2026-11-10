@@ -49,7 +49,7 @@
 #endif
 
 #include <atomic>
-#include <chrono>
+#include <chrono>  // KataGame fork (abscls-jtbd): <chrono>, <fstream> and <sstream> for the FP8 trunk's calibration
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -721,20 +721,18 @@ static bool enclosureFusedTrunkRequested() {
 // gets a scale for each output channel (its largest |weight| / 448), and each input tensor one scale, from a
 // calibration at the network's load: the handle runs the rows of ENCLOSURE_FP8_CALIBRATION (positions of the run,
 // readFp8CalibrationRows) through the fused trunk in FP16 (ComputeHandle::calibrateFp8Trunk), and an input's scale
-// is its largest value / 448. The tensors that a convolution reads are written in FP8 by the stage before it: a block's first convolution
-// writes the block's middle in FP8, and a block's last convolution writes the next block's input in FP8 when the next
-// block is an ordinary one (a global pooling block's first convolutions run in FP16, through cuDNN, and read it in
-// FP16; so does the trunk's final normalisation). The sums are in FP32, the trunk stays in FP16, and the first
-// convolution, the global pooling blocks' first convolutions and the heads stay as they are. Only a network whose
-// every block runs on the fused trunk, without a mask, runs in FP8: else the trunk runs in FP16, as with the fused
-// trunk alone.
-#if defined(KATAGO_GPU_CUDA) && defined(USE_CUTLASS_FUSED_CONV)
+// is its largest value / 448. The tensors that a convolution reads are written in FP8 by the stage before it: a
+// block's first convolution writes the block's middle in FP8, and a block's last convolution writes the next block's
+// input in FP8 when the next block is an ordinary one (a global pooling block's first convolutions run in FP16,
+// through cuDNN, and read it in FP16; so does the trunk's final normalisation). The sums are in FP32, the trunk stays
+// in FP16, and the first convolution, the global pooling blocks' first convolutions and the heads stay as they are.
+// Only a network whose every block runs on the fused trunk, without a mask, runs in FP8: else the trunk runs in FP16,
+// as with the fused trunk alone. A CUDA build without CUTLASS reads the flag only to warn that it does not run.
+#ifdef KATAGO_GPU_CUDA
 static bool enclosureFp8TrunkRequested() {
   static const bool requested = [] { const char* e = std::getenv("ENCLOSURE_FP8_TRUNK"); return e != NULL && e[0] == '1'; }();
   return requested;
 }
-static bool fp8TrunkOn(const CudaHandles* cudaHandles) { return cudaHandles->fp8TrunkEnabled; }
-static bool fp8Calibrating(const CudaHandles* cudaHandles) { return cudaHandles->fp8Calibrating; }
 #endif
 
 //---------------------------------------------------------------------------------
@@ -2280,16 +2278,15 @@ struct FusedTrunkConv {
   // KataGame fork (2026-11-10, abscls-jtbd): the FP8 form (fp8TrunkWanted and a shape that the FP8 kernels support;
   // fp8Filter NULL otherwise). The filter in E4M3 with a scale for each output channel; the largest |x| of the input
   // in the calibration (a float on the device) and the input's scale from it; and what finishFp8 sets after the
-  // calibration: the epilogue's words, the normalisation in the epilogue, 1 / the scale of the tensor that the
-  // epilogue writes in FP8 (1 when it writes FP16), and whether it writes next in FP8.
+  // calibration: the epilogue's words, the normalisation in the epilogue, and the scale of the FP8 tensor that the
+  // epilogue writes (0 when it writes FP16).
   OwnedDeviceBuf fp8Filter;
   vector<float> fp8WeightScale;
   OwnedDeviceBuf fp8InAmax;
-  float fp8InScale;
+  float fp8InScale = 0.0f;
   OwnedDeviceBuf fp8Channels;
-  const BatchNormLayer* fp8Norm;
-  float fp8OutScale;
-  bool fp8NextFp8;
+  const BatchNormLayer* fp8Norm = NULL;
+  float fp8NextInScale = 0.0f;
 #endif
 
   FusedTrunkConv() = delete;
@@ -2300,10 +2297,6 @@ struct FusedTrunkConv {
     : conv(convLayer), convYSize(desc->convYSize), convXSize(desc->convXSize), nnXLen(nnX), nnYLen(nnY)
   {
 #if defined(KATAGO_GPU_CUDA) && defined(USE_CUTLASS_FUSED_CONV)
-    fp8InScale = 0.0f;
-    fp8Norm = NULL;
-    fp8OutScale = 1.0f;
-    fp8NextFp8 = false;
     if(!cudaHandles->fp8TrunkWanted
        || !CudaFusedConv::fp8SupportsShape(desc->inChannels, desc->outChannels, desc->convYSize, desc->convXSize))
       return;
@@ -2317,7 +2310,7 @@ struct FusedTrunkConv {
       float amax = 0.0f;
       for(int i = 0; i < ic * ky * kx; i++)
         amax = std::max(amax, std::fabs(desc->weights[(size_t)o * ic * ky * kx + i]));
-      const float s = amax > 0.0f ? amax / 448.0f : 1.0f;
+      const float s = amax > 0.0f ? amax / CudaFusedConv::fp8Max : 1.0f;
       fp8WeightScale[o] = s;
       for(int y = 0; y < ky; y++)
         for(int x = 0; x < kx; x++)
@@ -2330,6 +2323,7 @@ struct FusedTrunkConv {
     CUDA_ERR(name.c_str(),cudaMemcpy(fp8Filter.buf, filter.data(), filter.size(), cudaMemcpyHostToDevice));
     CUDA_ERR(name.c_str(),cudaMalloc(&fp8InAmax.buf, sizeof(float)));
     CUDA_ERR(name.c_str(),cudaMemset(fp8InAmax.buf, 0, sizeof(float)));
+    CUDA_ERR(name.c_str(),cudaMalloc(&fp8Channels.buf, (size_t)oc * sizeof(CudaFusedConv::Fp8Channel)));
 #else
     (void)cudaHandles;
 #endif
@@ -2346,19 +2340,23 @@ struct FusedTrunkConv {
   }
 
   // After the calibration's forward passes (synchronised): the input's scale, its largest value / 448, and that value.
+  // A largest value of 0 is an error: the calibration did not record this input (or every value of it was 0).
   float setFp8InScale() {
     float amax = 0.0f;
     CUDA_ERR(conv.name.c_str(),cudaMemcpy(&amax, fp8InAmax.buf, sizeof(float), cudaMemcpyDeviceToHost));
     if(!std::isfinite(amax))
       throw StringError(conv.name + ": the FP8 calibration found a value that is not finite in this convolution's input");
-    fp8InScale = amax > 0.0f ? amax / 448.0f : 1.0f;
+    if(amax <= 0.0f)
+      throw StringError(conv.name + ": the FP8 calibration recorded no value above 0 in this convolution's input");
+    fp8InScale = amax / CudaFusedConv::fp8Max;
     return amax;
   }
 
   // The epilogue's words: each output channel's dequantisation (the input's scale times the channel's weight scale)
-  // with norm's packed scale and bias. outScale: 1 / the scale of the FP8 tensor that the epilogue writes, 1 for FP16.
-  void finishFp8(const BatchNormLayer& norm, float outScale, bool nextFp8) {
-    testAssert(hasFp8() && fp8InScale > 0.0f && norm.packedScaleBiasBuf.buf != NULL
+  // with norm's packed scale and bias. nextInScale: the scale of the FP8 tensor that the epilogue writes, 0 when it
+  // writes FP16.
+  void finishFp8(const BatchNormLayer& norm, float nextInScale) {
+    testAssert(hasFp8() && fp8InScale > 0.0f && nextInScale >= 0.0f && norm.packedScaleBiasBuf.buf != NULL
                && norm.numChannels == conv.outChannels);
     const int oc = conv.outChannels;
     vector<uint32_t> words(oc);
@@ -2366,32 +2364,30 @@ struct FusedTrunkConv {
     vector<CudaFusedConv::Fp8Channel> channels(oc);
     for(int o = 0; o < oc; o++)
       channels[o] = CudaFusedConv::Fp8Channel{fp8InScale * fp8WeightScale[o], words[o]};
-    if(fp8Channels.buf == NULL)
-      CUDA_ERR(conv.name.c_str(),cudaMalloc(&fp8Channels.buf, oc * sizeof(CudaFusedConv::Fp8Channel)));
     CUDA_ERR(conv.name.c_str(),cudaMemcpy(fp8Channels.buf, channels.data(), oc * sizeof(CudaFusedConv::Fp8Channel), cudaMemcpyHostToDevice));
     fp8Norm = &norm;
-    fp8OutScale = outScale;
-    fp8NextFp8 = nextFp8;
+    fp8NextInScale = nextInScale;
   }
 
   // FP8: out = fp8(relu(norm(conv(in)))), in and out in FP8 (a block's first convolution).
   void applyFp8Norm(CudaHandles* cudaHandles, int batchSize, const void* inBuf, void* outBuf) const {
-    testAssert(fp8Channels.buf != NULL && fp8NextFp8);
+    testAssert(fp8Norm != NULL && fp8NextInScale > 0.0f);
     CudaFusedConv::runFp8ConvScaleBiasRelu(
       (const uint8_t*)inBuf, (const uint8_t*)fp8Filter.buf, (const CudaFusedConv::Fp8Channel*)fp8Channels.buf,
-      fp8OutScale, (uint8_t*)outBuf, batchSize, nnYLen, nnXLen, conv.inChannels, conv.outChannels, convYSize,
-      convXSize, cudaHandles->stream);
+      1.0f / fp8NextInScale, (uint8_t*)outBuf, batchSize, nnYLen, nnXLen, conv.inChannels, conv.outChannels,
+      convYSize, convXSize, cudaHandles->stream);
   }
 
   // FP8: trunk = trunk + conv(in), and next = relu(nextNorm(trunk)), in FP8 or FP16 as finishFp8 set it (a block's last
   // convolution). nextNorm is the normalisation that finishFp8 took. Returns true: it wrote next.
   bool applyFp8AddNorm(CudaHandles* cudaHandles, int batchSize, const void* inBuf, void* trunkBuf,
                        const BatchNormLayer* nextNorm, void* nextBuf) const {
-    testAssert(fp8Channels.buf != NULL && nextNorm != NULL && nextNorm == fp8Norm);
+    testAssert(nextNorm != NULL && nextNorm == fp8Norm);
+    const bool nextFp8 = fp8NextInScale > 0.0f;
     CudaFusedConv::runFp8ConvAddScaleBiasRelu(
       (const uint8_t*)inBuf, (const uint8_t*)fp8Filter.buf, (half*)trunkBuf,
-      (const CudaFusedConv::Fp8Channel*)fp8Channels.buf, fp8OutScale, nextBuf, fp8NextFp8, batchSize, nnYLen, nnXLen,
-      conv.inChannels, conv.outChannels, convYSize, convXSize, cudaHandles->stream);
+      (const CudaFusedConv::Fp8Channel*)fp8Channels.buf, nextFp8 ? 1.0f / fp8NextInScale : 1.0f, nextBuf, nextFp8,
+      batchSize, nnYLen, nnXLen, conv.inChannels, conv.outChannels, convYSize, convXSize, cudaHandles->stream);
     return true;
   }
 
@@ -2559,7 +2555,7 @@ struct ResidualBlock {
 #if defined(KATAGO_GPU_CUDA) && defined(USE_CUTLASS_FUSED_CONV)
       // KataGame fork (2026-11-10, abscls-jtbd): the FP8 trunk. trunkScratchBuf holds the block's input in FP8 (the
       // stage before wrote it), and the middle is in FP8.
-      if(fp8TrunkOn(cudaHandles)) {
+      if(cudaHandles->fp8TrunkEnabled) {
         testAssert(inputNormed);
         trunkConv1->applyFp8Norm(cudaHandles,batchSize,trunkScratchBuf,midIn.buf);
         return trunkConv2->applyFp8AddNorm(cudaHandles,batchSize,midIn.buf,trunkBuf,nextNorm,trunkScratchBuf);
@@ -2568,12 +2564,12 @@ struct ResidualBlock {
       if(!inputNormed)
         normActConv1.norm.apply(cudaHandles,batchSize,trunkBuf,maskBuf,trunkScratchBuf);
 #if defined(KATAGO_GPU_CUDA) && defined(USE_CUTLASS_FUSED_CONV)
-      if(fp8Calibrating(cudaHandles))
+      if(cudaHandles->fp8Calibrating)
         trunkConv1->recordFp8InAmax(cudaHandles,batchSize,trunkScratchBuf);
 #endif
       trunkConv1->applyNorm(cudaHandles,batchSize,trunkScratchBuf,normActConv2.norm,midIn.buf);
 #if defined(KATAGO_GPU_CUDA) && defined(USE_CUTLASS_FUSED_CONV)
-      if(fp8Calibrating(cudaHandles))
+      if(cudaHandles->fp8Calibrating)
         trunkConv2->recordFp8InAmax(cudaHandles,batchSize,midIn.buf);
 #endif
       return trunkConv2->applyAdd(cudaHandles,scratch,batchSize,midIn.buf,trunkBuf,nextNorm,trunkScratchBuf,
@@ -2731,7 +2727,7 @@ struct GlobalPoolingResidualBlock {
 #if defined(KATAGO_GPU_CUDA) && defined(USE_CUTLASS_FUSED_CONV)
       // KataGame fork (2026-11-10, abscls-jtbd): the FP8 trunk. The block's input is in FP16 (its first convolutions
       // above read it through cuDNN); the pass writes the last convolution's input in FP8.
-      if(fp8TrunkOn(cudaHandles)) {
+      if(cudaHandles->fp8TrunkEnabled) {
         FusedTrunkConv::addBiasNormFp8(cudaHandles,batchSize,nnXLen*nnYLen,regularChannels,regularOut.buf,NULL,
                                        gpoolBias.buf,normActConv2.norm,1.0f / trunkFinalConv->fp8InScale,
                                        regularScratch.buf);
@@ -2743,7 +2739,7 @@ struct GlobalPoolingResidualBlock {
       FusedTrunkConv::addBiasNorm(cudaHandles,batchSize,nnXLen*nnYLen,regularChannels,regularOut.buf,NULL,
                                   gpoolBias.buf,normActConv2.norm,regularScratch.buf);
 #if defined(KATAGO_GPU_CUDA) && defined(USE_CUTLASS_FUSED_CONV)
-      if(fp8Calibrating(cudaHandles))
+      if(cudaHandles->fp8Calibrating)
         trunkFinalConv->recordFp8InAmax(cudaHandles,batchSize,regularScratch.buf);
 #endif
       return trunkFinalConv->applyAdd(cudaHandles,scratch,batchSize,regularScratch.buf,trunkBuf,nextNorm,
@@ -4287,6 +4283,7 @@ bool BlockStack::anyBlockFused() const {
   return false;
 }
 
+// KataGame fork (2026-11-10, abscls-jtbd): the FP8 trunk's BlockStack members (see their declarations).
 #if defined(KATAGO_GPU_CUDA) && defined(USE_CUTLASS_FUSED_CONV)
 bool BlockStack::fp8Capable() const {
   if(blocks.empty())
@@ -4330,16 +4327,16 @@ vector<float> BlockStack::finishFp8(const BatchNormLayer* tipNorm) const {
   }
   for(size_t i = 0; i < blocks.size(); i++) {
     // As apply's nextNorm: the next block's input normalisation, or the trunk's final one.
+    // The next block reads FP8 when it has an input scale.
     const BatchNormLayer* next = i + 1 < blocks.size() ? fusedInputNorm(i + 1,NULL) : tipNorm;
     const float nextScale = fp8InputScale(i + 1);
-    const float nextOutScale = nextScale > 0.0f ? 1.0f / nextScale : 1.0f;
     if(blocks[i].first == ORDINARY_BLOCK_KIND) {
       ResidualBlock* b = (ResidualBlock*)blocks[i].second.get();
-      b->trunkConv1->finishFp8(b->normActConv2.norm,1.0f / b->trunkConv2->fp8InScale,true);
-      b->trunkConv2->finishFp8(*next,nextOutScale,nextScale > 0.0f);
+      b->trunkConv1->finishFp8(b->normActConv2.norm,b->trunkConv2->fp8InScale);
+      b->trunkConv2->finishFp8(*next,nextScale);
     }
     else
-      ((GlobalPoolingResidualBlock*)blocks[i].second.get())->trunkFinalConv->finishFp8(*next,nextOutScale,nextScale > 0.0f);
+      ((GlobalPoolingResidualBlock*)blocks[i].second.get())->trunkFinalConv->finishFp8(*next,nextScale);
   }
   return amax;
 }
@@ -4777,7 +4774,7 @@ struct Trunk {
       initialMatMul->apply(cudaHandles,scratch,batchSize,inputGlobalBuf,globalBias.buf,workspaceBuf,workspaceBytes);
 #if defined(KATAGO_GPU_CUDA) && defined(USE_CUTLASS_FUSED_CONV)
       //KataGame fork (2026-11-10, abscls-jtbd): the FP8 trunk. The first block's input in FP8 when it reads FP8.
-      const float firstScale = fp8TrunkOn(cudaHandles) ? blocks.fp8InputScale(0) : 0.0f;
+      const float firstScale = cudaHandles->fp8TrunkEnabled ? blocks.fp8InputScale(0) : 0.0f;
       if(firstScale > 0.0f)
         FusedTrunkConv::addBiasNormFp8(cudaHandles,batchSize,nnXLen*nnYLen,trunkNumChannels,trunkScratch.buf,
                                        trunkScratch.buf,globalBias.buf,*firstNorm,1.0f / firstScale,trunkBuf);
@@ -6130,17 +6127,17 @@ struct ComputeHandle {
           "WARNING: Cuda backend: ENCLOSURE_FUSED_TRUNK=1 but the fused trunk is not usable here (it needs FP16, NHWC, "
           "a build with CUTLASS and a working sm_80+ GPU): the trunk runs unfused");
     }
-#ifdef USE_CUTLASS_FUSED_CONV
     // KataGame fork (2026-11-10, abscls-jtbd): the FP8 trunk (enclosureFp8TrunkRequested), on the fused trunk. Decided
     // before Model construction: the layers build their FP8 filters from it. The calibration follows the buffers.
     if(enclosureFp8TrunkRequested()) {
+#ifdef USE_CUTLASS_FUSED_CONV
       cudaHandles->fp8TrunkWanted = cudaHandles->fusedTrunkEnabled && CudaFusedConv::fp8SupportedOnCurrentDevice();
+#endif
       if(!cudaHandles->fp8TrunkWanted && logger != NULL)
         logger->write(
           "WARNING: Cuda backend: ENCLOSURE_FP8_TRUNK=1 but the FP8 trunk is not usable here (it needs the fused trunk, "
-          "ENCLOSURE_FUSED_TRUNK=1, and a working sm_89+ GPU): the trunk runs in FP16");
+          "ENCLOSURE_FUSED_TRUNK=1, a build with CUTLASS and a working sm_89+ GPU): the trunk runs in FP16");
     }
-#endif
     model = std::make_unique<Model>(
       cudaHandles.get(), &(loadedModel->modelDesc), maxBatchSize,
       nnXLen, nnYLen, inputsUseNHWC, useFP16, useNHWC
@@ -6192,16 +6189,17 @@ struct ComputeHandle {
        || rows.globals != model->numInputGlobalChannels || model->numInputMetaChannels != 0)
       throw StringError(Global::strprintf(
         "Cuda backend: %s holds rows of %d channels on a board of %d and %d global inputs, the network takes %d channels "
-        "on %d x %d and %d global inputs", file, rows.channels, rows.len, rows.globals, model->numInputChannels, nnXLen,
-        nnYLen, model->numInputGlobalChannels));
+        "on %d x %d, %d global inputs and %d metadata inputs (the rows have none)", file, rows.channels, rows.len,
+        rows.globals, model->numInputChannels, nnXLen, nnYLen, model->numInputGlobalChannels,
+        model->numInputMetaChannels));
 
     // The rows as getOutput's float inputs (NCHW, or NHWC when inputsUseNHWC), at most 16 a batch.
     const int batch = std::min(maxBatchSize, 16);
     const size_t rowBytes = (size_t)rows.channels * ((area + 7) / 8);
     vector<float> spatial((size_t)batch * rows.channels * area);
     cudaStream_t stream = cudaHandles->stream;
-    ValueHeadExtraBufs extra;
-    extra.wantAux = false;
+    // As getOutput's, without the aux outputs. Value-initialised: a head buffer that this list does not name is NULL.
+    ValueHeadExtraBufs extra = ValueHeadExtraBufs();
     extra.auxTrunkBuf = buffers->auxTrunkBuf;
     extra.auxScoringBuf = buffers->auxScoringBuf;
     extra.auxValueBuf = buffers->auxValueBuf;
