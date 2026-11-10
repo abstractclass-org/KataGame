@@ -85,6 +85,11 @@ void customCudaApplyCScaleBiasNCHW(const half* in, half* out, const half* scale,
 //Optionally also multiply by mask (can be null), with shape [n,xy]
 void customCudaApplyCScaleBiasNHWC(const float* in, float* out, const float* scale, const float* biases, const float* mask, int n, int xy, int c, int activation, cudaStream_t stream);
 void customCudaApplyCScaleBiasNHWC(const half* in, half* out, const half* scale, const half* biases, const half* mask, int n, int xy, int c, int activation, cudaStream_t stream);
+//KataGame fork (2026-11-10, the engine repository's abscls-rvu1; ENCLOSURE_FUSED_TRUNK): given an input with shape
+//[n,xy,c], biases nb of shape [n,c], and scale and biases of shape [c]: out = relu(scale * (in + nb) + biases),
+//computed in float, and when sumOut is not null, also sumOut = in + nb (sumOut may be in). No mask. FP16 only, c a
+//multiple of 8, every buffer 16-byte aligned.
+void customCudaAddNCBiasApplyCScaleBiasReluNHWC(const half* in, half* sumOut, const half* nb, const half* scale, const half* biases, half* out, int n, int xy, int c, cudaStream_t stream);
 
 //==============================================================================================
 // Transformer support kernels

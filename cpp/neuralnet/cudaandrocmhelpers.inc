@@ -31,6 +31,7 @@
 #endif
 #define KATAGO_HELPERS_INC_INCLUDED 1
 
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 
@@ -2305,6 +2306,63 @@ void customCudaApplyCScaleBiasNHWC(const float* in, float* out, const float* sca
 }
 void customCudaApplyCScaleBiasNHWC(const half* in, half* out, const half* scale, const half* biases, const half* mask, int nSize, int xySize, int cSize, int activation, cudaStream_t stream) {
   sharedApplyCScaleBiasNHWC(in,out,scale,biases,mask,nSize,xySize,cSize,true,activation,stream);
+}
+
+//KataGame fork (2026-11-10, the engine repository's abscls-rvu1; ENCLOSURE_FUSED_TRUNK): addNCBiasInplaceNHWC and
+//applyCScaleBiasNHWC with a ReLU in one pass, each thread on 8 channels of one point (16-byte loads and stores), in
+//float. sumOut may be in (each thread reads its 8 values before it writes them) or NULL.
+__global__
+void addNCBiasApplyCScaleBiasReluNHWCHalfKernel(
+  const half* in, half* sumOut, const half* nb, const half* scale, const half* biases, half* out,
+  int xySize, int c8Size, int total8)
+{
+#ifdef KATAGO_GPU_SUPPORTS_FP16
+  for(int i = blockIdx.x * blockDim.x + threadIdx.x; i < total8; i += gridDim.x * blockDim.x) {
+    const int c8 = i % c8Size;
+    const int n = i / (c8Size * xySize);
+    uint4 xv = ((const uint4*)in)[i];
+    const uint4 nbv = ((const uint4*)nb)[n * c8Size + c8];
+    const uint4 sv = ((const uint4*)scale)[c8];
+    const uint4 bv = ((const uint4*)biases)[c8];
+    const half* x = (const half*)&xv;
+    const half* nbh = (const half*)&nbv;
+    const half* s = (const half*)&sv;
+    const half* b = (const half*)&bv;
+    uint4 sumv, outv;
+    half* sum = (half*)&sumv;
+    half* o = (half*)&outv;
+    #pragma unroll
+    for(int j = 0; j < 8; j++) {
+      const float t = __half2float(x[j]) + __half2float(nbh[j]);
+      const float z = __half2float(s[j]) * t + __half2float(b[j]);
+      sum[j] = __float2half(t);
+      o[j] = __float2half(z > 0.0f ? z : 0.0f);
+    }
+    if(sumOut != NULL)
+      ((uint4*)sumOut)[i] = sumv;
+    ((uint4*)out)[i] = outv;
+  }
+#else
+  //Do nothing, FP16 not supported
+#endif
+}
+
+void customCudaAddNCBiasApplyCScaleBiasReluNHWC(
+  const half* in, half* sumOut, const half* nb, const half* scale, const half* biases, half* out,
+  int nSize, int xySize, int cSize, cudaStream_t stream
+) {
+  if(cSize % 8 != 0)
+    throw std::runtime_error("customCudaAddNCBiasApplyCScaleBiasReluNHWC: cSize must be a multiple of 8");
+  if(((uintptr_t)in | (uintptr_t)sumOut | (uintptr_t)nb | (uintptr_t)scale | (uintptr_t)biases | (uintptr_t)out) & 15)
+    throw std::runtime_error("customCudaAddNCBiasApplyCScaleBiasReluNHWC: buffers must be 16-byte aligned");
+  checkBufferIndexFitsInt(nSize, xySize, cSize, "customCudaAddNCBiasApplyCScaleBiasReluNHWC");
+  const int c8Size = cSize / 8;
+  const int total8 = nSize * xySize * c8Size;
+  if(total8 <= 0)
+    return;
+  const int threads = 256;
+  const int blocks = (total8 + threads - 1) / threads;
+  addNCBiasApplyCScaleBiasReluNHWCHalfKernel<<<blocks,threads,0,stream>>>(in,sumOut,nb,scale,biases,out,xySize,c8Size,total8);
 }
 
 //==============================================================================================

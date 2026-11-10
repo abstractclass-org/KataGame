@@ -770,6 +770,17 @@ if(USE_BACKEND STREQUAL "CUDA")
   else()
     message(STATUS "Vendored CUTLASS not found, not usable with this toolchain, or disabled via NO_CUTLASS_FUSED_FFN; building without the fused FFN kernel.")
   endif()
+  # KataGame fork (2026-11-10, the engine repository's abscls-rvu1): the vendored CUTLASS also builds the trunk's
+  # convolutions with their scale, bias and ReLU in the epilogue (cudafusedconv.cu, ENCLOSURE_FUSED_TRUNK=1 at run
+  # time), which need only its include tree.
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/external/cutlass/include/cutlass/cutlass.h
+     AND CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.4
+     AND NOT MSVC)
+    set(KATAGO_USE_CUTLASS_FUSED_CONV 1)
+    set(NEURALNET_BACKEND_SOURCES ${NEURALNET_BACKEND_SOURCES} neuralnet/cudafusedconv.cu)
+    set_source_files_properties(neuralnet/cudafusedconv.cu PROPERTIES
+      COMPILE_OPTIONS "-std=c++17;--expt-relaxed-constexpr")
+  endif()
   # The vendored header-only cudnn_frontend library trips GCC's -Wnull-dereference from its -O2
   # interprocedural analysis (no source location, so an in-file #pragma can't suppress it). It's
   # benign third-party code; silence it just for the one source that includes cudnn_frontend.h.
@@ -1161,6 +1172,10 @@ if(USE_BACKEND STREQUAL "CUDA")
     target_include_directories(katago SYSTEM PRIVATE
       external/cutlass/include
       external/cutlass/examples/45_dual_gemm)
+  endif()
+  if(KATAGO_USE_CUTLASS_FUSED_CONV)
+    target_compile_definitions(katago PRIVATE USE_CUTLASS_FUSED_CONV)
+    target_include_directories(katago SYSTEM PRIVATE external/cutlass/include)
   endif()
   if(NO_CUDNN_SDPA)
     message(STATUS "-DNO_CUDNN_SDPA=1 is set, building without the cudnn graph SDPA attention path.")

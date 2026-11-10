@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the fork's standalone Enclosure tests (testgamelayer, testsymmetry, testnninputs, testlocalpattern,
-# testincome, testnnoutputs, testnnrows, testrgsc, testrgscstates, testnotation, testgameinterface, testgameareas, testkomi, testcheapsearch, testareainputs, testdiversityinputs, testdiversitysearch, testrootviews, testselfplayviews; or $TESTS) against a KataGo build's objects, swapping KataGo's main for each test's. In WSL:
+# testincome, testnnoutputs, testnnrows, testrgsc, testrgscstates, testnotation, testgameinterface, testgameareas, testkomi, testcheapsearch, testareainputs, testdiversityinputs, testdiversitysearch, testrootviews, testselfplayviews; or $TESTS) against a KataGo build's objects, swapping KataGo's main for each test's. testfusedconv (the CUDA backend's fused trunk) builds only against a CUDA build with CUTLASS, so only through $TESTS. In WSL:
 #   bash tests/enclosure/build.sh [BUILD_DIR (default ~/ws/abstractclass-org/engines/builds/debug)] [OUT_DIR (default ~/ws/abstractclass-org/engines/v2scratch/enctests)]
 # then e.g. ~/ws/abstractclass-org/engines/v2scratch/enctests/testnninputs tests/data/enclosure_inputs.txt (from katagame/cpp).
 # A test of another folder of tests/ is FOLDER/NAME in $TESTS (a game's own, e.g. blueprints/benchstarreach, against

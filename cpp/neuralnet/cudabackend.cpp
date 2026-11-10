@@ -29,6 +29,10 @@
 #include "../neuralnet/cudafusedffn.h"
 #endif
 
+#ifdef USE_CUTLASS_FUSED_CONV
+#include "../neuralnet/cudafusedconv.h"
+#endif
+
 // Backend selector for the shared implementation file included below. See the comment at the
 // top of that file for the full contract.
 #define KATAGO_GPU_CUDA 1
