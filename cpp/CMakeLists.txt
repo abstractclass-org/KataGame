@@ -772,7 +772,7 @@ if(USE_BACKEND STREQUAL "CUDA")
   endif()
   # KataGame fork (2026-11-10, the engine repository's abscls-rvu1): the vendored CUTLASS also builds the trunk's
   # convolutions with their scale, bias and ReLU in the epilogue (cudafusedconv.cu, ENCLOSURE_FUSED_TRUNK=1 at run
-  # time), which need only its include tree.
+  # time), and their FP8 forms (abscls-jtbd, ENCLOSURE_FP8_TRUNK=1), which need only its include tree.
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/external/cutlass/include/cutlass/cutlass.h
      AND CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.4
      AND NOT MSVC)
