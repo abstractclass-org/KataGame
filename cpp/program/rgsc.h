@@ -54,8 +54,10 @@ namespace Rgsc {
   //(Entry), and a line of version 1 still loads, with both unknown.
   constexpr int STATE_RECORD_VERSION = 2;
 
-  //The buffer a game restarted from (C74 of its rows).
-  enum Source { SOURCE_NONE = 0, SOURCE_VANILLA = 1, SOURCE_SWING = 2 };
+  //The buffer a game restarted from (C74 of its rows). KataGame fork (2026-11-11, abscls-7ald): or a start from the
+  //file of people's positions (SOURCE_HUMAN, program/humanstarts.h), which is not a restart: it neither updates nor
+  //offers to a buffer.
+  enum Source { SOURCE_NONE = 0, SOURCE_VANILLA = 1, SOURCE_SWING = 2, SOURCE_HUMAN = 3 };
   //Where a buffer state came from: a state that a search evaluated (the tracker's candidate), or a played position.
   //Unknown for states saved before 2026-10-11.
   enum Origin { ORIGIN_UNKNOWN = 0, ORIGIN_TREE = 1, ORIGIN_PLAYED = 2 };

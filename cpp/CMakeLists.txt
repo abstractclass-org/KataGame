@@ -1099,6 +1099,7 @@ add_executable(katago
   program/playsettings.cpp
   program/play.cpp
   program/rgsc.cpp
+  program/humanstarts.cpp
   program/selfplaymanager.cpp
   ${GIT_HEADER_FILE_ALWAYS_UPDATED}
   tests/testboardarea.cpp

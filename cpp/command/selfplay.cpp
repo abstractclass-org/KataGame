@@ -14,6 +14,7 @@
 #include "../program/play.h"
 #include "../program/selfplaymanager.h"
 #include "../program/rgsc.h"
+#include "../program/humanstarts.h"
 #include "../program/azdbleague.h"
 #include "../command/commandline.h"
 #include "../core/test.h"
@@ -108,7 +109,9 @@ static bool rgscAfterGame(
 ) {
   const vector<float>& selected = gameData->selectedWhiteWinLossByTurn;
   const bool hasRegret = !selected.empty();
-  const bool restarted = source != Rgsc::SOURCE_NONE;
+  //KataGame fork (2026-11-11, abscls-7ald): a game from the file of people's positions (SOURCE_HUMAN) is no restart:
+  //it has its regret targets, it updates no buffer state and offers no candidate (it has no tracker).
+  const bool restarted = source == Rgsc::SOURCE_VANILLA || source == Rgsc::SOURCE_SWING;
   gameData->rgscSource = (int)source;
   if(hasRegret) {
     const Player winner = gameData->endHist.winner;
@@ -289,7 +292,8 @@ static void azdbAfterGame(
   {
     nlohmann::json record = AZdb::gameRecord<GameEncoding>(match, end.rules.komi, firstScore, side);
     record["rgsc_source"] = gameData.rgscSource;
-    if(match.restart) {
+    //A start from the file of people's positions (rgsc_source 3) has no producer.
+    if(match.restart && gameData.rgscSource != Rgsc::SOURCE_HUMAN) {
       record["start_member"] = restartEntry.member;
       record["start_side"] = restartEntry.side;
     }
@@ -391,6 +395,8 @@ int MainCmds::selfplay(const vector<string>& args) {
   GameRunner* gameRunner = new GameRunner(cfg, playSettings, logger);
   //Enclosure fork (owner, 2026-10-04): RGSC's buffer, shared by the game threads, kept across runs in its file.
   const Rgsc::Settings rgscSettings = Rgsc::Settings::load(cfg);
+  //KataGame fork (2026-11-11, abscls-7ald): the starts from people's positions (program/humanstarts.h).
+  const HumanStarts::Settings humanSettings = HumanStarts::Settings::load(cfg);
   //KataGame fork (2026-10-29): AZdb's members (AZdbSettings).
   const AZdbSettings azdbSettings = AZdbSettings::load(cfg, outputDir, inputsVersion);
   bool autoCleanupAllButLatestIfUnused = true;
@@ -429,6 +435,17 @@ int MainCmds::selfplay(const vector<string>& args) {
                  Global::doubleToString(rgscSettings.swingScale) + ", cap " +
                  Global::doubleToString(rgscSettings.swingCap) +
                  (rgscSettings.swingScale > 0 ? "" : " (scale 0: no swing targets)"));
+  //KataGame fork (2026-11-11, abscls-7ald): the file of people's positions, checked under the game's settings as
+  //RGSC's buffers are. A share humanStartProb of all games starts from it, drawn before RGSC's restarts.
+  HumanStarts::Starts* humanStarts = NULL;
+  std::atomic<int64_t> numHumanStarts(0);
+  if(humanSettings.enabled()) {
+    humanStarts = new HumanStarts::Starts();
+    humanStarts->load(humanSettings.file);
+    logger.write("Human starts: " + humanStarts->summary() + " from " + humanSettings.file + "; a game starts from "
+                 "one with probability " + Global::doubleToString(humanSettings.prob) +
+                 (rgscBuffer != NULL ? ", and RGSC's restarts draw from the other games" : ""));
+  }
   //KataGame fork (2026-10-29): AZdb's league, shared by the game threads, kept across runs in its file, and the log of
   //its games.
   AZdb::League<GameEncoding>* azdbLeague = NULL;
@@ -577,6 +594,9 @@ int MainCmds::selfplay(const vector<string>& args) {
     rgscBuffer,
     rgscSwingBuffer,
     &rgscSettings,
+    humanStarts,
+    &humanSettings,
+    &numHumanStarts,
     azdbLeague,
     &azdbSettings,
     &azdbGamesLog,
@@ -630,6 +650,24 @@ int MainCmds::selfplay(const vector<string>& args) {
         MatchPairer::BotSpec botSpecW = botSpecB;
 
         string seed = gameSeedBase + ":" + Global::uint64ToHexString(thisLoopSeedRand.nextUInt64());
+        //KataGame fork (2026-11-11, abscls-7ald): with probability humanStartProb the game starts from a state of the
+        //file of people's positions, drawn uniformly (program/humanstarts.h): no fork, no RGSC restart and no RGSC
+        //candidate. So with RGSC's rgscStartProb r and humanStartProb h, h of the games start from the file,
+        //(1 - h) r restart from RGSC's buffer, and (1 - h)(1 - r) start from the normal start. Without the file, no
+        //number is drawn here.
+        Rgsc::Entry humanEntry;
+        Sgf::PositionSample humanStart;
+        bool humanStarted = false;
+        if(humanStarts != NULL && thisLoopSeedRand.nextBool(humanSettings.prob)) {
+          string why;
+          humanStarted = humanStarts->draw(
+            thisLoopSeedRand, maxBoardXSizeUsed, maxBoardYSizeUsed, humanEntry, humanStart, why);
+          if(humanStarted)
+            numHumanStarts.fetch_add(1, std::memory_order_relaxed);
+          else
+            logger.write("Human starts: a state did not come back at its start, so the game starts from the normal "
+                         "start: " + why);
+        }
         //Enclosure fork (owner, 2026-10-04): RGSC. With probability rgscStartProb the game starts exactly at a state
         //drawn from the buffer (and takes no fork position); otherwise a tracker collects its searches' candidate.
         //Enclosure fork (2026-10-11): else, with probability rgscSwingStartProb / (1 - rgscStartProb), from a state of
@@ -641,7 +679,9 @@ int MainCmds::selfplay(const vector<string>& args) {
         std::unique_ptr<Rgsc::TreeTracker> rgscTracker;
         std::unique_ptr<Rgsc::TreeTracker> rgscSwingTracker;
         std::function<void(const MatchPairer::BotSpec&, Search*)> rgscAttach = nullptr;
-        if(rgscBuffer != NULL) {
+        if(humanStarted)
+          rgscSource = Rgsc::SOURCE_HUMAN;
+        else if(rgscBuffer != NULL) {
           if(rgscBuffer->maybeSample(thisLoopSeedRand, rgscEntry))
             rgscSource = Rgsc::SOURCE_VANILLA;
           else if(
@@ -678,13 +718,14 @@ int MainCmds::selfplay(const vector<string>& args) {
         }
         //KataGame fork (2026-10-29): AZdb. The matchmaker draws the game's members, and the game takes its copy of the
         //league's state. Two members play with two bots, one search each, and each search gets its member and the
-        //copy. A game that starts from a state of RGSC's buffer is member 0 against itself (AZdb::restartMatch).
+        //copy. A game that starts from a state of RGSC's buffer is member 0 against itself (AZdb::restartMatch), and
+        //so is a game from the file of people's positions (2026-11-11, abscls-7ald).
         //Without AZdb nothing here draws or changes.
         AZdb::Match azdbMatch;
         std::shared_ptr<const AZdb::State<GameEncoding>> azdbState;
         std::function<void(const MatchPairer::BotSpec&, Search*)> attach = rgscAttach;
         if(azdbLeague != NULL) {
-          azdbMatch = rgscRestarted ? AZdb::restartMatch() : azdbLeague->draw(thisLoopSeedRand);
+          azdbMatch = rgscRestarted || humanStarted ? AZdb::restartMatch() : azdbLeague->draw(thisLoopSeedRand);
           azdbState = azdbLeague->snapshot();
           botSpecB.botIdx = azdbMatch.members[Board::indexOfPlayer(P_BLACK)];
           botSpecW.botIdx = azdbMatch.members[Board::indexOfPlayer(P_WHITE)];
@@ -699,8 +740,9 @@ int MainCmds::selfplay(const vector<string>& args) {
             search->setDiversityState(azdbState);
           };
         }
+        const Sgf::PositionSample* exactStart = humanStarted ? &humanStart : rgscRestarted ? &rgscStart : NULL;
         gameData = gameRunner->runGame(
-          seed, botSpecB, botSpecW, rgscRestarted ? NULL : forkData, rgscRestarted ? &rgscStart : NULL, logger,
+          seed, botSpecB, botSpecW, exactStart != NULL ? NULL : forkData, exactStart, logger,
           shouldStopFunc,
           shouldPause,
           (switchNetsMidGame ? checkForNewNNEval : nullptr),
@@ -711,6 +753,9 @@ int MainCmds::selfplay(const vector<string>& args) {
         //and which of them train came with the bots (Play::runGame).
         if(gameData != NULL && azdbLeague != NULL)
           gameData->diversityState = azdbState;
+        //The start's source in the rows (C74), the record and AZdb's games file, also without RGSC.
+        if(gameData != NULL)
+          gameData->rgscSource = (int)rgscSource;
         if(gameData != NULL && rgscBuffer != NULL) {
           bool keep = rgscAfterGame(
             *rgscBuffer, rgscSwingBuffer, rgscSettings, gameData, rgscSource, rgscEntry.key, rgscTracker.get(),
@@ -814,6 +859,12 @@ int MainCmds::selfplay(const vector<string>& args) {
   //Overall self-play totals (per-model NN/data/moves breakdowns are logged above by the manager).
   logger.write("Total games: " + Global::int64ToString(numGamesStarted.load(std::memory_order_relaxed)));
   logger.write("Total selfplay runtime (seconds): " + Global::doubleToString(selfplayTimer.getSeconds()));
+  //KataGame fork (2026-11-11, abscls-7ald): the games started from the file of people's positions.
+  if(humanStarts != NULL) {
+    logger.write("Human starts: " + Global::int64ToString(numHumanStarts.load(std::memory_order_relaxed)) +
+                 " games started from the file");
+    delete humanStarts;
+  }
 
   //Enclosure fork (owner, 2026-10-04): RGSC's buffer, kept for the next run.
   if(rgscBuffer != NULL) {

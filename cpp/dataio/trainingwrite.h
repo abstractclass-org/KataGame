@@ -146,10 +146,13 @@ struct FinishedGameData {
   std::vector<bool> continuesMoveByTurn;
   //Enclosure fork (2026-10-11): RGSC's second source, value swing. Per turn, the network's swing ranking of the
   //position (NaN without the swing heads); and, set after the game, each turn's swing regret target (C72, flag C73).
-  //rgscSource: the buffer the game restarted from (Rgsc::Source; C74 of every row of the game).
+  //rgscSource: the buffer the game restarted from (Rgsc::Source; C74 of every row of the game). KataGame fork
+  //(2026-11-11, abscls-7ald): or SOURCE_HUMAN_START, a start from the file of people's positions
+  //(program/humanstarts.h), whose SGF record says gtype=humanpos.
   std::vector<float> swingRankingByTurn;
   std::vector<float> swingByTurn;
   int rgscSource = 0;
+  static constexpr int SOURCE_HUMAN_START = 3;
   //KataGame fork (2026-10-29): AZdb (program/azdb.h), for the rows of the inputs version 14. diversityMembers: the
   //member of each player, by the rules' player (Board::indexOfPlayer), whose latent the player's rows get.
   //diversityState: the game's copy of the members' state, taken at its start, from which the rows' rewards and the

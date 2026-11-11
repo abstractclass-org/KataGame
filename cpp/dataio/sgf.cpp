@@ -2089,6 +2089,10 @@ void WriteSgf::writeSgf(
       commentOut << "," << "gtype=fork";
     else if(gameData->mode == FinishedGameData::MODE_HANDICAP)
       commentOut << "," << "gtype=handicap";
+    //KataGame fork (2026-11-11, abscls-7ald): a start from the file of people's positions (program/humanstarts.h) is
+    //an exact start as RGSC's restarts are, with its own gtype.
+    else if(gameData->mode == FinishedGameData::MODE_SGFPOS && gameData->rgscSource == FinishedGameData::SOURCE_HUMAN_START)
+      commentOut << "," << "gtype=humanpos";
     else if(gameData->mode == FinishedGameData::MODE_SGFPOS)
       commentOut << "," << "gtype=sgfpos";
     else if(gameData->mode == FinishedGameData::MODE_HINTPOS)
