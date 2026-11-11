@@ -644,10 +644,9 @@ member `Diversity` (above). A game without it gives every member the reward 0.
   as the search checks itself (`Search::checkDiversitySetup`): a member 1 to 4 with w > 0 and no file is refused
   with the search's message. A query cannot change `diversityStateFile`. A query of a member 1 to 4 with w > 0 can
   search the root's views (`rootViews`, a game with views): a check of a finalist keeps the member's term and has the
-  reward of the member's move ("The search of the root's views"). GTP and Blueprints' engine
-  protocol do not read the file, so their members 1 to 4 play with λ = 1 only. Their evaluations outside the search
-  (GTP's `kata-raw-nn`, `kata-raw-human-nn` and `debug_moves`, the protocol's drop after a pick) read the latent of
-  the search's member.
+  reward of the member's move ("The search of the root's views"). GTP and Blueprints' engine protocol do not read the
+  file, so their members 1 to 4 play with λ = 1 only. Their evaluations outside the search (GTP's `kata-raw-nn`,
+  `kata-raw-human-nn` and `debug_moves`, the protocol's drop after a pick) read the latent of the search's member.
 
 **The training targets** are the slots of KataGo's spatial targets (`valueTargetsNCHW`) and the two that the fork
 added. `TARGETS` declares the slots that the game writes. The front computes C2-3 and C7 from `pieces`
@@ -937,9 +936,9 @@ passes of the cheap search's visits. `PASSES_OVERRIDES` gives the bots of these 
 games' (`OUT_DIR` "" for no files), such as bpj5's `maxVisits=600,cheapSearchVisits=100` on the positions of short
 games. The test prints the network's rows of the full search with the setting and without it on each position, each
 from an empty cache of the network (its size is `nnCacheSizePowerOfTwo` of the overrides): the setting's cost on the
-same positions. In each search of these checks, each pass and the move's search after the cheap passes have the
-player's own diversity term and no reward at their root, and the setting of the root views' checks
-(`Search::diversityMoverIntoRoot`, abscls-e0gz) is off after the search.
+same positions. In each of these searches, each pass and the move's search after the cheap passes have the player's
+own diversity term and no reward at their root (abscls-e0gz). After the search, `Search::diversityMoverIntoRoot`, which
+only a check of the root's views sets, is off.
 
 **AZdb's latent:** `testdiversityinputs POSITIONS_FILE` names no game, so it runs on any game's build, with the game's
 positions (Blueprints': `tests/data/blueprints_positions.txt`). It needs no network. It checks the cache's hash of each

@@ -461,11 +461,7 @@ bool RootViews::search(
   //Each search, with its share of the limits (genMoveSynchronous's searchFactor): the first takes onSearchBegun, and a
   //later one stops at once when stopped() is true.
   Search* search = bot->getSearchStopAndWait();
-  //At the end, also when a search stops.
-  struct SettingsReset {
-    Search* search;
-    ~SettingsReset() { resetSearchSettings(*search); }
-  } settingsReset{search};
+  const SettingsReset settingsReset{*search};
   auto isStopped = [&stopped]() noexcept {
     return stopped && stopped();
   };

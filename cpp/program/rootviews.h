@@ -162,6 +162,11 @@ namespace RootViews {
   //and the checks' diversity term (Search::diversityMoverIntoRoot, C_EMPTY). Each caller of Searches calls it at its
   //end, also when a search stops early.
   void resetSearchSettings(Search& search);
+  //Calls resetSearchSettings at the end of its scope, also when a search stops early or throws.
+  struct SettingsReset {
+    Search& search;
+    ~SettingsReset() { resetSearchSettings(search); }
+  };
 
   //The search of the root's views (above), of the position's cover views: writes the analysis engine's response in
   //ret and the chosen move in choice, or returns false when a search was stopped or had no result. Each search takes

@@ -1492,10 +1492,7 @@ static bool searchRootViews(
   Play::RootViewsSearch* record
 ) {
   const int numViews = (int)views.size();
-  struct CenterReset {
-    Search* bot;
-    ~CenterReset() { RootViews::resetSearchSettings(*bot); }
-  } centerReset{bot};
+  const RootViews::SettingsReset settingsReset{*bot};
   auto run = [&](Player movePla, const SearchLimitsThisMove* searchLimits) {
     return searchLimits == NULL ? bot->runWholeSearchAndGetMove(movePla)
       : runBotWithLimits(bot, movePla, playSettings, *searchLimits);
@@ -1523,11 +1520,11 @@ static bool searchRootViews(
 
   const bool cheap = limits != NULL && limits->isCheapSearch;
   if(!cheap) {
-    SearchLimitsThisMove passLimits = cheap ? shareOfLimits(*limits, 1.0 / numViews) : SearchLimitsThisMove();
+    SearchLimitsThisMove passLimits = SearchLimitsThisMove();
     //KataGame fork (abscls-lne9): rootViewsCheapPasses. A full search's limits hold its visits and playouts in
     //numAlterVisits and numAlterPlayouts, altered or not (getSearchLimitsThisMove).
     bool searchAgain = false;
-    if(!cheap && limits != NULL && playSettings.rootViewsCheapPasses) {
+    if(limits != NULL && playSettings.rootViewsCheapPasses) {
       passLimits = *limits;
       passLimits.doAlterVisitsPlayouts = true;
       passLimits.numAlterVisits = std::min(limits->numAlterVisits, limits->numCheapVisits);
@@ -1536,7 +1533,7 @@ static bool searchRootViews(
       searchAgain = std::min(passLimits.numAlterVisits, passLimits.numAlterPlayouts) <
         std::min(limits->numAlterVisits, limits->numAlterPlayouts);
     }
-    const SearchLimitsThisMove* passesLimits = cheap || searchAgain ? &passLimits : limits;
+    const SearchLimitsThisMove* passesLimits = searchAgain ? &passLimits : limits;
     double best = 0.0;
     int bestPass = -1;
     for(int i = 0; i<numViews; i++) {
