@@ -85,6 +85,7 @@ Search::Search(const SearchParams& params, NNEvaluator* nnEval, NNEvaluator* hum
    rootSafeArea(Board::MAX_ARR_SIZE, C_EMPTY),
    recentScoreCenter(0.0),
    fixedScoreCenter(std::numeric_limits<double>::quiet_NaN()),
+   diversityMoverIntoRoot(C_EMPTY),
    mirroringPla(C_EMPTY),
    mirrorAdvantage(0.0),
    mirrorCenterSymmetryError(1e10),
@@ -102,6 +103,7 @@ Search::Search(const SearchParams& params, NNEvaluator* nnEval, NNEvaluator* hum
    evalCache(nullptr),
    diversityWeight(0.0),
    diversityState(nullptr),
+   diversityPla(C_EMPTY),
    nonSearchRand(rSeed + string("$nonSearchRand")),
    logger(lg),
    nnEvaluator(nnEval),
@@ -759,6 +761,9 @@ void Search::beginSearch(bool pondering) {
   //If we begin the game with a ponder, then assume that "we" are the opposing side until we see otherwise.
   if(plaThatSearchIsFor == C_EMPTY)
     plaThatSearchIsFor = getOpp(rootPla);
+  //KataGame fork (abscls-e0gz): the player of AZdb's diversity term (diversityPla).
+  const Player lastDiversityPla = diversityPla;
+  diversityPla = diversityMoverIntoRoot != C_EMPTY ? diversityMoverIntoRoot : plaThatSearchIsFor;
 
   if(plaThatSearchIsForLastSearch != plaThatSearchIsFor) {
     //In the case we are doing playoutDoublingAdvantage without a specific player (so, doing the root player)
@@ -770,11 +775,6 @@ void Search::beginSearch(bool pondering) {
     //old probabilities without a lot of new search, so clearing ensures a better distribution.
     if(searchParams.avoidRepeatedPatternUtility != 0 || externalPatternBonusTable != nullptr)
       clearSearch();
-    //KataGame fork (2026-10-29): AZdb's diversity term counts the rewards and the head's returns of the player that
-    //the search is for. A tree of the other player's term has other node constants and values: clear it, as for the
-    //pattern bonus.
-    if(diversityWeight != 0.0)
-      clearSearch();
     //If we have a human SL net and the parameters are different for the different sides, clear the search.
     if(humanEvaluator != NULL) {
       if((searchParams.humanSLPlaExploreProbWeightless != searchParams.humanSLOppExploreProbWeightless) ||
@@ -784,6 +784,11 @@ void Search::beginSearch(bool pondering) {
         clearSearch();
     }
   }
+  //KataGame fork (2026-10-29): AZdb's diversity term counts the rewards and the head's returns of its player P. A tree
+  //of the other player's term has other node constants and values: clear it, as for the pattern bonus. P is the
+  //player that the search is for, except in a check of the root's views (diversityMoverIntoRoot, abscls-e0gz).
+  if(diversityWeight != 0.0 && diversityPla != lastDiversityPla)
+    clearSearch();
   plaThatSearchIsForLastSearch = plaThatSearchIsFor;
   //cout << "BEGINSEARCH " << PlayerIO::playerToString(rootPla) << " " << PlayerIO::playerToString(plaThatSearchIsFor) << endl;
 
@@ -822,9 +827,12 @@ void Search::beginSearch(bool pondering) {
 
   //KataGame fork (2026-10-29): D counts P's moves from the root, so the root has no reward of its own. A root
   //promoted from a child (makeMove) still has the child's reward, and the recomputation below takes it out of its
-  //stats.
+  //stats. KataGame fork (abscls-e0gz): a search that continues P's search below P's move into its root
+  //(diversityMoverIntoRoot) gives its root that move's reward, as P's search gives it to the move's node.
+  const double rootDiversityReward =
+    diversityWeight != 0.0 && diversityMoverIntoRoot != C_EMPTY ? computeDiversityRewardOfMove(rootBoard) : 0.0;
   if(rootNode != NULL)
-    rootNode->diversityReward = 0.0;
+    rootNode->diversityReward = rootDiversityReward;
 
   if(searchParams.rootSymmetryPruning) {
     const std::vector<int>& avoidMoveUntilByLoc = rootPla == P_BLACK ? avoidMoveUntilByLocBlack : avoidMoveUntilByLocWhite;
@@ -866,6 +874,7 @@ void Search::beginSearch(bool pondering) {
     //Also force that it is non-terminal.
     const bool forceNonTerminal = rootHistory.isGameFinished; // Make sure the root isn't considered terminal if game would be finished.
     rootNode = new SearchNode(rootPla, forceNonTerminal, createMutexIdxForNode(dummyThread), rootGraphHash);
+    rootNode->diversityReward = rootDiversityReward;  //KataGame fork (abscls-e0gz): above
     if(searchParams.useEvalCache && searchParams.useGraphSearch && evalCache != nullptr && mirroringPla == C_EMPTY)
       rootNode->evalCacheEntry = evalCache->find(getEvalCacheKey(rootNode->graphHash));
   }

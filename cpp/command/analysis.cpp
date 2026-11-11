@@ -1481,14 +1481,6 @@ int MainCmds::analysis(const vector<string>& args) {
           reportErrorForId(rbase.id, conflict, string("Does not combine with rootViews"));
           continue;
         }
-        //KataGame fork: AZdb's members. A check of the root's views searches the next position for its player to move,
-        //so the diversity term of a member 1 to 4 there would be that player's, without the member's own move.
-        if(GameInterface::hasViews<GameRules>() && Search::resolveDiversityWeight(rbase.params) != 0.0) {
-          reportErrorForId(rbase.id, "rootViews", "Does not combine with the diversity term of diversityMember " +
-                           Global::intToString(rbase.params.diversityMember) + ": a check of the root's views searches "
-                           "for the next player to move, not for the member's player. Set rootViews to false");
-          continue;
-        }
       }
 
       Board board(boardXSize,boardYSize);

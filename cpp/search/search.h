@@ -149,6 +149,12 @@ struct Search {
   //KataGame fork: the centre that the next searches take in place of their root's (computeRootValues), or NAN for the
   //root's. The analysis engine's root views give their searches one centre, so that their utilities have one scale.
   double fixedScoreCenter;
+  //KataGame fork (abscls-e0gz): P, when the next searches continue P's search below a move of P into their root, as a
+  //check of the root's views searches a candidate's child (RootViews::Searches::done sets it). AZdb's diversity term is
+  //then P's, whoever moves at the root (diversityPla), and the root's reward is that move's, as P's search gives it to
+  //the move's node (computeDiversityRewardOfMove). C_EMPTY (the default): the term is plaThatSearchIsFor's, and the
+  //root has no reward. setPosition keeps it, as it keeps fixedScoreCenter. Without the term, it changes nothing.
+  Player diversityMoverIntoRoot;
 
   //If the opponent is mirroring, then the color of that opponent, for countering mirroring
   Player mirroringPla;
@@ -190,15 +196,17 @@ struct Search {
 
   //KataGame fork (2026-10-29): AZdb's diversity term (the engine repository's
   //games/blueprints/docs/research/diversity-players.md, "The search"). A search of member i >= 1, whose player P is
-  //plaThatSearchIsFor, adds w s_P D to each node's utility: D is member i's intrinsic return, the rewards of P's moves
+  //diversityPla, adds w s_P D to each node's utility: D is member i's intrinsic return, the rewards of P's moves
   //from the root to the node (SearchNode::diversityReward), then the head's return of P after the node, output A where
   //P moves and output B where the opponent moves (0 at the game's end). The opponent minimizes the same utility.
   //diversityWeight: w = (1 - λ) / λ, resolved from the params at the start of each search (resolveDiversityWeight).
   //0 for member 0, and then the search is KataGo's and computes no reward, no D and reads no head. diversityState:
   //the game's copy of the members' state, from which the rewards come (setDiversityState). The win-loss and score
-  //values of the nodes stay KataGo's.
+  //values of the nodes stay KataGo's. diversityPla: P, resolved at the start of each search, as w is:
+  //plaThatSearchIsFor, or diversityMoverIntoRoot when it is set (abscls-e0gz).
   double diversityWeight;
   std::shared_ptr<const AZdb::State<GameEncoding>> diversityState;
+  Player diversityPla;
 
   Rand nonSearchRand; //only for use not in search, since rand isn't threadsafe
 
@@ -550,6 +558,9 @@ private:
   //caller checks diversityWeight first, so that a search with w = 0 runs KataGo's lines only.
   double getDiversityHeadUtility(const NNOutput& nnOutput, Player nextPla) const;
   double computeDiversityReward(const Board& board, const BoardHistory& hist) const;
+  //KataGame fork (abscls-e0gz): the reward of a move of P that gave board's position, whatever the history holds (a
+  //check of the root's views can start its history at its root): the node constant of that move's node.
+  double computeDiversityRewardOfMove(const Board& board) const;
 
   //----------------------------------------------------------------------------------------
   // Miscellaneous search biasing helpers, root move selection, etc.

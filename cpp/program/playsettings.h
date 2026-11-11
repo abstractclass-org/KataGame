@@ -113,10 +113,10 @@ struct PlaySettings {
   //best value of its child for the player to move (the passes share the first pass's score centre), unless
   //rootViewsCheapPasses gives the passes fewer visits (below). A cheap search
   //splits its limits as the analysis engine's rootViews does (rootViewsPassShare, rootViewsCandidates and
-  //rootViewsFinalists, with the analysis engine's defaults), but for a player with a diversity term (AZdb's members 1
-  //to 4): its passes take the limits between them, with no checks, as a check searches for the next player to move. The
-  //move then lies in the view of the pass that gave it, and so do the turn's policy target and row: the game keeps the
-  //view of each move (FinishedGameData::moveViews). Off by default. It does not combine with useReanalyze.
+  //rootViewsFinalists, with the analysis engine's defaults), for every player: a check keeps the root mover's diversity
+  //term (AZdb's members 1 to 4) and counts its candidate's reward (abscls-e0gz). The move then lies in the view of the
+  //pass that gave it, and so do the turn's policy target and row: the game keeps the view of each move
+  //(FinishedGameData::moveViews). Off by default. It does not combine with useReanalyze.
   bool rootViews;
   double rootViewsPassShare;
   int rootViewsCandidates;

@@ -200,7 +200,8 @@ struct SearchNode {
   Hash128 patternBonusHash;
   //KataGame fork (2026-10-29): AZdb's reward of the move into this node, as a utility (w s_P r, White positive), a
   //node constant that the node's own utility adds once (Search::computeDiversityReward). 0 unless the search has the
-  //diversity term, and 0 at the root.
+  //diversity term, and 0 at the root, except at the root of a check of the root's views, which has its candidate's
+  //(Search::diversityMoverIntoRoot, abscls-e0gz).
   double diversityReward;
   const uint32_t mutexIdx; // For lookup into mutex pool
 

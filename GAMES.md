@@ -49,7 +49,7 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/tests/enclosure/testcheapsearch.cpp` | Self-play's full and cheap searches (`play.cpp`'s `GameRunner`), for the build's game: the share of full searches among the actions that draw one, with `cheapSearchPerMove`, the search of an action that continues a move, and with `cheapSearchPerTurn`, the search of an action in the turn of the action before it. |
 | `cpp/tests/enclosure/testselfplayviews.cpp` | Self-play's search of the root's views (`PlaySettings::rootViews`), for a game with views: each move in its view, the replay, the full searches' visits, `view_action`, RGSC's played entries, the rows and records for `check_rows.py --records`, and the passes of a full search with `rootViewsCheapPasses`. |
 | `cpp/tests/enclosure/testdiversityinputs.cpp` | AZdb's latent in the network's inputs and cache, for any game: member 0 keeps the cache's hash of an evaluation without a member and the members' hashes differ, the rows of V14 are V13's with the member's one-hot after V13's global inputs (the float rows and the packed rows at each allowed symmetry), the rows of V13 do not read the member, and the training rows have 80 global targets before V14 and 84 in its rows. |
-| `cpp/tests/enclosure/testdiversitysearch.cpp` | AZdb's diversity term in the search, for a build's game that gives AZdb's statistics (Blueprints): member 0's search against KataGo's, D on chains, a transposition, the member's choice by its reward, each member's evaluations, the refusals and the tree's clear. |
+| `cpp/tests/enclosure/testdiversitysearch.cpp` | AZdb's diversity term in the search, for a build's game that gives AZdb's statistics (Blueprints): member 0's search against KataGo's, D on chains, a transposition, the member's choice by its reward, each member's evaluations, the refusals, the tree's clear, and the checks of the root's views with the member's term (abscls-e0gz). |
 | `cpp/tests/enclosure/testkomi.cpp` | Komi through the front, for the build's game: the result and the value targets at komis that decide a game, the global inputs at the history's komi, the even-komi search's bracket (an optional member of the encoding part) against KataGo's code and each game's pinned bracket, the two rules where the win-loss value keeps its sign up to the limit (no even komi, or KataGo's bracket end), each game's pinned lead step, and a self-play config's komi draws. |
 
 All members are static, and every file is a header. So the compiler sees the same code as in a build for one game, and
@@ -387,6 +387,12 @@ search takes its share of the clock's time for the move, and a move that the pos
 `MOVE/VIEW`.
 `Search::fixedScoreCenter` gives these searches one centre of the score utility in place of each root's centre
 (`computeRootValues`). Outside them it is `NAN`, and each search takes its root's centre, as in KataGo.
+A check continues the root mover's search below its candidate's move. With AZdb's diversity term (members 1 to 4), the
+search of the check's child counts the root mover's term, though the next player moves there, and gives its root the
+reward of the candidate's move (`Search::diversityMoverIntoRoot`, which `RootViews::Searches::done` sets before each
+check). The node of that move in a pass has the same reward, from the same position and mover, so the check's value
+and the passes' values of the move are on one term. Outside the checks the setting is `C_EMPTY`: the term is
+`plaThatSearchIsFor`'s, and the root has no reward.
 
 **In self-play** (`PlaySettings::rootViews` and `play.cpp`, with the engine repository's `games/blueprints/README.md`,
 "In self-play"), off unless a config sets `rootViews`, each searched position (the game's and a side position's)
@@ -402,9 +408,8 @@ and its row). When a pass would search as much as the action (a search stops at 
 reaches), the passes take the whole of the action's limits. The setting needs `rootViews`. The cheap searches, a cover
 of one view and the side positions do not change, and AZdb's members 1 to 4 take the same rule in their full searches. A
 cheap search splits its limits as the analysis engine does (`rootViewsPassShare`, `rootViewsCandidates` and
-`rootViewsFinalists`), but for a player with a diversity term (AZdb's members 1 to 4): its passes share the limits, with
-no checks, as a check searches for the next player to move. A cheap search's move is the analysis engine's choice, with
-no temperature. RGSC's tree candidate at a root in a set view (`Rgsc::TreeTracker`) is that state in the rules' view, as
+`rootViewsFinalists`), for AZdb's members 1 to 4 too. A cheap search's move is the analysis engine's choice, with no
+temperature. RGSC's tree candidate at a root in a set view (`Rgsc::TreeTracker`) is that state in the rules' view, as
 the state's text leaves the view out and the hash keys it. The game names each move in the view of the search that gave
 it (`FinishedGameData::moveViews`), so the turn's policy target and its row are in that view, and the records write such
 a move as `MOVE/VIEW`. The bots' history starts again after a move in a view (`RootViews::restartHistory`), as GTP's
@@ -420,7 +425,8 @@ loops whose cover has more than one view, full and cheap, and the moves in anoth
 with more than one view").
 
 `RootViews::Searches` holds the passes and the checks one at a time, for a caller that runs each search. `next()`
-gives each search's root and its share of the limits. `done()` takes the search at its end. `result()` gives the
+gives each search's root and its share of the limits. `done()` takes the search at its end, finds the next search and
+sets the search's `diversityMoverIntoRoot` for it. `result()` gives the
 response at any time, also with a search that has not ended. `RootViews::search` runs them on an `AsyncBot` (the
 analysis engine and GTP). Blueprints' engine protocol (`command/blueprintsprotocol.cpp`) runs them in its slices,
 with the manual interface of `Search`, so a reply during the search gives the candidates so far.
@@ -617,11 +623,12 @@ member `Diversity` (above). A game without it gives every member the reward 0.
   Self-play gives each row the member of its player's search.
 - **The search** of member i ≥ 1 (the settings `diversityMember` and `diversityLambda`, λ, 0.9 by default) adds
   w s_P D to each node's utility, with w = (1 − λ) / λ (`Search::diversityWeight`) and P the player that the search is
-  for. D is member i's intrinsic return: the rewards of P's moves from the root to the node, then output A where P
-  moves at the node and output B where the opponent moves, 0 at the game's end. The opponent minimizes the same
-  utility. A move's reward is a node constant (`SearchNode::diversityReward`), from the rows' code
-  (`AZdb::State::phiOfMove`) when the search creates the node. Each node adds it once to its average, as KataGo adds a
-  pattern bonus, so a node that two paths share has one value. The root has no reward. The win-loss and score values
+  for (`Search::diversityPla`: in a check of the root's views, the root's mover). D is member i's intrinsic return:
+  the rewards of P's moves from the root to the node, then output A where P moves at the node and output B where the
+  opponent moves, 0 at the game's end. The opponent minimizes the same utility. A move's reward is a node constant
+  (`SearchNode::diversityReward`), from the rows' code (`AZdb::State::phiOfMove`) when the search creates the node. Each node adds it once to its average, as KataGo adds a
+  pattern bonus, so a node that two paths share has one value. The root has no reward, except the root of a check of
+  the root's views, which has its candidate's (`Search::diversityMoverIntoRoot`). The win-loss and score values
   stay KataGo's. Every evaluation of the search reads member i's latent. Member 0, or λ = 1, gives w = 0: the search
   is KataGo's, with no reward, no D and no read of the head. With w > 0 the search refuses to start in four cases: a
   model without the head, a backend that does not compute it (`NeuralNet::computesIntrinsicHead`), no copy of the

@@ -1470,22 +1470,21 @@ static double passValue(const Search* bot, Player pla) {
 //turn takes the search whose move the action plays, turnBoard its root. Returns whether bot still holds that search's
 //tree. record, when not NULL, takes each search of a root in a view of the cover (a pass) as it ends.
 //- One view: the search in that view, with the action's limits.
-//- More views, in a full search, or in a cheap search of a player with a diversity term (AZdb's members 1 to 4): a
-//  pass for each view of the cover, with the whole of the action's limits in a full search and an even share of them
-//  in a cheap one. The move is the move of the pass whose most visited move has the best value of its child for the
-//  player to move (passValue, the first such pass), chosen within that pass as self-play chooses (the temperature over
-//  its visits). Every pass searches for the same player, with the same diversity term, and a move's reward is a
-//  constant of its child, the same position from every view. The passes take the first pass's score centre.
+//- More views, in a full search: a pass for each view of the cover, with the whole of the action's limits. The move is
+//  the move of the pass whose most visited move has the best value of its child for the player to move (passValue,
+//  the first such pass), chosen within that pass as self-play chooses (the temperature over its visits). Every pass
+//  searches for the same player, with the same diversity term, and a move's reward is a constant of its child, the
+//  same position from every view. The passes take the first pass's score centre.
 //- More views, in a full search of the game with PlaySettings::rootViewsCheapPasses (abscls-lne9): the passes as above,
 //  each with the action's limits at most at the visits and playouts of the action's cheap search
 //  (SearchLimitsThisMove::numCheapVisits). The best pass gives the view only: the bot searches the root in that view
 //  again from a new tree, with the whole of the action's limits, at the passes' score centre, and the turn takes that
 //  search. When a pass would search as much as the action (the fewer of their visits and playouts), the passes take
 //  the whole of the action's limits, as above.
-//- More views, in a cheap search otherwise: the analysis engine's split (RootViews::Searches), passes then checks with
-//  shares of the action's limits. A check searches the next position for its player to move, so a diversity term
-//  would be that player's (abscls-e0gz): the cheap searches with a term take the passes above. The move is the
-//  search's choice, named in the view of the pass that gave it, and the turn takes that pass.
+//- More views, in a cheap search: the analysis engine's split (RootViews::Searches), passes then checks with shares of
+//  the action's limits, for every player, AZdb's members 1 to 4 too: a check keeps the root mover's diversity term and
+//  counts its candidate's reward (abscls-e0gz). The move is the search's choice, named in the view of the pass that
+//  gave it, and the turn takes that pass.
 static bool searchRootViews(
   Search* bot, const Board& board, const BoardHistory& hist, Player pla, const vector<string>& views,
   const PlaySettings& playSettings, const SearchLimitsThisMove* limits,
@@ -1521,7 +1520,7 @@ static bool searchRootViews(
   }
 
   const bool cheap = limits != NULL && limits->isCheapSearch;
-  if(!cheap || Search::resolveDiversityWeight(bot->searchParams) != 0.0) {
+  if(!cheap) {
     SearchLimitsThisMove passLimits = cheap ? shareOfLimits(*limits, 1.0 / numViews) : SearchLimitsThisMove();
     //KataGame fork (abscls-lne9): rootViewsCheapPasses. A full search's limits hold its visits and playouts in
     //numAlterVisits and numAlterPlayouts, altered or not (getSearchLimitsThisMove).

@@ -18,8 +18,11 @@
 //candidate (the same child position). The candidates with the best child values from the root mover's side then get a
 //search of their child position each (a check), with the rest of the visits, and the move is the check with the best
 //value. The passes and the checks take the first pass's score centre, so that their utilities have one scale. Their
-//visits are not compared. When no pass finds a candidate (abscls-csmy: a pass of 1 visit searches its root only), the
-//move is the best legal move of the first pass's root by the network's policy, with no check. The analysis engine's
+//visits are not compared. A check continues the root mover's search below its candidate's move: with AZdb's diversity
+//term, the term stays the root mover's, and the check's root has the move's reward (abscls-e0gz), so that the checks'
+//values and the passes' values of a move are one value. When no pass finds a candidate (abscls-csmy: a pass of 1 visit
+//searches its root only), the move is the best legal move of the first pass's root by the network's policy, with no
+//check. The analysis engine's
 //rootViews (command/analysis.cpp), GTP's genmove (command/gtp.cpp) and Blueprints' engine protocol
 //(command/blueprintsprotocol.cpp) all search so.
 namespace RootViews {
@@ -91,8 +94,11 @@ namespace RootViews {
     double share() const { return share_; }
     //The search that next() gave, at its end: its analysis, and chosen, the move that it chose (genMoveSynchronous),
     //which a cover of one view gives as the choice. After the first pass of more views, every later search keeps its
-    //score centre (Search::fixedScoreCenter): the caller sets it back to NAN after the last. False when the search
-    //gave no analysis.
+    //score centre (Search::fixedScoreCenter): the caller sets it back to NAN after the last. KataGame fork
+    //(abscls-e0gz): done() also finds the next search, and sets the search for it: a check takes the root mover's
+    //diversity term and its candidate's reward (Search::diversityMoverIntoRoot = the root's player), a pass and the end
+    //of the searches take neither (C_EMPTY). A caller that stops before the end sets it back to C_EMPTY. False when
+    //the search gave no analysis.
     bool done(Search& search, Loc chosen);
     //The response, the analysis engine's, and the chosen move, from the searches done and from running, the search
     //that next() gave, as it is now (nullptr: none): a reply during the search, or the best check or pass so far when
@@ -123,6 +129,9 @@ namespace RootViews {
       int numSearches = 0;
       int64_t totalVisits = 0;
     };
+    //The search after the ones that next() gave: its root in board_, hist_ and pla_, its share in share_, and its
+    //index in upcoming_ (-1: none).
+    void prepareNext();
     void record(Results& results, const Search& search, nlohmann::json& out, Loc chosen) const;
     bool respond(const Results& results, nlohmann::json& ret, Choice& choice) const;
     Loc ownMove(const Hash128& child) const;
@@ -141,6 +150,8 @@ namespace RootViews {
     size_t numFinalists_ = 0;  //the first ones of order_ get a check
     int nextSearch_ = 0;  //the passes 0 to views_.size() - 1, then views_.size() + each finalist
     int current_ = -1;  //the search that next() gave and done() did not take yet, or -1
+    int upcoming_ = -1;  //the search that prepareNext() found, or -1
+    bool prepared_ = false;  //done() found the next search, which next() then gives
     Board board_;
     BoardHistory hist_;
     Player pla_ = C_EMPTY;

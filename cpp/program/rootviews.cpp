@@ -157,19 +157,28 @@ RootViews::Searches::Searches(
 }
 
 bool RootViews::Searches::next() {
-  current_ = -1;
+  if(!prepared_)
+    prepareNext();
+  prepared_ = false;
+  current_ = upcoming_;
+  upcoming_ = -1;
+  return current_ >= 0;
+}
+
+void RootViews::Searches::prepareNext() {
+  upcoming_ = -1;
   const int numViews = (int)views_.size();
   if(nextSearch_ < numViews) {
     //A pass: the root in one view, with an even share of the passes' share (one view: the whole budget).
-    current_ = nextSearch_++;
-    board_ = boards_[current_];
+    upcoming_ = nextSearch_++;
+    board_ = boards_[upcoming_];
     hist_ = rootHist_;
     pla_ = rootPla_;
     share_ = numViews == 1 ? 1.0 : settings_.passShare / numViews;
-    return true;
+    return;
   }
   if(numViews == 1 || results_.candidates.empty())
-    return false;
+    return;
   //The checks of the finalists, the candidates with the best values of the passes: a search of each one's child
   //position.
   if(order_.empty()) {
@@ -197,10 +206,9 @@ bool RootViews::Searches::next() {
       restartHistory(board_, hist_);
     pla_ = hist_.presumedNextMovePla;
     share_ = (1.0 - settings_.passShare) / numFinalists_;
-    current_ = numViews + f;
-    return true;
+    upcoming_ = numViews + f;
+    return;
   }
-  return false;
 }
 
 bool RootViews::Searches::done(Search& search, Loc chosen) {
@@ -213,7 +221,17 @@ bool RootViews::Searches::done(Search& search, Loc chosen) {
     record(results_, search, out, chosen);
   }
   current_ = -1;
-  return suc;
+  if(!suc) {
+    search.diversityMoverIntoRoot = C_EMPTY;
+    return false;
+  }
+  //The next search, so that the search takes its setting of the diversity term (abscls-e0gz). A check continues the
+  //root mover's search below its candidate's move: its term is the root mover's, and its root has the move's reward,
+  //so that its value compares with the passes' values of the move. A pass, and the end of the searches, take neither.
+  prepareNext();
+  prepared_ = true;
+  search.diversityMoverIntoRoot = upcoming_ >= (int)views_.size() ? rootPla_ : C_EMPTY;
+  return true;
 }
 
 bool RootViews::Searches::result(json& ret, Choice& choice, const Search* running) const {
@@ -440,9 +458,13 @@ bool RootViews::search(
   //Each search, with its share of the limits (genMoveSynchronous's searchFactor): the first takes onSearchBegun, and a
   //later one stops at once when stopped() is true.
   Search* search = bot->getSearchStopAndWait();
+  //At the end, also when a search stops: the searches' score centre and the checks' diversity term (Searches::done).
   struct CenterReset {
     Search* search;
-    ~CenterReset() { search->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN(); }
+    ~CenterReset() {
+      search->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN();
+      search->diversityMoverIntoRoot = C_EMPTY;
+    }
   } centerReset{search};
   auto isStopped = [&stopped]() noexcept {
     return stopped && stopped();

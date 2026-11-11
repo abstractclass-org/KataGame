@@ -323,22 +323,29 @@ double Search::getUtilityFromNN(const NNOutput& nnOutput, Player nextPla) const 
 //So output A is P's return where P moves, and output B where the opponent moves.
 double Search::getDiversityHeadUtility(const NNOutput& nnOutput, Player nextPla) const {
   assert(diversityWeight != 0.0 && nnOutput.hasIntrinsic);
-  const double headReturn = nextPla == plaThatSearchIsFor ? nnOutput.intrinsicA : nnOutput.intrinsicB;
-  return (plaThatSearchIsFor == P_WHITE ? diversityWeight : -diversityWeight) * headReturn;
+  const double headReturn = nextPla == diversityPla ? nnOutput.intrinsicA : nnOutput.intrinsicB;
+  return (diversityPla == P_WHITE ? diversityWeight : -diversityWeight) * headReturn;
 }
 
 //The rows' reward of the same move (AZdb::State::phiOfMove, as rowTargets), from P's side as the search's member.
 //The opponent's moves have no reward.
 double Search::computeDiversityReward(const Board& board, const BoardHistory& hist) const {
   assert(diversityWeight != 0.0 && diversityState != nullptr);
-  if(hist.moveHistory.empty() || hist.moveHistory.back().pla != plaThatSearchIsFor)
+  if(hist.moveHistory.empty() || hist.moveHistory.back().pla != diversityPla)
     return 0.0;
+  return computeDiversityRewardOfMove(board);
+}
+
+//The reward reads only the position after the move and its mover, P: a move that continues (a pick that waits for its
+//drop) has none.
+double Search::computeDiversityRewardOfMove(const Board& board) const {
+  assert(diversityWeight != 0.0 && diversityState != nullptr);
   using State = AZdb::State<GameEncoding>;
   std::array<double, State::N> x, phi;
-  if(!diversityState->phiOfMove(board.pos, Board::indexOfPlayer(plaThatSearchIsFor), x.data(), phi.data()))
+  if(!diversityState->phiOfMove(board.pos, Board::indexOfPlayer(diversityPla), x.data(), phi.data()))
     return 0.0;
   const double reward = diversityState->reward(searchParams.diversityMember, phi.data());
-  return (plaThatSearchIsFor == P_WHITE ? diversityWeight : -diversityWeight) * reward;
+  return (diversityPla == P_WHITE ? diversityWeight : -diversityWeight) * reward;
 }
 
 void Search::checkDiversitySetup(const SearchParams& params, const NNEvaluator* nnEval, bool hasState) {

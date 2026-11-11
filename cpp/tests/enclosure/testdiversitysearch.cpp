@@ -20,20 +20,30 @@
 //     the node constant is w s_P times the reward of the move into it, and the values are finite;
 //   - the reward's scale k = 100 (State's rewardScale) multiplies the rows' rewards and targets (AZdb::rowTargets) and
 //     the search's node rewards alike: k times those of k = 1. On a chain, D holds with the scaled rewards;
-//   - the refusals (no state, a model without the head, the eval cache), and the tree's clear when P changes.
+//   - the refusals (no state, a model without the head, the eval cache), and the tree's clear when P changes;
+//   - the checks of the root's views (abscls-e0gz). On chains, a search of a candidate's child that continues P's
+//     search (Search::diversityMoverIntoRoot) has the tree, the reward and the value of the candidate's node in P's
+//     search, both where the opponent moves next and where P moves again. Without the setting (the checks before), the
+//     value differs. With RootViews::Searches on the positions of POSITIONS, whose covers have several views: done()
+//     sets the setting for the checks only, a check's root has its candidate's reward and P's term, a check of 1 visit
+//     has the value of its candidate's node of 1 visit in a pass and the value of the term's formula, and the end of
+//     the searches leaves the setting off. RootViews::search (the analysis engine's) answers with checks, and leaves
+//     the setting off at its end and when it stops during a check.
 //
-//   testdiversitysearch MODEL MODEL_WITHOUT_HEAD
+//   testdiversitysearch MODEL MODEL_WITHOUT_HEAD [POSITIONS]
 //
 // MODEL is a network of the build's game of the inputs version 14 with the intrinsic value head, and
 // MODEL_WITHOUT_HEAD one of the same version without it. Random networks do (python/enclosure_nn_check.py make
-// -game GAME -inputs-version 14 [-intrinsic-head], then export_model_pytorch.py). The test builds with
-// tests/enclosure/build.sh BUILD_DIR, with TESTS=testdiversitysearch, on a backend that computes the head (Eigen or
-// CUDA). Its positions come from random games with fixed seeds, and each search runs on one thread. Exit code 0 when
-// every check holds.
+// -game GAME -inputs-version 14 [-intrinsic-head], then export_model_pytorch.py). POSITIONS is a file of positions as
+// testrootviews reads them, by default tests/data/blueprints_root_views.txt (the test runs from katagame/cpp). The test
+// builds with tests/enclosure/build.sh BUILD_DIR, with TESTS=testdiversitysearch, on a backend that computes the head
+// (Eigen or CUDA). Its other positions come from random games with fixed seeds, and each search runs on one thread.
+// Exit code 0 when every check holds.
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
@@ -42,12 +52,15 @@
 #include <vector>
 
 #include "../../core/config_parser.h"
+#include "../../core/global.h"
 #include "../../core/logger.h"
 #include "../../core/rand.h"
 #include "../../core/test.h"
 #include "../../game/graphhash.h"
 #include "../../neuralnet/nneval.h"
 #include "../../program/azdb.h"
+#include "../../program/rootviews.h"
+#include "../../search/asyncbot.h"
 #include "../../search/search.h"
 #include "../../search/searchnode.h"
 
@@ -499,11 +512,177 @@ static double nnUtility(NNEvaluator* nnEval, Logger& logger, const Position& p, 
   return utilityOf(*runSearch(nnEval, logger, params(1, member, 1.0), p, nullptr)->rootNode);
 }
 
+//The member's reward of a move of P that gave the position after, whatever the history holds, as the search counts it
+//(Search::computeDiversityRewardOfMove): 0 for a move that continues.
+static double moveRewardFor(const State& state, int member, const Board& after, Player P) {
+  vector<double> x(State::N), phi(State::N);
+  if(!state.phiOfMove(after.pos, Board::indexOfPlayer(P), x.data(), phi.data()))
+    return 0.0;
+  return state.reward(member, phi.data());
+}
+
+//The child position of the move loc on board, by its hash: the same position whatever view named the move.
+static Hash128 childHash(const Board& board, Loc loc) {
+  GameRules::Position p = board.pos;
+  GameRules::play(p, Board::actionOfMoveLoc(loc));
+  return GameRules::hash(p);
+}
+
+//A check of the root's views on a chain (abscls-e0gz): line[0] is a root of P, line[1] the child of its candidate move
+//m, and the nodes below form a chain (chainBelow). A pass at line[0] that may play only the chain gives m's node. A
+//check is a search of line[1] that continues P's search (Search::diversityMoverIntoRoot = P), on the chain below and
+//with the node's visits: its tree is the node's subtree, node by node, so its root has the node's reward and value.
+//The search of line[1] without the setting (the checks before) counts its player's term and no reward at its root: its
+//value differs where the opponent moves next, or where m has a reward. Adds the chain to opponentNext or playerNext.
+static void chainCheckTest(
+  NNEvaluator* nnEval, Logger& logger, const vector<Position>& line, int member, double lambda,
+  const shared_ptr<const State>& state, int64_t visits, const string& label, int& opponentNext, int& playerNext
+) {
+  const Player P = line[0].pla();
+  unique_ptr<Search> pass =
+    runSearch(nnEval, logger, params(visits, member, lambda), line[0], state, onlyMoves(chainMoves(line)));
+  const vector<Child> c = childrenOf(*pass->rootNode);
+  if(c.size() != 1 || c[0].loc != line[1].lastLoc()) {
+    check(false, label + ": the pass's one child");
+    return;
+  }
+  const SearchNode& node = *c[0].node;
+  const vector<int> until = onlyMoves(chainMoves(lineOf(line, 1)));
+  const SearchParams p = params(visitsOf(node), member, lambda);
+  unique_ptr<Search> checked = newSearch(nnEval, logger, p, line[1], state, until);
+  checked->diversityMoverIntoRoot = P;
+  checked->runWholeSearch(line[1].pla());
+  const SearchNode& root = *checked->rootNode;
+  check(pass->diversityPla == P && checked->diversityPla == P, label + ": P's term in the pass and in the check");
+  //The two chains, node by node, from m's node and from the check's root.
+  const SearchNode* a = &node;
+  const SearchNode* b = &root;
+  for(int depth = 0; a != NULL && b != NULL; depth++) {
+    check(visitsOf(*a) == visitsOf(*b) && a->diversityReward == b->diversityReward &&
+            near(utilityOf(*a), utilityOf(*b)),
+          where(label + ": the check's chain is the pass's, at", depth));
+    const vector<Child> ca = childrenOf(*a), cb = childrenOf(*b);
+    const bool one = ca.size() == 1 && cb.size() == 1 && ca[0].loc == cb[0].loc;
+    check(one || (ca.empty() && cb.empty()), where(label + ": one child or none in both, at", depth));
+    a = one ? ca[0].node : NULL;
+    b = one ? cb[0].node : NULL;
+  }
+  const double reward = signedWeight(P, lambda) * moveRewardFor(*state, member, line[1].board, P);
+  check(near(node.diversityReward, reward) && root.diversityReward == node.diversityReward,
+        label + ": the check's root has m's reward");
+  check(near(utilityOf(root), utilityOf(node)), label + ": the check's value is m's value in the pass (" +
+        Global::doubleToString(utilityOf(root)) + " vs " + Global::doubleToString(utilityOf(node)) + ")");
+  unique_ptr<Search> before = runSearch(nnEval, logger, p, line[1], state, until);
+  const bool opponent = line[1].pla() != P;
+  check(before->diversityPla == line[1].pla() && before->rootNode->diversityReward == 0.0,
+        label + ": without the setting, the term of the player to move and no reward at the root");
+  if(opponent || node.diversityReward != 0.0)
+    check(!near(utilityOf(*before->rootNode), utilityOf(node)), label + ": without the setting, another value");
+  (opponent ? opponentNext : playerNext)++;
+}
+
+//What the checks of the root's views with RootViews::Searches covered.
+struct ViewCounts {
+  int roots = 0;
+  int passes = 0;
+  int checks = 0;
+  int opponentNext = 0;  //checks where the opponent moves next
+  int compared[2] = {0, 0};  //checks of 1 visit compared with their candidate's node of 1 visit: P next, opponent next
+  int differ = 0;  //such checks with another value, without the setting
+};
+
+//The searches of the root's views at p, a root of P whose cover has several views, as RootViews::Searches gives them,
+//with the manual interface of Search: each pass of 4 visits, each check of 1. With the setting (withSetting), each
+//search begins with done()'s setting: off for the passes, P for the checks. A check's root then has P's term and its
+//candidate's reward, and its value of 1 visit is KataGo's utility of its evaluation plus w s_P times the reward and
+//P's head return there (output A where P moves, B where the opponent moves). Its candidate's node of 1 visit in a
+//pass has the same value. Without it (the checks before), the checks are counted where their value differs. The
+//setting is off after the last search.
+static void searchesTest(
+  NNEvaluator* nnEval, Logger& logger, const Position& p, int member, double lambda,
+  const shared_ptr<const State>& state, bool withSetting, const string& label, ViewCounts& counts
+) {
+  const Player P = p.pla();
+  const double wP = signedWeight(P, lambda);
+  const vector<string> views = RootViews::cover(p.board);
+  Search search(params(1, member, lambda), nnEval, &logger, "testdiversitysearch " + label);
+  search.setDiversityState(state);
+  RootViews::Searches searches(p.board, p.hist, P, views, RootViews::Settings(), RootViews::Report());
+  //Each pass's root children by their child positions: their visits, rewards and values.
+  struct Seen {
+    int64_t visits;
+    double reward;
+    double utility;
+  };
+  map<Hash128, Seen> passChildren;
+  int n = 0;
+  for(; searches.next(); n++) {
+    const bool isCheck = n >= (int)views.size();
+    check(search.diversityMoverIntoRoot == (isCheck ? P : C_EMPTY), label + ": done()'s setting for the next search");
+    if(!withSetting)
+      search.diversityMoverIntoRoot = C_EMPTY;
+    search.setPosition(searches.pla(), searches.board(), searches.hist());
+    search.beginSearch(false);
+    {
+      SearchThread thread(0, search);
+      const int64_t limit = isCheck ? 1 : 4;
+      int64_t done = search.getRootVisits();
+      while(done < limit)
+        if(search.runSinglePlayout(thread, double(limit - done)))
+          done++;
+      search.endManualSearch(thread);
+    }
+    const SearchNode& root = *search.rootNode;
+    if(!isCheck) {
+      counts.passes++;
+      check(search.diversityPla == P && root.diversityReward == 0.0,
+            label + ": a pass of P's term, no reward at its root");
+      for(const Child& c: childrenOf(root))
+        passChildren[childHash(searches.board(), c.loc)] = {visitsOf(*c.node), c.node->diversityReward,
+                                                           utilityOf(*c.node)};
+    }
+    else {
+      counts.checks++;
+      const bool opponent = searches.pla() != P;
+      counts.opponentNext += opponent ? 1 : 0;
+      const auto seen = passChildren.find(GameRules::hash(searches.board().pos));
+      check(seen != passChildren.end(), label + ": a check's root is a child of a pass");
+      const bool comparable = seen != passChildren.end() && seen->second.visits == 1 && visitsOf(root) == 1;
+      if(withSetting) {
+        const double reward = wP * moveRewardFor(*state, member, searches.board(), P);
+        check(search.diversityPla == P, label + ": a check of P's term");
+        check(near(root.diversityReward, reward), label + ": a check's root has its candidate's reward");
+        const NNOutput* out = root.getNNOutput();
+        check(out != NULL && visitsOf(root) == 1, label + ": a check of 1 visit");
+        if(out != NULL) {
+          const double head = opponent ? out->intrinsicB : out->intrinsicA;
+          const double expected = nnUtility(nnEval, logger, Position{searches.board(), searches.hist()}, member) +
+            reward + wP * head;
+          check(near(utilityOf(root), expected), label + ": a check's value of 1 visit, with P's term");
+        }
+        if(comparable) {
+          check(root.diversityReward == seen->second.reward, label + ": the reward of the candidate's node");
+          check(near(utilityOf(root), seen->second.utility), label + ": the value of the candidate's node (" +
+                Global::doubleToString(utilityOf(root)) + " vs " + Global::doubleToString(seen->second.utility) + ")");
+          counts.compared[opponent ? 1 : 0]++;
+        }
+      }
+      else if(comparable && !near(utilityOf(root), seen->second.utility))
+        counts.differ++;
+    }
+    check(searches.done(search, Board::NULL_LOC), label + ": each search gives an analysis");
+  }
+  check(n > (int)views.size(), label + ": checks after the passes");
+  check(search.diversityMoverIntoRoot == C_EMPTY, label + ": the setting is off after the last search");
+  counts.roots++;
+}
+
 int main(int argc, char** argv) {
-  if(argc != 3) {
-    fprintf(stderr, "usage: testdiversitysearch MODEL MODEL_WITHOUT_HEAD\n");
+  if(argc != 3 && argc != 4) {
+    fprintf(stderr, "usage: testdiversitysearch MODEL MODEL_WITHOUT_HEAD [POSITIONS]\n");
     return 2;
   }
+  const string positionsFile = argc == 4 ? argv[3] : "tests/data/blueprints_root_views.txt";
   Board::initHash();
   ScoreValue::initTables();
   NeuralNet::globalInitialize();
@@ -897,6 +1076,91 @@ int main(int argc, char** argv) {
       check(kept >= 1 && cleared, label + ": a move within the turn and a change of P");
     }
     printf("tree: kept within P's turn, cleared when P changes with the term only\n");
+  }
+
+  //The checks of the root's views (abscls-e0gz). On the chain of the game's last 5 actions and its later parts: a check
+  //has the value of its candidate's node in a pass, where the opponent moves next and where P moves again.
+  {
+    int opponentNext = 0, playerNext = 0;
+    for(int from = G - 5; from <= G - 2; from++) {
+      const vector<Position> line = lineOf(game, from);
+      if(chainBelow(line, chainMoves(line)))
+        chainCheckTest(nnEval, logger, line, member, lambda, state, 10,
+                       "a check on the chain from action " + Global::intToString(from), opponentNext, playerNext);
+    }
+    check(opponentNext > 0, "checks on chains: one where the opponent moves next");
+    printf("checks on chains: %d where the opponent moves next and %d where P moves again, each with the tree, the "
+           "reward and the value of its candidate's node in the pass\n", opponentNext, playerNext);
+  }
+
+  //With RootViews::Searches and RootViews::search, at the positions of POSITIONS, whose covers have several views (a
+  //random game's positions have none).
+  {
+    vector<Position> roots;
+    {
+      ifstream in(positionsFile);
+      check((bool)in, "the root's views: POSITIONS can be read (" + positionsFile + ")");
+      string line;
+      while(getline(in, line)) {
+        line = Global::trim(line);
+        if(line.empty() || line[0] == '#')
+          continue;
+        const size_t space = line.find(' ');
+        GameRules::Position p;
+        string why;
+        if(space == string::npos || !GameInterface::parseState<GameRules>(line.substr(space + 1), p, why)) {
+          check(false, "the root's views: a line of POSITIONS is not LABEL STATE: " + why);
+          continue;
+        }
+        Board board;
+        board.setPosition(p);
+        roots.push_back(Position{board, BoardHistory(board, board.nextPla(), Rules(), 0)});
+        check(RootViews::cover(board).size() > 1, "the root's views: a cover of several views");
+      }
+    }
+    check(!roots.empty(), "the root's views: positions whose cover has several views");
+    ViewCounts with, without;
+    for(size_t i = 0; i < roots.size(); i++) {
+      const string label = "the root's views at position " + Global::intToString((int)i);
+      searchesTest(nnEval, logger, roots[i], member, lambda, state, true, label, with);
+      searchesTest(nnEval, logger, roots[i], member, lambda, state, false, label + " without the setting", without);
+    }
+    check(with.compared[0] + with.compared[1] > 0, "the root's views: checks of 1 visit compared");
+    check(without.differ > 0, "the root's views: without the setting, a check's value differs");
+    printf("the root's views: %zu positions, %d passes and %d checks (%d where the opponent moves next); %d checks of "
+           "1 visit have their candidate's value in a pass (%d where the opponent moves next), and %d of them differ "
+           "without the setting\n", roots.size(), with.passes, with.checks, with.opponentNext,
+           with.compared[0] + with.compared[1], with.compared[1], without.differ);
+
+    //RootViews::search (the analysis engine's and GTP's): a response with checks, and the setting off at its end, and
+    //when a check stops (the search stops once the setting is on).
+    if(!roots.empty()) {
+      const Position& p = roots[0];
+      const vector<string> views = RootViews::cover(p.board);
+      AsyncBot bot(params(24, member, lambda), nnEval, &logger, "testdiversitysearch rootviews");
+      bot.setDiversityState(state);
+      Search* search = bot.getSearchStopAndWait();
+      nlohmann::json ret;
+      RootViews::Choice choice;
+      bool suc = RootViews::search(
+        &bot, p.board, p.hist, p.pla(), views, TimeControls(), 1.0, RootViews::Settings(), RootViews::Report(),
+        std::function<void()>(), std::function<bool()>(), ret, choice);
+      check(suc && choice.loc != Board::NULL_LOC && !ret["checks"].empty(), "RootViews::search: a move, with checks");
+      check(search->diversityMoverIntoRoot == C_EMPTY, "RootViews::search: the setting is off at its end");
+      const int numChecks = suc ? (int)ret["checks"].size() : 0;
+      bool stoppedInCheck = false;
+      std::function<bool()> stopped = [&]() noexcept {
+        stoppedInCheck = stoppedInCheck || search->diversityMoverIntoRoot != C_EMPTY;
+        return stoppedInCheck;
+      };
+      suc = RootViews::search(
+        &bot, p.board, p.hist, p.pla(), views, TimeControls(), 1.0, RootViews::Settings(), RootViews::Report(),
+        std::function<void()>(), stopped, ret, choice);
+      check(!suc && stoppedInCheck, "RootViews::search: stopped in a check");
+      check(search->diversityMoverIntoRoot == C_EMPTY, "RootViews::search: the setting is off after a stop");
+      printf("RootViews::search: a move with %d checks, and the setting off at its end and after a stop in a check\n",
+             numChecks);
+    }
   }
 
   delete nnEval;
