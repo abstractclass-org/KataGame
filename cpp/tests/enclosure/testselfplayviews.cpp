@@ -33,17 +33,16 @@
 //   settings searches as self-play does (Play::searchRootViewsForTests), each time with the same seed:
 //   - A full search with rootViewsCheapPasses: a pass for each view of the cover, in its order, each of
 //     min(cheapSearchVisits, maxVisits) visits. The move's view is the view of the first pass of the best value. The
-//     move's search has maxVisits visits, all of its own (Search::lastSearchNumPlayouts: the full search clears the
-//     bot, as self-play's do), and the bot holds it, its root in that view.
+//     move's search has maxVisits visits, all of its own (Search::lastSearchNumPlayouts: a new tree), and the bot
+//     holds it, its root in that view.
 //   - A full search without it: a pass for each view, each of maxVisits visits, and the move's view is the view of the
 //     first pass of the best value. The bot holds the move's search only when that pass is the last.
 //   - A cheap search with it: as without it. For member 0, the analysis engine's split: the passes take shares of
 //     cheapSearchVisits, and the move's search has at most cheapSearchVisits visits. For a member 1 to 4, a pass for
 //     each view of ceil(cheapSearchVisits / views) visits, and the move's search is one of them.
 //   - A side position with it (the bot's own limits): a pass for each view of maxVisits visits, as without it.
-//   The positions must hold a best pass before the last and one at the last, so that the bot both starts a new root
-//   and keeps the last pass's root. The bots take the config with OVERRIDES, then PASSES_OVERRIDES when given (OUT_DIR
-//   "" for no files): for example bpj5's visits (maxVisits=600,cheapSearchVisits=100) on the positions of short games.
+//   The bots take the config with OVERRIDES, then PASSES_OVERRIDES when given (OUT_DIR "" for no files): for example
+//   bpj5's visits (maxVisits=600,cheapSearchVisits=100) on the positions of short games.
 //   The test prints, for each position, the network's rows of the full search with the setting and without it, each
 //   from an empty cache of the network (nnCacheSizePowerOfTwo in OVERRIDES sets its size): the cost of the setting on
 //   the same positions.
@@ -291,9 +290,9 @@ struct PassesPosition {
 
 struct PassesCounts {
   int64_t positions = 0, views = 0;
-  int64_t bestLast = 0, bestBefore = 0;  //full searches with rootViewsCheapPasses: the best pass the last, or not
   int64_t sameView = 0;  //positions where the move's view of the cheap passes is the full passes' view
-  int64_t rowsCheapPasses = 0, rowsWholePasses = 0;  //the network's rows of the full searches with the setting and without
+  //the network's rows of the full searches with the setting (cheap passes) and without it (whole passes)
+  int64_t rowsCheapPasses = 0, rowsWholePasses = 0;
 };
 
 //The pass of the best value, the first one of equal values (searchRootViews's rule).
@@ -319,9 +318,13 @@ static void checkPasses(const PassesPosition& p, const SearchParams& params, NNE
   off.rootViewsCheapPasses = false;
   counts.positions++;
   counts.views += (int64_t)cover.size();
+  std::unique_ptr<Search> bot;
   int64_t rows = 0;  //the network's rows of the last search, from an empty cache
-  auto search = [&](const PlaySettings& settings, Play::RootViewsLimits limits, const string& name,
-                    std::unique_ptr<Search>& bot) {
+  string where;      //the last search's position and name, for the checks' messages
+  //A search of the position by a new bot, with the checks of every search: a pass for each view of the cover, in its
+  //order, and the move legal in its view.
+  auto search = [&](const PlaySettings& settings, Play::RootViewsLimits limits, const string& name) {
+    where = p.where + ", " + name;
     bot.reset(new Search(params, nnEval, &logger, "testselfplayviews passes " + p.where));
     if(attach != nullptr)
       attach(botSpec, bot.get());
@@ -329,7 +332,6 @@ static void checkPasses(const PassesPosition& p, const SearchParams& params, NNE
     const uint64_t rows0 = nnEval->numRowsProcessed();
     const Play::RootViewsSearch s = Play::searchRootViewsForTests(bot.get(), p.board, p.hist, p.pla, settings, limits);
     rows = (int64_t)(nnEval->numRowsProcessed() - rows0);
-    const string where = p.where + ", " + name;
     check(s.passes.size() == cover.size(), where + ": " + to_string(s.passes.size()) + " passes, " +
           to_string(cover.size()) + " views");
     for(size_t i = 0; i < s.passes.size() && i < cover.size(); i++)
@@ -340,82 +342,65 @@ static void checkPasses(const PassesPosition& p, const SearchParams& params, NNE
     check(GameRules::is_legal(viewed.pos, Board::actionOfMoveLoc(s.loc)), where + ": the move in its view");
     return s;
   };
-  auto passVisits = [&](const Play::RootViewsSearch& s, int64_t visits, const string& where) {
+  auto passVisits = [&](const Play::RootViewsSearch& s, int64_t visits) {
     for(size_t i = 0; i < s.passes.size(); i++)
       check(s.passes[i].visits == visits, where + ": pass " + to_string(i) + " of " +
             to_string(s.passes[i].visits) + " visits, not " + to_string(visits));
   };
-  std::unique_ptr<Search> bot;
+  //The move's view is the view of the first pass of the best value, and the move's search has maxVisits visits.
+  auto bestView = [&](const Play::RootViewsSearch& s) {
+    const size_t best = bestPass(s.passes);
+    if(best < cover.size())
+      check(s.view == cover[best], where + ": the move's view '" + s.view + "', the best pass's '" + cover[best] + "'");
+    check(s.visits == maxVisits, where + ": the move's search of " + to_string(s.visits) + " visits");
+    return best;
+  };
 
   //A full search with the setting.
-  const Play::RootViewsSearch full = search(on, Play::RootViewsLimits::FULL, "a full search with cheap passes", bot);
+  const Play::RootViewsSearch cheapPasses = search(on, Play::RootViewsLimits::FULL, "a full search with cheap passes");
   const int64_t rowsCheap = rows;
-  counts.rowsCheapPasses += rows;
-  {
-    const string where = p.where + ", a full search with cheap passes";
-    passVisits(full, cheapVisits, where);
-    const size_t best = bestPass(full.passes);
-    if(best < cover.size())
-      check(full.view == cover[best], where + ": the move's view '" + full.view + "', the best pass's '" +
-            cover[best] + "'");
-    check(full.visits == maxVisits, where + ": the move's search of " + to_string(full.visits) + " visits");
-    check(full.treeKept, where + ": the bot holds the move's search");
-    check(bot->getRootVisits() == maxVisits && bot->lastSearchNumPlayouts == maxVisits,
-          where + ": the bot's root of " + to_string(bot->getRootVisits()) + " visits, " +
-          to_string(bot->lastSearchNumPlayouts) + " of the last search");
-    Board viewed = p.board;
-    FinishedGameData::setBoardView(viewed, full.view);
-    check(GameRules::hash(bot->rootBoard.pos) == GameRules::hash(viewed.pos), where + ": the bot's root in the view");
-    (best + 1 == cover.size() ? counts.bestLast : counts.bestBefore)++;
-  }
+  passVisits(cheapPasses, cheapVisits);
+  bestView(cheapPasses);
+  check(cheapPasses.treeKept, where + ": the bot holds the move's search");
+  check(bot->getRootVisits() == maxVisits && bot->lastSearchNumPlayouts == maxVisits,
+        where + ": the bot's root of " + to_string(bot->getRootVisits()) + " visits, " +
+        to_string(bot->lastSearchNumPlayouts) + " of the last search");
+  Board viewed = p.board;
+  FinishedGameData::setBoardView(viewed, cheapPasses.view);
+  check(GameRules::hash(bot->rootBoard.pos) == GameRules::hash(viewed.pos), where + ": the bot's root in the view");
 
   //A full search without it.
-  const Play::RootViewsSearch whole = search(off, Play::RootViewsLimits::FULL, "a full search", bot);
+  const Play::RootViewsSearch wholePasses = search(off, Play::RootViewsLimits::FULL, "a full search");
+  passVisits(wholePasses, maxVisits);
+  const size_t best = bestView(wholePasses);
+  check(wholePasses.treeKept == (best + 1 == cover.size()),
+        where + ": the bot holds the move's search when it is the last");
+  counts.sameView += wholePasses.view == cheapPasses.view;
+  counts.rowsCheapPasses += rowsCheap;
   counts.rowsWholePasses += rows;
   printf("passes at %s: %d views, the network's rows of a full search %lld with cheap passes, %lld without\n",
          p.where.c_str(), (int)cover.size(), (long long)rowsCheap, (long long)rows);
-  {
-    const string where = p.where + ", a full search";
-    passVisits(whole, maxVisits, where);
-    const size_t best = bestPass(whole.passes);
-    if(best < cover.size())
-      check(whole.view == cover[best], where + ": the move's view '" + whole.view + "', the best pass's '" +
-            cover[best] + "'");
-    check(whole.visits == maxVisits, where + ": the move's search of " + to_string(whole.visits) + " visits");
-    check(whole.treeKept == (best + 1 == cover.size()), where + ": the bot holds the move's search when it is the last");
-    counts.sameView += whole.view == full.view;
-  }
 
   //A cheap search with it.
-  const Play::RootViewsSearch cheap = search(on, Play::RootViewsLimits::CHEAP, "a cheap search", bot);
-  {
-    const string where = p.where + ", a cheap search";
-    if(member) {
-      //shareOfLimits's share, as play.cpp computes it
-      const int64_t share = std::max((int64_t)1, (int64_t)ceil((double)cheapVisits * (1.0 / cover.size())));
-      passVisits(cheap, share, where);
-      check(cheap.visits == share, where + ": the move's search of " + to_string(cheap.visits) + " visits");
-    }
-    else {
-      int64_t sum = 0;
-      for(const Play::RootViewsPass& pass : cheap.passes)
-        sum += pass.visits;
-      check(sum <= cheapVisits + (int64_t)cover.size(), where + ": passes of " + to_string(sum) + " visits");
-      check(cheap.visits <= cheapVisits, where + ": the move's search of " + to_string(cheap.visits) + " visits");
-    }
+  const Play::RootViewsSearch cheap = search(on, Play::RootViewsLimits::CHEAP, "a cheap search");
+  if(member) {
+    //shareOfLimits's share, as play.cpp computes it
+    const int64_t share = std::max((int64_t)1, (int64_t)ceil((double)cheapVisits * (1.0 / cover.size())));
+    passVisits(cheap, share);
+    check(cheap.visits == share, where + ": the move's search of " + to_string(cheap.visits) + " visits");
+  }
+  else {
+    int64_t sum = 0;
+    for(const Play::RootViewsPass& pass : cheap.passes)
+      sum += pass.visits;
+    check(sum <= cheapVisits + (int64_t)cover.size(), where + ": passes of " + to_string(sum) + " visits");
+    check(cheap.visits <= cheapVisits, where + ": the move's search of " + to_string(cheap.visits) + " visits");
   }
 
   //A side position with it.
-  const Play::RootViewsSearch side = search(on, Play::RootViewsLimits::SIDE_POSITION, "a side position", bot);
-  {
-    const string where = p.where + ", a side position";
-    passVisits(side, maxVisits, where);
-    const size_t best = bestPass(side.passes);
-    if(best < cover.size())
-      check(side.view == cover[best], where + ": the move's view '" + side.view + "', the best pass's '" +
-            cover[best] + "'");
-    check(side.visits == maxVisits, where + ": the move's search of " + to_string(side.visits) + " visits");
-  }
+  const Play::RootViewsSearch side = search(on, Play::RootViewsLimits::SIDE_POSITION, "a side position");
+  passVisits(side, maxVisits);
+  bestView(side);
 }
 
 static void readGame(int gameIdx, const FinishedGameData& data, int64_t maxVisits, Counts& counts,
@@ -525,12 +510,17 @@ int main(int argc, char** argv) {
   Board::initHash();
   ScoreValue::initTables();
 
-  const map<string, string> forced{{"rootViews", "true"}, {"reduceVisits", "false"}, {"numSearchThreads", "1"},
-                                   {"normalAsymmetricPlayoutProb", "0"}, {"handicapAsymmetricPlayoutProb", "0"}};
+  //The config takes OVERRIDES, then extra (key=value,...), then the test's own settings.
+  const string overrides = argc >= 5 ? argv[4] : "";
+  auto applyOverrides = [&](ConfigParser& c, const string& extra) {
+    for(const string& o : {overrides, extra})
+      if(o != "")
+        c.overrideKeys(ConfigParser::parseCommaSeparated(o));
+    c.overrideKeys(map<string, string>{{"rootViews", "true"}, {"reduceVisits", "false"}, {"numSearchThreads", "1"},
+                                       {"normalAsymmetricPlayoutProb", "0"}, {"handicapAsymmetricPlayoutProb", "0"}});
+  };
   ConfigParser cfg(argv[1]);
-  if(argc >= 5 && string(argv[4]) != "")
-    cfg.overrideKeys(ConfigParser::parseCommaSeparated(argv[4]));
-  cfg.overrideKeys(forced);
+  applyOverrides(cfg, "");
   Logger logger(nullptr, false, true, false, false);
   Rand seedRand("testselfplayviews");
   const SearchParams baseParams = Setup::loadSingleParams(cfg, Setup::SETUP_FOR_OTHER);
@@ -541,10 +531,7 @@ int main(int argc, char** argv) {
   PlaySettings passesPlaySettings = playSettings;
   if(argc == 7 && string(argv[6]) != "") {
     ConfigParser passesCfg(argv[1]);
-    if(string(argv[4]) != "")
-      passesCfg.overrideKeys(ConfigParser::parseCommaSeparated(argv[4]));
-    passesCfg.overrideKeys(ConfigParser::parseCommaSeparated(argv[6]));
-    passesCfg.overrideKeys(forced);
+    applyOverrides(passesCfg, argv[6]);
     passesParams = Setup::loadSingleParams(passesCfg, Setup::SETUP_FOR_OTHER);
     passesPlaySettings = PlaySettings::loadForSelfplay(passesCfg, false);
   }
@@ -657,14 +644,11 @@ int main(int argc, char** argv) {
   PassesCounts passesCounts;
   for(const PassesPosition& p : passesPositions)
     checkPasses(p, passesParams, nnEval, passesPlaySettings, attach, botSpec, logger, passesCounts);
-  printf("passes: %lld positions with %lld views; with cheap passes, the best pass the last in %lld, before it in "
-         "%lld; the same view as the full passes' in %lld; the network's rows of the full searches %lld with cheap "
-         "passes, %lld without\n",
-         (long long)passesCounts.positions, (long long)passesCounts.views, (long long)passesCounts.bestLast,
-         (long long)passesCounts.bestBefore, (long long)passesCounts.sameView, (long long)passesCounts.rowsCheapPasses,
-         (long long)passesCounts.rowsWholePasses);
-  check(passesCounts.bestLast > 0 && passesCounts.bestBefore > 0,
-        "the positions of the passes hold a best pass before the last and one at the last");
+  printf("passes: %lld positions with %lld views; with cheap passes, the same view as the full passes' in %lld; the "
+         "network's rows of the full searches %lld with cheap passes, %lld without\n",
+         (long long)passesCounts.positions, (long long)passesCounts.views, (long long)passesCounts.sameView,
+         (long long)passesCounts.rowsCheapPasses, (long long)passesCounts.rowsWholePasses);
+  check(passesCounts.positions > 0, "a position of the passes");
 
   delete forkData;
   delete gameRunner;

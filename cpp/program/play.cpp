@@ -1129,6 +1129,11 @@ struct SearchLimitsThisMove {
   Player playoutDoublingAdvantagePla;
 
   Loc hintLoc;
+
+  //KataGame fork (abscls-lne9): the visits and playouts that a cheap search of this action would have, asymmetric
+  //playouts included, for the passes of the root's views in a full search (PlaySettings::rootViewsCheapPasses).
+  int64_t numCheapVisits;
+  int64_t numCheapPlayouts;
 };
 
 //forceFullSearch skips the hint and random cheap search branches, giving the limits that a full-search turn
@@ -1158,6 +1163,10 @@ static SearchLimitsThisMove getSearchLimitsThisMove(
   double playoutDoublingAdvantage = 0.0;
   Player playoutDoublingAdvantagePla = C_EMPTY;
   Loc hintLoc = Board::NULL_LOC;
+  //KataGame fork (abscls-lne9): a cheap search's visits and playouts of this action, scaled below with the asymmetric
+  //playouts as a cheap search's (SearchLimitsThisMove::numCheapVisits).
+  int64_t numCheapVisits = std::min(numAlterVisits,(int64_t)playSettings.cheapSearchVisits);
+  int64_t numCheapPlayouts = std::min(numAlterPlayouts,(int64_t)playSettings.cheapSearchVisits);
   double cheapSearchProb = forceFullSearch ? 0.0 : playSettings.cheapSearchProb;
 
   const BoardHistory& hist = toMoveBot->getRootHist();
@@ -1254,6 +1263,8 @@ static SearchLimitsThisMove getSearchLimitsThisMove(
     clearBotBeforeSearchThisMove = true;
     numAlterVisits = (int64_t)round(numAlterVisits * factor);
     numAlterPlayouts = (int64_t)round(numAlterPlayouts * factor);
+    numCheapVisits = std::max((int64_t)1, (int64_t)round(numCheapVisits * factor));
+    numCheapPlayouts = std::max((int64_t)1, (int64_t)round(numCheapPlayouts * factor));
 
     //Hardcoded limit here to ensure sanity
     if(numAlterVisits < 5)
@@ -1273,6 +1284,8 @@ static SearchLimitsThisMove getSearchLimitsThisMove(
   limits.playoutDoublingAdvantage = playoutDoublingAdvantage;
   limits.playoutDoublingAdvantagePla = playoutDoublingAdvantagePla;
   limits.hintLoc = hintLoc;
+  limits.numCheapVisits = numCheapVisits;
+  limits.numCheapPlayouts = numCheapPlayouts;
   return limits;
 }
 
@@ -1464,12 +1477,11 @@ static double passValue(const Search* bot, Player pla) {
 //  its visits). Every pass searches for the same player, with the same diversity term, and a move's reward is a
 //  constant of its child, the same position from every view. The passes take the first pass's score centre.
 //- More views, in a full search of the game with PlaySettings::rootViewsCheapPasses (abscls-lne9): the passes as above,
-//  each with the action's limits at most at the cheap search's visits and playouts. The best pass gives the view only:
-//  the bot searches the root in that view again with the whole of the action's limits, at the passes' score centre,
-//  and the turn takes that search. After the last pass, the bot holds that view's root, so the search continues the
-//  pass's tree unless the limits clear the bot (runBotWithLimits), as self-play's full searches do
-//  (clearBotBeforeSearch). When the action's limits have no more visits and playouts than the passes, the passes take
-//  the whole of them, as above.
+//  each with the action's limits at most at the visits and playouts of the action's cheap search
+//  (SearchLimitsThisMove::numCheapVisits). The best pass gives the view only: the bot searches the root in that view
+//  again from a new tree, with the whole of the action's limits, at the passes' score centre, and the turn takes that
+//  search. When a pass would search as much as the action (the fewer of their visits and playouts), the passes take
+//  the whole of the action's limits, as above.
 //- More views, in a cheap search otherwise: the analysis engine's split (RootViews::Searches), passes then checks with
 //  shares of the action's limits. A check searches the next position for its player to move, so a diversity term
 //  would be that player's (abscls-e0gz): the cheap searches with a term take the passes above. The move is the
@@ -1493,14 +1505,18 @@ static bool searchRootViews(
     if(record != NULL)
       record->passes.push_back(Play::RootViewsPass{view, bot->getRootVisits(), passValue(bot, pla)});
   };
-  if(numViews == 1) {
+  //The search of the root in view with the action's limits, which the turn takes. The bot holds its tree.
+  auto searchView = [&](const string& view) {
     turnBoard = board;
-    FinishedGameData::setBoardView(turnBoard, views[0]);
+    FinishedGameData::setBoardView(turnBoard, view);
     bot->setPosition(pla, turnBoard, hist);
     const Loc loc = run(pla, limits);
-    recordPass(views[0]);
     takeTurnSearch(turn, bot, turnBoard, hist, pla, loc, playSettings, false, locsBuf, playSelectionValuesBuf);
-    turn.view = views[0];
+    turn.view = view;
+  };
+  if(numViews == 1) {
+    searchView(views[0]);
+    recordPass(views[0]);
     return true;
   }
 
@@ -1513,10 +1529,11 @@ static bool searchRootViews(
     if(!cheap && limits != NULL && playSettings.rootViewsCheapPasses) {
       passLimits = *limits;
       passLimits.doAlterVisitsPlayouts = true;
-      passLimits.numAlterVisits = std::min(limits->numAlterVisits, (int64_t)playSettings.cheapSearchVisits);
-      passLimits.numAlterPlayouts = std::min(limits->numAlterPlayouts, (int64_t)playSettings.cheapSearchVisits);
-      searchAgain = passLimits.numAlterVisits < limits->numAlterVisits ||
-        passLimits.numAlterPlayouts < limits->numAlterPlayouts;
+      passLimits.numAlterVisits = std::min(limits->numAlterVisits, limits->numCheapVisits);
+      passLimits.numAlterPlayouts = std::min(limits->numAlterPlayouts, limits->numCheapPlayouts);
+      //A search stops at its visits or at its playouts, whichever it reaches first.
+      searchAgain = std::min(passLimits.numAlterVisits, passLimits.numAlterPlayouts) <
+        std::min(limits->numAlterVisits, limits->numAlterPlayouts);
     }
     const SearchLimitsThisMove* passesLimits = cheap || searchAgain ? &passLimits : limits;
     double best = 0.0;
@@ -1543,13 +1560,7 @@ static bool searchRootViews(
     }
     if(!searchAgain)
       return bestPass == numViews - 1;
-    turnBoard = board;
-    FinishedGameData::setBoardView(turnBoard, views[bestPass]);
-    if(bestPass != numViews - 1)
-      bot->setPosition(pla, turnBoard, hist);
-    const Loc loc = run(pla, limits);
-    takeTurnSearch(turn, bot, turnBoard, hist, pla, loc, playSettings, false, locsBuf, playSelectionValuesBuf);
-    turn.view = views[bestPass];
+    searchView(views[bestPass]);
     return true;
   }
 
@@ -1610,35 +1621,20 @@ static bool searchRootViews(
 }
 
 //KataGame fork (abscls-lne9): searchRootViews for its tests, with the limits that getSearchLimitsThisMove gives
-//self-play's full or cheap search of an action when no reduced visits, asymmetric playouts or hint apply.
+//self-play's full search of an action (clearBotBeforeSearch, as runGame requires) or its cheap search (a draw of
+//probability 1), in a game without a hint or asymmetric playouts and with no past values for reduceVisits.
 Play::RootViewsSearch Play::searchRootViewsForTests(
   Search* bot, const Board& board, const BoardHistory& hist, Player pla, const PlaySettings& playSettings,
   RootViewsLimits limitsKind
 ) {
   const vector<string> views = searchedViews(playSettings, board);
   testAssert(!views.empty());
-  SearchLimitsThisMove limits;
-  limits.doAlterVisitsPlayouts = false;
-  limits.numAlterVisits = bot->searchParams.maxVisits;
-  limits.numAlterPlayouts = bot->searchParams.maxPlayouts;
-  limits.clearBotBeforeSearchThisMove = true;  //self-play's (runGame's check)
-  limits.removeRootNoise = false;
-  limits.targetWeight = 1.0f;
-  limits.isCheapSearch = false;
-  limits.playoutDoublingAdvantage = 0.0;
-  limits.playoutDoublingAdvantagePla = C_EMPTY;
-  limits.hintLoc = Board::NULL_LOC;
-  if(limitsKind == RootViewsLimits::CHEAP) {
-    limits.doAlterVisitsPlayouts = true;
-    limits.isCheapSearch = true;
-    limits.numAlterVisits = std::min(limits.numAlterVisits, (int64_t)playSettings.cheapSearchVisits);
-    limits.numAlterPlayouts = std::min(limits.numAlterPlayouts, (int64_t)playSettings.cheapSearchVisits);
-    limits.targetWeight *= playSettings.cheapSearchTargetWeight;
-    if(playSettings.cheapSearchTargetWeight <= 0.0) {
-      limits.clearBotBeforeSearchThisMove = false;
-      limits.removeRootNoise = true;
-    }
-  }
+  PlaySettings drawSettings = playSettings;
+  drawSettings.cheapSearchProb = 1.0;
+  Rand rand("searchRootViewsForTests");
+  const SearchLimitsThisMove limits = getSearchLimitsThisMove(
+    bot, pla, drawSettings, rand, vector<double>(), 0, true, OtherGameProperties(),
+    limitsKind != RootViewsLimits::CHEAP, NULL);
   RootViewsSearch record;
   TurnSearch turn;
   Board turnBoard(board);

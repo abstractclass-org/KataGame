@@ -139,7 +139,10 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg, bool isDistributed
     playSettings.rootViewsFinalists = rootViewSettings.finalists;
   }
   //KataGame fork (abscls-lne9): a full search's passes at the cheap search's visits.
-  playSettings.rootViewsCheapPasses = cfg.contains("rootViewsCheapPasses") ? cfg.getBool("rootViewsCheapPasses") : false;
+  playSettings.rootViewsCheapPasses =
+    cfg.contains("rootViewsCheapPasses") ? cfg.getBool("rootViewsCheapPasses") : false;
+  if(playSettings.rootViewsCheapPasses && !playSettings.rootViews)
+    throw StringError("rootViewsCheapPasses needs rootViews: it sets the passes of the search of the root's views");
   if(playSettings.rootViews && playSettings.useReanalyze)
     throw StringError("rootViews does not combine with useReanalyze: a reanalysis searches a turn again in one view");
   playSettings.forSelfPlay = true;

@@ -90,12 +90,6 @@ class SelfplayManager {
     // Counted at game-finish in the data write loop (lock-free), read cross-thread for logging.
     std::atomic<int64_t> gamesFinishedCount;
     std::atomic<int64_t> movesPlayedCount;
-    //KataGame fork (abscls-lne9): the root's views, counted at game-finish as the two above: the searches whose cover
-    //has more than one view (FinishedGameData::numFullSearchesMoreViews, numCheapSearchesMoreViews) and the moves in
-    //another view than the rules' (moveViews).
-    std::atomic<int64_t> fullSearchesMoreViewsCount;
-    std::atomic<int64_t> cheapSearchesMoreViewsCount;
-    std::atomic<int64_t> movesInViewCount;
     double lastReleaseTime;
     bool hasDataWriteLoop;
 

@@ -388,35 +388,36 @@ search takes its share of the clock's time for the move, and a move that the pos
 `Search::fixedScoreCenter` gives these searches one centre of the score utility in place of each root's centre
 (`computeRootValues`). Outside them it is `NAN`, and each search takes its root's centre, as in KataGo.
 
-**In self-play** (`PlaySettings::rootViews` and `play.cpp`, with the engine repository's
-`games/blueprints/README.md`, "In self-play"), off unless a config sets `rootViews`, each searched position (the game's
-and a side position's) computes its cover. A cover of the rules' view alone gives the usual search, and a cover of one other view gives the search in
-that view. With more views, a full search gives each view a pass with the whole of the action's limits, and the move
-is the move of the pass whose most visited move has the best value of its child for the player to move, chosen in that
-pass as self-play chooses. The passes take the first pass's score centre. With `rootViewsCheapPasses` (off unless a
-config sets it), a full search of the game gives each pass the action's limits with at most the cheap search's visits
-and playouts (`cheapSearchVisits`). The best pass gives the view only: the bot searches the root in that view again
-with the whole of the action's limits, at the passes' score centre, and the turn takes that search (its move, its
-policy target and its row). Self-play's full searches clear the bot first (`clearBotBeforeSearch`), so that search
-starts a new tree, also after the last pass. When the action's limits are no larger than the passes', the passes take
-the whole of them. The cheap searches, a cover of one view and the side positions do not change, and AZdb's members 1
-to 4 take the same rule in their full searches. A cheap search splits its limits as the
-analysis engine does (`rootViewsPassShare`, `rootViewsCandidates` and `rootViewsFinalists`), but for a player with a
-diversity term (AZdb's members 1 to 4): its passes share the limits, with no checks, as a check searches for the next
-player to move. A cheap search's move is the analysis engine's choice, with no temperature. RGSC's tree candidate at a
-root in a set view (`Rgsc::TreeTracker`) is that state in the rules' view, as the state's text leaves the view out and
-the hash keys it. The game names each move in the view of the search that gave it (`FinishedGameData::moveViews`), so the
-turn's policy target and its row are in that view, and the records write such a move as `MOVE/VIEW`. The bots' history
-starts again after a move in a view (`RootViews::restartHistory`), as GTP's does, since a search replays its history
-from its start. Each replay of a finished game plays each move in its view (`FinishedGameData::playMove`): the rows'
-writer, the records, RGSC's played positions, AZdb's statistics and the lead's estimate. A fork's replay stops before
-the game's first move in a view. The rows' writer moves the second policy target, the next search's policy, into the
-view that the row gives the next position (`view_in_frame`, each move by `view_action`). A move that this view does
-not hold drops out. A row whose next policy keeps no move, or keeps only moves of target 0 (KataGo's policy target
-pruning and the rounding to whole targets can give a child 0), has no second policy target. The log counts both kinds
-of rows. The setting does not combine with `useReanalyze`. Self-play's log gives, for each network at its cleanup, the
-searches of the games' loops whose cover has more than one view, full and cheap, and the moves in another view than
-the rules' ("Final searches with more than one view").
+**In self-play** (`PlaySettings::rootViews` and `play.cpp`, with the engine repository's `games/blueprints/README.md`,
+"In self-play"), off unless a config sets `rootViews`, each searched position (the game's and a side position's)
+computes its cover. A cover of the rules' view alone gives the usual search, and a cover of one other view gives the
+search in that view. With more views, a full search gives each view a pass with the whole of the action's limits, and
+the move is the move of the pass whose most visited move has the best value of its child for the player to move, chosen
+in that pass as self-play chooses. The passes take the first pass's score centre. With `rootViewsCheapPasses` (off
+unless a config sets it), a full search of the game gives each pass the action's limits with at most the visits and
+playouts of a cheap search of the action (`cheapSearchVisits`, scaled as a cheap search's in a game of asymmetric
+playouts). The best pass gives the view only: the bot searches the root in that view again from a new tree, with the
+whole of the action's limits, at the passes' score centre, and the turn takes that search (its move, its policy target
+and its row). When a pass would search as much as the action (a search stops at its visits or its playouts, the first it
+reaches), the passes take the whole of the action's limits. The setting needs `rootViews`. The cheap searches, a cover
+of one view and the side positions do not change, and AZdb's members 1 to 4 take the same rule in their full searches. A
+cheap search splits its limits as the analysis engine does (`rootViewsPassShare`, `rootViewsCandidates` and
+`rootViewsFinalists`), but for a player with a diversity term (AZdb's members 1 to 4): its passes share the limits, with
+no checks, as a check searches for the next player to move. A cheap search's move is the analysis engine's choice, with
+no temperature. RGSC's tree candidate at a root in a set view (`Rgsc::TreeTracker`) is that state in the rules' view, as
+the state's text leaves the view out and the hash keys it. The game names each move in the view of the search that gave
+it (`FinishedGameData::moveViews`), so the turn's policy target and its row are in that view, and the records write such
+a move as `MOVE/VIEW`. The bots' history starts again after a move in a view (`RootViews::restartHistory`), as GTP's
+does, since a search replays its history from its start. Each replay of a finished game plays each move in its view
+(`FinishedGameData::playMove`): the rows' writer, the records, RGSC's played positions, AZdb's statistics and the lead's
+estimate. A fork's replay stops before the game's first move in a view. The rows' writer moves the second policy target,
+the next search's policy, into the view that the row gives the next position (`view_in_frame`, each move by
+`view_action`). A move that this view does not hold drops out. A row whose next policy keeps no move, or keeps only
+moves of target 0 (KataGo's policy target pruning and the rounding to whole targets can give a child 0), has no second
+policy target. The log counts both kinds of rows. The setting does not combine with `useReanalyze`. When a network's
+games searched a view other than the rules', self-play's log gives at the network's cleanup the searches of the games'
+loops whose cover has more than one view, full and cheap, and the moves in another view than the rules' ("Final searches
+with more than one view").
 
 `RootViews::Searches` holds the passes and the checks one at a time, for a caller that runs each search. `next()`
 gives each search's root and its share of the limits. `done()` takes the search at its end. `result()` gives the
@@ -923,12 +924,12 @@ views, each with a new bot of the config's settings. A full search with `rootVie
 of the cover with the cheap search's visits, the move's view is the first pass of the best value, and the move's
 search has the config's visits, all of its own (the full search starts a new tree). A full search without it has a
 pass of the config's visits for each view, and the same choice. A cheap search and a side position take the rules
-that do not change with the setting. The positions must hold a best pass before the last and one at the last.
-`rootViewsCheapPasses=true` in the overrides gives the games themselves the passes of the cheap search's visits.
-`PASSES_OVERRIDES` gives the bots of these checks other settings than the games' (`OUT_DIR` "" for no files), such as
-bpj5's `maxVisits=600,cheapSearchVisits=100` on the positions of short games. The test prints the network's rows of
-the full search with the setting and without it on each position, each from an empty cache of the network (its size
-is `nnCacheSizePowerOfTwo` of the overrides): the setting's cost on the same positions.
+that do not change with the setting. `rootViewsCheapPasses=true` in the overrides gives the games themselves the
+passes of the cheap search's visits. `PASSES_OVERRIDES` gives the bots of these checks other settings than the
+games' (`OUT_DIR` "" for no files), such as bpj5's `maxVisits=600,cheapSearchVisits=100` on the positions of short
+games. The test prints the network's rows of the full search with the setting and without it on each position, each
+from an empty cache of the network (its size is `nnCacheSizePowerOfTwo` of the overrides): the setting's cost on the
+same positions.
 
 **AZdb's latent:** `testdiversityinputs POSITIONS_FILE` names no game, so it runs on any game's build, with the game's
 positions (Blueprints': `tests/data/blueprints_positions.txt`). It needs no network. It checks the cache's hash of each

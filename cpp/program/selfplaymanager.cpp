@@ -22,9 +22,6 @@ SelfplayManager::ModelData::ModelData(
   gameStartedCount(0),
   gamesFinishedCount(0),
   movesPlayedCount(0),
-  fullSearchesMoreViewsCount(0),
-  cheapSearchesMoreViewsCount(0),
-  movesInViewCount(0),
   lastReleaseTime(initialTime),
   hasDataWriteLoop(hasDataLoop),
   finishedGameQueue(maxDQueueSize),
@@ -372,6 +369,10 @@ void SelfplayManager::runDataWriteLoopImpl(ModelData* modelData) {
     logger->write("Data write loop starting for neural net: " + modelData->modelName);
 
   Rand rand;
+  //KataGame fork (abscls-lne9): the root's views, for the log at the cleanup: the searches whose cover has more than
+  //one view (FinishedGameData::numFullSearchesMoreViews, numCheapSearchesMoreViews) and the moves in another view than
+  //the rules' (moveViews).
+  int64_t fullSearchesMoreViews = 0, cheapSearchesMoreViews = 0, movesInAnotherView = 0;
   while(true) {
     size_t size = modelData->finishedGameQueue.size();
     if(size > maxDataQueueSize / 2 && logger != NULL)
@@ -393,13 +394,10 @@ void SelfplayManager::runDataWriteLoopImpl(ModelData* modelData) {
       (int64_t)(gameData->endHist.moveHistory.size() - gameData->startHist.moveHistory.size()),
       std::memory_order_relaxed
     );
-    //KataGame fork (abscls-lne9): the root's views.
-    modelData->fullSearchesMoreViewsCount.fetch_add(gameData->numFullSearchesMoreViews, std::memory_order_relaxed);
-    modelData->cheapSearchesMoreViewsCount.fetch_add(gameData->numCheapSearchesMoreViews, std::memory_order_relaxed);
-    modelData->movesInViewCount.fetch_add(
-      (int64_t)std::count_if(gameData->moveViews.begin(), gameData->moveViews.end(),
-                             [](const string& view) { return !view.empty(); }),
-      std::memory_order_relaxed);
+    fullSearchesMoreViews += gameData->numFullSearchesMoreViews;
+    cheapSearchesMoreViews += gameData->numCheapSearchesMoreViews;
+    movesInAnotherView += std::count_if(gameData->moveViews.begin(), gameData->moveViews.end(),
+                                 [](const string& view) { return !view.empty(); });
 
     if(modelData->sgfOut != NULL) {
       testAssert(gameData->startHist.moveHistory.size() <= gameData->endHist.moveHistory.size());
@@ -445,14 +443,11 @@ void SelfplayManager::runDataWriteLoopImpl(ModelData* modelData) {
         Global::int64ToString(modelData->tdataWriter->numRowsNextPolicyTranslated()) + ", without it: " +
         Global::int64ToString(modelData->tdataWriter->numRowsNextPolicyLost()));
     //KataGame fork (abscls-lne9): the root's views, when the games searched a view other than the rules'.
-    const int64_t fullMore = modelData->fullSearchesMoreViewsCount.load(std::memory_order_relaxed);
-    const int64_t cheapMore = modelData->cheapSearchesMoreViewsCount.load(std::memory_order_relaxed);
-    const int64_t movesInView = modelData->movesInViewCount.load(std::memory_order_relaxed);
-    if(fullMore + cheapMore + movesInView > 0)
+    if(fullSearchesMoreViews + cheapSearchesMoreViews + movesInAnotherView > 0)
       logger->write(
-        "Final searches with more than one view: " + Global::int64ToString(fullMore) + " full, " +
-        Global::int64ToString(cheapMore) + " cheap; moves in another view than the rules': " +
-        Global::int64ToString(movesInView));
+        "Final searches with more than one view: " + Global::int64ToString(fullSearchesMoreViews) + " full, " +
+        Global::int64ToString(cheapSearchesMoreViews) + " cheap; moves in another view than the rules': " +
+        Global::int64ToString(movesInAnotherView));
     logger->write("Final NN rows: " + Global::int64ToString(modelData->nnEval->numRowsProcessed()));
     logger->write("Final NN batches: " + Global::int64ToString(modelData->nnEval->numBatchesProcessed()));
     logger->write("Final NN avg batch size: " + Global::doubleToString(modelData->nnEval->averageProcessedBatchSize()));

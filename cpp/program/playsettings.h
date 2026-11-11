@@ -122,12 +122,13 @@ struct PlaySettings {
   int rootViewsCandidates;
   int rootViewsFinalists;
   //KataGame fork (abscls-lne9): with rootViews, a full search of the game's loop whose cover has more views gives each
-  //pass the action's limits with at most the cheap search's visits and playouts (cheapSearchVisits). The best pass, by
-  //the rule above, gives the view. The bot then searches the position in that view again with the whole of the
-  //action's limits, and the turn takes that search: its move, its policy target and its row. The search starts a new
-  //tree when the limits clear the bot, as self-play's full searches do (clearBotBeforeSearch). When the action's limits
-  //have no more visits and playouts than the passes, the rule above applies. The cheap searches, a cover of one view
-  //and the side positions do not change, and AZdb's members 1 to 4 take the same rule as member 0. Off by default.
+  //pass the action's limits with at most the visits and playouts of a cheap search of the action (cheapSearchVisits,
+  //scaled as a cheap search's in a game of asymmetric playouts). The best pass, by the rule above, gives the view. The
+  //bot then searches the position in that view again from a new tree with the whole of the action's limits, and the
+  //turn takes that search: its move, its policy target and its row. When a pass would search as much as the action (a
+  //search stops at its visits or its playouts, the first it reaches), the rule above applies. The cheap searches, a
+  //cover of one view and the side positions do not change, and AZdb's members 1 to 4 take the same rule as member 0.
+  //It needs rootViews. Off by default.
   bool rootViewsCheapPasses;
 
   //Don't stochastically integerify target weights
