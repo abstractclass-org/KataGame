@@ -1494,7 +1494,7 @@ static bool searchRootViews(
   const int numViews = (int)views.size();
   struct CenterReset {
     Search* bot;
-    ~CenterReset() { bot->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN(); }
+    ~CenterReset() { RootViews::resetSearchSettings(*bot); }
   } centerReset{bot};
   auto run = [&](Player movePla, const SearchLimitsThisMove* searchLimits) {
     return searchLimits == NULL ? bot->runWholeSearchAndGetMove(movePla)

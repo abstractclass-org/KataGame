@@ -225,9 +225,7 @@ bool RootViews::Searches::done(Search& search, Loc chosen) {
     search.diversityMoverIntoRoot = C_EMPTY;
     return false;
   }
-  //The next search, so that the search takes its setting of the diversity term (abscls-e0gz). A check continues the
-  //root mover's search below its candidate's move: its term is the root mover's, and its root has the move's reward,
-  //so that its value compares with the passes' values of the move. A pass, and the end of the searches, take neither.
+  //The next search, for its setting of the diversity term (abscls-e0gz, rootviews.h).
   prepareNext();
   prepared_ = true;
   search.diversityMoverIntoRoot = upcoming_ >= (int)views_.size() ? rootPla_ : C_EMPTY;
@@ -448,6 +446,11 @@ bool RootViews::Searches::respond(const Results& results, json& ret, Choice& cho
   return true;
 }
 
+void RootViews::resetSearchSettings(Search& search) {
+  search.fixedScoreCenter = std::numeric_limits<double>::quiet_NaN();
+  search.diversityMoverIntoRoot = C_EMPTY;
+}
+
 bool RootViews::search(
   AsyncBot* bot, const Board& rootBoard, const BoardHistory& rootHist, Player rootPla,
   const vector<string>& views, const TimeControls& tc, double searchFactor,
@@ -458,14 +461,11 @@ bool RootViews::search(
   //Each search, with its share of the limits (genMoveSynchronous's searchFactor): the first takes onSearchBegun, and a
   //later one stops at once when stopped() is true.
   Search* search = bot->getSearchStopAndWait();
-  //At the end, also when a search stops: the searches' score centre and the checks' diversity term (Searches::done).
-  struct CenterReset {
+  //At the end, also when a search stops.
+  struct SettingsReset {
     Search* search;
-    ~CenterReset() {
-      search->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN();
-      search->diversityMoverIntoRoot = C_EMPTY;
-    }
-  } centerReset{search};
+    ~SettingsReset() { resetSearchSettings(*search); }
+  } settingsReset{search};
   auto isStopped = [&stopped]() noexcept {
     return stopped && stopped();
   };

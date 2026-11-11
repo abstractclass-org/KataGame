@@ -798,15 +798,13 @@ struct Running {
 
   // The rule's view alone: the search and the reply without the root's views.
   bool ruleViewAlone() const { return views.size() == 1 && views[0].empty(); }
-  // Its end ends its search in slices, and the score centre and the checks' diversity term of the root's views
-  // (RootViews::Searches::done).
+  // Its end ends its search in slices, and the settings of the root's views' searches (RootViews::resetSearchSettings).
   ~Running() {
     if(thread != nullptr) {
       E.search->endManualSearch(*thread);
       delete thread;
     }
-    E.search->fixedScoreCenter = std::numeric_limits<double>::quiet_NaN();
-    E.search->diversityMoverIntoRoot = C_EMPTY;
+    RootViews::resetSearchSettings(*E.search);
   }
 };
 Running* RUN = nullptr;

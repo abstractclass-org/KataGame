@@ -23,12 +23,12 @@
 //   - the refusals (no state, a model without the head, the eval cache), and the tree's clear when P changes;
 //   - the checks of the root's views (abscls-e0gz). On chains, a search of a candidate's child that continues P's
 //     search (Search::diversityMoverIntoRoot) has the tree, the reward and the value of the candidate's node in P's
-//     search, both where the opponent moves next and where P moves again. Without the setting (the checks before), the
-//     value differs. With RootViews::Searches on the positions of POSITIONS, whose covers have several views: done()
-//     sets the setting for the checks only, a check's root has its candidate's reward and P's term, a check of 1 visit
-//     has the value of its candidate's node of 1 visit in a pass and the value of the term's formula, and the end of
-//     the searches leaves the setting off. RootViews::search (the analysis engine's) answers with checks, and leaves
-//     the setting off at its end and when it stops during a check.
+//     search, both where the opponent moves next and where P moves again. Without the setting (a search for the
+//     child's player to move), the value differs. With RootViews::Searches on the positions of POSITIONS, whose covers
+//     have several views: done() sets the setting for the checks only, a check's root has its candidate's reward and
+//     P's term, a check of 1 visit has the value of its candidate's node of 1 visit in a pass and the value of the
+//     term's formula, and the end of the searches leaves the setting off. RootViews::search (the analysis engine's)
+//     answers with checks, and leaves the setting off at its end and when it stops during a check.
 //
 //   testdiversitysearch MODEL MODEL_WITHOUT_HEAD [POSITIONS]
 //
@@ -164,12 +164,20 @@ static bool phiOfMove(const State& state, const Position& p, vector<double>& phi
   return state.phiOfMove(p.board.pos, Board::indexOfPlayer(p.lastPla()), x.data(), phi.data());
 }
 
-//The member's reward of the move into p, as the search counts it for P: P's moves that end a move, else 0.
-static double rewardFor(const State& state, int member, const Position& p, Player P) {
-  vector<double> phi;
-  if(p.hist.moveHistory.empty() || p.lastPla() != P || !phiOfMove(state, p, phi))
+//The member's reward of a move of P that gave the position after, whatever the history holds, as the search counts it
+//(Search::computeDiversityRewardOfMove): 0 for a move that continues.
+static double moveRewardFor(const State& state, int member, const Board& after, Player P) {
+  vector<double> x(State::N), phi(State::N);
+  if(!state.phiOfMove(after.pos, Board::indexOfPlayer(P), x.data(), phi.data()))
     return 0.0;
   return state.reward(member, phi.data());
+}
+
+//The member's reward of the move into p, as the search counts it for P: P's moves that end a move, else 0.
+static double rewardFor(const State& state, int member, const Position& p, Player P) {
+  if(p.hist.moveHistory.empty() || p.lastPla() != P)
+    return 0.0;
+  return moveRewardFor(state, member, p.board, P);
 }
 
 static SearchParams params(int64_t visits, int member, double lambda) {
@@ -512,15 +520,6 @@ static double nnUtility(NNEvaluator* nnEval, Logger& logger, const Position& p, 
   return utilityOf(*runSearch(nnEval, logger, params(1, member, 1.0), p, nullptr)->rootNode);
 }
 
-//The member's reward of a move of P that gave the position after, whatever the history holds, as the search counts it
-//(Search::computeDiversityRewardOfMove): 0 for a move that continues.
-static double moveRewardFor(const State& state, int member, const Board& after, Player P) {
-  vector<double> x(State::N), phi(State::N);
-  if(!state.phiOfMove(after.pos, Board::indexOfPlayer(P), x.data(), phi.data()))
-    return 0.0;
-  return state.reward(member, phi.data());
-}
-
 //The child position of the move loc on board, by its hash: the same position whatever view named the move.
 static Hash128 childHash(const Board& board, Loc loc) {
   GameRules::Position p = board.pos;
@@ -532,8 +531,8 @@ static Hash128 childHash(const Board& board, Loc loc) {
 //m, and the nodes below form a chain (chainBelow). A pass at line[0] that may play only the chain gives m's node. A
 //check is a search of line[1] that continues P's search (Search::diversityMoverIntoRoot = P), on the chain below and
 //with the node's visits: its tree is the node's subtree, node by node, so its root has the node's reward and value.
-//The search of line[1] without the setting (the checks before) counts its player's term and no reward at its root: its
-//value differs where the opponent moves next, or where m has a reward. Adds the chain to opponentNext or playerNext.
+//The search of line[1] without the setting counts the term of its player to move and no reward at its root: its value
+//differs where the opponent moves next, or where m has a reward. Adds the chain to opponentNext or playerNext.
 static void chainCheckTest(
   NNEvaluator* nnEval, Logger& logger, const vector<Position>& line, int member, double lambda,
   const shared_ptr<const State>& state, int64_t visits, const string& label, int& opponentNext, int& playerNext
@@ -596,8 +595,8 @@ struct ViewCounts {
 //search begins with done()'s setting: off for the passes, P for the checks. A check's root then has P's term and its
 //candidate's reward, and its value of 1 visit is KataGo's utility of its evaluation plus w s_P times the reward and
 //P's head return there (output A where P moves, B where the opponent moves). Its candidate's node of 1 visit in a
-//pass has the same value. Without it (the checks before), the checks are counted where their value differs. The
-//setting is off after the last search.
+//pass has the same value. Without it (each check for its player to move), the checks are counted where their value
+//differs. The setting is off after the last search.
 static void searchesTest(
   NNEvaluator* nnEval, Logger& logger, const Position& p, int member, double lambda,
   const shared_ptr<const State>& state, bool withSetting, const string& label, ViewCounts& counts

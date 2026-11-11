@@ -426,10 +426,11 @@ with more than one view").
 
 `RootViews::Searches` holds the passes and the checks one at a time, for a caller that runs each search. `next()`
 gives each search's root and its share of the limits. `done()` takes the search at its end, finds the next search and
-sets the search's `diversityMoverIntoRoot` for it. `result()` gives the
-response at any time, also with a search that has not ended. `RootViews::search` runs them on an `AsyncBot` (the
-analysis engine and GTP). Blueprints' engine protocol (`command/blueprintsprotocol.cpp`) runs them in its slices,
-with the manual interface of `Search`, so a reply during the search gives the candidates so far.
+sets the search's `diversityMoverIntoRoot` for it. `result()` gives the response at any time, also with a search that
+has not ended. At its end, also after a stop, each caller sets the search's settings back with
+`RootViews::resetSearchSettings`. `RootViews::search` runs them on an `AsyncBot` (the analysis engine and GTP).
+Blueprints' engine protocol (`command/blueprintsprotocol.cpp`) runs them in its slices, with the manual interface of
+`Search`, so a reply during the search gives the candidates so far.
 
 ## The rules part
 
@@ -626,24 +627,24 @@ member `Diversity` (above). A game without it gives every member the reward 0.
   for (`Search::diversityPla`: in a check of the root's views, the root's mover). D is member i's intrinsic return:
   the rewards of P's moves from the root to the node, then output A where P moves at the node and output B where the
   opponent moves, 0 at the game's end. The opponent minimizes the same utility. A move's reward is a node constant
-  (`SearchNode::diversityReward`), from the rows' code (`AZdb::State::phiOfMove`) when the search creates the node. Each node adds it once to its average, as KataGo adds a
-  pattern bonus, so a node that two paths share has one value. The root has no reward, except the root of a check of
-  the root's views, which has its candidate's (`Search::diversityMoverIntoRoot`). The win-loss and score values
-  stay KataGo's. Every evaluation of the search reads member i's latent. Member 0, or λ = 1, gives w = 0: the search
-  is KataGo's, with no reward, no D and no read of the head. With w > 0 the search refuses to start in four cases: a
-  model without the head, a backend that does not compute it (`NeuralNet::computesIntrinsicHead`), no copy of the
-  game's state (`Search::setDiversityState`), and the eval cache. A member of 1 to 4 needs a model of V14. The search
-  clears its tree when P changes, as for the pattern bonus, and when the state, the member or w changes.
-  `testdiversitysearch` checks the term ("The checks").
+  (`SearchNode::diversityReward`), from the rows' code (`AZdb::State::phiOfMove`) when the search creates the node. Each
+  node adds it once to its average, as KataGo adds a pattern bonus, so a node that two paths share has one value. The
+  root has no reward, except the root of a check of the root's views, which has its candidate's
+  (`Search::diversityMoverIntoRoot`). The win-loss and score values stay KataGo's. Every evaluation of the search reads
+  member i's latent. Member 0, or λ = 1, gives w = 0: the search is KataGo's, with no reward, no D and no read of the
+  head. With w > 0 the search refuses to start in four cases: a model without the head, a backend that does not compute
+  it (`NeuralNet::computesIntrinsicHead`), no copy of the game's state (`Search::setDiversityState`), and the eval
+  cache. A member of 1 to 4 needs a model of V14. The search clears its tree when P changes, as for the pattern bonus,
+  and when the state, the member or w changes. `testdiversitysearch` checks the term ("The checks").
 - **The analysis engine** reads the run's state of the members once, at its start: the league's file that self-play
   writes, which the setting `diversityStateFile` names (`AZdb::readState`: ψ, μ, σ and ℓ0 as the file holds them,
   with the league's checks). The state then stays the same for the engine's life, and every search shares it
   (`AsyncBot::setDiversityState`). A search of member 0 does not read it, so a query of member 0 gets the same response
   with the file and without it. The engine checks its config at its start, and each query that overrides settings,
   as the search checks itself (`Search::checkDiversitySetup`): a member 1 to 4 with w > 0 and no file is refused
-  with the search's message. A query cannot change `diversityStateFile`. A query of a member 1 to 4 with w > 0 does
-  not search the root's views (`rootViews`, a game with views): a check of a finalist searches the next position for
-  its player to move, so its term would be that player's, without the member's own move. GTP and Blueprints' engine
+  with the search's message. A query cannot change `diversityStateFile`. A query of a member 1 to 4 with w > 0 can
+  search the root's views (`rootViews`, a game with views): a check of a finalist keeps the member's term and has the
+  reward of the member's move ("The search of the root's views"). GTP and Blueprints' engine
   protocol do not read the file, so their members 1 to 4 play with λ = 1 only. Their evaluations outside the search
   (GTP's `kata-raw-nn`, `kata-raw-human-nn` and `debug_moves`, the protocol's drop after a pick) read the latent of
   the search's member.
@@ -942,13 +943,16 @@ same positions.
 positions (Blueprints': `tests/data/blueprints_positions.txt`). It needs no network. It checks the cache's hash of each
 member, the rows of V14 against V13's at each allowed symmetry, and the count of the training rows' global targets.
 
-**AZdb's search:** `testdiversitysearch MODEL MODEL_WITHOUT_HEAD` runs on a build of a game that gives AZdb's statistics
-(Blueprints), with two networks of the game of the inputs version 14: one with the intrinsic value head, one without
-it. Small random ones are enough (the test's header gives the commands). It checks that member 0 searches as KataGo's
-search, and D at each node of chains where each depth allows one move. It checks a node that two orders of P's moves
-share, a member's choice of the move with the larger reward, and each node's reward in a member's search with
-self-play's weightings. It also checks the members' evaluations in one cache, the refusals, and when the search keeps
-and clears its tree.
+**AZdb's search:** `testdiversitysearch MODEL MODEL_WITHOUT_HEAD [POSITIONS]` runs on a build of a game that gives
+AZdb's statistics (Blueprints), with two networks of the game of the inputs version 14: one with the intrinsic value
+head, one without it. Small random ones are enough (the test's header gives the commands). POSITIONS is a file of
+positions whose covers have several views, by default `tests/data/blueprints_root_views.txt`. It checks that member 0
+searches as KataGo's search, and D at each node of chains where each depth allows one move. It checks a node that two
+orders of P's moves share, a member's choice of the move with the larger reward, and each node's reward in a member's
+search with self-play's weightings. It also checks the members' evaluations in one cache, the refusals, and when the
+search keeps and clears its tree. The checks of the root's views keep the member's term: on chains, a check has the
+tree, the reward and the value of its candidate's node in the pass, and with `RootViews::Searches` and
+`RootViews::search` on POSITIONS, `done()` gives the setting to the checks only.
 
 **Connect-4's encoding part.** The conformance suite checks that its mirror maps the legal moves onto the image's. With
 a Connect-4 binary and network, the engine repository's `games/connect4/tests/test_network.py` checks two more things.

@@ -22,9 +22,8 @@
 //term, the term stays the root mover's, and the check's root has the move's reward (abscls-e0gz), so that the checks'
 //values and the passes' values of a move are one value. When no pass finds a candidate (abscls-csmy: a pass of 1 visit
 //searches its root only), the move is the best legal move of the first pass's root by the network's policy, with no
-//check. The analysis engine's
-//rootViews (command/analysis.cpp), GTP's genmove (command/gtp.cpp) and Blueprints' engine protocol
-//(command/blueprintsprotocol.cpp) all search so.
+//check. The analysis engine's rootViews (command/analysis.cpp), GTP's genmove (command/gtp.cpp) and Blueprints' engine
+//protocol (command/blueprintsprotocol.cpp) all search so.
 namespace RootViews {
   struct Settings {
     double passShare = 0.5;  //rootViewsPassShare: the passes' share of the visits, the playouts and the time
@@ -94,11 +93,11 @@ namespace RootViews {
     double share() const { return share_; }
     //The search that next() gave, at its end: its analysis, and chosen, the move that it chose (genMoveSynchronous),
     //which a cover of one view gives as the choice. After the first pass of more views, every later search keeps its
-    //score centre (Search::fixedScoreCenter): the caller sets it back to NAN after the last. KataGame fork
-    //(abscls-e0gz): done() also finds the next search, and sets the search for it: a check takes the root mover's
-    //diversity term and its candidate's reward (Search::diversityMoverIntoRoot = the root's player), a pass and the end
-    //of the searches take neither (C_EMPTY). A caller that stops before the end sets it back to C_EMPTY. False when
-    //the search gave no analysis.
+    //score centre (Search::fixedScoreCenter). KataGame fork (abscls-e0gz): done() also finds the next search, whose
+    //root board(), hist() and pla() then give, and sets search for it: a check takes the root mover's diversity term
+    //and its candidate's reward (Search::diversityMoverIntoRoot = the root's player), a pass and the end of the
+    //searches take neither (C_EMPTY). The caller calls resetSearchSettings at its end, also when a search stops early.
+    //False when the search gave no analysis.
     bool done(Search& search, Loc chosen);
     //The response, the analysis engine's, and the chosen move, from the searches done and from running, the search
     //that next() gave, as it is now (nullptr: none): a reply during the search, or the best check or pass so far when
@@ -158,6 +157,11 @@ namespace RootViews {
     double share_ = 1.0;
     Results results_;
   };
+
+  //The settings that Searches gives a search, back to their defaults: the score centre (Search::fixedScoreCenter, NAN)
+  //and the checks' diversity term (Search::diversityMoverIntoRoot, C_EMPTY). Each caller of Searches calls it at its
+  //end, also when a search stops early.
+  void resetSearchSettings(Search& search);
 
   //The search of the root's views (above), of the position's cover views: writes the analysis engine's response in
   //ret and the chosen move in choice, or returns false when a search was stopped or had no result. Each search takes
