@@ -65,10 +65,15 @@ static HumanStarts::Settings settingsOf(const map<string, string>& kvs, bool& re
   return s;
 }
 
+static void readText(HumanStarts::Starts& starts, const string& text) {
+  istringstream in(text);
+  starts.read(in);
+}
+
 static bool refusedText(const string& text, const string& what) {
   HumanStarts::Starts starts;
   try {
-    starts.loadText(text);
+    readText(starts, text);
   }
   catch(const StringError&) {
     return true;
@@ -176,7 +181,7 @@ int main(int argc, char** argv) {
   const string text = out.str();
 
   HumanStarts::Starts starts;
-  starts.loadText(text);
+  readText(starts, text);
   const vector<Rgsc::Entry>& states = starts.states();
   check(states.size() == texts.size(), "every good state is kept once: " + Global::uint64ToString(states.size()) +
         " of " + Global::uint64ToString(texts.size()));

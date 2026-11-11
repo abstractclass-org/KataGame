@@ -1,20 +1,16 @@
 #include "../program/humanstarts.h"
 
 #include <fstream>
-#include <sstream>
 #include <unordered_set>
 
+#include "../core/fileutils.h"
 #include "../core/global.h"
 #include "../core/test.h"
-#include "../dataio/trainingwrite.h"
 #include "../external/nlohmann_json/json.hpp"
 
 using namespace std;
 
 const char* HumanStarts::FORMAT = "human-starts";
-
-//The rows' C74 and the SGF record's gtype read the same code (FinishedGameData::rgscSource).
-static_assert((int)Rgsc::SOURCE_HUMAN == FinishedGameData::SOURCE_HUMAN_START, "one code for a human start");
 
 HumanStarts::Settings HumanStarts::Settings::load(ConfigParser& cfg) {
   Settings s;
@@ -34,30 +30,28 @@ Rgsc::Context HumanStarts::context() {
 }
 
 void HumanStarts::Starts::load(const string& file) {
-  ifstream in(file);
-  if(!in)
-    throw StringError("Human starts: cannot read " + file);
-  ostringstream text;
-  text << in.rdbuf();
+  //A line at a time: the file of a run holds about 70 MB.
+  ifstream in;
+  FileUtils::open(in, file);
   try {
-    loadText(text.str());
+    read(in);
   }
   catch(const StringError& e) {
     throw StringError(string(e.what()) + " (" + file + ")");
   }
 }
 
-void HumanStarts::Starts::loadText(const string& text) {
+void HumanStarts::Starts::read(istream& in) {
   entries.clear();
   numRejected = 0;
   numDuplicates = 0;
   firstRejections.clear();
-  istringstream in(text);
   string line;
   bool header = false;
   int64_t lineNumber = 0;
   unordered_set<uint64_t> keys;
   Board board;
+  GameRules::Position p;
   auto reject = [&](const string& why) {
     numRejected++;
     if(firstRejections.size() < 5)
@@ -91,7 +85,6 @@ void HumanStarts::Starts::loadText(const string& text) {
       continue;
     }
     const string state = j["state"].get<string>();
-    static thread_local GameRules::Position p;
     string why;
     if(!GameInterface::parseState<GameRules>(state, p, why)) {
       reject("the state does not parse: " + why);
@@ -124,7 +117,8 @@ string HumanStarts::Starts::summary() const {
   return s;
 }
 
-void HumanStarts::drawAtStart(Rand& rand, Sgf::PositionSample& start) {
+//The game's draws at its start (GameInterface::drawStart) on an exact start's board.
+static void drawAtStart(Rand& rand, Sgf::PositionSample& start) {
   if constexpr(GameInterface::rules::HasDrawStart<GameRules>::value) {
     GameRules::Position p = start.board.pos;
     GameInterface::drawStart<GameRules>(p, [&rand]() { return rand.nextUInt64(); });

@@ -5,6 +5,7 @@
 #include "../core/sha2.h"
 #include "../dataio/files.h"
 #include "../program/playutils.h"
+#include "../program/rgsc.h"
 
 #include "../external/nlohmann_json/json.hpp"
 
@@ -2091,7 +2092,7 @@ void WriteSgf::writeSgf(
       commentOut << "," << "gtype=handicap";
     //KataGame fork (2026-11-11, abscls-7ald): a start from the file of people's positions (program/humanstarts.h) is
     //an exact start as RGSC's restarts are, with its own gtype.
-    else if(gameData->mode == FinishedGameData::MODE_SGFPOS && gameData->rgscSource == FinishedGameData::SOURCE_HUMAN_START)
+    else if(gameData->mode == FinishedGameData::MODE_SGFPOS && gameData->rgscSource == Rgsc::SOURCE_HUMAN)
       commentOut << "," << "gtype=humanpos";
     else if(gameData->mode == FinishedGameData::MODE_SGFPOS)
       commentOut << "," << "gtype=sgfpos";

@@ -27,6 +27,7 @@
 //With humanStartProb 0 (the default), self-play draws nothing and runs as without this file.
 
 #include <cstdint>
+#include <istream>
 #include <string>
 #include <vector>
 
@@ -57,14 +58,11 @@ namespace HumanStarts {
     //Loads the file. Throws when it cannot be read, its header is not one of this format and version, or no state is
     //kept.
     void load(const std::string& file);
-    //Loads the file's text, the same way (the tests).
-    void loadText(const std::string& text);
+    //Loads the lines of a stream, the same way (the file's, or a test's), a line at a time.
+    void read(std::istream& in);
 
-    size_t size() const { return entries.size(); }
     int64_t rejected() const { return numRejected; }
     int64_t duplicates() const { return numDuplicates; }
-    //The first reasons of the rejections, for the log.
-    const std::vector<std::string>& rejections() const { return firstRejections; }
     //The states that the load kept, in the file's order: each state's text, key (Rgsc::stateKey with context()) and
     //turn number.
     const std::vector<Rgsc::Entry>& states() const { return entries; }
@@ -81,11 +79,9 @@ namespace HumanStarts {
     std::vector<Rgsc::Entry> entries;
     int64_t numRejected = 0;
     int64_t numDuplicates = 0;
+    //The first reasons of the rejections, for the summary.
     std::vector<std::string> firstRejections;
   };
-
-  //The game's draws at its start (GameInterface::drawStart) on an exact start's board.
-  void drawAtStart(Rand& rand, Sgf::PositionSample& start);
 }
 
 #endif  // PROGRAM_HUMANSTARTS_H_

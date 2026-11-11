@@ -58,6 +58,8 @@ namespace Rgsc {
   //file of people's positions (SOURCE_HUMAN, program/humanstarts.h), which is not a restart: it neither updates nor
   //offers to a buffer.
   enum Source { SOURCE_NONE = 0, SOURCE_VANILLA = 1, SOURCE_SWING = 2, SOURCE_HUMAN = 3 };
+  //Whether a game of this source restarted from one of RGSC's buffers.
+  inline bool fromBuffer(int source) { return source == SOURCE_VANILLA || source == SOURCE_SWING; }
   //Where a buffer state came from: a state that a search evaluated (the tracker's candidate), or a played position.
   //Unknown for states saved before 2026-10-11.
   enum Origin { ORIGIN_UNKNOWN = 0, ORIGIN_TREE = 1, ORIGIN_PLAYED = 2 };
