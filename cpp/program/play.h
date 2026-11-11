@@ -310,6 +310,10 @@ namespace Play {
     std::string view;  //the view of the pass's root, "" the rules'
     int64_t visits;    //the root's visits at the pass's end
     double value;      //the pass's value for the player to move: the utility of the child of its most visited move
+    //KataGame fork (abscls-e0gz): the player of the pass's diversity term (Search::diversityPla) and its root's reward
+    //(SearchNode::diversityReward), which only a check of the root's views has
+    Player diversityPla;
+    double rootReward;
   };
   struct RootViewsSearch {
     std::vector<RootViewsPass> passes;  //each search of a root in a view of the cover, in the cover's order

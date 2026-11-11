@@ -34,13 +34,16 @@
 //   - A full search with rootViewsCheapPasses: a pass for each view of the cover, in its order, each of
 //     min(cheapSearchVisits, maxVisits) visits. The move's view is the view of the first pass of the best value. The
 //     move's search has maxVisits visits, all of its own (Search::lastSearchNumPlayouts: a new tree), and the bot
-//     holds it, its root in that view.
+//     holds it, its root in that view. That search has the player's own diversity term and no reward at its root.
 //   - A full search without it: a pass for each view, each of maxVisits visits, and the move's view is the view of the
 //     first pass of the best value. The bot holds the move's search only when that pass is the last.
-//   - A cheap search with it: as without it. For member 0, the analysis engine's split: the passes take shares of
-//     cheapSearchVisits, and the move's search has at most cheapSearchVisits visits. For a member 1 to 4, a pass for
-//     each view of ceil(cheapSearchVisits / views) visits, and the move's search is one of them.
+//   - A cheap search with it: as without it, the analysis engine's split for every member (abscls-e0gz): the passes
+//     take shares of cheapSearchVisits, and the move's search has at most cheapSearchVisits visits.
 //   - A side position with it (the bot's own limits): a pass for each view of maxVisits visits, as without it.
+//   - In each of these searches (abscls-e0gz), each pass has the player's own diversity term (Search::diversityPla)
+//     and no reward at its root, as only a check of the root's views continues a search below a move. The setting of
+//     the checks (Search::diversityMoverIntoRoot) is off (C_EMPTY) after the search. With a member 1 to 4 in
+//     OVERRIDES, the term is the member's.
 //   The bots take the config with OVERRIDES, then PASSES_OVERRIDES when given (OUT_DIR "" for no files): for example
 //   bpj5's visits (maxVisits=600,cheapSearchVisits=100) on the positions of short games.
 //   The test prints, for each position, the network's rows of the full search with the setting and without it, each
@@ -86,6 +89,7 @@
 #include "../../program/rgsc.h"
 #include "../../program/rootviews.h"
 #include "../../program/setup.h"
+#include "../../search/searchnode.h"
 
 using namespace std;
 
@@ -312,7 +316,6 @@ static void checkPasses(const PassesPosition& p, const SearchParams& params, NNE
   const vector<string> cover = RootViews::cover(p.board);
   const int64_t maxVisits = params.maxVisits;
   const int64_t cheapVisits = std::min(maxVisits, (int64_t)playSettings.cheapSearchVisits);
-  const bool member = Search::resolveDiversityWeight(params) != 0.0;  //a diversity term: AZdb's members 1 to 4
   PlaySettings on = playSettings, off = playSettings;
   on.rootViewsCheapPasses = true;
   off.rootViewsCheapPasses = false;
@@ -322,7 +325,8 @@ static void checkPasses(const PassesPosition& p, const SearchParams& params, NNE
   int64_t rows = 0;  //the network's rows of the last search, from an empty cache
   string where;      //the last search's position and name, for the checks' messages
   //A search of the position by a new bot, with the checks of every search: a pass for each view of the cover, in its
-  //order, and the move legal in its view.
+  //order, each with the player's own term and no reward at its root, the move legal in its view, and the checks'
+  //setting off at the end.
   auto search = [&](const PlaySettings& settings, Play::RootViewsLimits limits, const string& name) {
     where = p.where + ", " + name;
     bot.reset(new Search(params, nnEval, &logger, "testselfplayviews passes " + p.where));
@@ -337,6 +341,10 @@ static void checkPasses(const PassesPosition& p, const SearchParams& params, NNE
     for(size_t i = 0; i < s.passes.size() && i < cover.size(); i++)
       check(s.passes[i].view == cover[i], where + ": pass " + to_string(i) + " in view '" + s.passes[i].view +
             "', the cover's '" + cover[i] + "'");
+    for(size_t i = 0; i < s.passes.size(); i++)
+      check(s.passes[i].diversityPla == p.pla && s.passes[i].rootReward == 0.0,
+            where + ": pass " + to_string(i) + " with the player's own term and no reward at its root");
+    check(bot->diversityMoverIntoRoot == C_EMPTY, where + ": the checks' setting is off after the search");
     Board viewed = p.board;
     FinishedGameData::setBoardView(viewed, s.view);
     check(GameRules::is_legal(viewed.pos, Board::actionOfMoveLoc(s.loc)), where + ": the move in its view");
@@ -368,6 +376,8 @@ static void checkPasses(const PassesPosition& p, const SearchParams& params, NNE
   Board viewed = p.board;
   FinishedGameData::setBoardView(viewed, cheapPasses.view);
   check(GameRules::hash(bot->rootBoard.pos) == GameRules::hash(viewed.pos), where + ": the bot's root in the view");
+  check(bot->diversityPla == p.pla && bot->rootNode->diversityReward == 0.0,
+        where + ": the move's search with the player's own term and no reward at its root");
 
   //A full search without it.
   const Play::RootViewsSearch wholePasses = search(off, Play::RootViewsLimits::FULL, "a full search");
@@ -383,19 +393,11 @@ static void checkPasses(const PassesPosition& p, const SearchParams& params, NNE
 
   //A cheap search with it.
   const Play::RootViewsSearch cheap = search(on, Play::RootViewsLimits::CHEAP, "a cheap search");
-  if(member) {
-    //shareOfLimits's share, as play.cpp computes it
-    const int64_t share = std::max((int64_t)1, (int64_t)ceil((double)cheapVisits * (1.0 / cover.size())));
-    passVisits(cheap, share);
-    check(cheap.visits == share, where + ": the move's search of " + to_string(cheap.visits) + " visits");
-  }
-  else {
-    int64_t sum = 0;
-    for(const Play::RootViewsPass& pass : cheap.passes)
-      sum += pass.visits;
-    check(sum <= cheapVisits + (int64_t)cover.size(), where + ": passes of " + to_string(sum) + " visits");
-    check(cheap.visits <= cheapVisits, where + ": the move's search of " + to_string(cheap.visits) + " visits");
-  }
+  int64_t sum = 0;
+  for(const Play::RootViewsPass& pass : cheap.passes)
+    sum += pass.visits;
+  check(sum <= cheapVisits + (int64_t)cover.size(), where + ": passes of " + to_string(sum) + " visits");
+  check(cheap.visits <= cheapVisits, where + ": the move's search of " + to_string(cheap.visits) + " visits");
 
   //A side position with it.
   const Play::RootViewsSearch side = search(on, Play::RootViewsLimits::SIDE_POSITION, "a side position");

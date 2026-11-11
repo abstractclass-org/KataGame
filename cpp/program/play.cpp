@@ -1502,7 +1502,9 @@ static bool searchRootViews(
   };
   auto recordPass = [&](const string& view) {
     if(record != NULL)
-      record->passes.push_back(Play::RootViewsPass{view, bot->getRootVisits(), passValue(bot, pla)});
+      record->passes.push_back(Play::RootViewsPass{
+        view, bot->getRootVisits(), passValue(bot, pla), bot->diversityPla,
+        bot->rootNode == NULL ? 0.0 : bot->rootNode->diversityReward});
   };
   //The search of the root in view with the action's limits, which the turn takes. The bot holds its tree.
   auto searchView = [&](const string& view) {
