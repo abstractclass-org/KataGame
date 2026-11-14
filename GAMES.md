@@ -636,6 +636,16 @@ member `Diversity` (above). A game without it gives every member the reward 0.
   it (`NeuralNet::computesIntrinsicHead`), no copy of the game's state (`Search::setDiversityState`), and the eval
   cache. A member of 1 to 4 needs a model of V14. The search clears its tree when P changes, as for the pattern bonus,
   and when the state, the member or w changes. `testdiversitysearch` checks the term ("The checks").
+- **The team** (the setting `diversityTeam`, `none` by default, or `value`) chooses the member of each search from the
+  5 members (`Search::chooseDiversityTeamMember`). With `value`, before each search each member's network evaluates
+  the root once, with the search's other inputs, and the member with the highest value for the player to move (win
+  less loss of its own value head, the lowest member of equal values) becomes the search's `diversityMember`. This is
+  the value rule of the paper's sub-additive planning, on the network's value in place of each member's search. A
+  change of the member clears the tree. A ponder and a check of the root's views keep the member of their search. The
+  team needs what members 1 to 4 need (the search refuses it otherwise), and a config gives no `diversityMember`
+  beside it. The analysis engine's response gives `rootInfo`'s `teamMember`, the chosen member, and `teamWinrates`,
+  each member's raw winrate of the root in the response's perspective, as `rawWinrate`. `testdiversitysearch` checks
+  the choice, the response and the refusals.
 - **The analysis engine** reads the run's state of the members once, at its start: the league's file that self-play
   writes, which the setting `diversityStateFile` names (`AZdb::readState`: ψ, μ, σ and ℓ0 as the file holds them,
   with the league's checks). The state then stays the same for the engine's life, and every search shares it

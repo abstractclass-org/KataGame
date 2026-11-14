@@ -124,6 +124,14 @@ struct SearchParams {
   //λ is. The engine repository's games/blueprints/docs/research/diversity-players.md, "The search".
   int diversityMember;
   double diversityLambda;
+  //KataGame fork (abscls-hqyw.15): AZdb's team, the rule that chooses the member of each search from the team of
+  //NNInputs::NUM_DIVERSITY_MEMBERS members (Search::chooseDiversityTeamMember). DIVERSITY_TEAM_NONE: the search's
+  //member is diversityMember. DIVERSITY_TEAM_VALUE: before each search, each member's network evaluates the root,
+  //and the member with the highest value of the player to move searches (the paper's value rule, on the network's
+  //value in place of each member's search). The chosen member is then diversityMember, as if it were set.
+  int diversityTeam;
+  static constexpr int DIVERSITY_TEAM_NONE = 0;
+  static constexpr int DIVERSITY_TEAM_VALUE = 1;
 
   float nnPolicyTemperature; //Scale neural net policy probabilities by this temperature, applies everywhere in the tree
   bool antiMirror; //Enable anti-mirroring logic

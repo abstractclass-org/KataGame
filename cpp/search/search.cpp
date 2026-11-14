@@ -86,6 +86,8 @@ Search::Search(const SearchParams& params, NNEvaluator* nnEval, NNEvaluator* hum
    recentScoreCenter(0.0),
    fixedScoreCenter(std::numeric_limits<double>::quiet_NaN()),
    diversityMoverIntoRoot(C_EMPTY),
+   diversityTeamMember(-1),
+   diversityTeamValues(),
    mirroringPla(C_EMPTY),
    mirrorAdvantage(0.0),
    mirrorCenterSymmetryError(1e10),
@@ -565,6 +567,11 @@ void Search::runWholeSearch(
     logger->write("Warning: int64_t atomic numPlayoutsShared is not lock free");
   if(!std::atomic_is_lock_free(&shouldStopNow))
     logger->write("Warning: bool atomic shouldStopNow is not lock free");
+
+  //KataGame fork (abscls-hqyw.15): AZdb's team chooses the member of this search first, as a change of the member
+  //clears the tree.
+  if(searchParams.diversityTeam != SearchParams::DIVERSITY_TEAM_NONE && !pondering && diversityMoverIntoRoot == C_EMPTY)
+    chooseDiversityTeamMember();
 
   //Do this first, just in case this causes us to clear things and have 0 effective time carried over
   beginSearch(pondering);

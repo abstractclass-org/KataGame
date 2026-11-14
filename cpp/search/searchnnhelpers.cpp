@@ -8,6 +8,10 @@
 //------------------------
 
 void Search::computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwnerMap) {
+  computeRootNNEvaluation(nnResultBuf, includeOwnerMap, searchParams.diversityMember);
+}
+
+void Search::computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwnerMap, int member) {
   Board board = rootBoard;
   const BoardHistory& hist = rootHistory;
   Player pla = rootPla;
@@ -26,7 +30,7 @@ void Search::computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwner
       getOpp(pla) == playoutDoublingAdvantagePla ? -searchParams.playoutDoublingAdvantage : searchParams.playoutDoublingAdvantage
     );
   }
-  nnInputParams.diversityMember = searchParams.diversityMember;  //KataGame fork: AZdb's latent, the search's member
+  nnInputParams.diversityMember = member;  //KataGame fork: AZdb's latent, by default the search's member
   if(searchParams.ignorePreRootHistory || searchParams.ignoreAllHistory)
     nnInputParams.maxHistory = 0;
   nnEvaluator->evaluate(

@@ -349,6 +349,23 @@ double Search::computeDiversityRewardOfMove(const Board& board) const {
 }
 
 void Search::checkDiversitySetup(const SearchParams& params, const NNEvaluator* nnEval, bool hasState) {
+  //KataGame fork (abscls-hqyw.15): a team searches with each of its members in turn, so each member must be able to.
+  if(params.diversityTeam != SearchParams::DIVERSITY_TEAM_NONE) {
+    if(params.diversityTeam != SearchParams::DIVERSITY_TEAM_VALUE)
+      throw StringError("diversityTeam must be none or value");
+    SearchParams one = params;
+    one.diversityTeam = SearchParams::DIVERSITY_TEAM_NONE;
+    for(int m = 0; m < NNInputs::NUM_DIVERSITY_MEMBERS; m++) {
+      one.diversityMember = m;
+      try {
+        checkDiversitySetup(one, nnEval, hasState);
+      }
+      catch(const StringError& e) {
+        throw StringError(string("diversityTeam: ") + e.what());
+      }
+    }
+    return;
+  }
   const int member = params.diversityMember;
   if(member < 0 || member >= NNInputs::NUM_DIVERSITY_MEMBERS)
     throw StringError("diversityMember must be from 0 to " + Global::intToString(NNInputs::NUM_DIVERSITY_MEMBERS - 1));
@@ -377,6 +394,29 @@ void Search::checkDiversitySetup(const SearchParams& params, const NNEvaluator* 
                "file that the analysis engine's setting diversityStateFile names");
   if(params.useEvalCache)
     refuseTerm("cannot run with useEvalCache, whose cached utilities leave the term out");
+}
+
+void Search::chooseDiversityTeamMember() {
+  checkDiversitySetup(searchParams, nnEvaluator, diversityState != nullptr);
+  diversityTeamValues.assign(NNInputs::NUM_DIVERSITY_MEMBERS, 0.0);
+  int best = 0;
+  for(int m = 0; m < NNInputs::NUM_DIVERSITY_MEMBERS; m++) {
+    //The root's evaluation as the search's own (includeOwnerMap as at the root), so that the chosen member's search
+    //finds it in the cache.
+    NNResultBuf buf;
+    computeRootNNEvaluation(buf, true, m);
+    const NNOutput& out = *buf.result;
+    const double whiteValue = (double)out.whiteWinProb - (double)out.whiteLossProb;
+    diversityTeamValues[m] = rootPla == P_WHITE ? whiteValue : -whiteValue;
+    if(diversityTeamValues[m] > diversityTeamValues[best])
+      best = m;
+  }
+  diversityTeamMember = best;
+  if(best != searchParams.diversityMember) {
+    SearchParams params = searchParams;
+    params.diversityMember = best;
+    setParamsNoClearing(params);
+  }
 }
 
 

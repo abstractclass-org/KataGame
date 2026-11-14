@@ -20,7 +20,8 @@
 //     the node constant is w s_P times the reward of the move into it, and the values are finite;
 //   - the reward's scale k = 100 (State's rewardScale) multiplies the rows' rewards and targets (AZdb::rowTargets) and
 //     the search's node rewards alike: k times those of k = 1. On a chain, D holds with the scaled rewards;
-//   - the refusals (no state, a model without the head, the eval cache), and the tree's clear when P changes;
+//   - the refusals (no state, a model without the head, the eval cache, and a team without the state or the head),
+//     and the tree's clear when P changes;
 //   - the checks of the root's views (abscls-e0gz). On chains, a search of a candidate's child that continues P's
 //     search (Search::diversityMoverIntoRoot) has the tree, the reward and the value of the candidate's node in P's
 //     search, both where the opponent moves next and where P moves again. Without the setting (a search for the
@@ -29,6 +30,9 @@
 //     P's term, a check of 1 visit has the value of its candidate's node of 1 visit in a pass and the value of the
 //     term's formula, and the end of the searches leaves the setting off. RootViews::search (the analysis engine's)
 //     answers with checks, and leaves the setting off at its end and when it stops during a check.
+//   - AZdb's team (abscls-hqyw.15, SearchParams::diversityTeam = value): the team's member is the member whose network
+//     gives the player to move the highest value at the root, its search is that member's search, the response
+//     reports the member and each member's raw winrate, and the config reads the team and refuses a member beside it;
 //
 //   testdiversitysearch MODEL MODEL_WITHOUT_HEAD [POSITIONS]
 //
@@ -60,6 +64,7 @@
 #include "../../neuralnet/nneval.h"
 #include "../../program/azdb.h"
 #include "../../program/rootviews.h"
+#include "../../program/setup.h"
 #include "../../search/asyncbot.h"
 #include "../../search/search.h"
 #include "../../search/searchnode.h"
@@ -1007,6 +1012,92 @@ int main(int argc, char** argv) {
            "rewards\n", k, G, rewards, targets, nodes, rewarded);
   }
 
+  //AZdb's team (abscls-hqyw.15), the value rule, at roots along the random game: the team's member is the member whose
+  //network gives the player to move the highest value at the root (win less loss, the lowest of equal values), and
+  //the team's search is that member's own search: the same visits, root utility and move. The response reports the
+  //member and each member's raw winrate. A search without a team chooses nothing and reports nothing. One search
+  //object that a team runs at each root changes its member as the roots ask (its tree cleared at each change).
+  {
+    SearchParams teamParams = params(30, 0, lambda);
+    teamParams.diversityTeam = SearchParams::DIVERSITY_TEAM_VALUE;
+    int chosen[AZdb::NUM_MEMBERS] = {0, 0, 0, 0, 0};
+    unique_ptr<Search> reused;
+    int roots = 0, reusedSame = 0;
+    for(int at = G / 8; at < G; at += std::max(1, G / 10)) {
+      const Position& root = game[at];
+      const string label = "team at action " + Global::intToString(at);
+      vector<double> values(AZdb::NUM_MEMBERS);
+      int want = 0;
+      for(int m = 0; m < AZdb::NUM_MEMBERS; m++) {
+        MiscNNInputParams in;
+        in.diversityMember = m;
+        NNResultBuf buf;
+        nnEval->evaluate(root.board, root.hist, root.pla(), in, buf, true, false);
+        const double white = (double)buf.result->whiteWinProb - (double)buf.result->whiteLossProb;
+        values[m] = root.pla() == P_WHITE ? white : -white;
+        if(values[m] > values[want])
+          want = m;
+      }
+      unique_ptr<Search> team = runSearch(nnEval, logger, teamParams, root, state);
+      check(team->diversityTeamMember == want && team->searchParams.diversityMember == want,
+            label + ": the member of the highest value");
+      for(int m = 0; m < AZdb::NUM_MEMBERS; m++)
+        check(near(team->diversityTeamValues[m], values[m], 1e-6), label + ": a member's value");
+      unique_ptr<Search> alone = runSearch(nnEval, logger, params(30, want, lambda), root, state);
+      check(visitsOf(*team->rootNode) == visitsOf(*alone->rootNode) &&
+            near(utilityOf(*team->rootNode), utilityOf(*alone->rootNode)) &&
+            team->getChosenMoveLoc() == alone->getChosenMoveLoc(), label + ": the chosen member's search");
+      nlohmann::json ret;
+      check(team->getAnalysisJson(C_EMPTY, 2, false, false, false, false, false, false, false, false, ret),
+            label + ": a response");
+      const nlohmann::json& info = ret["rootInfo"];
+      check(info.contains("teamMember") && info["teamMember"].get<int>() == want, label + ": the response's member");
+      bool winrates = info.contains("teamWinrates") && info["teamWinrates"].size() == (size_t)AZdb::NUM_MEMBERS;
+      for(int m = 0; winrates && m < AZdb::NUM_MEMBERS; m++)
+        winrates = near(info["teamWinrates"][m].get<double>(), 0.5 + 0.5 * values[m], 1e-4);
+      check(winrates, label + ": the response's winrates, from the side to move");
+      nlohmann::json plain;
+      alone->getAnalysisJson(C_EMPTY, 2, false, false, false, false, false, false, false, false, plain);
+      check(alone->diversityTeamMember == -1 && !plain["rootInfo"].contains("teamMember") &&
+            !plain["rootInfo"].contains("teamWinrates"), label + ": no team, no choice");
+      //One search object across the roots: each root's choice, and the move of the chosen member's search.
+      if(reused == nullptr)
+        reused = newSearch(nnEval, logger, teamParams, root, state, vector<int>());
+      else
+        reused->setPosition(root.pla(), root.board, root.hist);
+      reused->runWholeSearch(root.pla());
+      check(reused->diversityTeamMember == want, label + ": a reused search's member");
+      reusedSame += reused->getChosenMoveLoc() == alone->getChosenMoveLoc() ? 1 : 0;
+      chosen[want]++;
+      roots++;
+    }
+    check(roots >= 8, "team: enough roots");
+    printf("team: %d roots, the members chosen %d %d %d %d %d times; a reused search played the chosen member's move "
+           "at %d of them\n", roots, chosen[0], chosen[1], chosen[2], chosen[3], chosen[4], reusedSame);
+
+    //The config: diversityTeam is none or value, and refuses a diversityMember beside it.
+    {
+      map<string, string> kvs = {{"maxVisits", "10"}, {"numSearchThreads", "1"}, {"diversityTeam", "value"}};
+      ConfigParser cfg(kvs);
+      const SearchParams loaded = Setup::loadSingleParams(cfg, Setup::SETUP_FOR_ANALYSIS);
+      check(loaded.diversityTeam == SearchParams::DIVERSITY_TEAM_VALUE && loaded.diversityMember == 0,
+            "team: the config's value");
+      kvs["diversityMember"] = "2";
+      ConfigParser both(kvs);
+      try {
+        Setup::loadSingleParams(both, Setup::SETUP_FOR_ANALYSIS);
+        check(false, "team: the config's member beside a team: no refusal");
+      }
+      catch(const StringError& e) {
+        check(string(e.what()).find("diversityTeam") != string::npos, string("team: the config's member: ") + e.what());
+      }
+      ConfigParser none(map<string, string>{{"maxVisits", "10"}, {"numSearchThreads", "1"}});
+      check(Setup::loadSingleParams(none, Setup::SETUP_FOR_ANALYSIS).diversityTeam == SearchParams::DIVERSITY_TEAM_NONE,
+            "team: none by default");
+      printf("team: the config reads value, refuses a member beside it, and has none by default\n");
+    }
+  }
+
   //The refusals.
   {
     auto refuses = [&](NNEvaluator* eval, const SearchParams& p, const shared_ptr<const State>& s, const string& word,
@@ -1026,10 +1117,18 @@ int main(int argc, char** argv) {
     cached.useEvalCache = true;
     refuses(nnEval, cached, state, "useEvalCache", "the eval cache");
     refuses(nnEval, params(10, AZdb::NUM_MEMBERS, lambda), state, "diversityMember", "a member outside the team");
+    //AZdb's team: each member must be able to search, so a team needs what a member 1 to 4 needs.
+    SearchParams team = params(10, 0, lambda);
+    team.diversityTeam = SearchParams::DIVERSITY_TEAM_VALUE;
+    refuses(nnEval, team, nullptr, "diversityTeam", "a team without the state");
+    refuses(plainEval, team, state, "diversityTeam", "a team without the head");
     //w = 0 needs neither the head nor a state.
     runSearch(plainEval, logger, params(10, member, 1.0), game[G / 2], nullptr);
     runSearch(plainEval, logger, params(10, 0, lambda), game[G / 2], nullptr);
-    printf("refusals: no state, no head, the eval cache, a member outside the team\n");
+    team.diversityLambda = 1.0;
+    runSearch(plainEval, logger, team, game[G / 2], nullptr);
+    printf("refusals: no state, no head, the eval cache, a member outside the team, a team without the state or the "
+           "head\n");
   }
 
   //The tree: kept between P's moves (the new root without a reward), cleared when P changes, unless w = 0.

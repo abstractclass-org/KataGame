@@ -796,6 +796,16 @@ vector<SearchParams> Setup::loadParams(
     if(cfg.contains("diversityLambda"+idxStr)) params.diversityLambda = cfg.getDouble("diversityLambda"+idxStr, 0.0, 1.0);
     else if(cfg.contains("diversityLambda"))   params.diversityLambda = cfg.getDouble("diversityLambda", 0.0, 1.0);
     else                                       params.diversityLambda = 0.9;
+    //KataGame fork (abscls-hqyw.15): AZdb's team (SearchParams::diversityTeam), none or value. The team chooses the
+    //member of each search, so a member set beside it would mean nothing: the config gives one or the other.
+    {
+      const string key = cfg.contains("diversityTeam"+idxStr) ? "diversityTeam"+idxStr : "diversityTeam";
+      const string team = cfg.contains(key) ? cfg.getString(key, {"none", "value"}) : "none";
+      params.diversityTeam = team == "value" ? SearchParams::DIVERSITY_TEAM_VALUE : SearchParams::DIVERSITY_TEAM_NONE;
+      if(params.diversityTeam != SearchParams::DIVERSITY_TEAM_NONE && params.diversityMember != 0)
+        throw StringError("diversityTeam = " + team + " chooses the member of each search: give no diversityMember "
+                          "beside it (it is " + Global::intToString(params.diversityMember) + ")");
+    }
 
     if(cfg.contains("nnPolicyTemperature"+idxStr))
       params.nnPolicyTemperature = cfg.getFloat("nnPolicyTemperature"+idxStr,0.01f,5.0f);

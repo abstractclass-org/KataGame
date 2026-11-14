@@ -80,6 +80,7 @@ SearchParams::SearchParams()
    avoidRepeatedPatternUtility(0.0),
    diversityMember(0),
    diversityLambda(0.9),
+   diversityTeam(DIVERSITY_TEAM_NONE),
    nnPolicyTemperature(1.0f),
    antiMirror(false),
    ignorePreRootHistory(false),
@@ -218,6 +219,7 @@ bool SearchParams::operator==(const SearchParams& other) const {
 
     diversityMember == other.diversityMember &&
     diversityLambda == other.diversityLambda &&
+    diversityTeam == other.diversityTeam &&
 
     nnPolicyTemperature == other.nnPolicyTemperature &&
     antiMirror == other.antiMirror &&
@@ -483,6 +485,7 @@ json SearchParams::changeableParametersToJson() const {
 
   ret["diversityMember"] = diversityMember;
   ret["diversityLambda"] = diversityLambda;
+  ret["diversityTeam"] = diversityTeam;
 
   ret["nnPolicyTemperature"] = nnPolicyTemperature;
   // Special handling in GTP
@@ -672,6 +675,7 @@ void SearchParams::printParams(std::ostream& out) const {
 
   PRINTPARAM(diversityMember);
   PRINTPARAM(diversityLambda);
+  PRINTPARAM(diversityTeam);
 
   PRINTPARAM(nnPolicyTemperature);
   PRINTPARAM(antiMirror);

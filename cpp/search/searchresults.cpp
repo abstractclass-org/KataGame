@@ -2151,6 +2151,17 @@ bool Search::getAnalysisJson(
       rootInfo["rawStScoreError"] = Global::roundDynamic(nnOutput->shorttermScoreError,OUTPUT_PRECISION);
       rootInfo["rawVarTimeLeft"] = Global::roundDynamic(nnOutput->varTimeLeft,OUTPUT_PRECISION);
     }
+    //KataGame fork (abscls-hqyw.15): AZdb's team (SearchParams::diversityTeam): the member that the team chose for
+    //this search, and each member's raw winrate of the root, as rawWinrate, which the choice compared.
+    if(searchParams.diversityTeam != SearchParams::DIVERSITY_TEAM_NONE && diversityTeamMember >= 0) {
+      rootInfo["teamMember"] = diversityTeamMember;
+      json winrates = json::array();
+      for(double moverValue : diversityTeamValues) {
+        const double whiteValue = rootPla == P_WHITE ? moverValue : -moverValue;
+        winrates.push_back(Global::roundDynamic(0.5 + 0.5*whiteValue*flipFactor,OUTPUT_PRECISION));
+      }
+      rootInfo["teamWinrates"] = winrates;
+    }
     if(humanOutput != NULL) {
       rootInfo["humanWinrate"] = Global::roundDynamic(0.5 + 0.5*(humanOutput->whiteWinProb - humanOutput->whiteLossProb)*flipFactor,OUTPUT_PRECISION);
       rootInfo["humanScoreMean"] = Global::roundDynamic(humanOutput->whiteScoreMean*flipFactor,OUTPUT_PRECISION);
