@@ -1085,7 +1085,7 @@ int main(int argc, char** argv) {
       for(int at = G / 4; at < G; at += std::max(1, G / 4)) {
         const Position& root = game[at];
         unique_ptr<Search> team = runSearch(nnEval, logger, teamParams, root, state);
-        bool one = false;
+        bool atOneSymmetry = false;
         for(int s : SymmetryHelpers::ALLOWED) {
           bool all = true;
           for(int m = 0; all && m < AZdb::NUM_MEMBERS; m++) {
@@ -1097,9 +1097,9 @@ int main(int argc, char** argv) {
             const double white = (double)buf.result->whiteWinProb - (double)buf.result->whiteLossProb;
             all = near(team->diversityTeamValues[m], root.pla() == P_WHITE ? white : -white, 1e-6);
           }
-          one = one || all;
+          atOneSymmetry = atOneSymmetry || all;
         }
-        same += one ? 1 : 0;
+        same += atOneSymmetry ? 1 : 0;
         tried++;
       }
       nnEval->setDoRandomize(false);
