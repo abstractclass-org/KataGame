@@ -31,8 +31,9 @@
 //     term's formula, and the end of the searches leaves the setting off. RootViews::search (the analysis engine's)
 //     answers with checks, and leaves the setting off at its end and when it stops during a check.
 //   - AZdb's team (abscls-hqyw.15, SearchParams::diversityTeam = value): the team's member is the member whose network
-//     gives the player to move the highest value at the root, its search is that member's search, the response
-//     reports the member and each member's raw winrate, and the config reads the team and refuses a member beside it;
+//     gives the player to move the highest value at the root, its search is that member's search, the members' values
+//     come from one symmetry when the evaluator draws them at random, the response reports the member and each
+//     member's raw winrate, and the config reads the team and refuses a member beside it;
 //
 //   testdiversitysearch MODEL MODEL_WITHOUT_HEAD [POSITIONS]
 //
@@ -1075,15 +1076,47 @@ int main(int argc, char** argv) {
     printf("team: %d roots, the members chosen %d %d %d %d %d times; a reused search played the chosen member's move "
            "at %d of them\n", roots, chosen[0], chosen[1], chosen[2], chosen[3], chosen[4], reusedSame);
 
+    //With an evaluator that draws a random symmetry for each evaluation (nnRandomize), the members' values still come
+    //from one symmetry, so that they compare: at one allowed symmetry, each member's value is its value there. The
+    //network is random, so its values differ between symmetries, and a symmetry for each member would fail here.
+    {
+      nnEval->setDoRandomize(true);
+      int same = 0, tried = 0;
+      for(int at = G / 4; at < G; at += std::max(1, G / 4)) {
+        const Position& root = game[at];
+        unique_ptr<Search> team = runSearch(nnEval, logger, teamParams, root, state);
+        bool one = false;
+        for(int s : SymmetryHelpers::ALLOWED) {
+          bool all = true;
+          for(int m = 0; all && m < AZdb::NUM_MEMBERS; m++) {
+            MiscNNInputParams in;
+            in.diversityMember = m;
+            in.symmetry = s;
+            NNResultBuf buf;
+            nnEval->evaluate(root.board, root.hist, root.pla(), in, buf, true, false);
+            const double white = (double)buf.result->whiteWinProb - (double)buf.result->whiteLossProb;
+            all = near(team->diversityTeamValues[m], root.pla() == P_WHITE ? white : -white, 1e-6);
+          }
+          one = one || all;
+        }
+        same += one ? 1 : 0;
+        tried++;
+      }
+      nnEval->setDoRandomize(false);
+      check(tried >= 3 && same == tried, "team: the members' values from one symmetry");
+      printf("team: with random symmetries, the members' values came from one symmetry at %d of %d roots\n", same,
+             tried);
+    }
+
     //The config: diversityTeam is none or value, and refuses a diversityMember beside it.
     {
-      map<string, string> kvs = {{"maxVisits", "10"}, {"numSearchThreads", "1"}, {"diversityTeam", "value"}};
-      ConfigParser cfg(kvs);
-      const SearchParams loaded = Setup::loadSingleParams(cfg, Setup::SETUP_FOR_ANALYSIS);
+      map<string, string> teamKvs = {{"maxVisits", "10"}, {"numSearchThreads", "1"}, {"diversityTeam", "value"}};
+      ConfigParser teamCfg(teamKvs);
+      const SearchParams loaded = Setup::loadSingleParams(teamCfg, Setup::SETUP_FOR_ANALYSIS);
       check(loaded.diversityTeam == SearchParams::DIVERSITY_TEAM_VALUE && loaded.diversityMember == 0,
             "team: the config's value");
-      kvs["diversityMember"] = "2";
-      ConfigParser both(kvs);
+      teamKvs["diversityMember"] = "2";
+      ConfigParser both(teamKvs);
       try {
         Setup::loadSingleParams(both, Setup::SETUP_FOR_ANALYSIS);
         check(false, "team: the config's member beside a team: no refusal");

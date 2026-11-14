@@ -8,14 +8,15 @@
 //------------------------
 
 void Search::computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwnerMap) {
-  computeRootNNEvaluation(nnResultBuf, includeOwnerMap, searchParams.diversityMember);
+  computeRootNNEvaluation(nnResultBuf, includeOwnerMap, searchParams.diversityMember, NNInputs::SYMMETRY_NOTSPECIFIED);
 }
 
-void Search::computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwnerMap, int member) {
+void Search::computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwnerMap, int member, int symmetry) {
   Board board = rootBoard;
   const BoardHistory& hist = rootHistory;
   Player pla = rootPla;
-  bool skipCache = false;
+  //KataGame fork (abscls-hqyw.15): an explicit symmetry's own output, not the cache's entry of another symmetry.
+  bool skipCache = symmetry != NNInputs::SYMMETRY_NOTSPECIFIED;
   bool isRoot = true;
   MiscNNInputParams nnInputParams;
   nnInputParams.drawEquivalentWinsForWhite = searchParams.drawEquivalentWinsForWhite;
@@ -31,6 +32,7 @@ void Search::computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwner
     );
   }
   nnInputParams.diversityMember = member;  //KataGame fork: AZdb's latent, by default the search's member
+  nnInputParams.symmetry = symmetry;
   if(searchParams.ignorePreRootHistory || searchParams.ignoreAllHistory)
     nnInputParams.maxHistory = 0;
   nnEvaluator->evaluate(

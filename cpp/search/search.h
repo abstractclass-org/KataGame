@@ -340,7 +340,8 @@ struct Search {
   //analysis engine checks its config and each query with it, before their searches.
   static void checkDiversitySetup(const SearchParams& params, const NNEvaluator* nnEval, bool hasState);
   //KataGame fork (abscls-hqyw.15): AZdb's team's choice of the member of the next search (SearchParams::diversityTeam).
-  //The value rule: each member's network evaluates the root once, with the search's other inputs, and the member with
+  //The value rule: each member's network evaluates the root once, with the search's other inputs and one symmetry for
+  //all (so that the values compare), and the member with
   //the highest value for the player to move (the lowest of equal values) becomes the search's diversityMember. A
   //change of the member clears the tree (setParamsNoClearing). Sets diversityTeamMember and diversityTeamValues.
   //runWholeSearch calls it before each search of a team, except a ponder and a check of the root's views
@@ -658,8 +659,10 @@ public:
   //Enclosure fork (2026-10-21): public, for the network's outputs at the root that the search does not read (the
   //engine protocol's maps, command/enclosureprotocol.cpp). The root's inputs, as the search evaluates the root.
   void computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwnerMap);
-  //KataGame fork (abscls-hqyw.15): the same with AZdb's latent of ``member`` in place of the search's member.
-  void computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwnerMap, int member);
+  //KataGame fork (abscls-hqyw.15): the same with AZdb's latent of ``member`` in place of the search's member, and at
+  //``symmetry`` (NNInputs::SYMMETRY_NOTSPECIFIED: the evaluator's choice). An explicit symmetry skips the cache's
+  //lookup, as an entry can hold another symmetry's output.
+  void computeRootNNEvaluation(NNResultBuf& nnResultBuf, bool includeOwnerMap, int member, int symmetry);
 private:
   bool initNodeNNOutput(
     SearchThread& thread, SearchNode& node,

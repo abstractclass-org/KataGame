@@ -399,12 +399,18 @@ void Search::checkDiversitySetup(const SearchParams& params, const NNEvaluator* 
 void Search::chooseDiversityTeamMember() {
   checkDiversitySetup(searchParams, nnEvaluator, diversityState != nullptr);
   diversityTeamValues.assign(NNInputs::NUM_DIVERSITY_MEMBERS, 0.0);
+  //One symmetry for every member's evaluation, so that the values compare: a random allowed one when the evaluator
+  //randomizes, else its default. With a symmetry of each (the evaluator's draw, or a cache entry of an earlier
+  //evaluation), the symmetries' noise would take part in the choice.
+  const int symmetry = nnEvaluator->getDoRandomize()
+    ? SymmetryHelpers::ALLOWED[nonSearchRand.nextUInt(SymmetryHelpers::NUM_ALLOWED_SYMMETRIES)]
+    : nnEvaluator->getDefaultSymmetry();
   int best = 0;
   for(int m = 0; m < NNInputs::NUM_DIVERSITY_MEMBERS; m++) {
-    //The root's evaluation as the search's own (includeOwnerMap as at the root), so that the chosen member's search
-    //finds it in the cache.
+    //The root's evaluation as the search's own (includeOwnerMap as at the root). The evaluator keeps it in the cache,
+    //so the chosen member's search starts from it.
     NNResultBuf buf;
-    computeRootNNEvaluation(buf, true, m);
+    computeRootNNEvaluation(buf, true, m, symmetry);
     const NNOutput& out = *buf.result;
     const double whiteValue = (double)out.whiteWinProb - (double)out.whiteLossProb;
     diversityTeamValues[m] = rootPla == P_WHITE ? whiteValue : -whiteValue;
