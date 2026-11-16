@@ -74,9 +74,14 @@ SCORE_SCALE = 20.0       # people's median |margin|, 409 points, / KataGo's scor
 GAME_LENGTH = 132.0      # the actions of a game: 120 of the site's moves, and one more for each edit (C++)
 # KataGo's spatial losses read the board's area as the area of play: nearly every one of Go's 361 points ends owned. The
 # view's 4,489 hexes hold the window, and about 360 of them hold a cell at the game's end (bpj3's rows: a mean of 363,
-# a median of 361). So the ownership (C0), the future positions (C2-3) and the scoring slot (C4) read 361 hexes, and
-# every coefficient is KataGo's or Enclosure's (LOSS_COEFFICIENTS' defaults). C1 and C5-6 average over their own cells.
+# a median of 361). So the ownership (C0), the future positions (C2-3) and the scoring slot (C4) read 361 hexes. C1 and
+# C5-6 average over their own cells.
 LOSS_AREA = 361.0
+# Every coefficient is KataGo's or Enclosure's (LOSS_COEFFICIENTS' defaults). C4 (the points earned) and C2-3 (the
+# stars later) are the targets closest to how the game is won, and at KataGo's 0.25 they barely pull the trunk. But a
+# larger coefficient takes their own head weights past the trainer's step (the engine repository's
+# games/blueprints/docs/decisions/training.md, "C4 and C2-3: the heads' own weights limit their coefficients"):
+# C2-3's are at the limit at 0.25 already, and C4's reach 0.91 of it at 25.
 
 # The encoding's facts that the augmentation reads (gamerules.h, gameencoding.h). A plane's index in a batch is
 # 1 + its index here: KataGo's on-board plane comes first.

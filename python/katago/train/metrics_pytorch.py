@@ -231,7 +231,8 @@ class Metrics:
         loss = torch.square(torch.tanh(pred_pretanh) - target) * mask.unsqueeze(1)
         loss = loss * constant_like([1.0,0.25], loss).view(1,2,1,1)
         loss = torch.sum(loss, dim=(1, 2, 3)) / torch.sqrt(self.spatial_area(mask_sum_hw))
-        return 0.25 * global_weight * weight * loss
+        # KataGame fork: the game's coefficient (games.LOSS_COEFFICIENTS: futurepos), KataGo's 0.25 by default.
+        return self.loss_coefficients["futurepos"] * global_weight * weight * loss
 
 
     def loss_regret_value_samplewise(self, pred_regret, target_regret, weight, global_weight):
@@ -1089,7 +1090,7 @@ class Metrics:
             + loss_td_value3 * td_value_loss_scales[2]
             + loss_td_score
             + loss_ownership
-            + loss_scoring * 0.25
+            + loss_scoring * self.loss_coefficients["scoring"]  # KataGame fork: KataGo's 0.25 by default
             + loss_futurepos
             + loss_income
             + loss_regret_value

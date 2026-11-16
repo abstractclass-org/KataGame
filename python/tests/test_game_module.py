@@ -319,11 +319,53 @@ def test_a_module_that_sets_an_unknown_loss_coefficient_is_refused(monkeypatch):
         games.get("badcoefficients")
 
 
+# KataGo's ownership 1.5, scoring slot 0.25 and future positions 0.25, Enclosure's 1 for the seki slot and 1.5 for the
+# income slot (games.LOSS_COEFFICIENTS).
+DEFAULT_COEFFICIENTS = {"ownership": 1.5, "seki": 1.0, "income": 1.5, "scoring": 0.25, "futurepos": 0.25}
+
+
 def test_every_game_has_katagos_and_enclosures_coefficients_and_blueprints_reads_361_hexes():
-    # KataGo's ownership 1.5, Enclosure's 1 for the seki slot and 1.5 for the income slot (games.LOSS_COEFFICIENTS).
     for name, area in (("enclosure", None), ("connect4", None), ("blueprints", 361.0)):
-        assert games.loss_coefficients(games.get(name)) == {"ownership": 1.5, "seki": 1.0, "income": 1.5}
+        assert games.loss_coefficients(games.get(name)) == DEFAULT_COEFFICIENTS
         assert games.loss_area(games.get(name)) == area
+
+
+# losses()' loss sums before C4's and C2-3's coefficients (KataGame 22efb774, at 1 thread; Blueprints at the defaults).
+LOSS_SUMS_BEFORE = {  # loss_sum, sloss_sum, fploss_sum
+    "enclosure": ("0x1.cf24700000000p+7", "0x1.7f97000000000p-4", "0x1.056e240000000p+3"),
+    "connect4": ("0x1.7a0ca60000000p+6", "0x1.4760000000000p-7", "0x1.55496a0000000p+1"),
+    "blueprints": ("0x1.fef2ae0000000p+8", "0x1.9c23400000000p-2", "0x1.9691a40000000p+6"),
+}
+
+
+def losses_at_1_thread(game_name):
+    threads = torch.get_num_threads()
+    torch.set_num_threads(1)  # a sum's order, and so its last bits, can depend on the threads
+    try:
+        return losses(game_name)
+    finally:
+        torch.set_num_threads(threads)
+
+
+@pytest.mark.parametrize("game_name", sorted(LOSS_SUMS_BEFORE))
+def test_the_default_coefficients_give_the_loss_sums_of_before_bit_for_bit(game_name, monkeypatch):
+    # The coefficients take the place of KataGo's two 0.25s: at their defaults, the trainer's sums stay as they were.
+    monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", {}, raising=False)
+    out = losses_at_1_thread(game_name)
+    assert tuple(float.hex(out[k]) for k in ("loss_sum", "sloss_sum", "fploss_sum")) == LOSS_SUMS_BEFORE[game_name]
+
+
+def test_a_games_scoring_and_future_positions_coefficients_reach_their_losses(monkeypatch):
+    # C2-3's coefficient is in its loss (fploss), C4's in the total only (loss_sum's sloss times it), as KataGo's 0.25s.
+    monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", {}, raising=False)
+    default = losses_at_1_thread("blueprints")
+    scoring, futurepos = 25.0, 0.75
+    monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", {"scoring": scoring, "futurepos": futurepos})
+    own = losses_at_1_thread("blueprints")
+    assert own["fploss_sum"] == pytest.approx(futurepos / 0.25 * default["fploss_sum"], rel=1e-6)
+    added = (scoring - 0.25) * default["sloss_sum"] + own["fploss_sum"] - default["fploss_sum"]
+    assert own["loss_sum"] - default["loss_sum"] == pytest.approx(added, abs=1e-5 * own["loss_sum"])
+    assert all(own[k] == default[k] for k in own if k not in ("fploss_sum", "loss_sum")), own
 
 
 def metrics_of(game_name):
@@ -358,20 +400,23 @@ def test_the_ownership_loss_sums_the_points_over_the_games_loss_area(game_name, 
 
 @pytest.mark.parametrize("game_name,board,area", LOSS_AREAS)
 def test_the_future_positions_loss_sums_the_points_over_the_square_root_of_the_loss_area(game_name, board, area):
-    # KataGo's: 0.25 times the squared errors of each on-board point, the far horizon's times 0.25, summed over the row,
-    # over the square root of the area ("let's compromise and scale by sqrt(boardarea)").
+    # KataGo's: its coefficient (KataGo's 0.25, the game's futurepos) times the squared errors of each on-board point,
+    # the far horizon's times 0.25, summed over the row, over the square root of the area ("let's compromise and scale
+    # by sqrt(boardarea)").
     pred, target, weight, mask, mask_sum_hw, global_weight = spatial_rows(game_name, board)
     pred, target = torch.cat((pred, -pred), dim=1), torch.stack((target, -target), dim=1)
     loss = metrics_of(game_name).loss_futurepos_samplewise(pred, target, weight, mask, mask_sum_hw, global_weight)
     squares = torch.square(torch.tanh(pred) - target) * mask.unsqueeze(1)
-    expected = 0.25 * global_weight * (squares[:, 0] + 0.25 * squares[:, 1]).sum(dim=(1, 2)) / area ** 0.5
+    coefficient = games.loss_coefficients(games.get(game_name))["futurepos"]
+    expected = coefficient * global_weight * (squares[:, 0] + 0.25 * squares[:, 1]).sum(dim=(1, 2)) / area ** 0.5
     assert torch.allclose(loss, expected)
 
 
 @pytest.mark.parametrize("game_name,board,area", LOSS_AREAS)
 def test_the_scoring_loss_is_katagos_transform_of_the_squared_errors_over_the_loss_area(game_name, board, area):
     # KataGo's: the squared errors of each on-board point, summed over the row, over the area: x. Then its "huberlike
-    # transform", 4 (sqrt(x / 2 + 1) - 1). The coefficient 0.25 is in the total (metrics_pytorch, loss_sum).
+    # transform", 4 (sqrt(x / 2 + 1) - 1). Its coefficient (KataGo's 0.25, the game's scoring) is in the total
+    # (metrics_pytorch, loss_sum).
     pred, target, weight, mask, mask_sum_hw, global_weight = spatial_rows(game_name, board)
     loss = metrics_of(game_name).loss_scoring_samplewise(pred, target, weight, mask, mask_sum_hw, global_weight)
     x = (torch.square(pred[:, 0] - target) * mask).sum(dim=(1, 2)) / area

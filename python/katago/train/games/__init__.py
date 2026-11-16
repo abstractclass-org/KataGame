@@ -114,9 +114,11 @@ TARGET_NEXT_PIECES = 1 << 5    # C7, flagged in C75: the next mover's pieces aft
 
 # The trainer's losses whose coefficients a game's LOSS_COEFFICIENTS can set, and their defaults (metrics_pytorch).
 LOSS_COEFFICIENTS = {
-    "ownership": 1.5,  # C0, KataGo's
-    "seki": 1.0,       # C1, with the classes of Enclosure's edges that get cut: Enclosure's
-    "income": 1.5,     # C5-6, Enclosure's
+    "ownership": 1.5,   # C0, KataGo's
+    "seki": 1.0,        # C1, with the classes of Enclosure's edges that get cut: Enclosure's
+    "futurepos": 0.25,  # C2-3, KataGo's: in the loss (fploss), before the far horizon's 0.25
+    "scoring": 0.25,    # C4, KataGo's: in loss_sum only (sloss is without it)
+    "income": 1.5,      # C5-6, Enclosure's
 }
 
 # A training row as the C++ row writer lays it out (dataio/trainingwrite.cpp, TrainingWriteBuffers): the channels of
