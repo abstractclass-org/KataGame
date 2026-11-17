@@ -110,7 +110,7 @@ def test_the_weighted_hessian_by_chunks_of_rows_is_that_of_the_whole_batch(monke
     size = sum(float((w * w).sum()) for w in whole) ** 0.5
     assert size > 0
     assert sum(float(((a - b) ** 2).sum()) for a, b in zip(chunks, whole)) ** 0.5 < 1e-4 * size
-    assert model.value_head.scoring_gradient_scale == 400.0 and metrics.loss_coefficients["scoring"] == 0.25
+    assert model.value_head.shared_gradient_scales["scoring"] == 400.0 and metrics.loss_coefficients["scoring"] == 0.25
     # At the scales 1 and the coefficients 0.25 x 400 and 0.25 x 4 directly, the same product.
     plain = blueprints_b6c96(monkeypatch, {})
     plain_metrics = Metrics(1, plain)

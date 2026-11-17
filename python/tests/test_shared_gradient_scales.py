@@ -102,7 +102,7 @@ def test_every_game_but_blueprints_has_the_factor_1_and_the_model_reads_its_game
                          ("blueprints", {"futurepos": 2.0, "scoring": 400.0})):
         assert games.shared_gradient_scales(games.get(name)) == scales
         head = b6c96(name, 1).value_head
-        assert (head.scoring_gradient_scale, head.futurepos_gradient_scale) == (scales["scoring"], scales["futurepos"])
+        assert head.shared_gradient_scales == scales
 
 
 def test_a_module_that_sets_the_scale_of_an_unknown_head_is_refused(monkeypatch):

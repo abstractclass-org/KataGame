@@ -239,10 +239,9 @@ def steps(args):
             for p in group["params"]:
                 buf = optimizer.state[p].get("momentum_buffer")
                 assert buf is None or buf.shape == p.shape, "the checkpoint's momentum does not fit the model"
-    factor = {"output": HEAD_LR_FACTOR, "output_noreg": HEAD_LR_FACTOR * NOREG_LR_FACTOR, "noreg": NOREG_LR_FACTOR,
-              "input_noreg": NOREG_LR_FACTOR}
+    factors = group_factors(model, HEAD_LR_FACTOR, NOREG_LR_FACTOR)
     for group in optimizer.param_groups:
-        group["lr"] = LR * factor.get(group["group_name"], 1.0) / LOOKAHEAD_ALPHA
+        group["lr"] = LR * factors[id(group["params"][0])] / LOOKAHEAD_ALPHA
         group["weight_decay"] = trainer_weight_decay(group["group_name"], model.config["norm_kind"], args.batch_size)
     cap = {"fixup": 2500.0, "fixscale": 2500.0, "fixscaleonenorm": 2500.0}.get(model.config["norm_kind"], 5500.0)
     cap *= math.sqrt(args.batch_size / 256.0)
@@ -280,8 +279,8 @@ def steps(args):
                     p.copy_(s)
         finite = all(math.isfinite(float(v.detach() if torch.is_tensor(v) else v))
                      for k, v in results.items() if k.endswith("_sum"))
-        per = {k: float(results[k]) / rows for k in ("loss_sum", "p0loss_sum", "vloss_sum", "oloss_sum", "sloss_sum",
-                                                    "fploss_sum")}
+        per = {k: float(results[k].detach()) / rows
+               for k in ("loss_sum", "p0loss_sum", "vloss_sum", "oloss_sum", "sloss_sum", "fploss_sum")}
         print(f"{step:>4} {per['loss_sum']:>9.4f} {per['p0loss_sum']:>8.4f} {per['vloss_sum']:>7.4f} "
               f"{per['oloss_sum']:>7.4f} {per['sloss_sum']:>9.6f} {per['fploss_sum'] / c23:>9.5f} {gnorm:>9.3f} "
               f"{'yes' if gnorm > cap else 'no':>7} {'yes' if finite else 'NO':>6}", flush=True)

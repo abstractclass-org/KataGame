@@ -3030,9 +3030,8 @@ class ValueHead(torch.nn.Module):
         # KataGame fork: the factor on the gradient that C4's head (conv_scoring) and C2-3's (conv_futurepos's channels
         # 0:2) send into the layers that they share with the others (games.SHARED_GRADIENT_SCALES). At 1, KataGo's
         # path.
-        scales = games.shared_gradient_scales(modelconfigs.get_game(config))
-        self.scoring_gradient_scale = float(scales["scoring"])
-        self.futurepos_gradient_scale = float(scales["futurepos"])
+        self.shared_gradient_scales = {head: float(scale) for head, scale in
+                                       games.shared_gradient_scales(modelconfigs.get_game(config)).items()}
 
         self.pos_len = pos_len
         self.scorebelief_mid = self.pos_len*self.pos_len + EXTRA_SCORE_DISTR_RADIUS
@@ -3146,6 +3145,12 @@ class ValueHead(torch.nn.Module):
     def add_brenorm_clippage(self, upper_rclippage, lower_rclippage, dclippage):
         pass
 
+    def scaled_input(self, x, head: str):
+        """KataGame fork: x, with the head's shared gradient scale on the gradient that goes back through it. At 1, x
+        itself: KataGo's path."""
+        scale = self.shared_gradient_scales[head]
+        return x if scale == 1.0 else GradientScaleFunction.apply(x, scale)
+
     def forward(self, x, mask, mask_sum_hw, mask_sum:float, input_global, extra_outputs: Optional[ExtraOutputs]):
         outv1 = x
         outv1 = self.conv1(outv1)
@@ -3162,20 +3167,16 @@ class ValueHead(torch.nn.Module):
         out_miscvalue = self.linear_miscvaluehead(outv2)
         out_moremiscvalue = self.linear_moremiscvaluehead(outv2)
         out_ownership = self.conv_ownership(outv1) * mask
-        if self.scoring_gradient_scale == 1.0:
-            out_scoring = self.conv_scoring(outv1) * mask
-        else:
-            # KataGame fork: on C4's own path only, after the shared activation: the value, the scores and the
-            # ownership read outv1 without the factor.
-            out_scoring = self.conv_scoring(GradientScaleFunction.apply(outv1, self.scoring_gradient_scale)) * mask
-        if self.futurepos_gradient_scale == 1.0:
+        # KataGame fork: C4's factor on its own path only, after the shared activation: the value, the scores and the
+        # ownership read outv1 without the factor.
+        out_scoring = self.conv_scoring(self.scaled_input(outv1, "scoring")) * mask
+        if self.shared_gradient_scales["futurepos"] == 1.0:
             out_futurepos = self.conv_futurepos(x) * mask
         else:
             # KataGame fork: C2-3's channels 0:2 read x with the factor, C5-6's 2:4 without it. Two convolutions on
             # slices of the one weight, so that the checkpoint's shapes stay.
             weight = self.conv_futurepos.weight
-            scaled = GradientScaleFunction.apply(x, self.futurepos_gradient_scale)
-            out_futurepos = torch.cat((torch.nn.functional.conv2d(scaled, weight[0:2]),
+            out_futurepos = torch.cat((torch.nn.functional.conv2d(self.scaled_input(x, "futurepos"), weight[0:2]),
                                        torch.nn.functional.conv2d(x, weight[2:4])), dim=1) * mask
         out_seki = self.conv_seki(x) * mask
 

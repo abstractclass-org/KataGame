@@ -357,13 +357,20 @@ LOSS_SUMS_BEFORE = {  # loss_sum, sloss_sum, fploss_sum
 }
 
 
-def losses_at_1_thread(game_name):
+def at_1_thread(function, *args):
+    """function(*args) at 1 thread: a sum's order, and so its last bits, can depend on the threads."""
     threads = torch.get_num_threads()
-    torch.set_num_threads(1)  # a sum's order, and so its last bits, can depend on the threads
+    torch.set_num_threads(1)
     try:
-        return losses(game_name)
+        return function(*args)
     finally:
         torch.set_num_threads(threads)
+
+
+def blueprints_at_the_defaults(monkeypatch):
+    """Blueprints with the default loss coefficients and shared gradient scales."""
+    for member in ("LOSS_COEFFICIENTS", "SHARED_GRADIENT_SCALES"):
+        monkeypatch.setattr(games.get("blueprints"), member, {}, raising=False)
 
 
 @pytest.mark.parametrize("game_name", sorted(LOSS_SUMS_BEFORE))
@@ -371,9 +378,8 @@ def test_the_default_coefficients_give_the_loss_sums_of_before_bit_for_bit(game_
     # The coefficients take the place of KataGo's two 0.25s: at their defaults, the trainer's sums stay as they were.
     # So do the shared gradient scales at their defaults. (With Blueprints' factors, C2-3's two convolutions on slices
     # of the weight sum in another order: the same outputs to float32's rounding, test_shared_gradient_scales.)
-    monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", {}, raising=False)
-    monkeypatch.setattr(games.get("blueprints"), "SHARED_GRADIENT_SCALES", {}, raising=False)
-    out = losses_at_1_thread(game_name)
+    blueprints_at_the_defaults(monkeypatch)
+    out = at_1_thread(losses, game_name)
     assert tuple(float.hex(out[k]) for k in ("loss_sum", "sloss_sum", "fploss_sum")) == LOSS_SUMS_BEFORE[game_name]
 
 
@@ -389,23 +395,17 @@ GRADIENT_SUMS_BEFORE = {  # the sum of the squares, the sum
 @pytest.mark.parametrize("game_name", sorted(GRADIENT_SUMS_BEFORE))
 def test_the_default_coefficients_and_gradient_scales_give_the_gradients_of_before_bit_for_bit(game_name, monkeypatch):
     # At the factor 1, the value head takes KataGo's path: every parameter's gradient stays as it was.
-    monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", {}, raising=False)
-    monkeypatch.setattr(games.get("blueprints"), "SHARED_GRADIENT_SCALES", {}, raising=False)
-    threads = torch.get_num_threads()
-    torch.set_num_threads(1)
-    try:
-        assert gradient_sums(game_name) == GRADIENT_SUMS_BEFORE[game_name]
-    finally:
-        torch.set_num_threads(threads)
+    blueprints_at_the_defaults(monkeypatch)
+    assert at_1_thread(gradient_sums, game_name) == GRADIENT_SUMS_BEFORE[game_name]
 
 
 def test_a_games_scoring_and_future_positions_coefficients_reach_their_losses(monkeypatch):
     # C2-3's coefficient is in its loss (fploss), C4's in the total only (loss_sum's sloss times it), as KataGo's 0.25s.
     monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", {}, raising=False)
-    default = losses_at_1_thread("blueprints")
+    default = at_1_thread(losses, "blueprints")
     scoring, futurepos = 25.0, 0.75
     monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", {"scoring": scoring, "futurepos": futurepos})
-    own = losses_at_1_thread("blueprints")
+    own = at_1_thread(losses, "blueprints")
     assert own["fploss_sum"] == pytest.approx(futurepos / 0.25 * default["fploss_sum"], rel=1e-6)
     added = (scoring - 0.25) * default["sloss_sum"] + own["fploss_sum"] - default["fploss_sum"]
     assert own["loss_sum"] - default["loss_sum"] == pytest.approx(added, abs=1e-5 * own["loss_sum"])

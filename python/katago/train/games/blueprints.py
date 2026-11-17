@@ -83,7 +83,7 @@ LOSS_AREA = 361.0
 # and C4's reach 0.91 of it at 25. So their heads send N times their gradient into the layers that they share with
 # the others (SHARED_GRADIENT_SCALES), and their own weights train as at 0.25: each pulls the trunk about as hard as
 # C1 (the engine repository's games/blueprints/docs/decisions/training.md, "C4 and C2-3: the heads' own weights limit
-# their coefficients", and the entry after it).
+# their coefficients", and "C4 and C2-3 pull the trunk through their shared gradient scales").
 SHARED_GRADIENT_SCALES = {"scoring": 400.0, "futurepos": 2.0}
 
 # The encoding's facts that the augmentation reads (gamerules.h, gameencoding.h). A plane's index in a batch is

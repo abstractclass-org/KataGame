@@ -104,12 +104,11 @@ def set_shared_gradient_scales(model, scales):
     """Sets the value heads' factors that `scales` names, in place of the game's (model_pytorch's ValueHead)."""
     heads = [model.value_head] + ([model.intermediate_value_head] if model.get_has_intermediate_head() else [])
     for head in heads:
-        head.scoring_gradient_scale = float(scales.get("scoring", head.scoring_gradient_scale))
-        head.futurepos_gradient_scale = float(scales.get("futurepos", head.futurepos_gradient_scale))
+        head.shared_gradient_scales.update({name: float(scale) for name, scale in scales.items()})
 
 
 def shared_gradient_scales(model):
-    return {"scoring": model.value_head.scoring_gradient_scale, "futurepos": model.value_head.futurepos_gradient_scale}
+    return dict(model.value_head.shared_gradient_scales)
 
 
 def group_factors(model, head_lr_factor=0.5, noreg_lr_factor=1.0):
