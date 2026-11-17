@@ -192,6 +192,25 @@ def loss_sums(model, batch):
     return {k: float(v) for k, v in metrics.items() if k.endswith("_sum")}
 
 
+def gradient_sums(game_name, model=None):
+    """loss_sum's gradient on every parameter, on losses()' model (or `model`) and batch: the float64 sum of the
+    squares and the sum, in hex."""
+    if model is None:
+        model = b6c96(game_name, 1)
+        model.initialize()
+    batch = random_batch(model)
+    batch["globalTargetsNC"][:, [34, 68]] = 1.0
+    outputs = model(batch["binaryInputNCHW"], batch["globalInputNC"])
+    metrics = Metrics(1, model).metrics_dict_batchwise(
+        model, model.postprocess_output(outputs), None, batch, is_training=False,
+        soft_policy_weight_scale=8.0, disable_optimistic_policy=False, meta_kata_only_soft_policy=False,
+        value_loss_scale=0.6, td_value_loss_scales=[0.6, 0.6, 0.6], seki_loss_scale=1.0,
+        variance_time_loss_scale=1.0, main_loss_scale=None, intermediate_loss_scale=None)
+    metrics["loss_sum"].backward()
+    grads = [p.grad.double() for p in model.parameters() if p.grad is not None]
+    return float.hex(sum(float((g * g).sum()) for g in grads)), float.hex(sum(float(g.sum()) for g in grads))
+
+
 def spatial_losses(game_name):
     out = losses(game_name)
     return {k: out[k] for k in ("oloss_sum", "skloss_sum", "fploss_sum", "sloss_sum", "iloss_sum", "smloss_sum")}
@@ -350,9 +369,34 @@ def losses_at_1_thread(game_name):
 @pytest.mark.parametrize("game_name", sorted(LOSS_SUMS_BEFORE))
 def test_the_default_coefficients_give_the_loss_sums_of_before_bit_for_bit(game_name, monkeypatch):
     # The coefficients take the place of KataGo's two 0.25s: at their defaults, the trainer's sums stay as they were.
+    # So do the shared gradient scales at their defaults. (With Blueprints' factors, C2-3's two convolutions on slices
+    # of the weight sum in another order: the same outputs to float32's rounding, test_shared_gradient_scales.)
     monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", {}, raising=False)
+    monkeypatch.setattr(games.get("blueprints"), "SHARED_GRADIENT_SCALES", {}, raising=False)
     out = losses_at_1_thread(game_name)
     assert tuple(float.hex(out[k]) for k in ("loss_sum", "sloss_sum", "fploss_sum")) == LOSS_SUMS_BEFORE[game_name]
+
+
+# gradient_sums() before the shared gradient scales (KataGame 39067862, whose defaults give 22efb774's losses above,
+# at 1 thread; Blueprints at the defaults).
+GRADIENT_SUMS_BEFORE = {  # the sum of the squares, the sum
+    "enclosure": ("0x1.144eff5e7cecep+9", "0x1.6c8fc50370b64p+11"),
+    "connect4": ("0x1.7bf8636bdc6b6p+7", "0x1.a7e194927edfcp+8"),
+    "blueprints": ("0x1.003d4798d446dp+22", "0x1.a25bbb047cd62p+15"),
+}
+
+
+@pytest.mark.parametrize("game_name", sorted(GRADIENT_SUMS_BEFORE))
+def test_the_default_coefficients_and_gradient_scales_give_the_gradients_of_before_bit_for_bit(game_name, monkeypatch):
+    # At the factor 1, the value head takes KataGo's path: every parameter's gradient stays as it was.
+    monkeypatch.setattr(games.get("blueprints"), "LOSS_COEFFICIENTS", {}, raising=False)
+    monkeypatch.setattr(games.get("blueprints"), "SHARED_GRADIENT_SCALES", {}, raising=False)
+    threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        assert gradient_sums(game_name) == GRADIENT_SUMS_BEFORE[game_name]
+    finally:
+        torch.set_num_threads(threads)
 
 
 def test_a_games_scoring_and_future_positions_coefficients_reach_their_losses(monkeypatch):

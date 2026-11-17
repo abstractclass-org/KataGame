@@ -42,6 +42,10 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         not depend on the draw. Default: the global targets as they are.
   LOSS_COEFFICIENTS     a dict: the coefficient of each of the trainer's losses that it names, of LOSS_COEFFICIENTS
                         below. Default: those of LOSS_COEFFICIENTS below.
+  SHARED_GRADIENT_SCALES
+                        a dict: the factor on the gradient that each head that it names, of SHARED_GRADIENT_SCALES
+                        below, sends into the layers that it shares with the other heads (the backward pass only).
+                        Default: those of SHARED_GRADIENT_SCALES below, 1.
   LOSS_AREA             the area, in points, that KataGo's spatial losses read where KataGo reads the board's area
                         (metrics_pytorch): the ownership loss and the scoring slot's loss sum over the row's points and
                         divide by it, the future positions' loss by its square root, and the income loss without an
@@ -119,6 +123,16 @@ LOSS_COEFFICIENTS = {
     "futurepos": 0.25,  # C2-3, KataGo's: in the loss (fploss), before the far horizon's 0.25
     "scoring": 0.25,    # C4, KataGo's: in loss_sum only (sloss is without it)
     "income": 1.5,      # C5-6, Enclosure's
+}
+
+# The factor on the gradient that a head sends back into the layers that it shares with the other heads, which a
+# game's SHARED_GRADIENT_SCALES can set, and their defaults: 1, KataGo's (model_pytorch, ValueHead). A factor N is the
+# identity in the forward pass and N times the gradient in the backward pass, on the head's own input path. So the
+# head's own weights train as at the factor 1, and the shared layers get N times the head's gradient: N times its pull
+# on the trunk. A loss coefficient scales both, and the curvature of the head's own weights with them.
+SHARED_GRADIENT_SCALES = {
+    "futurepos": 1.0,  # C2-3: the input of conv_futurepos's channels 0:2, the trunk's output (C5-6's 2:4 stay)
+    "scoring": 1.0,    # C4: the input of conv_scoring, after the value head's first layer and its activation
 }
 
 # A training row as the C++ row writer lays it out (dataio/trainingwrite.cpp, TrainingWriteBuffers): the channels of
@@ -240,6 +254,10 @@ def get(name: str):
     if unknown:
         raise ValueError(f"the trainer's module of the game {name!r} sets the coefficient of no loss named "
                          f"{', '.join(unknown)} (LOSS_COEFFICIENTS: {', '.join(LOSS_COEFFICIENTS)})")
+    unknown = sorted(set(getattr(game, "SHARED_GRADIENT_SCALES", {})) - set(SHARED_GRADIENT_SCALES))
+    if unknown:
+        raise ValueError(f"the trainer's module of the game {name!r} sets the gradient scale of no head named "
+                         f"{', '.join(unknown)} (SHARED_GRADIENT_SCALES: {', '.join(SHARED_GRADIENT_SCALES)})")
     turns = getattr(game, "NUM_HISTORY_TURNS", 0)
     if turn_global_inputs(game) and not (turns > 0 and game.NUM_HISTORY_PLANES % turns == 0 and
                                          turn_global_inputs(game) % turns == 0):
@@ -288,6 +306,12 @@ def loss_coefficients(game):
     """The game's coefficient of each loss of LOSS_COEFFICIENTS: its LOSS_COEFFICIENTS, and the default for each loss
     that it does not name."""
     return {**LOSS_COEFFICIENTS, **getattr(game, "LOSS_COEFFICIENTS", {})}
+
+
+def shared_gradient_scales(game):
+    """The game's factor on the gradient that each head of SHARED_GRADIENT_SCALES sends into the shared layers: its
+    SHARED_GRADIENT_SCALES, and the default for each head that it does not name."""
+    return {**SHARED_GRADIENT_SCALES, **getattr(game, "SHARED_GRADIENT_SCALES", {})}
 
 
 def loss_area(game):

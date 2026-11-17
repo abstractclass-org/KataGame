@@ -1244,6 +1244,10 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
 
     logging.info(f"Model norm normal baseline: " + str(train_state["modelnorm_normal_baseline"]))
     logging.info(f"Model norm input baseline: " + str(train_state["modelnorm_input_baseline"]))
+    # KataGame fork: the game's loss coefficients and the value head's shared gradient scales (katago/train/games).
+    logging.info(f"Loss coefficients: {metrics_obj.loss_coefficients}")
+    logging.info(f"Shared gradient scales: scoring {raw_model.value_head.scoring_gradient_scale}, "
+                 f"futurepos {raw_model.value_head.futurepos_gradient_scale}")
 
     # Print all model parameters just to get a summary
     total_num_params = 0

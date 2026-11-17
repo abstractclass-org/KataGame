@@ -2,14 +2,16 @@
 """KataGame fork: the gradient that each of the trainer's losses gives the shared trunk, on batches of rows.
 
     python loss_gradients.py -checkpoint CKPT -npz ROWS.npz [ROWS.npz ...] [-batches 1] [-batch-size 64] [-threads 2]
-                             [-loss-coefficients NAME=VALUE,...]
+                             [-loss-coefficients NAME=VALUE,...] [-shared-gradient-scales NAME=VALUE,...]
 
 The losses are the terms of metrics_pytorch's loss_sum, in groups, each with the scale that the trainer gives it: the
 trainer's defaults of -soft-policy-weight-scale, -value-loss-scale, -td-value-loss-scales, -seki-loss-scale and
 -variance-time-loss-scale, and the game's loss coefficients (katago/train/games: LOSS_COEFFICIENTS).
 -loss-coefficients sets some of the coefficients for the run, for example scoring=0.25,futurepos=0.25 (KataGo's) to
-compare a game's own coefficients with them. The groups add up to loss_sum, and the tool checks that. Only the main
-heads' losses count: a model's intermediate heads, if it has them, are left out.
+compare a game's own coefficients with them. The value head's shared gradient scales are the game's
+(games.SHARED_GRADIENT_SCALES), or those that -shared-gradient-scales sets (for example scoring=1,futurepos=1). The
+gradients go through them, so each group's line is its pull under them. The groups add up to loss_sum, and the tool
+checks that. Only the main heads' losses count: a model's intermediate heads, if it has them, are left out.
 
 For each batch, the tool prints a line for each group:
 - per row: its loss per row, as loss_sum adds it (with its coefficient);
@@ -76,16 +78,38 @@ def groups(version, scales, coefficients):
     ]
 
 
-def parse_coefficients(text):
-    """-loss-coefficients' NAME=VALUE,...: a dict of the loss coefficients that it names (games.LOSS_COEFFICIENTS)."""
+def parse_settings(text, known, what):
+    """NAME=VALUE,...: a dict of the settings that it names, each of `known` (`what` names them in an error)."""
     out = {}
     for item in filter(None, text.split(",")):
         name, _, value = item.partition("=")
-        if name not in games.LOSS_COEFFICIENTS:
-            raise ValueError(f"no loss coefficient named {name} (games.LOSS_COEFFICIENTS: "
-                             f"{', '.join(games.LOSS_COEFFICIENTS)})")
+        if name not in known:
+            raise ValueError(f"no {what} named {name} ({', '.join(known)})")
         out[name] = float(value)
     return out
+
+
+def parse_coefficients(text):
+    """-loss-coefficients' NAME=VALUE,...: a dict of the loss coefficients that it names (games.LOSS_COEFFICIENTS)."""
+    return parse_settings(text, games.LOSS_COEFFICIENTS, "loss coefficient")
+
+
+def parse_scales(text):
+    """-shared-gradient-scales' NAME=VALUE,...: a dict of the heads' factors that it names
+    (games.SHARED_GRADIENT_SCALES)."""
+    return parse_settings(text, games.SHARED_GRADIENT_SCALES, "shared gradient scale")
+
+
+def set_shared_gradient_scales(model, scales):
+    """Sets the value heads' factors that `scales` names, in place of the game's (model_pytorch's ValueHead)."""
+    heads = [model.value_head] + ([model.intermediate_value_head] if model.get_has_intermediate_head() else [])
+    for head in heads:
+        head.scoring_gradient_scale = float(scales.get("scoring", head.scoring_gradient_scale))
+        head.futurepos_gradient_scale = float(scales.get("futurepos", head.futurepos_gradient_scale))
+
+
+def shared_gradient_scales(model):
+    return {"scoring": model.value_head.scoring_gradient_scale, "futurepos": model.value_head.futurepos_gradient_scale}
 
 
 def group_factors(model, head_lr_factor=0.5, noreg_lr_factor=1.0):
@@ -194,6 +218,7 @@ def main():
     ap.add_argument("-threads", type=int, default=2)
     ap.add_argument("-seed", type=int, default=0)
     ap.add_argument("-loss-coefficients", type=parse_coefficients, default={})
+    ap.add_argument("-shared-gradient-scales", type=parse_scales, default={})
     ap.add_argument("-soft-policy-weight-scale", type=float, default=8.0)
     ap.add_argument("-value-loss-scale", type=float, default=0.6)
     ap.add_argument("-td-value-loss-scales", type=str, default="0.6,0.6,0.6")
@@ -215,6 +240,7 @@ def main():
     model.train()
     metrics = Metrics(1, model)
     metrics.loss_coefficients.update(args.loss_coefficients)
+    set_shared_gradient_scales(model, args.shared_gradient_scales)
     torch.manual_seed(args.seed)
     batches = itertools.islice(read_npz_training_data(
         args.npz, batch_size=args.batch_size, world_size=1, rank=0, pos_len=model.pos_len, device="cpu",
@@ -223,7 +249,7 @@ def main():
 
     trunk = [p for name, p in model.named_parameters() if p.requires_grad and not name.startswith(HEADS)]
     print(f"{args.checkpoint}: {sum(p.numel() for p in trunk)} trunk parameters in {len(trunk)} tensors; loss "
-          f"coefficients {metrics.loss_coefficients}")
+          f"coefficients {metrics.loss_coefficients}; shared gradient scales {shared_gradient_scales(model)}")
     measured = []
     for i, batch in enumerate(batches):
         measured.append(measure(model, metrics, batch, scales, args.lr, args.momentum, args.head_lr_factor,

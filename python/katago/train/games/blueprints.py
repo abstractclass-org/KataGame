@@ -79,9 +79,12 @@ GAME_LENGTH = 132.0      # the actions of a game: 120 of the site's moves, and o
 LOSS_AREA = 361.0
 # Every coefficient is KataGo's or Enclosure's (LOSS_COEFFICIENTS' defaults). C4 (the points earned) and C2-3 (the
 # stars later) are the targets closest to how the game is won, and at KataGo's 0.25 they barely pull the trunk. But a
-# larger coefficient takes their own head weights past the trainer's step (the engine repository's
-# games/blueprints/docs/decisions/training.md, "C4 and C2-3: the heads' own weights limit their coefficients"):
-# C2-3's are at the limit at 0.25 already, and C4's reach 0.91 of it at 25.
+# larger coefficient takes their own head weights past the trainer's step: C2-3's are at the limit at 0.25 already,
+# and C4's reach 0.91 of it at 25. So their heads send N times their gradient into the layers that they share with
+# the others (SHARED_GRADIENT_SCALES), and their own weights train as at 0.25: each pulls the trunk about as hard as
+# C1 (the engine repository's games/blueprints/docs/decisions/training.md, "C4 and C2-3: the heads' own weights limit
+# their coefficients", and the entry after it).
+SHARED_GRADIENT_SCALES = {"scoring": 400.0, "futurepos": 2.0}
 
 # The encoding's facts that the augmentation reads (gamerules.h, gameencoding.h). A plane's index in a batch is
 # 1 + its index here: KataGo's on-board plane comes first.

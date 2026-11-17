@@ -15,7 +15,7 @@ from typing import Any, List, Dict, Optional, Set
 
 from torch.amp import autocast
 
-from ..train import modelconfigs
+from ..train import games, modelconfigs
 from ..train.trainloop_helpers import env_flag
 
 # Under AMP, cast the small cos/sin rotation tables to the input dtype before the
@@ -150,6 +150,19 @@ def init_weights(tensor, activation, scale, fan_tensor=None):
         tensor.fill_(0.0)
     else:
         torch.nn.init.trunc_normal_(tensor, mean=0.0, std=std, a=-2.0*std, b=2.0*std)
+
+class GradientScaleFunction(torch.autograd.Function):
+    """KataGame fork: the identity in the forward pass, and the gradient times scale in the backward pass
+    (games.SHARED_GRADIENT_SCALES)."""
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, scale: float):
+        ctx.scale = scale  # scale is not a tensor
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return grad_output * ctx.scale, None
+
 
 class SoftPlusWithGradientFloorFunction(torch.autograd.Function):
     """
@@ -3014,6 +3027,12 @@ class ValueHead(torch.nn.Module):
         # Every game has them: a target that a game does not write trains nothing.
         self.conv_futurepos = torch.nn.Conv2d(c_in, 4, kernel_size=1, padding="same", bias=False)
         self.conv_seki = torch.nn.Conv2d(c_in, 4, kernel_size=1, padding="same", bias=False)
+        # KataGame fork: the factor on the gradient that C4's head (conv_scoring) and C2-3's (conv_futurepos's channels
+        # 0:2) send into the layers that they share with the others (games.SHARED_GRADIENT_SCALES). At 1, KataGo's
+        # path.
+        scales = games.shared_gradient_scales(modelconfigs.get_game(config))
+        self.scoring_gradient_scale = float(scales["scoring"])
+        self.futurepos_gradient_scale = float(scales["futurepos"])
 
         self.pos_len = pos_len
         self.scorebelief_mid = self.pos_len*self.pos_len + EXTRA_SCORE_DISTR_RADIUS
@@ -3143,8 +3162,21 @@ class ValueHead(torch.nn.Module):
         out_miscvalue = self.linear_miscvaluehead(outv2)
         out_moremiscvalue = self.linear_moremiscvaluehead(outv2)
         out_ownership = self.conv_ownership(outv1) * mask
-        out_scoring = self.conv_scoring(outv1) * mask
-        out_futurepos = self.conv_futurepos(x) * mask
+        if self.scoring_gradient_scale == 1.0:
+            out_scoring = self.conv_scoring(outv1) * mask
+        else:
+            # KataGame fork: on C4's own path only, after the shared activation: the value, the scores and the
+            # ownership read outv1 without the factor.
+            out_scoring = self.conv_scoring(GradientScaleFunction.apply(outv1, self.scoring_gradient_scale)) * mask
+        if self.futurepos_gradient_scale == 1.0:
+            out_futurepos = self.conv_futurepos(x) * mask
+        else:
+            # KataGame fork: C2-3's channels 0:2 read x with the factor, C5-6's 2:4 without it. Two convolutions on
+            # slices of the one weight, so that the checkpoint's shapes stay.
+            weight = self.conv_futurepos.weight
+            scaled = GradientScaleFunction.apply(x, self.futurepos_gradient_scale)
+            out_futurepos = torch.cat((torch.nn.functional.conv2d(scaled, weight[0:2]),
+                                       torch.nn.functional.conv2d(x, weight[2:4])), dim=1) * mask
         out_seki = self.conv_seki(x) * mask
 
         # Score belief head
