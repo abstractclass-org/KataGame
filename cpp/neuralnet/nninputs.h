@@ -336,13 +336,51 @@ namespace NNInputs {
   );
 }
 
+//KataGame fork (abscls-shfz.6): the rank bitmap of the compact policy (PolicyView), for CHANNELS policy channels a
+//point. Each point has WORDS 64-bit words, and the bit of channel c is bit c % 64 of the point's word c / 64. A point's
+//start is the slot of its first legal channel (the legal entries before the point). A game with at most 64 channels
+//has one word a point, which mark and slot read without the words' arithmetic. Tak's 255 channels take 4 words.
+template<int CHANNELS>
+struct PolicyRankMask {
+  static_assert(CHANNELS >= 1, "a point has a policy channel");
+  static constexpr int WORDS = (CHANNELS + 63) / 64;
+  //Sets the bit of the point's channel in mask (WORDS words a point).
+  static inline void mark(uint64_t* mask, int point, int channel) {
+    if constexpr(WORDS == 1)
+      mask[point] |= uint64_t(1) << channel;
+    else
+      mask[point * WORDS + (channel >> 6)] |= uint64_t(1) << (channel & 63);
+  }
+  //The slot of the point's channel: start[point] plus the number of the point's set channels below it. -1 when its bit
+  //is not set.
+  static inline int slot(const uint64_t* mask, const uint16_t* start, int point, int channel) {
+    if constexpr(WORDS == 1) {
+      const uint64_t m = mask[point];
+      if(((m >> channel) & 1) == 0)
+        return -1;
+      return start[point] + __builtin_popcountll(m & ((uint64_t(1) << channel) - 1));
+    }
+    else {
+      const uint64_t* words = mask + point * WORDS;
+      const int word = channel >> 6, bit = channel & 63;
+      if(((words[word] >> bit) & 1) == 0)
+        return -1;
+      int s = start[point] + __builtin_popcountll(words[word] & ((uint64_t(1) << bit) - 1));
+      for(int w = 0; w < word; w++)
+        s += __builtin_popcountll(words[w]);
+      return s;
+    }
+  }
+};
+using NNPolicyRankMask = PolicyRankMask<NNPos::POLICY_CHANNELS>;
+
 //Enclosure fork (owner, 2026-10-05/06: compact policy storage): a policy read by position, as upstream reads its dense
 //array: view[pos] is the probability of the move at pos, negative (-1) for an illegal move. Either dense
-//(MAX_NN_POLICY_SIZE entries: root noise) or compact, read through a rank bitmap: per point, mask has bit `channel` set
-//when that action is legal and start the slot of the point's first legal action, so action point * POLICY_CHANNELS +
-//channel is at slot start[point] + popcount(mask[point] & ((1 << channel) - 1)) of prob; pass (the last position) at
-//passSlot, -1 when illegal. Both list the legal positions ascending in pos[0, n): legalPos(k), probAt(k) walk them.
-static_assert(NNPos::POLICY_CHANNELS <= 64, "a point's legal channels fit in one mask word");
+//(MAX_NN_POLICY_SIZE entries: root noise) or compact, read through a rank bitmap (NNPolicyRankMask): per point, mask
+//has the bit of `channel` set when that action is legal and start the slot of the point's first legal action, so
+//action point * POLICY_CHANNELS + channel is at slot start[point] + the number of the point's legal channels below
+//`channel` of prob; pass (the last position) at passSlot, -1 when illegal. Both list the legal positions ascending in
+//pos[0, n): legalPos(k), probAt(k) walk them.
 static_assert(NNPos::MAX_NN_POLICY_SIZE <= 65536, "a policy index and a slot fit in 16 bits");
 struct PolicyView {
   const float* dense;
@@ -359,10 +397,8 @@ struct PolicyView {
     if(p == NNPos::PASS_POS)
       return passSlot >= 0 ? prob[passSlot] : -1.0f;
     const int point = p / NNPos::POLICY_CHANNELS, channel = p - point * NNPos::POLICY_CHANNELS;
-    const uint64_t m = mask[point];
-    if(((m >> channel) & 1) == 0)
-      return -1.0f;
-    return prob[start[point] + __builtin_popcountll(m & ((uint64_t(1) << channel) - 1))];
+    const int s = NNPolicyRankMask::slot(mask, start, point, channel);
+    return s < 0 ? -1.0f : prob[s];
   }
   inline int legalPos(int k) const { return pos[k]; }
   inline float probAt(int k) const { return dense != NULL ? dense[pos[k]] : prob[k]; }
@@ -398,10 +434,11 @@ struct NNOutput {
   //legal positions ascending, legalProbs their probabilities, and the rank bitmap (policyMask, policyStart,
   //policyPassSlot; PolicyView) that finds a position's slot. Read it through policy() or getPolicyProbsMaybeNoised():
   //view[pos] is the probability, -1 for an illegal move, as the dense array gave. Root noise and temperature keep the
-  //sign, so legalPos holds for the noised policy too; the search's new-child scan walks it.
+  //sign, so legalPos holds for the noised policy too; the search's new-child scan walks it. policyMask has
+  //NNPolicyRankMask::WORDS words a point.
   std::vector<uint16_t> legalPos;
   std::vector<float> legalProbs;
-  uint64_t policyMask[NNPos::MAX_BOARD_AREA];
+  uint64_t policyMask[NNPos::MAX_BOARD_AREA * NNPolicyRankMask::WORDS];
   uint16_t policyStart[NNPos::MAX_BOARD_AREA];
   int policyPassSlot;
   //The dense policy while an evaluation is in flight: the backend writes it and the evaluator post-processes it (the

@@ -2,6 +2,7 @@
 losses its facts, and the export writes the game into the model file (model option H, neuralnet/desc.cpp): 0 for
 Enclosure, another game's name for another game."""
 import os
+import re
 import sys
 import types
 
@@ -144,6 +145,39 @@ def test_the_export_writes_0_for_enclosure_and_another_games_name_into_option_h(
     assert header[1] == b"17" and header[OPTION_H] == b"0"
     assert export_random_model(tmp_path / "stub", game="stubgame")[OPTION_H] == b"stubgame"
     assert export_random_model(tmp_path / "connect4", game="connect4")[OPTION_H] == b"connect4"
+
+
+@pytest.fixture
+def wide_game(monkeypatch):
+    """A game with Connect-4's facts and 255 policy channels a point, as Tak's 6 x 6 (the engine repository's
+    games/tak/docs/design/03-moves-and-policy.md)."""
+    connect4 = games.get("connect4")
+    stub = types.ModuleType("katago.train.games.widegame")
+    stub.__dict__.update({m: getattr(connect4, m) for m in games.MEMBERS})
+    stub.NAME = "widegame"
+    stub.POLICY_CHANNELS = 255
+    monkeypatch.setitem(sys.modules, "katago.train.games.widegame", stub)
+    return stub
+
+
+def test_a_game_of_255_policy_channels_trains_and_exports_each_channel(tmp_path, wide_game):
+    # More channels than one 64-bit word of the engine's compact policy (neuralnet/nninputs.h, PolicyRankMask): the
+    # trainer's head, its losses and the export size everything by POLICY_CHANNELS.
+    model = b6c96("widegame", 1)
+    model.initialize()
+    batch = random_batch(model)
+    with torch.no_grad():
+        policy = model(batch["binaryInputNCHW"], batch["globalInputNC"])[0][0]
+    assert policy.shape == (2, model.policy_head.num_policy_outputs, 7 * 7 * 255 + 1)
+    sums = loss_sums(model, batch)
+    assert all(np.isfinite(v) for v in sums.values()) and sums["p0loss_sum"] > 0, sums
+    export_random_model(tmp_path, game="widegame")
+    written = (tmp_path / "model.bin").read_bytes()
+    # A convolution's header: its name, its diameters 1 and 1, its input channels, its output channels. The export
+    # writes the regular and the optimistic policy, then the four aux policies, as blocks of 255 channels.
+    for name, outputs in ((b"conv2p", 2), (b"conv2p_aux", 4)):
+        header = re.search(rb"\." + name + rb"\n1\n1\n\d+\n(\d+)\n", written)
+        assert header is not None and int(header.group(1)) == outputs * 255, name
 
 
 def random_batch(model, n=2):
