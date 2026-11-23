@@ -1885,7 +1885,10 @@ void NNEvaluator::evaluate(
         double shorttermWinlossErrorPreSoftplus = buf.result->shorttermWinlossError * postProcessParams.outputScaleMultiplier;
         double shorttermScoreErrorPreSoftplus = buf.result->shorttermScoreError * postProcessParams.outputScaleMultiplier;
 
-        if(history.rules.koRule != Rules::KO_SIMPLE && history.rules.scoringRule != Rules::SCORING_TERRITORY)
+        //KataGame fork: a game whose draws are a class of their own keeps the output (GameInterface::drawsAsNoResult).
+        const bool noResultImpossible = !GameInterface::drawsAsNoResult<GameEncoding>() &&
+          history.rules.koRule != Rules::KO_SIMPLE && history.rules.scoringRule != Rules::SCORING_TERRITORY;
+        if(noResultImpossible)
           noResultLogits -= 100000.0;
 
         // Softmax
@@ -1894,7 +1897,7 @@ void NNEvaluator::evaluate(
         lossProb = exp(lossLogits - maxLogits);
         noResultProb = exp(noResultLogits - maxLogits);
 
-        if(history.rules.koRule != Rules::KO_SIMPLE && history.rules.scoringRule != Rules::SCORING_TERRITORY)
+        if(noResultImpossible)
           noResultProb = 0.0;
 
         double probSum = winProb + lossProb + noResultProb;

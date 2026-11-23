@@ -16,7 +16,8 @@ softplus of the error heads, RGSC's sigmoid), so both sides read as the search r
 - policy, policyopt: the first and the optimistic policy output (the engine's two policy channels, which the search
   blends by its policy optimism), as probabilities over the legal moves (games.legal_moves; every entry for a game
   without it): the largest difference over the largest probability;
-- value: the win and loss probabilities (the fork's NNEvaluator renormalises them: no result is impossible);
+- value: the win and loss probabilities (the fork's NNEvaluator renormalises them: no result is impossible), and the
+  no result's in a game whose draws are no results (games.draws_as_no_result);
 - score: the score mean and the lead, each over its multiplier (in the network's units);
 - uncertainty: the score's stdev and the time left's variance, each over its multiplier, and the short-term winloss
   and score errors, which the search's uncertainty weighting reads, as the search reads them: NNEvaluator takes the
@@ -171,6 +172,7 @@ def compare(args):
     if model.config["version"] >= 10:
         for k in ("stverror", "stserror"):
             ref[k], cpp_scalars[k], mult[k] = np.sqrt(ref[k]), np.sqrt(cpp_scalars[k]), np.sqrt(mult[k])
+    outcomes = 3 if games.draws_as_no_result(game) else 2  # the value outputs that NNEvaluator keeps
     worst = {k: 0.0 for k in MEASURES}
     raw = dict(policy_logit=0.0, policyopt_logit=0.0, value_logit=0.0)
     failures = 0
@@ -184,7 +186,7 @@ def compare(args):
             t_probs, c_probs = softmax(t_logits), softmax(c_logits)
             diffs[k] = np.abs(t_probs - c_probs).max() / max(t_probs.max(), 1e-9)
             raw[k + "_logit"] = max(raw[k + "_logit"], np.abs(t_logits - c_logits).max())
-        diffs["value"] = np.abs(softmax(ref["value"][r][:2]) - softmax(cpp["value"][r][:2])).max()
+        diffs["value"] = np.abs(softmax(ref["value"][r][:outcomes]) - softmax(cpp["value"][r][:outcomes])).max()
         raw["value_logit"] = max(raw["value_logit"], np.abs(ref["value"][r] - cpp["value"][r]).max())
         rel = lambda k: abs(ref[k][r] - cpp_scalars[k][r]) / mult[k]  # noqa: E731
         diffs["score"] = max(rel("scoremean"), rel("lead"))

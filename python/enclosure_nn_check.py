@@ -30,7 +30,7 @@ import numpy as np
 import torch
 
 from enclosure_nn_outputs_check import WHITE, read_dump
-from katago.train import modelconfigs
+from katago.train import games, modelconfigs
 from katago.train.load_model import load_model
 from katago.train.model_pytorch import Model
 
@@ -61,7 +61,12 @@ def compare(args):
     if args.use_swa:  # the weights that the run's exports carry (export_model_for_selfplay.sh -use-swa)
         model = swa_model
     model.eval()
-    size = modelconfigs.get_game(model.config).MAX_BOARD_LEN  # the network's board
+    game = modelconfigs.get_game(model.config)
+    size = game.MAX_BOARD_LEN  # the network's board
+    # The value outputs that NNEvaluator keeps: win, loss and no result in a game whose draws are no results. Else no
+    # result is impossible under the fork's rules (area scoring, positional ko): its probability is 0, and win and loss
+    # are renormalised.
+    outcomes = 3 if games.draws_as_no_result(game) else 2
     c_in = modelconfigs.get_num_bin_input_features(model.config)
     positions = read_dump(args.dump)
     worst = dict(policy=0.0, value=0.0, score=0.0, own=0.0)
@@ -91,10 +96,10 @@ def compare(args):
                 logits = policy_logits[i, 0].numpy()[actions].astype(np.float64)
                 probs = np.exp(logits - logits.max())
                 probs /= probs.sum()
-                # As NNEvaluator under the fork's rules (area scoring, positional ko): no result is impossible,
-                # so its probability is 0 and win and loss are renormalised.
                 value = np.zeros(3)
-                value[:2] = torch.softmax(value_logits[i, :2].double(), dim=0).numpy()
+                value[:outcomes] = torch.softmax(value_logits[i, :outcomes].double(), dim=0).numpy()
+                # NNEvaluator's score mean and lead count a no result as 0.
+                scored = 1.0 - value[2]
                 # The C++ ownership is 0 off the board (a board smaller than the network's).
                 on_board = spatial[i, 0].numpy() > 0
                 own = np.where(on_board, np.tanh(ownership_pretanh[i, 0].double().numpy().reshape(-1)), 0.0)
@@ -105,8 +110,8 @@ def compare(args):
                 diffs = dict(
                     policy=np.abs(probs - cpp_probs).max() / max(probs.max(), 1e-9),
                     value=np.abs(value - cpp_value).max(),
-                    score=max(abs(sign * float(scoremean[i]) - p["score"][0]),
-                              abs(sign * float(lead[i]) - p["score"][2])) / model.scoremean_multiplier,
+                    score=max(abs(sign * float(scoremean[i]) * scored - p["score"][0]),
+                              abs(sign * float(lead[i]) * scored - p["score"][2])) / model.scoremean_multiplier,
                     own=np.abs(own - sign * p["owner"]).max(),
                 )
                 # AZdb's returns of the member: no view, relative to their size (at least 1).

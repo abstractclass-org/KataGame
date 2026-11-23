@@ -80,15 +80,20 @@ struct BoardHistory {
 
   //Is the game over?
   bool isGameFinished;
-  //Winner of the game if over, C_EMPTY for a draw.
+  //Winner of the game if over, C_EMPTY for a draw. KataGame fork: the rules' winner, for a game whose rules give the
+  //end (GameInterface::gameEnd), and else the sign of the final score.
   Player winner;
-  //Red's score minus Blue's (White is Red), once the game is over.
+  //Red's score minus Blue's (White is Red), once the game is over. 0 for a no result.
   float finalWhiteMinusBlackScore;
+  //The score decided the result: not a resignation, not a no result, and not a win that the rules give at any score.
   bool isScored;
-  //The rules' draw: the player to move has no legal edge (not produced by this engine, which forfeits the
-  //turn instead, as meaf.us does after a timeout).
+  //KataGame fork: a draw of a game whose draws are a class of their own (GameInterface::drawsAsNoResult). Never in the
+  //other games, whose draws are scored games without a winner.
   bool isNoResult;
   bool isResignation;
+  //KataGame fork: the end as the rules gave it (GameInterface::gameEnd), with the kind of ending. Its kind is -1 for a
+  //game whose rules give none, and for a game that its rules did not end (resigned, or stopped at the move cap).
+  GameInterface::GameEnd rulesEnd;
 
   BoardHistory();
   ~BoardHistory();
@@ -143,7 +148,8 @@ struct BoardHistory {
 
   //Nothing to do in Enclosure (no pass-alive areas).
   void endGameIfAllPassAlive(const Board& board);
-  //Ends the game now, scored by the players' scores.
+  //Ends the game now, by the rules' end where the rules ended it (GameInterface::gameEnd), and else (a game that stops
+  //earlier) scored by the players' scores, KataGo's rule.
   void endAndScoreGameNow(const Board& board);
   void endAndScoreGameNow(const Board& board, Color area[Board::MAX_ARR_SIZE]);
   void getAreaNow(const Board& board, Color area[Board::MAX_ARR_SIZE]) const;

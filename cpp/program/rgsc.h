@@ -35,6 +35,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -88,6 +89,11 @@ namespace Rgsc {
     //The swing buffer's settings: its file and start probability, no warm-up, draws only when full.
     Settings forSwingBuffer() const;
   };
+
+  //The outcome z of a game for its regret targets, White's return: 1, -1, or 0 for a draw (a no result too). None for a
+  //game that stopped before its rules ended it (hitTurnLimit, the move cap): its result is missing data, not a draw, so
+  //the game gives no regret targets and no candidate (selfplay.cpp, rgscAfterGame).
+  std::optional<double> gameOutcome(const BoardHistory& endHist, bool hitTurnLimit);
 
   //A position's key: the moves that reach it, each with its player, combined so that the order does not matter
   //(the authors' key; in Enclosure a position is the edges each player has placed).
@@ -179,6 +185,8 @@ namespace Rgsc {
     bool updateAfterRestart(uint64_t key, double regret);
     //Counts a finished game; returns how many had finished before it (for the warm-up).
     int64_t countFinishedGame();
+    //Counts a game at the move cap, which gave no regret targets (gameOutcome).
+    void countGameAtCap();
     //Adds a game's regret targets to this run's regret by kind of action (summary): a turn whose action continues the
     //move of the action before it (continuesMove[k], GameInterface::continuesMove: Blueprints' drop), a turn whose
     //action the next turn's continues (a pick), and a move of one action (a placement).
@@ -186,8 +194,8 @@ namespace Rgsc {
     size_t size() const;
     //A one-line summary for the log: states and their regrets and origins, and this run's counts (restarts drawn,
     //written after their state left the buffer, and dropped; candidates offered and taken; sample attempts while
-    //the buffer was empty, or not yet full; entries rejected at the load and at a restart, and collisions of keys),
-    //and this run's regret targets by kind of action (addRegrets).
+    //the buffer was empty, or not yet full; entries rejected at the load and at a restart, and collisions of keys;
+    //games at the move cap), and this run's regret targets by kind of action (addRegrets).
     std::string summary() const;
     void countDroppedRestart();
     void countRestartStateGone();
@@ -211,6 +219,7 @@ namespace Rgsc {
     int64_t rejectedAtLoad = 0;
     int64_t rejectedAtRestart = 0;
     int64_t keyCollisions = 0;
+    int64_t gamesAtCap = 0;
     //Regret targets by kind of action: a move of one action, a move's first action, a later action.
     int64_t regretCount[3] = {0, 0, 0};
     double regretSum[3] = {0.0, 0.0, 0.0};

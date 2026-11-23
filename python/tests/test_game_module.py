@@ -291,6 +291,12 @@ def test_rows_with_policy_targets_count_as_zero_rows_only_when_their_target_sums
     assert (sums["p0zrows_sum"], sums["p1zrows_sum"]) == (1.0, 2.0)
 
 
+def test_only_a_game_that_says_so_has_draws_as_no_results(monkeypatch):
+    for name in ("enclosure", "connect4", "blueprints"):
+        assert not games.draws_as_no_result(games.get(name))
+    assert games.draws_as_no_result(stub_game(monkeypatch, "drawgame", enclosure, DRAWS_AS_NO_RESULT=True))
+
+
 def test_a_game_without_mask_targets_keeps_the_weights():
     global_targets = torch.ones(2, GLOBAL_TARGETS_NC_CHANNELS)
     assert not hasattr(enclosure, "mask_targets")

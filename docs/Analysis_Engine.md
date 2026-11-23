@@ -254,7 +254,7 @@ Current fields are:
       * `scoreLead` - The predicted average number of points that the current side is leading by (with this many points fewer, it would be an even game).
       * `scoreSelfplay` - The predicted average value of the final score of the game after this move during selfplay, in points. (NOTE: users should usually prefer scoreLead, since scoreSelfplay may be biased by the fact that KataGo isn't perfectly score-maximizing).
       * `prior` - The policy prior of the move, as a float in [0,1].
-      * `noResultValue` - The predicted probability that the game ends in a no-result (e.g. triple ko/long cycle), as a float in [0,1]. Only present if `includeNoResultValue` was true. Relevant for rulesets like Japanese rules without superko.
+      * `noResultValue` - The predicted probability that the game ends in a no-result (e.g. triple ko/long cycle), as a float in [0,1]. Only present if `includeNoResultValue` was true. Relevant for rulesets like Japanese rules without superko. In KataGame, the probability of a draw in a game whose draws are no results (`GAMES.md`, `DRAWS_AS_NO_RESULT`).
       * `humanPrior` - The human policy for the move, as a float in [0,1], if available.
       * `utility` - The utility of the move, combining both winrate and score, as a float in [-C,C] where C is the maximum possible utility. The maximum winrate utility can be set by `winLossUtilityFactor` in the config, while the maximum score utility is the sum of `staticScoreUtilityFactor` and `dynamicScoreUtilityFactor`.
       * `lcb` - The [LCB](https://github.com/leela-zero/leela-zero/issues/2282) of the move's winrate. Has the same units as winrate, but might lie outside of [0,1] since the current implementation doesn't strictly account for the 0-1 bounds.
@@ -277,7 +277,7 @@ Current fields are:
       * `rawLead` - The lead prediction of the neural net by itself, without any search.
       * `rawScoreSelfplay` - The selfplay score prediction of the neural net by itself, without any search.
       * `rawScoreSelfplayStdev` - The standard deviation of the final game score predicted by the net itself, without any search.
-      * `rawNoResultProb` - The raw predicted probability of a no result game in Japanese-like rules.
+      * `rawNoResultProb` - The raw predicted probability of a no result game in Japanese-like rules. In KataGame, the probability of a draw in a game whose draws are no results (`GAMES.md`, `DRAWS_AS_NO_RESULT`).
       * `rawStWrError` - The short-term uncertainty the raw neural net believed there would be in the winrate of the position, prior to searching it.
       * `rawStScoreError` - The short-term uncertainty the raw neural net believed there would be in the score of the position, prior to searching it.
       * `rawVarTimeLeft` - The raw neural net's guess of "how long of a meaningful game is left?", in no particular units. A large number when expected that it will be a long game before the winner becomes clear. A small number when the net believes the winner is already clear, or that the winner is unclear but will become clear soon.

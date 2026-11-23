@@ -3725,12 +3725,15 @@ bool GTPSession::handle(string line) {
       double finalWhiteMinusBlackScore = 0.0;
       engine->computeAnticipatedWinnerAndScore(winner,finalWhiteMinusBlackScore);
 
+      //KataGame fork: a win that the score did not decide has no score (GameInterface::gameEnd), as in its SGF record.
+      const BoardHistory& hist = engine->bot->getRootHist();
+      const bool scored = !hist.isGameFinished || hist.isScored;
       if(winner == C_EMPTY)
         response = "0";
       else if(winner == C_BLACK)
-        response = "B+" + Global::strprintf("%.1f",-finalWhiteMinusBlackScore);
+        response = "B+" + (scored ? Global::strprintf("%.1f",-finalWhiteMinusBlackScore) : string());
       else if(winner == C_WHITE)
-        response = "W+" + Global::strprintf("%.1f",finalWhiteMinusBlackScore);
+        response = "W+" + (scored ? Global::strprintf("%.1f",finalWhiteMinusBlackScore) : string());
       else
         ASSERT_UNREACHABLE;
     }

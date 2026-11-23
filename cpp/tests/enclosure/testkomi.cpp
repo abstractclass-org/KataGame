@@ -6,7 +6,9 @@
 // - The result: a random game to its end, then the history's result at komis of both signs, at 0, and at the komis
 //   that decide the game (the half point nearest the opposite of the earned margin, and half a point to either side):
 //   the final margin with K, its winner, White's wins in the value targets (a margin of 0 is half a win), the final
-//   score target, each side's own komi, and the network cache's hash, which changes with a nonzero K only.
+//   score target, each side's own komi, and the network cache's hash, which changes with a nonzero K only. In a game
+//   whose rules give the end (GameInterface::gameEnd), the winner is the rules'. In a game whose draws are no results,
+//   a draw has the final score 0 (testgameends checks both).
 // - The inputs: at a position of that game, the front's global inputs (NNInputs::fillRowV8, which gives the game the
 //   history's komi) are the game's global_inputs at that komi. The test prints the global inputs that change with K.
 // - The even-komi search (PlayUtils::evenKomiOffset): the defaults with stub games, and the build's game's bracket,
@@ -198,13 +200,20 @@ static void checkResults() {
     BoardHistory h(hist);
     h.setKomi((float)komi);
     h.endAndScoreGameNow(board);
-    const double d = margin + komi;
-    const Player winner = d > 0 ? P_WHITE : d < 0 ? P_BLACK : C_EMPTY;
+    const GameInterface::GameEnd end = GameInterface::gameEnd<GameRules>(board.pos, komi);
+    const Player winner = end.result < 0 ? P_WHITE : end.result > 0 ? P_BLACK : C_EMPTY;
+    const bool noResult = GameInterface::drawsAsNoResult<GameEncoding>() && winner == C_EMPTY;
+    const double d = noResult ? 0.0 : margin + komi;
     const string at = "komi " + to_string(komi) + ": ";
-    check(h.winner == winner, at + "the winner is the sign of the margin with komi");
+    if(!GameInterface::hasGameEnd<GameRules>())
+      check(winner == (d > 0 ? P_WHITE : d < 0 ? P_BLACK : C_EMPTY),
+            at + "the winner is the sign of the margin with komi");
+    check(h.winner == winner, at + "the winner is the rules'");
+    check(h.isNoResult == noResult, at + "a no result is a draw of a game whose draws are no results");
     check(h.finalWhiteMinusBlackScore == (float)d, at + "the final margin counts komi");
     const double wins = ScoreValue::whiteWinsOfWinner(h.winner, 0.5);
-    check(wins == (d > 0 ? 1.0 : d < 0 ? 0.0 : 0.5), at + "White's wins: 1, 0, or half a win at a margin of 0");
+    check(wins == (winner == P_WHITE ? 1.0 : winner == P_BLACK ? 0.0 : 0.5),
+          at + "White's wins: 1, 0, or half a win in a draw");
     check(ScoreValue::whiteScoreDrawAdjust(h.finalWhiteMinusBlackScore, 0.5, h) == (float)d,
           at + "the final score target is the margin with komi");
     check(h.currentSelfKomi(P_WHITE, 0.5) == (float)komi && h.currentSelfKomi(P_BLACK, 0.5) == -(float)komi,

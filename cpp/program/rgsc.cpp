@@ -472,6 +472,11 @@ void Rgsc::Buffer::countRestartStateGone() {
   restartsStateGone++;
 }
 
+void Rgsc::Buffer::countGameAtCap() {
+  lock_guard<std::mutex> lock(mutex);
+  gamesAtCap++;
+}
+
 string Rgsc::Buffer::summary() const {
   lock_guard<std::mutex> lock(mutex);
   vector<double> r;
@@ -499,7 +504,7 @@ string Rgsc::Buffer::summary() const {
   //KataGame fork (2026-10-27): the rejected entries and the collisions of keys, and the regret targets by kind of
   //action.
   out << "; rejected at the load " << rejectedAtLoad << ", at a restart " << rejectedAtRestart << "; key collisions "
-      << keyCollisions << "; regret targets:";
+      << keyCollisions << "; games at the move cap " << gamesAtCap << "; regret targets:";
   const char* kinds[3] = {"moves of one action", "first actions of a move", "later actions"};
   for(int kind = 0; kind < 3; kind++)
     out << (kind > 0 ? "," : "") << " " << kinds[kind] << " " << regretCount[kind] << " mean "
@@ -565,6 +570,12 @@ Rgsc::Entry Rgsc::TreeTracker::candidate() const {
 }
 
 //------------------------------------------------------------------------------------------------------------
+
+std::optional<double> Rgsc::gameOutcome(const BoardHistory& endHist, bool hitTurnLimit) {
+  if(hitTurnLimit)
+    return std::nullopt;
+  return endHist.winner == P_WHITE ? 1.0 : endHist.winner == P_BLACK ? -1.0 : 0.0;
+}
 
 vector<float> Rgsc::regretsOfGame(const vector<float>& selectedWhiteWinLoss, double whiteOutcome) {
   const size_t n = selectedWhiteWinLoss.size();

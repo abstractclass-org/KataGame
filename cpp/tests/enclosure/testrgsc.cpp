@@ -2,10 +2,10 @@
 //
 //   testrgsc SCRATCH_DIR
 //
-// Eq. 2 on a short game; the position key's order independence; the buffer's fill, replace-the-lowest, skip-known
-// and EMA rules; the floor for tree candidates; sampling frequencies against the paper's R^(1/tau) / sum; the
-// start probability; and the save/load round trip (SCRATCH_DIR/rgsc_buffer.txt), with each state's origin and AZdb
-// member and side, and older files without them.
+// Eq. 2 on a short game; a game's outcome; the position key's order independence; the buffer's fill,
+// replace-the-lowest, skip-known and EMA rules; the floor for tree candidates; sampling frequencies against the paper's
+// R^(1/tau) / sum; the start probability; and the save/load round trip (SCRATCH_DIR/rgsc_buffer.txt), with each state's
+// origin and AZdb member and side, and older files without them.
 
 #include <cmath>
 #include <cstdio>
@@ -40,6 +40,23 @@ int main(int argc, char** argv) {
     check(near(r[0], (0.25 + 1.44 + 0.01) / 3, 1e-6), "regret at turn 0: mean of all");
     vector<float> d = Rgsc::regretsOfGame({0.0f, 0.0f}, 0.0);
     check(d[0] == 0.0f && d[1] == 0.0f, "a no-result game with zero values has zero regret");
+  }
+
+  // The outcome of a game: White's return, 0 for a draw, also as a no result, and none for a game at the move cap,
+  // whatever its history's winner (abscls-shfz.7).
+  {
+    BoardHistory end;
+    end.isGameFinished = true;
+    const struct { Player winner; bool noResult; double outcome; } ends[] = {
+      {P_WHITE, false, 1.0}, {P_BLACK, false, -1.0}, {C_EMPTY, false, 0.0}, {C_EMPTY, true, 0.0}};
+    for(const auto& e : ends) {
+      end.winner = e.winner;
+      end.isNoResult = e.noResult;
+      const std::optional<double> z = Rgsc::gameOutcome(end, false);
+      check(z.has_value() && *z == e.outcome, "the outcome of a game that its rules ended");
+      check(!Rgsc::gameOutcome(end, true).has_value(), "no outcome of a game at the move cap");
+    }
+    check(!Rgsc::gameOutcome(BoardHistory(), true).has_value(), "no outcome of an unfinished game at the move cap");
   }
 
   // The swing regret (2026-10-11), the same values and outcome, gamma 0.5, scale 2: the steps to the next value (the

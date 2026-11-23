@@ -18,7 +18,7 @@
 // The players: Tak's White moves first, so White is player 0 (KataGo's Black in the code's names) and Black is player
 // 1. Komi is the front's (KataGo's rules.komi, in flats, added to the second player's score as playtak adds it to
 // Black's): score(p, player) is the player's flats on top, and result(p) is the result without komi. result_with_komi
-// gives the result under a komi in half-flats, as playtak and TEI give it.
+// gives the result under a komi in half-flats, as playtak and TEI give it, and game_end the end under the front's komi.
 //
 // The notation is Tak's own: moves in PTN (c3, Sb3, Cc4, 3c3>12), positions in TPS with one more field, the plies
 // since the last placement or flattening (TPS does not hold them). The reserves come from the board.
@@ -35,6 +35,7 @@
 
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -64,6 +65,8 @@ constexpr int CAPSTONES[9] = {0, 0, 0, 0, 0, 1, 1, 2, 2};
 
 enum Kind { FLAT = 0, WALL = 1, CAP = 2 };  // also the placements' channels
 enum End : int8_t { ONGOING = 0, ROAD, FLATS, FIFTY };
+// The kinds of ending under a komi (GameRules::game_end). The result gives the winner of a road and of a flat win.
+enum EndKind { ROAD_WIN = 0, FLAT_WIN, FLAT_TIE, FIFTY_DRAW };
 enum Opening { SWAP = 0, DOUBLE_BLACK_STACK = 1 };
 
 constexpr int DX[4] = {0, 0, 1, -1};
@@ -488,8 +491,18 @@ struct GameRules {
     update_end(p);
   }
 
-  // The result without komi (the front adds its komi to the score): White's return.
+  // The result without komi: White's return.
   static float result(const Position& p) { return float(result_with_komi(p, 0)); }
+  // The end of the game with a komi of so many flats (a multiple of a half) added to Black's flat count, the optional
+  // member that the front reads: White's return, the kind of ending, and whether the flat count decided it. A road wins
+  // at any flat count, and the 50-ply rule draws at any.
+  static GameInterface::GameEnd game_end(const Position& p, double komi) {
+    GameInterface::GameEnd end;
+    end.result = result_with_komi(p, int(std::lround(2 * komi)));
+    end.kind = p.end == ROAD ? ROAD_WIN : p.end == FIFTY ? FIFTY_DRAW : end.result == 0 ? FLAT_TIE : FLAT_WIN;
+    end.scored = p.end == FLATS;
+    return end;
+  }
   // The player's flats on top, so that KataGo's margin, score(p, 1) - score(p, 0) + komi, is Black's flat count
   // minus White's, plus komi.
   static double score(const Position& p, int player) { return popcount(flats(p, player)); }

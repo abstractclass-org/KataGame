@@ -93,6 +93,11 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         model of version 15 reads the rows of version 14 with these planes at 0, and a model of version
                         14 reads the rows of version 15 without them (data_processing_pytorch.fit_binary_input_nchw), as
                         with the planes of closed areas. Default: 0 (reach_spatial_inputs).
+  DRAWS_AS_NO_RESULT    True for a game whose draws are a class of their own, KataGo's no result (C++ GameInterface):
+                        its rows' value target of a draw is the third output, and the evaluator keeps that output. The
+                        trainer trains the three outputs in every game. The checks of the network against the engine
+                        read it (enclosure_nn_check.py, nn_rows_check.py). Default: False, and the evaluator removes
+                        the third output, unless the rules have a simple ko (draws_as_no_result).
   legal_moves(binary_inputs, global_inputs)
                         the moves that the rows' inputs make legal (N, policy) as booleans, in the policy's order (the
                         point's index * POLICY_CHANNELS + the channel, then pass), from the rows as read (no symmetry).
@@ -181,6 +186,12 @@ def reach_spatial_inputs(game):
 def canonical_labels(game):
     """Whether the game's inputs version 13 reads its labels in a canonical order (False: version 13 is version 12)."""
     return getattr(game, "CANONICAL_LABELS", False)
+
+
+def draws_as_no_result(game):
+    """Whether the game's draws are KataGo's no result, so that the evaluator keeps the value head's third output
+    (False: it removes the output, and win and loss share the probability)."""
+    return getattr(game, "DRAWS_AS_NO_RESULT", False)
 
 
 def num_global_inputs(game, inputs_version):

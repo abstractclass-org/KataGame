@@ -133,7 +133,7 @@ In addition to a basic set of [GTP commands](https://www.lysator.liu.se/~gunnar/
             * `scoreLead` - The predicted average number of points that the current side is leading by (with this many points fewer, it would be an even game).
             * `scoreSelfplay` - The predicted average value of the final score of the game after this move from low-playout noisy selfplay, in points. (NOTE: users should usually prefer scoreLead, since scoreSelfplay may be biased by the fact that KataGo isn't perfectly score-maximizing).
             * `prior` - The policy prior of the move, as a float in [0,1].
-            * `noResultValue` - The predicted probability that the game ends in a no-result (e.g. triple ko/long cycle), as a float in [0,1]. Only present if `noResultValue true` was requested. Relevant for rulesets like Japanese rules without superko.
+            * `noResultValue` - The predicted probability that the game ends in a no-result (e.g. triple ko/long cycle), as a float in [0,1]. Only present if `noResultValue true` was requested. Relevant for rulesets like Japanese rules without superko. In KataGame, the probability of a draw in a game whose draws are no results (`GAMES.md`, `DRAWS_AS_NO_RESULT`).
             * `utility` - The utility of the move, combining both winrate and score, as a float in [-C,C] where C is the maximum possible utility.
             * `lcb` - The [LCB](https://github.com/leela-zero/leela-zero/issues/2282) of the move's winrate, as a float in [0,1].
             * `utilityLcb` - The LCB of the move's utility.

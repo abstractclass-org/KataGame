@@ -24,6 +24,7 @@
 #include <cmath>
 #include <csignal>
 #include <limits>
+#include <optional>
 
 using namespace std;
 
@@ -102,26 +103,30 @@ static void rgscOfferCandidate(
 //vanilla buffer only.
 //KataGame fork (2026-10-27): no swing targets with rgscSwingScale 0; each game's regret targets by kind of action
 //(Rgsc::Buffer::addRegrets); and the buffer's summary in the log at each save.
+//KataGame fork (abscls-shfz.7): a game at the move cap has no outcome (Rgsc::gameOutcome), in every game: no regret and
+//no swing targets, no candidate, and no update of a restart's start state. It is written as other games are.
 static bool rgscAfterGame(
   Rgsc::Buffer& buffer, Rgsc::Buffer* swingBuffer, const Rgsc::Settings& settings, FinishedGameData* gameData,
   Rgsc::Source source, uint64_t restartKey, const Rgsc::TreeTracker* tracker, const Rgsc::TreeTracker* swingTracker,
   Logger& logger
 ) {
   const vector<float>& selected = gameData->selectedWhiteWinLossByTurn;
-  const bool hasRegret = !selected.empty();
+  const std::optional<double> outcome = Rgsc::gameOutcome(gameData->endHist, gameData->hitTurnLimit);
+  const bool searched = !selected.empty();
+  const bool hasRegret = searched && outcome.has_value();
   //KataGame fork (2026-11-11, abscls-7ald): a game from the file of people's positions (SOURCE_HUMAN) is no restart:
   //it has its regret targets, it updates no buffer state and offers no candidate (it has no tracker). The caller set
   //the game's rgscSource.
   const bool restarted = Rgsc::fromBuffer(source);
   if(hasRegret) {
-    const Player winner = gameData->endHist.winner;
-    const double whiteOutcome = winner == P_WHITE ? 1.0 : winner == P_BLACK ? -1.0 : 0.0;
-    gameData->regretByTurn = Rgsc::regretsOfGame(selected, whiteOutcome);
+    gameData->regretByTurn = Rgsc::regretsOfGame(selected, *outcome);
     if(settings.swingScale > 0)
       gameData->swingByTurn =
-        Rgsc::swingsOfGame(selected, whiteOutcome, settings.swingGamma, settings.swingScale, settings.swingCap);
+        Rgsc::swingsOfGame(selected, *outcome, settings.swingGamma, settings.swingScale, settings.swingCap);
     buffer.addRegrets(gameData->regretByTurn, gameData->continuesMoveByTurn);
   }
+  if(!outcome.has_value())
+    buffer.countGameAtCap();
   //A model exported before the heads were added gives no rankings: the game still gets its regret targets (so the
   //heads train on them), but offers nothing and does not count toward the warm-up, which starts with the first
   //model that has the heads.
@@ -138,11 +143,14 @@ static bool rgscAfterGame(
     const bool fromSwing = source == Rgsc::SOURCE_SWING;
     testAssert(!fromSwing || swingBuffer != NULL);
     Rgsc::Buffer& from = fromSwing ? *swingBuffer : buffer;
-    if(!hasRegret) {
+    if(!searched) {
       keep = false;
       from.countDroppedRestart();
     }
-    else if(!from.updateAfterRestart(restartKey, fromSwing ? gameData->swingByTurn[0] : gameData->regretByTurn[0]))
+    else if(
+      hasRegret &&
+      !from.updateAfterRestart(restartKey, fromSwing ? gameData->swingByTurn[0] : gameData->regretByTurn[0])
+    )
       from.countRestartStateGone();
   }
   else if(

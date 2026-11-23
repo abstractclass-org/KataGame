@@ -295,6 +295,21 @@ struct WithStandardBoard : GameRules {
   static constexpr int STANDARD_X_SIZE = 3, STANDARD_Y_SIZE = 2;
 };
 static_assert(GameInterface::checkRules<WithStandardBoard>(), "the stub game with a standard board");
+//The stub game with the end of its own (the optional member game_end): the first player wins at any komi.
+struct WithGameEnd : GameRules {
+  static GameInterface::GameEnd game_end(const Position&, double) {
+    GameInterface::GameEnd end;
+    end.result = 1;
+    end.kind = 3;
+    end.scored = false;
+    return end;
+  }
+};
+static_assert(GameInterface::checkRules<WithGameEnd>(), "the stub game with its own end");
+//The optional member of the encoding part that makes a draw a class of its own, alone: true, false and none.
+struct DrawsAsNoResult { static constexpr bool DRAWS_AS_NO_RESULT = true; };
+struct DrawsAsHalfWins { static constexpr bool DRAWS_AS_NO_RESULT = false; };
+struct NoDrawMember {};
 }  // namespace stub
 
 //The hashes of before the interface, pinned: the values that KataGame main (192acb41) gives in the fixture's first
@@ -474,6 +489,23 @@ static void checkOptionalMembers() {
       GameInterface::drawStart<R>(drawn, [&draws]() { draws++; return uint64_t(1); });
       if(draws != 0 || R::position_text(drawn) != R::position_text(start) || !(R::hash(drawn) == R::hash(start)))
         fail("the default of drawStart: no draw, and the start as it was");
+    }
+    //The end of a game, by default KataGo's rule, the sign of the margin with komi: the stub game's scores are 0, so
+    //the komi decides. A game's own end is read as it is, at any komi. A draw is a class of its own only in a game that
+    //says so.
+    static_assert(!GameInterface::hasGameEnd<R>() && !GameInterface::hasGameEnd<S>() &&
+                    GameInterface::hasGameEnd<stub::WithGameEnd>(), "Enclosure and the stub game have KataGo's end");
+    static_assert(!GameInterface::drawsAsNoResult<E>() && !GameInterface::drawsAsNoResult<stub::NoDrawMember>() &&
+                    !GameInterface::drawsAsNoResult<stub::DrawsAsHalfWins>() &&
+                    GameInterface::drawsAsNoResult<stub::DrawsAsNoResult>(),
+                  "a draw is no result where the game says so");
+    for(const double komi : {-0.5, 0.0, 0.5, 2.0}) {
+      const GameInterface::GameEnd end = GameInterface::gameEnd<S>(stub::Position(), komi);
+      if(end.result != (komi > 0 ? -1 : komi < 0 ? 1 : 0) || end.kind != -1 || !end.scored)
+        fail("the default of gameEnd: the sign of the margin, no kind, scored");
+      const GameInterface::GameEnd own = GameInterface::gameEnd<stub::WithGameEnd>(stub::Position(), komi);
+      if(own.result != 1 || own.kind != 3 || own.scored)
+        fail("gameEnd of a game with its own end");
     }
     //The front: Board() is the standard board, and a replayed game passes at any time, while an edge is legal.
     Board board;

@@ -136,6 +136,16 @@
  *                           other is p in another view (set_view), or -1 when other's view does not name it: the
  *                           same child position. A game gives all five or none. Blueprints' views. Default: one
  *                           view, "" (viewText, setView, viewCover, viewInFrame, viewAction: the action itself).
+ *   game_end(p, komi)       GameEnd: the end of the game at the terminal position p under the rules' komi (the front's
+ *                           rules.komi, points added to the second player's score): the first player's return, the kind
+ *                           of ending, and whether the score decided it. For a game whose winner is not always the sign
+ *                           of the margin: in Tak a road wins whatever the flat count, and the 50-ply rule draws at any
+ *                           count. BoardHistory's end of a game reads it, so the search's terminal nodes, the rows, the
+ *                           records and the matches have the rules' winner. The final score stays the margin with komi.
+ *                           A win that the score did not decide is not scored (BoardHistory::isScored), and its record
+ *                           gives no score. The front calls it for a terminal position only: a game that stops earlier
+ *                           (self-play's move cap) keeps KataGo's rule. Tak gives it. Default: KataGo's rule, the sign
+ *                           of the margin with komi, and no kind (gameEnd).
  *   state_text(p), parse_state(text, p, why)
  *                           std::string, bool: the whole state that the network reads, as one line: the one-line
  *                           position and what it leaves out that the inputs read (input_hash: the earlier turns of the
@@ -265,6 +275,15 @@
  *                           after V11's planes. They move as pixels under the symmetries. Blueprints: the hexes of the
  *                           areas closed by the mover's walls and by the opponent's walls. Default: 0, and V12 is V11
  *                           (areaSpatialInputs).
+ *   DRAWS_AS_NO_RESULT      bool: true for a game whose draws are a class of their own, KataGo's no result. A game that
+ *                           ends without a winner is then BoardHistory::isNoResult, its rows' value target is no result
+ *                           with probability 1, and the evaluator keeps the network's no-result output. A draw is worth
+ *                           noResultUtilityForWhite to the search, so a run and an engine keep it at 0, half a win, and
+ *                           noResultStdev at 0. drawEquivalentWinsForWhite does not act on such a draw. A game that
+ *                           stops before its rules end it (self-play's move cap) is never a no result. Tak: a flat tie
+ *                           after komi and the 50-ply rule. Default: false, KataGo's rule: a draw is
+ *                           drawEquivalentWinsForWhite wins, and the evaluator removes the output unless the rules have
+ *                           a simple ko or territory scoring (drawsAsNoResult).
  *   CanonicalActionMap      a type, for a game whose position holds labels that no rule reads (Blueprints' numbers of
  *                           the blueprints): the inputs version 13 (NNInputs V13, model version 22) reads the labels
  *                           in an order that depends only on what they label, so that two positions that differ only
@@ -333,6 +352,13 @@ struct InputOptions {
   //True: the game's labels in their canonical order (CanonicalActionMap), the inputs version 13.
   bool canonical = false;
   bool reach = false;  //True: the game's planes of reach too (NUM_REACH_SPATIAL_INPUTS), the inputs version 15.
+};
+
+//The end of a game, as the rules give it under the rules' komi (the rules part's game_end).
+struct GameEnd {
+  int result = 0;      //The first player's return: 1 a win, 0 a draw, -1 a loss.
+  int kind = -1;       //The kind of ending, a number of the game's own from 0, or -1: the game gives none.
+  bool scored = true;  //Whether the score with komi decided the result, which is then the sign of the margin.
 };
 
 //The optional training targets: the slots of KataGo's spatial targets (its training rows' valueTargetsNCHW) and the
@@ -485,6 +511,7 @@ namespace rules {
                        G::view_in_frame(std::declval<const P<G>&>(), std::declval<const P<G>&>()))
   GAMEINTERFACE_DETECT(HasViewAction, int,
                        G::view_action(std::declval<const P<G>&>(), 0, std::declval<const P<G>&>()))
+  GAMEINTERFACE_DETECT(HasGameEnd, GameEnd, G::game_end(std::declval<const P<G>&>(), 0.0))
   GAMEINTERFACE_DETECT(HasStateText, std::string, G::state_text(std::declval<const P<G>&>()))
   GAMEINTERFACE_DETECT(HasParseState, bool,
                        G::parse_state(std::declval<const std::string&>(), std::declval<P<G>&>(),
@@ -798,6 +825,20 @@ template<class R> int viewAction(const typename R::Position& p, int action, cons
   }
 }
 
+//The end of the game at the terminal position p under the rules' komi: the game's, else KataGo's rule, the sign of the
+//margin (the second player's score minus the first's, with the komi).
+template<class R> constexpr bool hasGameEnd() { return rules::HasGameEnd<R>::value; }
+template<class R> GameEnd gameEnd(const typename R::Position& p, double komi) {
+  if constexpr(rules::HasGameEnd<R>::value)
+    return R::game_end(p, komi);
+  else {
+    const double margin = R::score(p, 1) - R::score(p, 0) + komi;
+    GameEnd end;
+    end.result = margin > 0 ? -1 : margin < 0 ? 1 : 0;
+    return end;
+  }
+}
+
 //Whether the game gives its whole state as a text (state_text, parse_state).
 template<class R> constexpr bool hasStateText() { return rules::HasStateText<R>::value; }
 
@@ -868,6 +909,7 @@ namespace encoding {
   GAMEINTERFACE_DETECT(HasTurnGlobalInputs, int, std::integral_constant<int, G::NUM_TURN_GLOBAL_INPUTS>::value)
   GAMEINTERFACE_DETECT(HasAreaSpatialInputs, int, std::integral_constant<int, G::NUM_AREA_SPATIAL_INPUTS>::value)
   GAMEINTERFACE_DETECT(HasReachSpatialInputs, int, std::integral_constant<int, G::NUM_REACH_SPATIAL_INPUTS>::value)
+  GAMEINTERFACE_DETECT(HasDrawsAsNoResult, bool, std::integral_constant<bool, G::DRAWS_AS_NO_RESULT>::value)
   template<class G, class = void> struct HasCanonicalActionMap : std::false_type {};
   template<class G> struct HasCanonicalActionMap<G, std::enable_if_t<std::is_convertible<
     decltype(std::declval<const typename G::CanonicalActionMap&>()(0)), int>::value &&
@@ -916,6 +958,14 @@ template<class E> constexpr int reachSpatialInputs() {
     return E::NUM_REACH_SPATIAL_INPUTS;
   else
     return 0;
+}
+
+//Whether the game's draws are a class of their own, KataGo's no result (DRAWS_AS_NO_RESULT): the game's, else false.
+template<class E> constexpr bool drawsAsNoResult() {
+  if constexpr(encoding::HasDrawsAsNoResult<E>::value)
+    return E::DRAWS_AS_NO_RESULT;
+  else
+    return false;
 }
 
 //Whether the game has a canonical order of its labels (CanonicalActionMap), which the inputs version 13 reads.

@@ -1920,11 +1920,15 @@ string WriteSgf::gameResultNoSgfTag(const BoardHistory& hist, double overrideFin
   if(!hist.isGameFinished)
     return "";
   else if(hist.isNoResult)
-    return "Void";
+    //KataGame fork: a draw of a game whose draws are a class of their own is a draw in its record, as in other games.
+    return GameInterface::drawsAsNoResult<GameEncoding>() ? "0" : "Void";
   else if(hist.isResignation && hist.winner == C_BLACK)
     return "B+R";
   else if(hist.isResignation && hist.winner == C_WHITE)
     return "W+R";
+  //KataGame fork: a win that the score did not decide (GameInterface::gameEnd) has no score, which SGF makes optional.
+  else if(!hist.isScored && hist.winner != C_EMPTY)
+    return hist.winner == C_BLACK ? "B+" : "W+";
 
   if(!std::isnan(overrideFinishedWhiteScore)) {
     if(overrideFinishedWhiteScore < 0)

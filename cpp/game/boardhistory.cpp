@@ -59,7 +59,8 @@ BoardHistory::BoardHistory()
     hasButton(false),
     isPastNormalPhaseEnd(false),
     isGameFinished(false),winner(C_EMPTY),finalWhiteMinusBlackScore(0.0f),
-    isScored(false),isNoResult(false),isResignation(false)
+    isScored(false),isNoResult(false),isResignation(false),
+    rulesEnd()
 {}
 
 BoardHistory::~BoardHistory()
@@ -120,6 +121,7 @@ void BoardHistory::clear(const Board& board, Player pla, const Rules& r, int ePh
   isScored = false;
   isNoResult = false;
   isResignation = false;
+  rulesEnd = GameInterface::GameEnd();
   koHashHistory.push_back(getSituationAndSimpleKoHash(board,presumedNextMovePla));
   if(board.isGameOver())
     endAndScoreGameNow(board);
@@ -253,6 +255,22 @@ void BoardHistory::endAndScoreGameNow(const Board& board) {
   isResignation = false;
   isGameFinished = true;
   isPastNormalPhaseEnd = false;
+  rulesEnd = GameInterface::GameEnd();
+
+  //KataGame fork: the rules' end in place of the score's sign, and a draw as a no result, for a game that has them. A
+  //game that its rules have not ended (the move cap) keeps the score's sign above, and its tie is no draw by the rules.
+  if constexpr(GameInterface::hasGameEnd<GameRules>() || GameInterface::drawsAsNoResult<GameEncoding>()) {
+    if(board.isGameOver()) {
+      rulesEnd = GameInterface::gameEnd<GameRules>(board.pos, rules.komi);
+      winner = rulesEnd.result > 0 ? P_BLACK : rulesEnd.result < 0 ? P_WHITE : C_EMPTY;
+      isScored = rulesEnd.scored;
+      if(GameInterface::drawsAsNoResult<GameEncoding>() && winner == C_EMPTY) {
+        isNoResult = true;
+        isScored = false;
+        finalWhiteMinusBlackScore = 0.0f;
+      }
+    }
+  }
 }
 
 void BoardHistory::endAndScoreGameNow(const Board& board, Color area[Board::MAX_ARR_SIZE]) {
@@ -272,6 +290,7 @@ void BoardHistory::setWinnerByResignation(Player pla) {
   isResignation = true;
   winner = pla;
   finalWhiteMinusBlackScore = 0.0f;
+  rulesEnd = GameInterface::GameEnd();
 }
 
 void BoardHistory::printBasicInfo(ostream& out, const Board& board) const {
