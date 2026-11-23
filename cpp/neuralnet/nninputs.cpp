@@ -299,7 +299,7 @@ NNOutput::NNOutput()
    regretRanking(0.0f),hasSwing(false),swingValue(0.0f),swingRanking(0.0f),hasIntrinsic(false),intrinsicA(0.0f),
    intrinsicB(0.0f),auxMap(NULL),auxValues(NULL),auxPolicy(NULL),scoreBeliefLen(0),scoreBelief(NULL),scoreBeliefRaw(NULL)
 {
-  std::fill(policyMask, policyMask + NNPos::MAX_BOARD_AREA * NNPolicyRankMask::WORDS, uint64_t(0));
+  std::fill(std::begin(policyMask), std::end(policyMask), uint64_t(0));
 }
 
 //Enclosure fork (owner, 2026-10-05/06: compact policy storage).
@@ -316,7 +316,7 @@ void PolicyView::toDense(float* out) const {
 void NNOutput::setPolicyFromDense(const float* dense) {
   legalPos.clear();
   legalProbs.clear();
-  std::fill(policyMask, policyMask + NNPos::MAX_BOARD_AREA * NNPolicyRankMask::WORDS, uint64_t(0));
+  std::fill(std::begin(policyMask), std::end(policyMask), uint64_t(0));
   policyPassSlot = -1;
   const int passPos = NNPos::PASS_POS;
   for(int point = 0; point < NNPos::MAX_BOARD_AREA; point++) {
@@ -348,7 +348,7 @@ void NNOutput::setPolicyFromLegal(const uint16_t* pos, const float* probs, const
   legalProbs.clear();
   legalPos.reserve(count);
   legalProbs.reserve(count);
-  std::fill(policyMask, policyMask + NNPos::MAX_BOARD_AREA * NNPolicyRankMask::WORDS, uint64_t(0));
+  std::fill(std::begin(policyMask), std::end(policyMask), uint64_t(0));
   policyPassSlot = -1;
   //As setPolicyFromDense: a point's start is the number of legal entries before it, pass (last) after every point.
   int point = 0;
@@ -384,7 +384,7 @@ void NNOutput::compactPolicy() {
 static void copyCompactPolicy(NNOutput& to, const NNOutput& from) {
   to.legalPos = from.legalPos;
   to.legalProbs = from.legalProbs;
-  std::copy(from.policyMask, from.policyMask + NNPos::MAX_BOARD_AREA * NNPolicyRankMask::WORDS, to.policyMask);
+  std::copy(std::begin(from.policyMask), std::end(from.policyMask), to.policyMask);
   std::copy(from.policyStart, from.policyStart + NNPos::MAX_BOARD_AREA, to.policyStart);
   to.policyPassSlot = from.policyPassSlot;
   to.policyDense = NULL;

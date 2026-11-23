@@ -25,15 +25,19 @@ from katago.train.model_pytorch import Model, policy_len  # noqa: E402
 OPTION_H = 18  # model option H's line in the header (as in the engine's games/enclosure/tests/test_model_game.py)
 
 
+def stub_game(monkeypatch, name, base, **facts):
+    """A game module `name` with the facts of the game module `base`, and `facts` in place of some of them."""
+    stub = types.ModuleType("katago.train.games." + name)
+    stub.__dict__.update({m: getattr(base, m) for m in games.MEMBERS})
+    stub.__dict__.update(NAME=name, **facts)
+    monkeypatch.setitem(sys.modules, stub.__name__, stub)
+    return stub
+
+
 @pytest.fixture
 def game_without_ownership(monkeypatch):
     """A game with Enclosure's facts that writes every target but the ownership."""
-    stub = types.ModuleType("katago.train.games.stubgame")
-    stub.__dict__.update({m: getattr(enclosure, m) for m in games.MEMBERS})
-    stub.NAME = "stubgame"
-    stub.TARGETS = enclosure.TARGETS & ~games.TARGET_OWNERSHIP
-    monkeypatch.setitem(sys.modules, "katago.train.games.stubgame", stub)
-    return stub
+    return stub_game(monkeypatch, "stubgame", enclosure, TARGETS=enclosure.TARGETS & ~games.TARGET_OWNERSHIP)
 
 
 def test_enclosure_gives_its_inputs_policy_and_scales():
@@ -151,13 +155,7 @@ def test_the_export_writes_0_for_enclosure_and_another_games_name_into_option_h(
 def wide_game(monkeypatch):
     """A game with Connect-4's facts and 255 policy channels a point, as Tak's 6 x 6 (the engine repository's
     games/tak/docs/design/03-moves-and-policy.md)."""
-    connect4 = games.get("connect4")
-    stub = types.ModuleType("katago.train.games.widegame")
-    stub.__dict__.update({m: getattr(connect4, m) for m in games.MEMBERS})
-    stub.NAME = "widegame"
-    stub.POLICY_CHANNELS = 255
-    monkeypatch.setitem(sys.modules, "katago.train.games.widegame", stub)
-    return stub
+    return stub_game(monkeypatch, "widegame", games.get("connect4"), POLICY_CHANNELS=255)
 
 
 def test_a_game_of_255_policy_channels_trains_and_exports_each_channel(tmp_path, wide_game):
@@ -363,11 +361,7 @@ def test_blueprints_next_mover_is_g76_in_new_rows_and_c1_in_old_rows():
 
 
 def test_a_module_that_sets_an_unknown_loss_coefficient_is_refused(monkeypatch):
-    stub = types.ModuleType("katago.train.games.badcoefficients")
-    stub.__dict__.update({m: getattr(enclosure, m) for m in games.MEMBERS})
-    stub.NAME = "badcoefficients"
-    stub.LOSS_COEFFICIENTS = {"ownership": 0.5, "owner": 0.5}
-    monkeypatch.setitem(sys.modules, "katago.train.games.badcoefficients", stub)
+    stub_game(monkeypatch, "badcoefficients", enclosure, LOSS_COEFFICIENTS={"ownership": 0.5, "owner": 0.5})
     with pytest.raises(ValueError, match="sets the coefficient of no loss named owner"):
         games.get("badcoefficients")
 

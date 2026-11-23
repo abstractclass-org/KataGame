@@ -5,9 +5,10 @@
 //   testpolicymask
 //
 // 1. The mask alone, for 1, 6, 48, 64, 65, 128 and 255 channels a point (Tak's 6 x 6 has 255), on 36 points: random
-//    sets of legal positions, the empty set, the full set, and sets of the channels next to the words' edges. A
-//    position's slot (PolicyRankMask::slot) is its rank in the ascending list of legal positions, and -1 when it is not
-//    legal. The point's start is the number of legal positions before the point, as NNOutput keeps it.
+//    sets of legal positions, the empty set, the full set, and sets of the channels next to the words' edges and of
+//    the last channel. A position's slot (PolicyRankMask::slot) is its rank in the ascending list of legal positions,
+//    and -1 when it is not legal. The point's start is the number of legal positions before the point, as NNOutput
+//    keeps it.
 // 2. The build's own policy (the game's POLICY_CHANNELS): random dense policies through setPolicyFromDense and
 //    setPolicyFromLegal, read back through policy() at every position and through toDense.
 //
@@ -23,9 +24,9 @@ using namespace std;
 
 static int failures = 0;
 
-static void fail(const char* what, int channels, int p, int got, int expected) {
+static void fail(const char* what, int channels, int p, double got, double expected) {
   if(failures < 20)
-    printf("FAIL %s: %d channels, position %d: %d, expected %d\n", what, channels, p, got, expected);
+    printf("FAIL %s: %d channels, position %d: %g, expected %g\n", what, channels, p, got, expected);
   failures++;
 }
 
@@ -68,18 +69,19 @@ static void checkChannels(Rand& rand) {
       checkSlots<CHANNELS>(legal, points);
     }
   }
-  //The channels next to each word's edge, alone and together, at each point.
-  for(int edge = 0; edge < CHANNELS; edge += 64) {
-    for(int c: {edge - 1, edge, edge + 63}) {
-      if(c < 0 || c >= CHANNELS)
-        continue;
-      for(int p = 0; p < n; p++)
-        legal[p] = (p % CHANNELS == c) ? 1 : 0;
-      checkSlots<CHANNELS>(legal, points);
-      for(int p = 0; p < n; p++)
-        legal[p] = (p % CHANNELS == c || rand.nextBool(0.5)) ? 1 : 0;
-      checkSlots<CHANNELS>(legal, points);
-    }
+  //The channels next to each word's edge and the last channel, alone and with random others, at each point.
+  vector<int> edges = {CHANNELS - 1};
+  for(int edge = 0; edge < CHANNELS; edge += 64)
+    for(int c: {edge - 1, edge, edge + 63})
+      if(c >= 0 && c < CHANNELS)
+        edges.push_back(c);
+  for(int c: edges) {
+    for(int p = 0; p < n; p++)
+      legal[p] = (p % CHANNELS == c) ? 1 : 0;
+    checkSlots<CHANNELS>(legal, points);
+    for(int p = 0; p < n; p++)
+      legal[p] = (p % CHANNELS == c || rand.nextBool(0.5)) ? 1 : 0;
+    checkSlots<CHANNELS>(legal, points);
   }
 }
 
@@ -109,12 +111,12 @@ static void checkOutput(Rand& rand, double density) {
     const PolicyView view = out->policy();
     for(int p = 0; p < size; p++)
       if(view[p] != dense[p])
-        fail(out == &fromDense ? "setPolicyFromDense" : "setPolicyFromLegal", NNPos::POLICY_CHANNELS, p,
-             (int)(view[p] * 1e6f), (int)(dense[p] * 1e6f));
+        fail(out == &fromDense ? "setPolicyFromDense" : "setPolicyFromLegal", NNPos::POLICY_CHANNELS, p, view[p],
+             dense[p]);
     view.toDense(back.data());
     for(int p = 0; p < size; p++)
       if(back[p] != dense[p])
-        fail("toDense", NNPos::POLICY_CHANNELS, p, (int)(back[p] * 1e6f), (int)(dense[p] * 1e6f));
+        fail("toDense", NNPos::POLICY_CHANNELS, p, back[p], dense[p]);
   }
 }
 

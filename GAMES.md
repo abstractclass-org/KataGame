@@ -294,9 +294,10 @@ These stay declared, with neutral answers, so that their callers compile unchang
 - **A point can have more than 64 channels** (abscls-shfz.6: Tak's 6x6 has 255). The compact policy that the search
   keeps (`NNOutput`, `PolicyView` in `neuralnet/nninputs.h`) finds an action's slot through a mask of the point's legal
   channels: `PolicyRankMask` gives each point `(POLICY_CHANNELS + 63) / 64` words of 64 bits. A game with at most 64
-  channels has one word, which `mark` and `slot` read without the words' arithmetic (`if constexpr`). The other sizes
-  have no limit of their own below the actions' 32,768 of the CUDA backend's policy gather: the backends, the
-  trainer's head and losses, and the export size everything by `POLICY_CHANNELS`.
+  channels has one word, which `mark` and `slot` read without the words' arithmetic (`if constexpr`). The backends,
+  the trainer's head and losses, and the export size everything by `POLICY_CHANNELS`, with no limit of their own. The
+  one other limit is the CUDA backend's policy gather: a policy index has 15 bits of a gather entry, so a game has at
+  most 32,768 actions.
   `tests/enclosure/testpolicymask.cpp` checks the mask at 1 to 255 channels and the build's own compact policy, and
   the trainer's `test_game_module.py` trains and exports a game of 255 channels.
 - **Go's score parity** (the komi input times a parity vector in the score-belief head) stays a no-op: the vector is

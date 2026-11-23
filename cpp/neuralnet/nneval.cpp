@@ -1599,8 +1599,7 @@ void NNEvaluator::evaluate(
     //Enclosure fork: the compact policy (the new output's dense scratch is left unread).
     buf.result->legalPos = resultWithoutOwnerMap->legalPos;
     buf.result->legalProbs = resultWithoutOwnerMap->legalProbs;
-    std::copy(resultWithoutOwnerMap->policyMask, resultWithoutOwnerMap->policyMask + NNPos::MAX_BOARD_AREA * NNPolicyRankMask::WORDS,
-              buf.result->policyMask);
+    std::copy(std::begin(resultWithoutOwnerMap->policyMask), std::end(resultWithoutOwnerMap->policyMask), buf.result->policyMask);
     std::copy(resultWithoutOwnerMap->policyStart, resultWithoutOwnerMap->policyStart + NNPos::MAX_BOARD_AREA, buf.result->policyStart);
     buf.result->policyPassSlot = resultWithoutOwnerMap->policyPassSlot;
     buf.result->policyDense = NULL;
