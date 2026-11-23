@@ -1,0 +1,6 @@
+# Tak's own code outside the game layer (GAMES.md, "The game layer"). It is Tak's, and it uses the rules part alone, so
+# it needs no build of katago. Only these files may name Tak (tests/checkgamelayer.py).
+#
+# One path a line, relative to katagame/cpp. A folder ends with /. CMakeLists.txt compiles each .cpp file of this list
+# (not the folders) into katago.
+tests/tak/                      # its standalone tests, which need no katago: g++ as each file's comment says
