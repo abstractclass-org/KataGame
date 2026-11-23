@@ -15,20 +15,20 @@
 // - Stacks (6): for P, then O: the other player's pieces under the player's top pieces, as a share of the other
 //   player's pieces on the board (captives); the player's own pieces under its top pieces, as a share of its pieces on
 //   the board (support); and the height of its tallest stack, over the board's side N.
-// - Roads (6): for P, then O: log(1 + n) of the empty squares where a flat of the player completes its road (a square
-//   that the player's road already spans would count nothing, as a complete road is the result: 0 then; the reserve
-//   does not matter); the player's longest reach, the larger of the rows and the columns that one road group spans,
-//   over N; and the road pieces of its largest road group, as a share of its road pieces. A road piece is a flat or a
-//   capstone on top, and a road group is a set of them joined by orthogonal steps.
+// - Roads (6): for P, then O: log(1 + n) of the empty squares where a flat of the player completes its road, 0 when the
+//   road is complete already (a complete road is the result), whatever its reserve; the player's longest reach, the
+//   larger of the rows and the columns that one road group spans, over N; and the road pieces of its largest road
+//   group, as a share of its road pieces. A road piece is a flat or a capstone on top, and a road group is a set of
+//   them joined by orthogonal steps.
 // - Contact (4): for P, then O: the player's top pieces with an orthogonal neighbour of the other player's, as a share
 //   of its top pieces; and the player's walls next to a road piece of the other player's, as a share of its walls.
 // - Edges (2): for P, then O: the player's top pieces on the edge squares, as a share of its top pieces, over the edge
 //   squares' share of the board, 4 (N - 1) / N^2: 1 for play that does not favour the edges.
 // - Tempo (2): for P, then O: the share of the player's moves that were spreads. A player's moves are its plies, and
 //   its placements are its starting reserve less its reserve now. The swap opening keeps this true: each player places
-//   one piece of the other's and has one piece placed for it. Before both players have moved (ply 2), and before a
-//   player has moved, the share is 0. Under the double black stack, Black's first piece is two flats from Black's
-//   reserve, so Black's placements are one fewer than its reserve shows.
+//   one piece of the other's and has one piece placed for it. Before both players have moved (ply 2), the share is 0:
+//   the first two plies are placements, and White's first one is of Black's reserve. Under the double black stack,
+//   Black's first piece is two flats from Black's reserve, so Black's placements are one fewer than its reserve shows.
 //
 // The normalization (DiversityNormalizer): z = (x - mean) / max(sd, SIGMA_FLOOR), clipped to [-CLIP, CLIP], times
 // 1 / sqrt(the size of its group). The mean and the standard deviation are running estimates, exponential moving
@@ -69,7 +69,8 @@ constexpr std::array<uint64_t, MAX_LEN + 1> edge_table() {
     t[s] = edge_bits(s);
   return t;
 }
-constexpr uint64_t NOT_WEST = ~column_bits(0), NOT_EAST = ~column_bits(MAX_LEN - 1);
+constexpr uint64_t WEST = column_bits(0);
+constexpr uint64_t NOT_WEST = ~WEST, NOT_EAST = ~column_bits(MAX_LEN - 1);
 constexpr std::array<uint64_t, MAX_LEN + 1> EDGE = edge_table();
 }  // namespace diversity_detail
 
@@ -144,7 +145,7 @@ struct Diversity {
     enum { WEST = 1, EAST = 2, SOUTH = 4, NORTH = 8 };
     const int n = p.size;
     const uint64_t road = road_pieces(p, who);
-    const uint64_t westEdge = diversity_detail::column_bits(0), eastEdge = diversity_detail::column_bits(n - 1);
+    const uint64_t westEdge = diversity_detail::WEST, eastEdge = westEdge << (n - 1);
     const uint64_t southEdge = (uint64_t(1) << n) - 1, northEdge = southEdge << ((n - 1) * MAX_LEN);
     Roads r;
     r.pieces = popcount(road);
@@ -152,14 +153,14 @@ struct Diversity {
     uint8_t flags[NUM_POINTS];
     int groups = 0;
     bool complete = false;
-    uint64_t rest = road;
-    while(rest) {
-      uint64_t group = rest & (~rest + 1), last = 0;
+    uint64_t left = road;
+    while(left) {
+      uint64_t group = left & (~left + 1), last = 0;
       while(group != last) {
         last = group;
         group |= neighbours(group) & road;
       }
-      rest &= ~group;
+      left &= ~group;
       const int f = ((group & westEdge) ? WEST : 0) | ((group & eastEdge) ? EAST : 0) |
                     ((group & southEdge) ? SOUTH : 0) | ((group & northEdge) ? NORTH : 0);
       flags[groups] = uint8_t(f);
@@ -175,11 +176,11 @@ struct Diversity {
         label[__builtin_ctzll(g)] = int8_t(groups);
       groups++;
     }
-    // A complete road cannot be completed (it is the result). Else each empty square joins the groups that touch it,
-    // and the square itself touches the edges that it is on.
+    // A complete road cannot be completed (it is the result). Else an empty square joins the groups that touch it and
+    // the edges that it is on. A square beside no road piece is on no two opposite edges (N >= 3): it completes none.
     if(complete)
       return r;
-    uint64_t empty = board_mask(n) & ~occupied(p);
+    uint64_t empty = board_mask(n) & ~occupied(p) & neighbours(road);
     while(empty) {
       const int e = __builtin_ctzll(empty);
       empty &= empty - 1;
@@ -198,7 +199,7 @@ struct Diversity {
   // The share of the player's moves that were spreads (the header comment's "Tempo").
   static double spread_share(const Position& p, int who) {
     const int moves = who == 0 ? (p.ply + 1) / 2 : p.ply / 2;
-    if(p.ply < 2 || moves <= 0)
+    if(p.ply < 2)
       return 0.0;
     const int extra = who == 1 && opening == DOUBLE_BLACK_STACK ? 1 : 0;
     const int spreads = moves - (on_board(p, who) - extra);

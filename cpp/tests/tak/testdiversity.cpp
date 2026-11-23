@@ -58,7 +58,7 @@ tak::Position position(const string& text) {
 
 const string ROW = "x5/x5/x5/x5/1,1,1,1,x 1 4 0";            // a white row of four: e1 completes a road
 const string FULL_ROW = "x5/x5/x5/x5/1,1,1,1,1 1 4 0";       // a white road, the game's end
-const string STACKS = "x5/x5/x2,21,x2/x5/1221,x4 1 3 0";     // white tops on c3 (over a black flat) and a1 (over W, B, B)
+const string STACKS = "x5/x5/x2,21,x2/x5/1221,x4 1 3 0";     // white tops on c3 (over B) and a1 (over W, B, B)
 const string WALLS = "1C,x3,1S/x5/x,2,x3/x,1S,x,2S,x/x5 1 4 0";
 const string MIXED = "1,1,x,1,1/x5/2,2,2,x2/x2,1S,x2/x,12,x3 1 6 0";
 
