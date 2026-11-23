@@ -82,6 +82,9 @@ inline int action_point(int action) { return action / CHANNELS; }
 inline int action_channel(int action) { return action % CHANNELS; }
 inline int place_action(int i, int kind) { return i * CHANNELS + kind; }
 inline int spread_action(int i, int direction, int pattern) { return i * CHANNELS + 3 + 4 * pattern + direction; }
+// A spread's channel (3 or more): its pattern and its direction.
+inline int channel_pattern(int channel) { return (channel - 3) / 4; }
+inline int channel_direction(int channel) { return (channel - 3) % 4; }
 
 // A pattern's pickup: k for patterns 2^(k-1) - 1 to 2^k - 2.
 inline int pattern_pieces(int pattern) { return 64 - __builtin_clzll(uint64_t(pattern) + 1); }
@@ -190,12 +193,12 @@ inline void set_top(Position& p, int i, int kind) {
 
 // Whether the player's flats and capstones on top join opposite edges.
 inline bool has_road(const Position& p, int player) {
-  const uint64_t board = board_mask(p.size), road = p.owner[player] & ~p.walls;
-  const uint64_t west = column_mask(0), east = column_mask(MAX_LEN - 1);
-  const uint64_t notWest = ~west, notEast = ~east;
+  // The road's squares are on the board, so the masks need not stop at its side.
+  const uint64_t road = p.owner[player] & ~p.walls;
+  const uint64_t west = column_mask(0), notWest = ~west, notEast = ~column_mask(MAX_LEN - 1);
   const uint64_t row = (uint64_t(1) << p.size) - 1;  // row 1's squares
-  const uint64_t starts[2] = {road & column_mask(0), road & row};
-  const uint64_t goals[2] = {column_mask(p.size - 1) & board, row << ((p.size - 1) * MAX_LEN)};
+  const uint64_t starts[2] = {road & west, road & row};
+  const uint64_t goals[2] = {column_mask(p.size - 1), row << ((p.size - 1) * MAX_LEN)};
   for(int axis = 0; axis < 2; axis++) {
     uint64_t group = starts[axis], last = 0;
     while(group != last) {
@@ -266,6 +269,18 @@ inline std::string square_name(int i) {
   return std::string(1, char('a' + i % MAX_LEN)) + std::to_string(i / MAX_LEN + 1);
 }
 
+// The parts of the text between the separators, an empty part where two separators meet.
+inline std::vector<std::string> split(const std::string& text, char separator) {
+  std::vector<std::string> parts(1);
+  for(char c : text) {
+    if(c == separator)
+      parts.emplace_back();
+    else
+      parts.back() += c;
+  }
+  return parts;
+}
+
 // Reads a move in PTN, case-insensitively, with no position: its action on the largest board, or false and the
 // reason. PTN's marks may end it: a flattening's *, and ' " ! ? (tak and the annotations), which change nothing.
 // flattens tells whether the text has the *.
@@ -329,7 +344,7 @@ inline bool parse_ptn(const std::string& text, int& action, bool& flattens, std:
   std::vector<int> drops;
   for(; at < s.size(); at++) {
     if(!std::isdigit((unsigned char)s[at]) || s[at] == '0')
-      return fail("each drop is a count of 1 to 8");
+      return fail("each drop is a count of at least 1");
     drops.push_back(s[at] - '0');
   }
   if(drops.empty())
@@ -419,7 +434,7 @@ struct GameRules {
     }
     if(p.ply < 2 || !(p.owner[me] & bit(i)))
       return false;
-    const int pattern = (channel - 3) / 4, direction = (channel - 3) % 4;
+    const int pattern = channel_pattern(channel), direction = channel_direction(channel);
     const int k = pattern_pieces(pattern);
     if(k > p.height[i] || k > p.size)
       return false;
@@ -445,7 +460,7 @@ struct GameRules {
       set_top(p, i, channel);
       p.drawClock = 0;
     } else {
-      const int pattern = (channel - 3) / 4, direction = (channel - 3) % 4;
+      const int pattern = channel_pattern(channel), direction = channel_direction(channel);
       const int k = pattern_pieces(pattern), code = pattern_code(pattern);
       const int kind = kind_at(p, i);
       uint64_t carried = take(p, i, k);
@@ -499,19 +514,15 @@ struct GameRules {
   }
 
   // The player whose piece tops the point.
-  static void pieces(const Position& p, int8_t* owners) {
-    for(int y = 0; y < p.size; y++)
-      for(int x = 0; x < p.size; x++) {
-        const uint64_t b = bit(point(x, y));
-        owners[y * p.size + x] = int8_t((p.owner[0] & b) ? 0 : (p.owner[1] & b) ? 1 : -1);
-      }
-  }
+  static void pieces(const Position& p, int8_t* owners) { fill_owners(p, p.owner[0], p.owner[1], owners); }
   // The player whose flat tops the point: the flat count's squares, which sum to the flat margin.
-  static void area(const Position& p, int8_t* owners) {
+  static void area(const Position& p, int8_t* owners) { fill_owners(p, flats(p, 0), flats(p, 1), owners); }
+  // Each point of the board, row by row: 0 in White's squares, 1 in Black's, else -1.
+  static void fill_owners(const Position& p, uint64_t white, uint64_t black, int8_t* owners) {
     for(int y = 0; y < p.size; y++)
       for(int x = 0; x < p.size; x++) {
         const uint64_t b = bit(point(x, y));
-        owners[y * p.size + x] = int8_t((flats(p, 0) & b) ? 0 : (flats(p, 1) & b) ? 1 : -1);
+        owners[y * p.size + x] = int8_t((white & b) ? 0 : (black & b) ? 1 : -1);
       }
   }
 
@@ -523,8 +534,8 @@ struct GameRules {
     const int i = action_point(action), channel = action_channel(action);
     if(channel < 3)
       return std::string(channel == WALL ? "S" : channel == CAP ? "C" : "") + square_name(i);
-    const int pattern = (channel - 3) / 4, k = pattern_pieces(pattern);
-    std::string s = (k > 1 ? std::to_string(k) : "") + square_name(i) + DIRECTIONS[(channel - 3) % 4];
+    const int pattern = channel_pattern(channel), k = pattern_pieces(pattern);
+    std::string s = (k > 1 ? std::to_string(k) : "") + square_name(i) + DIRECTIONS[channel_direction(channel)];
     const std::vector<int> drops = pattern_drops(pattern);
     if(drops.size() > 1)
       for(int c : drops)
@@ -535,7 +546,7 @@ struct GameRules {
   // 2a1, as ptn.ninja writes it.
   static int parse_action(const Position& p, const std::string& text, std::string* why) {
     std::string reason;
-    auto fail = [why, &reason](const std::string& r) {
+    auto fail = [why](const std::string& r) {
       if(why)
         *why = r;
       return -1;
@@ -571,7 +582,7 @@ struct GameRules {
       return fail(square_name(i) + " is empty");
     if(!(p.owner[me] & bit(i)))
       return fail("the stack on " + square_name(i) + " is not the mover's");
-    const int pattern = (channel - 3) / 4, k = pattern_pieces(pattern);
+    const int pattern = channel_pattern(channel), k = pattern_pieces(pattern);
     if(k > p.size)
       return fail("the carry limit is " + std::to_string(p.size));
     if(k > p.height[i])
@@ -579,7 +590,7 @@ struct GameRules {
     if(!is_legal(p, action))
       return fail(text + " meets the edge, a wall or a capstone (only a capstone alone flattens a wall)");
     bool wallAfter;
-    const bool flattening = pattern_steps(pattern) > open_run(p, i, (channel - 3) % 4, wallAfter);
+    const bool flattening = pattern_steps(pattern) > open_run(p, i, channel_direction(channel), wallAfter);
     if(flattens && !flattening)
       return fail(text + " flattens no wall (*)");
     return action;
@@ -636,27 +647,15 @@ struct GameRules {
   // against the board, and the count against the plies. The end of the game comes from the board.
   static bool parse_position(const std::string& text, Position& p, std::string& why) {
     std::vector<std::string> fields;
-    for(size_t at = 0; at < text.size();) {
-      while(at < text.size() && text[at] == ' ')
-        at++;
-      if(at == text.size())
-        break;
-      const size_t end = text.find(' ', at);
-      fields.push_back(text.substr(at, end == std::string::npos ? std::string::npos : end - at));
-      at = end == std::string::npos ? text.size() : end;
-    }
+    for(const std::string& field : split(text, ' '))
+      if(!field.empty())
+        fields.push_back(field);
     if(fields.size() != 3 && fields.size() != 4) {
       why = "a position is TPS (the board, the player to move, the move number), then the plies since the last "
             "placement or flattening";
       return false;
     }
-    std::vector<std::string> rows(1);
-    for(char c : fields[0]) {
-      if(c == '/')
-        rows.emplace_back();
-      else
-        rows.back() += c;
-    }
+    const std::vector<std::string> rows = split(fields[0], '/');
     const int size = int(rows.size());
     Position q;
     if(!new_game(size, size, q)) {
@@ -668,14 +667,7 @@ struct GameRules {
     for(int r = 0; r < size; r++) {
       const int y = size - 1 - r;
       int x = 0;
-      std::vector<std::string> squares(1);
-      for(char c : rows[r]) {
-        if(c == ',')
-          squares.emplace_back();
-        else
-          squares.back() += c;
-      }
-      for(const std::string& sq : squares) {
+      for(const std::string& sq : split(rows[r], ',')) {
         if(sq.empty()) {
           why = "row " + std::to_string(r + 1) + " has an empty square's text";
           return false;
