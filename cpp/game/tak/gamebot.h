@@ -11,7 +11,8 @@
 namespace tak {
 
 // The komi that the bot plays for, in half-flats, added to Black's flat count (as result_with_komi). A position does
-// not hold its komi, so the match sets it, for the whole process.
+// not hold its komi, so the match sets it, for the whole process: the komi that the match's result uses, and not while
+// a search runs (the search releases Python's lock, and it reads the komi as it goes).
 inline int bot_half_komi = 0;
 
 // The rules part as the search reads it: the ends of a game, under the bot's komi.
@@ -20,9 +21,10 @@ struct BotRules : GameRules {
 
   // The search adds the mover's score minus the opponent's to an end's value, to choose among ends of one result. Tak
   // pays no margin, so the winner's score is minus the plies played: an earlier win is worth more, and so is a later
-  // loss. A draw is worth 0.
+  // loss. A draw is worth 0. The hash leaves out the move number, so the table can give a win the plies of another path
+  // to the same position. That can change which win the search prefers, and never the result.
   static double score(const Position& p, int player) {
-    const int white = result_with_komi(p, bot_half_komi);
+    const float white = result(p);
     return white != 0 && player == (white > 0 ? 0 : 1) ? -double(p.ply) : 0.0;
   }
 
