@@ -909,7 +909,8 @@ targets, the rows (C0-2, C20, C27, C52, C62) and RGSC's outcome, for games that 
 cap. In a game without the members it checks KataGo's rule. On the test game `endings` (`-DGAME=endings`), it computes
 each end from the board's pieces alone, and it requires every kind of ending: a line that the score contradicts and a
 line that it does not, for each player, a count for each player, a tie of the count, and a draw at any count.
-`testrgsc` checks RGSC's outcome alone (`Rgsc::gameOutcome`).
+`testrgsc` checks RGSC's outcome alone (`Rgsc::gameOutcome`), and that a restart's state leaves the buffer at the move
+cap.
 
 **Komi:** `testkomi` runs on a build of any game, with a self-play config as an optional argument. It plays a random
 game to its end and checks the history's result at komis of both signs, at 0, and at the komis that decide the game

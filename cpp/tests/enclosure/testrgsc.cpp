@@ -3,9 +3,9 @@
 //   testrgsc SCRATCH_DIR
 //
 // Eq. 2 on a short game; a game's outcome; the position key's order independence; the buffer's fill,
-// replace-the-lowest, skip-known and EMA rules; the floor for tree candidates; sampling frequencies against the paper's
-// R^(1/tau) / sum; the start probability; and the save/load round trip (SCRATCH_DIR/rgsc_buffer.txt), with each state's
-// origin and AZdb member and side, and older files without them.
+// replace-the-lowest, skip-known and EMA rules, and a restart's state that leaves at the move cap; the floor for tree
+// candidates; sampling frequencies against the paper's R^(1/tau) / sum; the start probability; and the save/load round
+// trip (SCRATCH_DIR/rgsc_buffer.txt), with each state's origin and AZdb member and side, and older files without them.
 
 #include <cmath>
 #include <cstdio>
@@ -110,6 +110,51 @@ int main(int argc, char** argv) {
   check(buffer.updateAfterRestart(keyOfI(3), 0.2), "EMA update finds the state");
   check(!buffer.updateAfterRestart(keyOfI(2), 0.2), "EMA update reports a state that left");
   // Now: 1 -> 0.5, 3 -> 0.5 * 0.8 + 0.5 * 0.2 = 0.5, 5 -> 0.6.
+
+  // After a restart (abscls-shfz.7): a game that its rules ended keeps its state and moves its regret, and a game at
+  // the move cap (no outcome, so no regret) drops its state, so that the state is not drawn again. The regret of the
+  // game is as self-play gives it (rgscAfterGame): gameOutcome, then Eq. 2.
+  {
+    Rgsc::Settings capSettings = settings;
+    capSettings.bufferFile = string(argv[1]) + "/rgsc_cap_buffer.txt";
+    Rgsc::Buffer atCap(capSettings);
+    atCap.offer(keyOfI(1), 0.9, movesOf(1));
+    atCap.offer(keyOfI(2), 0.7, movesOf(2));
+    atCap.offer(keyOfI(3), 0.8, movesOf(3));
+    auto regretOfGame = [](bool hitTurnLimit, Player winner) {
+      BoardHistory hist;
+      hist.isGameFinished = !hitTurnLimit;
+      hist.winner = winner;
+      const std::optional<double> outcome = Rgsc::gameOutcome(hist, hitTurnLimit);
+      std::optional<double> regret;
+      if(outcome.has_value())
+        regret = Rgsc::regretsOfGame({0.0f, 0.5f}, *outcome)[0];
+      return regret;
+    };
+    const std::optional<double> finished = regretOfGame(false, P_WHITE);
+    const std::optional<double> capped = regretOfGame(true, C_EMPTY);
+    check(finished.has_value() && !capped.has_value(), "the regret of a finished game, and none of a game at the cap");
+    check(atCap.updateAfterRestart(keyOfI(2), finished), "a finished game's state is in the buffer");
+    Rand rand("testrgsc cap");
+    Rgsc::Entry e;
+    for(int i = 0; i < 200; i++)
+      if(atCap.sample(rand, e) && e.key == keyOfI(2))
+        check(near(e.regret, 0.5 * 0.7 + 0.5 * *finished, 1e-6), "a finished game moves its state's regret");
+    check(atCap.size() == 3 && atCap.contains(keyOfI(2)), "a finished game keeps its state");
+    check(atCap.updateAfterRestart(keyOfI(1), capped), "a game at the cap drops its state");
+    check(atCap.size() == 2 && !atCap.contains(keyOfI(1)), "a game at the cap: its state left the buffer");
+    check(atCap.contains(keyOfI(2)) && atCap.contains(keyOfI(3)), "a game at the cap leaves the other states");
+    check(!atCap.updateAfterRestart(keyOfI(1), capped), "a game at the cap whose state had left already");
+    for(int i = 0; i < 200; i++)
+      check(atCap.sample(rand, e) && e.key != keyOfI(1), "a dropped state is not drawn");
+    check(atCap.summary().find("games at the move cap 0, states dropped for one 1") != string::npos,
+          "the summary counts the dropped states");
+    check(atCap.updateAfterRestart(keyOfI(3), capped), "the state of another game at the cap");
+    check(atCap.contains(keyOfI(2)) && atCap.size() == 1, "only the state of the finished game is left");
+    atCap.countGameAtCap();
+    check(atCap.summary().find("games at the move cap 1, states dropped for one 2") != string::npos,
+          "the summary counts both");
+  }
 
   // Sampling: P ~ R^(1/tau) = R^10: weights 0.5^10, 0.5^10, 0.6^10.
   {

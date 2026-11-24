@@ -92,7 +92,8 @@ namespace Rgsc {
 
   //The outcome z of a game for its regret targets, White's return: 1, -1, or 0 for a draw (a no result too). None for a
   //game that stopped before its rules ended it (hitTurnLimit, the move cap): its result is missing data, not a draw, so
-  //the game gives no regret targets and no candidate (selfplay.cpp, rgscAfterGame).
+  //the game gives no regret targets and no candidate, and a restart's state leaves the buffer (selfplay.cpp,
+  //rgscAfterGame).
   std::optional<double> gameOutcome(const BoardHistory& endHist, bool hitTurnLimit);
 
   //A position's key: the moves that reach it, each with its player, combined so that the order does not matter
@@ -181,8 +182,10 @@ namespace Rgsc {
     void offer(uint64_t key, double regret, const std::vector<Move>& moves, int origin = ORIGIN_UNKNOWN);
     //Removes the entry with this key, whose state did not come back for a restart (restoreState), and counts it.
     void reject(uint64_t key);
-    //After a game started from the state with this key: the EMA update. False if the state left the buffer.
-    bool updateAfterRestart(uint64_t key, double regret);
+    //After a game started from the state with this key: the EMA update. None for a game without an outcome
+    //(gameOutcome, the move cap): the state leaves the buffer, and it is counted. Its regret cannot be measured, so it
+    //would keep it and be drawn again. False if the state had left the buffer already.
+    bool updateAfterRestart(uint64_t key, std::optional<double> regret);
     //Counts a finished game; returns how many had finished before it (for the warm-up).
     int64_t countFinishedGame();
     //Counts a game at the move cap, which gave no regret targets (gameOutcome).
@@ -195,7 +198,8 @@ namespace Rgsc {
     //A one-line summary for the log: states and their regrets and origins, and this run's counts (restarts drawn,
     //written after their state left the buffer, and dropped; candidates offered and taken; sample attempts while
     //the buffer was empty, or not yet full; entries rejected at the load and at a restart, and collisions of keys;
-    //games at the move cap), and this run's regret targets by kind of action (addRegrets).
+    //games at the move cap, and the states that left for one), and this run's regret targets by kind of action
+    //(addRegrets).
     std::string summary() const;
     void countDroppedRestart();
     void countRestartStateGone();
@@ -203,6 +207,8 @@ namespace Rgsc {
    private:
     //The paper's draw, with the mutex held: counts the restart and the entry's draws.
     void drawLocked(Rand& rand, Entry& out);
+    //Removes the entry with this key, with the mutex held. False if it is not in the buffer.
+    bool removeLocked(uint64_t key);
 
     Settings settings;
     std::string name;
@@ -220,6 +226,7 @@ namespace Rgsc {
     int64_t rejectedAtRestart = 0;
     int64_t keyCollisions = 0;
     int64_t gamesAtCap = 0;
+    int64_t statesDroppedAtCap = 0;
     //Regret targets by kind of action: a move of one action, a move's first action, a later action.
     int64_t regretCount[3] = {0, 0, 0};
     double regretSum[3] = {0.0, 0.0, 0.0};

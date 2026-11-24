@@ -104,7 +104,8 @@ static void rgscOfferCandidate(
 //KataGame fork (2026-10-27): no swing targets with rgscSwingScale 0; each game's regret targets by kind of action
 //(Rgsc::Buffer::addRegrets); and the buffer's summary in the log at each save.
 //KataGame fork (abscls-shfz.7): a game at the move cap has no outcome (Rgsc::gameOutcome), in every game: no regret and
-//no swing targets, no candidate, and no update of a restart's start state. It is written as other games are.
+//no swing targets and no candidate. A restart's state leaves the buffer (Rgsc::Buffer::updateAfterRestart): its regret
+//cannot be measured, so it would keep it and be drawn again. The game is written as other games are.
 static bool rgscAfterGame(
   Rgsc::Buffer& buffer, Rgsc::Buffer* swingBuffer, const Rgsc::Settings& settings, FinishedGameData* gameData,
   Rgsc::Source source, uint64_t restartKey, const Rgsc::TreeTracker* tracker, const Rgsc::TreeTracker* swingTracker,
@@ -147,11 +148,13 @@ static bool rgscAfterGame(
       keep = false;
       from.countDroppedRestart();
     }
-    else if(
-      hasRegret &&
-      !from.updateAfterRestart(restartKey, fromSwing ? gameData->swingByTurn[0] : gameData->regretByTurn[0])
-    )
-      from.countRestartStateGone();
+    else {
+      std::optional<double> regret;
+      if(hasRegret)
+        regret = fromSwing ? gameData->swingByTurn[0] : gameData->regretByTurn[0];
+      if(!from.updateAfterRestart(restartKey, regret))
+        from.countRestartStateGone();
+    }
   }
   else if(
     tracker != NULL && hasRegret && gameData->usedInitialPosition == 0 && gameData->mode == FinishedGameData::MODE_NORMAL &&

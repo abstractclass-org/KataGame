@@ -417,22 +417,32 @@ void Rgsc::Buffer::offer(Entry e) {
   }
 }
 
-void Rgsc::Buffer::reject(uint64_t key) {
-  lock_guard<std::mutex> lock(mutex);
-  rejectedAtRestart++;
+bool Rgsc::Buffer::removeLocked(uint64_t key) {
   for(size_t i = 0; i < entries.size(); i++)
     if(entries[i].key == key) {
       keys.erase(key);
       entries.erase(entries.begin() + i);
-      return;
+      return true;
     }
+  return false;
 }
 
-bool Rgsc::Buffer::updateAfterRestart(uint64_t key, double regret) {
+void Rgsc::Buffer::reject(uint64_t key) {
   lock_guard<std::mutex> lock(mutex);
+  rejectedAtRestart++;
+  removeLocked(key);
+}
+
+bool Rgsc::Buffer::updateAfterRestart(uint64_t key, std::optional<double> regret) {
+  lock_guard<std::mutex> lock(mutex);
+  if(!regret.has_value()) {
+    const bool removed = removeLocked(key);
+    statesDroppedAtCap += removed;
+    return removed;
+  }
   for(Entry& e : entries) {
     if(e.key == key) {
-      e.regret = (1.0 - settings.emaAlpha) * e.regret + settings.emaAlpha * regret;
+      e.regret = (1.0 - settings.emaAlpha) * e.regret + settings.emaAlpha * *regret;
       return true;
     }
   }
@@ -504,7 +514,8 @@ string Rgsc::Buffer::summary() const {
   //KataGame fork (2026-10-27): the rejected entries and the collisions of keys, and the regret targets by kind of
   //action.
   out << "; rejected at the load " << rejectedAtLoad << ", at a restart " << rejectedAtRestart << "; key collisions "
-      << keyCollisions << "; games at the move cap " << gamesAtCap << "; regret targets:";
+      << keyCollisions << "; games at the move cap " << gamesAtCap << ", states dropped for one " << statesDroppedAtCap
+      << "; regret targets:";
   const char* kinds[3] = {"moves of one action", "first actions of a move", "later actions"};
   for(int kind = 0; kind < 3; kind++)
     out << (kind > 0 ? "," : "") << " " << kinds[kind] << " " << regretCount[kind] << " mean "
