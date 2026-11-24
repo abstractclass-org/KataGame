@@ -24,6 +24,14 @@ def huber_loss(x, y, delta):
 def constant_like(data, other_tensor):
     return torch.tensor(data, dtype=other_tensor.dtype, device=other_tensor.device, requires_grad=False)
 
+# KataGame fork (abscls-shfz.9): the logit of a policy slot outside the game's static mask (katago/train/games:
+# policy_mask), the model's own for the slots off the board: its probability is 0 in a float32 softmax.
+MASKED_POLICY_LOGIT = -5000.0
+
+# The policy outputs that a softmax reads: the mover's, the next mover's, the two soft ones, and the two optimistic ones
+# of versions 12 and later. The two after them, of versions 16 and later, are the Q values.
+SOFTMAX_POLICY_OUTPUTS = 6
+
 def normalized_policy_target(target):
     """KataGame fork (abscls-3tbn): the policy targets [N, moves] divided by their sums, and 1.0 for each row with a
     target, 0.0 for each row whose target sums to 0. Such a row stays all 0, not NaN, and its weight must be 0:
@@ -60,6 +68,10 @@ class Metrics:
         # KataGame fork (abscls-shfz.8): the classes of the game's endings (katago/train/games: ENDING_CLASSES), 0 for a
         # game whose rows keep KataGo's C27.
         self.ending_classes = games.ending_classes(game)
+        # KataGame fork (abscls-shfz.9): the static mask of the game's policy by its board's size (policy_mask), None
+        # for a game without it, and whether the rows hold their legal moves (katago/train/games: LEGAL_MOVES_IN_ROWS).
+        self.policy_mask = getattr(game, "policy_mask", None)
+        self.legal_moves_in_rows = games.legal_moves_in_rows(game)
         self.value_len = 3
         self.num_td_values = 3
         self.num_futurepos_values = 2
@@ -118,6 +130,18 @@ class Metrics:
         assert target_probs.shape == pred_logits.shape
         loss = cross_entropy(pred_logits, target_probs, dim=1)
         return 0.15 * global_weight * weight * loss
+
+    def apply_policy_mask(self, policy_logits, policymask, on_board):
+        """KataGame fork (abscls-shfz.9): the policy logits (N, outputs, moves) with no logit in a slot outside the
+        game's static mask, for the outputs that a softmax reads, and the mask of the slots that they read (N, moves),
+        as policymask and of its dtype: the static mask, or policymask, the board's slots, in a game without one."""
+        static = None if self.policy_mask is None else self.policy_mask(on_board)
+        if static is None:
+            return policy_logits, policymask
+        static = static.to(torch.bool)
+        assert static.shape == policymask.shape
+        softmax = policy_logits[:, :SOFTMAX_POLICY_OUTPUTS].masked_fill(~static.unsqueeze(1), MASKED_POLICY_LOGIT)
+        return torch.cat((softmax, policy_logits[:, SOFTMAX_POLICY_OUTPUTS:]), dim=1), static.to(policymask.dtype)
 
     def score_surprise(self, stdevs_excess, score_weight):
         # KataGo's term of the optimistic policies' weights for a score of around 1.5 sigma more than expected. KataGame
@@ -736,7 +760,20 @@ class Metrics:
         # KataGame fork (abscls-3tbn): a policy target of sum 0 has the weight 0 (normalized_policy_target).
         target_policy_player, has_policy_player = normalized_policy_target(target_policy_ncmove[:, 0, :])
         target_policy_opponent, has_policy_opponent = normalized_policy_target(target_policy_ncmove[:, 1, :])
-        target_policy_player_soft = (target_policy_player + 1e-7) * policymask
+        # KataGame fork (abscls-shfz.9): each policy output has its softmax on the game's static mask (the slots that
+        # the size of board can use, policy_mask), and no logit outside it. Without it, the softmax is on every slot of
+        # the board's points, as KataGo's. The mask is one size's for each row's game, so it is the next mover's too.
+        policy_logits, policymask = self.apply_policy_mask(policy_logits, policymask, mask)
+        # KataGame fork (abscls-shfz.9): KataGo's floor of the soft target is on every slot that the softmax reads. A
+        # game whose rows hold the legal moves of their positions has the mover's floor on those alone, in the rows that
+        # have them. The next mover's target is of a later position, whose legal moves no row holds, so its floor keeps
+        # the softmax's slots.
+        policymask_player, legal_rows = policymask, None
+        if self.legal_moves_in_rows:
+            legal = batch["legalMovesNMove"]
+            legal_rows = torch.any(legal, dim=1)
+            policymask_player = torch.where(legal_rows.unsqueeze(1), legal.to(policymask.dtype), policymask)
+        target_policy_player_soft = (target_policy_player + 1e-7) * policymask_player
         target_policy_player_soft = torch.pow(target_policy_player_soft, 0.25)
         target_policy_player_soft /= torch.sum(target_policy_player_soft, dim=1, keepdim=True)
         target_policy_opponent_soft = (target_policy_opponent + 1e-7) * policymask
@@ -1247,6 +1284,11 @@ class Metrics:
                 "ptsoftentr_sum": soft_policy_target_entropy,
                 "sekiweightscale_sum": seki_weight_scale * weight,
             }
+
+            # KataGame fork (abscls-shfz.9): the rows that hold their legal moves, in a game with them: the others (a
+            # window's older rows) have the soft target's floor without them.
+            if legal_rows is not None:
+                extra_results["lmrows_sum"] = legal_rows.to(target_global_nc.dtype).sum()
 
             if include_model_norms:
                 extra_results.update(self.get_model_norm_metrics(raw_model))

@@ -62,7 +62,7 @@ def test_at_level_1_the_members_hold_the_same_bytes(tmp_path, rows):
 def test_the_shuffles_save_function_writes_level_1(tmp_path):
     _, arrays = written_by_numpy(tmp_path, 50)
     saved, expected = str(tmp_path / "saved.npz"), str(tmp_path / "expected.npz")
-    shuffle.save_output_npz(saved, [arrays[key] for key in KEYS], include_meta=True, include_qvalues=True, start=5,
-                            stop=45)
+    shuffle.save_output_npz(saved, [arrays[key] for key in KEYS] + [None], include_meta=True, include_qvalues=True,
+                            start=5, stop=45)
     shuffle.savez_zlib_level(expected, 1, **{key: value[5:45] for key, value in arrays.items()})
     assert pathlib.Path(saved).read_bytes() == pathlib.Path(expected).read_bytes()

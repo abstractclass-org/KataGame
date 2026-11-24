@@ -107,6 +107,22 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         The score's surprise of the optimistic policies reads C27. A model can then have the ending head
                         (train.py's -heads ending), which learns the class, in training only: the export leaves it out.
                         Default: 0, KataGo's C27 and no ending head (ending_classes).
+  LEGAL_MOVES_IN_ROWS   True for a game whose rows hold the moves that are legal in their positions (C++ GameInterface:
+                        LEGAL_MOVES_IN_ROWS), a bit for each move of the policy (the array legalMovesNMovePacked). The
+                        loader gives each row's moves (legalMovesNMove) and maps them as the mover's policy
+                        (apply_symmetry_policy). The floor of the mover's soft policy target is on them alone
+                        (metrics_pytorch). A row of 0 bits, from a file without the array, has the floor of a game
+                        without this member. The loader refuses a row whose visited moves are not all in it, and the
+                        array in the rows of a game without this member. Default: False (legal_moves_in_rows).
+  policy_mask(on_board)
+                        the moves that a position of the rows' board can have (N, policy) as booleans, in the policy's
+                        order, pass included, from the on-board plane (N, y, x) of the rows, at their symmetry: a move
+                        outside it is never legal on that size of board. Every policy loss has its softmax on these
+                        moves alone, and the soft targets' floor too, but for the mover's on the rows that hold their
+                        legal moves. A module gives it for a game with many slots that no position of a board can use.
+                        The loader refuses a row whose legal moves or visited moves are not all in it. Default: none,
+                        and the softmax is on every slot of the board's points, as KataGo's (policy_mask below gives
+                        None).
   legal_moves(binary_inputs, global_inputs)
                         the moves that the rows' inputs make legal (N, policy) as booleans, in the policy's order (the
                         point's index * POLICY_CHANNELS + the channel, then pass), from the rows as read (no symmetry).
@@ -215,6 +231,22 @@ def ending_classes(game):
     return getattr(game, "ENDING_CLASSES", 0)
 
 
+def legal_moves_in_rows(game):
+    """Whether the game's rows hold the legal moves of their positions (False: a game without the member)."""
+    return getattr(game, "LEGAL_MOVES_IN_ROWS", False)
+
+
+def packed_policy_len(policy_len):
+    """The bytes of a row's legal moves, a bit for each of the policy's policy_len moves (C++ packedPolicyLen)."""
+    return (policy_len + 7) // 8
+
+
+def policy_mask(game, on_board):
+    """The game's policy_mask of the rows' on-board plane (N, y, x), or None for a game without it."""
+    mask = getattr(game, "policy_mask", None)
+    return None if mask is None else mask(on_board)
+
+
 def num_global_inputs(game, inputs_version):
     """The global inputs of a row of the game at the inputs version, in their order: the game's, version 9's playout
     inputs, version 10's extended inputs, version 11's turn inputs, version 14's latent (versions 12, 13 and 15 add
@@ -258,6 +290,7 @@ def row_bytes(game, inputs_version=9):
         + 2 * (points + ROW_EXTRA_SCORE_RADIUS)
         + ROW_VALUE_TARGETS * points
         + 2 * ROW_QVALUE_TARGETS * moves
+        + (packed_policy_len(moves) if legal_moves_in_rows(game) else 0)  # legalMovesNMovePacked
     )
 
 

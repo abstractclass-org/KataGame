@@ -1,7 +1,7 @@
 #pragma once
 // A game of the tests, not of the game layer (GAMES.md, "A game of the tests"): the rules part of a small game with
 // every kind of ending, for the optional members that no game of game/ builds with yet (game_end, DRAWS_AS_NO_RESULT,
-// ENDING_CLASSES).
+// ENDING_CLASSES, LEGAL_MOVES_IN_ROWS).
 //
 // The board is 4 x 4. A move puts the mover's piece on an empty point, and the players alternate. Pass is never legal.
 // - A full row or column of one player's pieces wins for that player, whatever the score (LINE).

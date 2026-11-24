@@ -306,6 +306,9 @@ struct WithGameEnd : GameRules {
   }
 };
 static_assert(GameInterface::checkRules<WithGameEnd>(), "the stub game with its own end");
+//The optional member of the encoding part for the legal moves in the training rows, alone: true, false and none.
+struct LegalMovesInRows { static constexpr bool LEGAL_MOVES_IN_ROWS = true; };
+struct NoLegalMovesInRows { static constexpr bool LEGAL_MOVES_IN_ROWS = false; };
 //The optional member of the encoding part that makes a draw a class of its own, alone: true, false and none.
 struct DrawsAsNoResult { static constexpr bool DRAWS_AS_NO_RESULT = true; };
 struct DrawsAsHalfWins { static constexpr bool DRAWS_AS_NO_RESULT = false; };
@@ -508,6 +511,10 @@ static void checkOptionalMembers() {
                   "a draw is no result where the game says so");
     //The classes of a game's endings: none by default, and no class. A game's own class reads the rules' end and the
     //mover's side: the first player's win is the first player's class 0 and the second player's class 1.
+    static_assert(!GameInterface::legalMovesInRows<E>() && !GameInterface::legalMovesInRows<stub::NoDrawMember>() &&
+                    !GameInterface::legalMovesInRows<stub::NoLegalMovesInRows>() &&
+                    GameInterface::legalMovesInRows<stub::LegalMovesInRows>(),
+                  "Enclosure and the stub games have the legal moves in their rows only when they give it");
     static_assert(GameInterface::endingClasses<E>() == 0 && GameInterface::endingClasses<stub::NoDrawMember>() == 0 &&
                     GameInterface::endingClasses<stub::WithEndings>() == 2,
                   "a game has the ending classes that it gives");

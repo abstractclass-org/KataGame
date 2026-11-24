@@ -25,6 +25,10 @@ from typing import Sequence
 # Needs to be kept in sync with QVALUE_SPATIAL_TARGET_NUM_CHANNELS in trainingwrite.cpp C++ code among other places.
 EXPECTED_Q_VALUE_TARGETS_NCMOVE_CHANNELS = 3
 
+# KataGame fork (abscls-shfz.9): the array of the rows' legal moves, of a game whose rows have it (C++
+# LEGAL_MOVES_IN_ROWS, data_processing_pytorch.LEGAL_MOVES_ARRAY in the trainer).
+LEGAL_MOVES_ARRAY = "legalMovesNMovePacked"
+
 # Needs to be kept in sync with GLOBAL_TARGET_NUM_CHANNELS in trainingwrite.cpp C++ code among other places.
 # Data format version 2 files (recorded in channel 63 of each row) had only 64 channels; they are zero-padded
 # up to this width when shuffling, which correctly encodes "not reanalyzed" for the version 3 channels. KataGame fork
@@ -75,6 +79,10 @@ def assert_keys(npz, include_meta: bool, include_qvalues: bool):
     ]
     if include_meta:
         keys.append("metadataInputNC")
+    # KataGame fork (abscls-shfz.9): the rows of a game that keeps their legal moves have them
+    # (data_processing_pytorch.LEGAL_MOVES_ARRAY), and the other rows none.
+    if LEGAL_MOVES_ARRAY in npz.keys():
+        keys.append(LEGAL_MOVES_ARRAY)
     # We don't require qValueTargetsNCMove even if include_qvalues is True
     # since we'll handle missing values by filling with zeros
     expected_keys = set(keys)
@@ -124,6 +132,21 @@ def memusage_mb():
     return psutil.Process(os.getpid()).memory_info().rss // 1048576
 
 
+def fill_missing_legal_moves(
+    legalMovesList: list[np.ndarray | None], globalTargetsNCList: list[np.ndarray]
+) -> list[np.ndarray] | None:
+    """KataGame fork (abscls-shfz.9): each file's legal moves of its rows (None for a file without the array), with 0
+    bits, which is no mask to the loader, for the rows of the files without it, when a file has it. So one window holds
+    the rows of both kinds. None when no file has it, as with the rows of the games that keep none."""
+    widths = {arr.shape[1] for arr in legalMovesList if arr is not None}
+    if len(widths) == 0:
+        return None
+    if len(widths) > 1:
+        raise ValueError(f"files of {sorted(widths)} bytes of legal moves a row: rows of other policies do not merge")
+    (width,) = widths
+    return [arr if arr is not None else np.zeros((targets.shape[0], width), dtype=np.uint8)
+            for arr, targets in zip(legalMovesList, globalTargetsNCList)]
+
 def save_output_npz(
     filename: str,
     arrs: Sequence[np.ndarray | None],
@@ -132,8 +155,8 @@ def save_output_npz(
     start: int,
     stop: int,
 ):
-    assert len(arrs) == 8
-    [binaryInputNCHWPacked,globalInputNC,policyTargetsNCMove,globalTargetsNC,scoreDistrN,valueTargetsNCHW,metadataInputNC,qValueTargetsNCMove] = (
+    assert len(arrs) == 9
+    [binaryInputNCHWPacked,globalInputNC,policyTargetsNCMove,globalTargetsNC,scoreDistrN,valueTargetsNCHW,metadataInputNC,qValueTargetsNCMove,legalMovesNMovePacked] = (
         arrs
     )
     assert binaryInputNCHWPacked is not None
@@ -157,6 +180,8 @@ def save_output_npz(
         save_dict["metadataInputNC"] = metadataInputNC[start:stop]
     if qValueTargetsNCMove is not None:
         save_dict["qValueTargetsNCMove"] = qValueTargetsNCMove[start:stop]
+    if legalMovesNMovePacked is not None:
+        save_dict[LEGAL_MOVES_ARRAY] = legalMovesNMovePacked[start:stop]
 
     savez_zlib_level(filename, SHUFFLE_ZLIB_LEVEL, **save_dict)
 
@@ -243,12 +268,14 @@ def load_and_accumulate_input_contents(
     valueTargetsNCHWList: list[np.ndarray],
     metadataInputNCList: list[np.ndarray] | None,
     qValueTargetsNCMoveList: list[np.ndarray] | None,
+    legalMovesList: list[np.ndarray | None],
     include_meta: bool,
     include_qvalues: bool,
     fill_in_qvalues: bool
 ):
     with np.load(input_file) as npz:
         assert_keys(npz, include_meta, include_qvalues)
+        legalMovesList.append(npz[LEGAL_MOVES_ARRAY] if LEGAL_MOVES_ARRAY in npz.keys() else None)
         binaryInputNCHWPackedList.append(npz["binaryInputNCHWPacked"])
         globalInputNCList.append(npz["globalInputNC"])
         policyTargetsNCMoveList.append(npz["policyTargetsNCMove"])
@@ -299,10 +326,11 @@ def shardify(
     valueTargetsNCHWList = []
     metadataInputNCList = [] if include_meta else None
     qValueTargetsNCMoveList = [] if include_qvalues else None
+    legalMovesList = []
 
     for input_file in input_file_group:
         try:
-            load_and_accumulate_input_contents(input_file,binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList,include_meta,include_qvalues,fill_in_qvalues=fill_in_qvalues)
+            load_and_accumulate_input_contents(input_file,binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList,legalMovesList,include_meta,include_qvalues,fill_in_qvalues=fill_in_qvalues)
 
         except FileNotFoundError:
             num_files_not_found += 1
@@ -317,7 +345,7 @@ def shardify(
     pad_inputs_to_widest(globalInputNCList)
     concatenated_arrs = (
         joint_concatenate(
-            [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList]
+            [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList,fill_missing_legal_moves(legalMovesList, globalTargetsNCList)]
         )
     )
 
@@ -408,11 +436,12 @@ def merge_bucket(
     valueTargetsNCHWList = []
     metadataInputNCList = [] if include_meta else None
     qValueTargetsNCMoveList = [] if include_qvalues else None
+    legalMovesList = []
 
     for input_idx in range(num_shards_to_merge):
         shard_filename = os.path.join(out_tmp_dir, str(input_idx) + ".npz")
         try:
-            load_and_accumulate_input_contents(shard_filename,binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList,include_meta,include_qvalues,fill_in_qvalues=False)
+            load_and_accumulate_input_contents(shard_filename,binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList,legalMovesList,include_meta,include_qvalues,fill_in_qvalues=False)
         except FileNotFoundError:
             print("WARNING: Empty shard in merge_bucket for shard :", input_idx, out_tmp_dir)
 
@@ -425,7 +454,7 @@ def merge_bucket(
     pad_inputs_to_widest(globalInputNCList)
     concatenated_arrs = (
         joint_concatenate(
-            [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList]
+            [binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList,fill_missing_legal_moves(legalMovesList, globalTargetsNCList)]
         )
     )
 

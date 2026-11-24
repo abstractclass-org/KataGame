@@ -15,6 +15,7 @@ import torch.distributed
 import torch.multiprocessing
 from torch.amp import autocast, GradScaler
 
+from katago.train import games
 from katago.train import modelconfigs
 from katago.train.model_pytorch import Model
 from katago.train.metrics_pytorch import Metrics
@@ -638,6 +639,15 @@ def load_batch(data_path, batch_size, pos_len, model_config, device):
             qValueTargetsNCMove = npz["qValueTargetsNCMove"][:batch_size].astype(np.float32)
         else:
             qValueTargetsNCMove = None
+        # KataGame fork (abscls-shfz.9): the rows' legal moves, for a game whose rows hold them (0 bits without).
+        legalMovesNMove = None
+        if games.legal_moves_in_rows(modelconfigs.get_game(model_config)):
+            moves = policyTargetsNCMove.shape[2]
+            if data_processing_pytorch.LEGAL_MOVES_ARRAY in npz:
+                packed = npz[data_processing_pytorch.LEGAL_MOVES_ARRAY][:batch_size]
+            else:
+                packed = np.zeros((globalInputNC.shape[0], games.packed_policy_len(moves)), dtype=np.uint8)
+            legalMovesNMove = data_processing_pytorch.unpack_legal_moves(torch.from_numpy(packed), moves)
 
     binaryInputNCHW = np.unpackbits(binaryInputNCHWPacked, axis=2)
     assert binaryInputNCHW.shape[2] == ((pos_len * pos_len + 7) // 8) * 8
@@ -669,6 +679,8 @@ def load_batch(data_path, batch_size, pos_len, model_config, device):
     )
     if qValueTargetsNCMove is not None:
         batch["qValueTargetsNCMove"] = torch.from_numpy(qValueTargetsNCMove).to(device)
+    if legalMovesNMove is not None:
+        batch["legalMovesNMove"] = legalMovesNMove.to(device)
     return batch
 
 

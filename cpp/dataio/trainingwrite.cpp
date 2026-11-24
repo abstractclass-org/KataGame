@@ -319,6 +319,7 @@ TrainingWriteBuffers::TrainingWriteBuffers(int iVersion, int maxRws, int numBCha
    dataXLen(xLen),
    dataYLen(yLen),
    packedBoardArea((xLen*yLen + 7)/8),
+   packedPolicyLen((NNPos::getPolicySize(xLen,yLen) + 7)/8),
    hasMetadataInput(includeMetadata),
    curRows(0),
    binaryInputNCHWUnpacked(NULL),
@@ -329,6 +330,7 @@ TrainingWriteBuffers::TrainingWriteBuffers(int iVersion, int maxRws, int numBCha
    scoreDistrN({maxRws, xLen*yLen*2+NNPos::EXTRA_SCORE_DISTR_RADIUS*2}),
    valueTargetsNCHW({maxRws, VALUE_SPATIAL_TARGET_NUM_CHANNELS, yLen, xLen}),
    qValueTargetsNCMove({maxRws, QVALUE_SPATIAL_TARGET_NUM_CHANNELS, NNPos::getPolicySize(xLen,yLen)}),
+   legalMovesNMovePacked({(HAS_LEGAL_MOVES ? maxRws : 1), packedPolicyLen}),
    metadataInputNC({(includeMetadata ? maxRws : 1), SGFMetadata::METADATA_INPUT_NUM_CHANNELS})
 {
   binaryInputNCHWUnpacked = new float[numBChannels * xLen * yLen];
@@ -396,6 +398,35 @@ static void fillPolicyTarget(const vector<PolicyTargetMove>& policyTargetMoves, 
       pos = (*labels)(pos);
       target[pos] = (int16_t)std::min(32767, (int)target[pos] + (int)move.policyTarget);
     }
+  }
+}
+
+//KataGame fork (abscls-shfz.9): the row's legal moves (TrainingWriteBuffers::legalMovesNMovePacked), a bit for each
+//policy index, at the indices where fillPolicyTarget puts the same moves. The rules' own list, not the board's cache of
+//it (Board::legalActions). It stops, with the row's name, at a position without legal moves and at a visited move of
+//the row's policy target (policyTarget, can be null) that is not legal, whose visits would silently drop from the loss.
+static void fillLegalMoves(const Board& board, const vector<PolicyTargetMove>* policyTarget, int policySize, int dataXLen, int dataYLen, const RowLabels* labels, const string& rowName, uint8_t* bits) {
+  auto indexOf = [&](Loc loc) {
+    int pos = NNPos::locToPos(loc, board.x_size, dataXLen, dataYLen);
+    testAssert(pos >= 0 && pos < policySize);
+    return labels == NULL ? pos : (*labels)(pos);
+  };
+  std::fill(bits, bits + (policySize + 7) / 8, (uint8_t)0);
+  vector<int> legalActions;
+  GameRules::legal_actions(board.pos, legalActions);
+  if(legalActions.empty())
+    throw StringError(rowName + " has a position without legal moves");
+  for(const int action : legalActions) {
+    const int pos = indexOf(Board::moveLocOfAction(action));
+    bits[pos >> 3] |= (uint8_t)(0x80 >> (pos & 7));
+  }
+  if(policyTarget == NULL)
+    return;
+  for(const PolicyTargetMove& move : *policyTarget) {
+    const int pos = indexOf(move.loc);
+    if(move.policyTarget > 0 && (bits[pos >> 3] & (0x80 >> (pos & 7))) == 0)
+      throw StringError(rowName + " has visits on the move " + Location::toString(move.loc, board) +
+                        ", which is not legal in its position");
   }
 }
 
@@ -713,6 +744,14 @@ void TrainingWriteBuffers::addRow(
     uniformPolicyTarget(policySize, rowPolicy + 1 * policySize);
     rowGlobal[28] = 0.0f;
   }
+
+  //KataGame fork (abscls-shfz.9): the legal moves of the row's position, for a game whose rows hold them, in the frame
+  //of the row's moves. The second policy target is of a later position, whose legal moves the row does not hold.
+  if constexpr(HAS_LEGAL_MOVES)
+    fillLegalMoves(board, policyTarget0, policySize, dataXLen, dataYLen, labels ? &*labels : NULL,
+                   string(isSidePosition ? "The side position" : "The row") + " of turn " + Global::intToString(turnIdx) +
+                     " of the game " + gameHash.toString(),
+                   legalMovesNMovePacked.data + curRows * packedPolicyLen);
 
   //Fill td-like value targets
   //Enclosure fork: look-ahead horizons count decisions (edges), so KataGo's 19x19 formula stands: about 6,
@@ -1082,6 +1121,11 @@ void TrainingWriteBuffers::writeToZipFile(const string& fileName) {
   numBytes = qValueTargetsNCMove.prepareHeaderWithNumRows(curRows);
   zipFile.writeBuffer("qValueTargetsNCMove", qValueTargetsNCMove.dataIncludingHeader, numBytes);
 
+  if(HAS_LEGAL_MOVES) {
+    numBytes = legalMovesNMovePacked.prepareHeaderWithNumRows(curRows);
+    zipFile.writeBuffer("legalMovesNMovePacked", legalMovesNMovePacked.dataIncludingHeader, numBytes);
+  }
+
   if(hasMetadataInput) {
     numBytes = metadataInputNC.prepareHeaderWithNumRows(curRows);
     zipFile.writeBuffer("metadataInputNC", metadataInputNC.dataIncludingHeader, numBytes);
@@ -1173,6 +1217,19 @@ void TrainingWriteBuffers::writeToTextOstream(ostream& out) {
     if((i+1) % (len/curRows) == 0) out << endl;
   }
   out << endl;
+
+  if(HAS_LEGAL_MOVES) {
+    out << "legalMovesNMovePacked" << endl;
+    legalMovesNMovePacked.prepareHeaderWithNumRows(curRows);
+    printHeader((const char*)legalMovesNMovePacked.dataIncludingHeader);
+    len = legalMovesNMovePacked.getActualDataLen(curRows);
+    for(int i = 0; i<len; i++) {
+      sprintf(buf,"%02X",legalMovesNMovePacked.data[i]);
+      out << buf;
+      if((i+1) % (len/curRows) == 0) out << endl;
+    }
+    out << endl;
+  }
 
   if(hasMetadataInput) {
     out << "metadataInputNC" << endl;

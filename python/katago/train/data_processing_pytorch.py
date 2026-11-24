@@ -76,6 +76,61 @@ def pad_value_targets_nchw(valueTargetsNCHW: np.ndarray) -> np.ndarray:
     padded[:, :num_channels] = valueTargetsNCHW
     return padded
 
+# KataGame fork (abscls-shfz.9): the rows' array of a game with the member LEGAL_MOVES_IN_ROWS (katago/train/games): the
+# moves that are legal in each row's position, a bit for each move of the policy, as the planes are packed (C++
+# legalMovesNMovePacked). A row of 0 bits has none: the rows of files without the array, which the shuffle fills with it
+# (shuffle.py has the same name), and the rows of a file that this reader reads without it.
+LEGAL_MOVES_ARRAY = "legalMovesNMovePacked"
+
+def describe_row(npz_file, row, globalTargetsNC):
+    """The row's name: the file, the row's index among those that this rank reads, and its turn (C51)."""
+    return f"{npz_file}, row {row} (turn {int(globalTargetsNC[row, 51])} of its game)"
+
+def check_policy_masks(npz_file, game, binaryInputNCHWPacked, policyTargetsNCMove, globalTargetsNC, legalMovesPacked):
+    """Refuses, with the row's name, a row whose moves are outside a mask that the losses read: the rows' legal moves
+    (legalMovesPacked, None for a game without them) and the game's policy_mask. A visited move outside its mask would
+    drop its visits from the loss, and a legal move outside policy_mask its softmax and its floor, with no word of it.
+    The arrays are the rows' of one rank, in their dtypes on disk. A policy target without a weight (C26, C28) is
+    uniform over all moves, and no target, and a row of 0 bits has no legal moves to check."""
+    has_static = getattr(game, "policy_mask", None) is not None
+    if not has_static and legalMovesPacked is None:
+        return
+    moves = policyTargetsNCMove.shape[2]
+    size = game.MAX_BOARD_LEN
+    step = 4096  # rows at a time: a row's moves are a byte each here
+    for start in range(0, policyTargetsNCMove.shape[0], step):
+        part = slice(start, start + step)
+        targets = globalTargetsNC[part]
+        visited = [(policyTargetsNCMove[part, channel] > 0) & (targets[:, weight] != 0)[:, None]
+                   for channel, weight in ((0, 26), (1, 28))]
+        checks = []
+        if legalMovesPacked is not None:
+            legal = np.unpackbits(legalMovesPacked[part], axis=1, count=moves).astype(bool)
+            checks.append((visited[0] & ~legal & legal.any(axis=1)[:, None],
+                           "has visits on a move outside its own legal moves"))
+        if has_static:
+            on_board = np.unpackbits(binaryInputNCHWPacked[part, 0], axis=1, count=size * size)
+            static = game.policy_mask(torch.from_numpy(on_board.reshape(-1, size, size).astype(np.float32)))
+            static = np.asarray(static.cpu(), dtype=bool)
+            if static.shape != (targets.shape[0], moves):
+                raise ValueError(f"{npz_file}: the policy_mask of the game {game.NAME!r} has the shape {static.shape}, "
+                                 f"not {(targets.shape[0], moves)}")
+            if legalMovesPacked is not None:
+                checks.append((legal & ~static, "has a legal move outside the game's policy_mask"))
+            checks.append((visited[0] & ~static, "has visits on a move outside the game's policy_mask"))
+            checks.append((visited[1] & ~static, "has visits of the next move outside the game's policy_mask"))
+        for outside, what in checks:
+            if outside.any():
+                row = int(np.flatnonzero(outside.any(axis=1))[0])
+                move = int(np.flatnonzero(outside[row])[0])
+                if move == moves - 1:
+                    where = "pass"
+                else:
+                    point, channel = divmod(move, game.POLICY_CHANNELS)
+                    where = f"x {point % size}, y {point // size}, channel {channel}"
+                raise ValueError(f"{describe_row(npz_file, start + row, globalTargetsNC)} {what}: the move {move} "
+                                 f"({where})")
+
 def read_npz_training_data(
     npz_files,
     batch_size: int,
@@ -99,6 +154,7 @@ def read_npz_training_data(
     # Enclosure fork: the history dropout and the symmetries are the game's (apply_history_dropout, katago/train/games).
     game = modelconfigs.get_game(model_config)
     symmetries = games.symmetries(game)
+    include_legal_moves = games.legal_moves_in_rows(game)
 
     # Version 16 always predicts q values; version 17+ does so only when configured.
     include_qvalues = model_config["version"] == 16 or (
@@ -169,6 +225,22 @@ def read_npz_training_data(
                 qValueTargetsNCMove = select_rank_rows(npz["qValueTargetsNCMove"])
             else:
                 qValueTargetsNCMove = None
+            # KataGame fork (abscls-shfz.9): the rows' legal moves, 0 bits in a file without the array: a run's window
+            # can hold rows from before the game's LEGAL_MOVES_IN_ROWS.
+            legalMovesPacked = None
+            if include_legal_moves:
+                packed_len = games.packed_policy_len(policyTargetsNCMove.shape[2])
+                if LEGAL_MOVES_ARRAY in npz.files:
+                    legalMovesPacked = npz[LEGAL_MOVES_ARRAY]
+                    if legalMovesPacked.dtype != np.uint8 or legalMovesPacked.shape != (num_samples, packed_len):
+                        raise ValueError(f"{npz_file}: {LEGAL_MOVES_ARRAY} is {legalMovesPacked.dtype} of the shape "
+                                         f"{legalMovesPacked.shape}, not uint8 of {(num_samples, packed_len)}")
+                    legalMovesPacked = select_rank_rows(legalMovesPacked)
+                else:
+                    legalMovesPacked = np.zeros((used // world_size, packed_len), dtype=np.uint8)
+            elif LEGAL_MOVES_ARRAY in npz.files:
+                raise ValueError(f"{npz_file}: the rows hold {LEGAL_MOVES_ARRAY}, and the trainer's module of the "
+                                 f"game {game.NAME!r} does not give LEGAL_MOVES_IN_ROWS")
         del npz
 
         assert len(binaryInputNCHWPacked.shape) == 3
@@ -177,7 +249,9 @@ def read_npz_training_data(
         assert globalInputNC.shape[1] == num_global_features
         if ENCLOSURE_ZERO_INPUT_CHANNELS:
             binaryInputNCHWPacked[:, ENCLOSURE_ZERO_INPUT_CHANNELS] = 0
-        return (npz_file, binaryInputNCHWPacked, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove)
+        check_policy_masks(npz_file, game, binaryInputNCHWPacked, policyTargetsNCMove, globalTargetsNC,
+                           legalMovesPacked)
+        return (npz_file, binaryInputNCHWPacked, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove, legalMovesPacked)
 
     if not npz_files:
         return
@@ -207,7 +281,7 @@ def read_npz_training_data(
 
         while pending:
             future = pending.popleft()
-            (npz_file, binaryInputNCHWPacked, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove) = future.result()
+            (npz_file, binaryInputNCHWPacked, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove, legalMovesPacked) = future.result()
 
             # The arrays already hold only this rank's rows (selected in load_npz_file),
             # so the first dim is num_whole_steps * batch_size.
@@ -239,6 +313,8 @@ def read_npz_training_data(
                     valueTargetsNCHW=to_device(valueTargetsNCHW, rows, torch.float32),
                     metadataInputNC=to_device(metadataInputNC, rows, torch.float32),
                     qValueTargetsNCMove=to_device(qValueTargetsNCMove, rows, torch.float32),
+                    legalMovesNMove=(unpack_legal_moves(to_device(legalMovesPacked, rows), policyTargetsNCMove.shape[2])
+                                     if legalMovesPacked is not None else None),
                 )
     finally:
         # KataGame fork (2026-11-02, abscls-xtoh): KataGo's reader leaves its executor's with-block, which waits for
@@ -276,9 +352,10 @@ class FileAhead:
 # KataGame fork (2026-11-02, abscls-xtoh): the reader's work on each batch, on its device: the game's masks, the history
 # dropout and the symmetry symm (one of the game's, or None), then the batch's dict. metadataInputNC and
 # qValueTargetsNCMove are None when the model does not read them. tests/reference_npz_reader.py, the reader before it
-# kept the rows' dtypes, calls it too.
+# kept the rows' dtypes, calls it too. legalMovesNMove (abscls-shfz.9) is the rows' legal moves (N, moves), or None for
+# a game without them: the batch has them mapped as the mover's policy targets are (the policy's own map, in bool).
 def finish_batch(game, inputs_version, symm, binaryInputNCHW, globalInputNC, policyTargetsNCMove, globalTargetsNC,
-                 scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove):
+                 scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove, legalMovesNMove=None):
     # KataGame fork: the targets that the game's symmetries cannot map get weight 0, in every batch.
     globalTargetsNC = games.mask_targets(game, binaryInputNCHW, globalInputNC, valueTargetsNCHW, globalTargetsNC)
     binaryInputNCHW, globalInputNC = apply_history_dropout(game, binaryInputNCHW, globalInputNC, inputs_version)
@@ -290,6 +367,10 @@ def finish_batch(game, inputs_version, symm, binaryInputNCHW, globalInputNC, pol
         policyTargetsNCMove = game.apply_symmetry_policy_targets(policyTargetsNCMove, symm, binaryInputNCHW, globalInputNC, valueTargetsNCHW, globalTargetsNC)
         if qValueTargetsNCMove is not None:
             qValueTargetsNCMove = game.apply_symmetry_policy(qValueTargetsNCMove, symm, binaryInputNCHW, globalInputNC)
+        if legalMovesNMove is not None:
+            # > 0: a game's map may add up slots that fall together.
+            legalMovesNMove = game.apply_symmetry_policy(
+                legalMovesNMove.unsqueeze(1).float(), symm, binaryInputNCHW, globalInputNC).squeeze(1) > 0
         binaryInputNCHW = game.apply_symmetry_inputs(binaryInputNCHW, symm)
         # KataGame fork (2026-10-26): the extended global inputs of the inputs version 10 can name points.
         globalInputNC = games.apply_symmetry_global_inputs(game, globalInputNC, symm)
@@ -307,12 +388,21 @@ def finish_batch(game, inputs_version, symm, binaryInputNCHW, globalInputNC, pol
         batch["metadataInputNC"] = metadataInputNC
     if qValueTargetsNCMove is not None:
         batch["qValueTargetsNCMove"] = qValueTargetsNCMove.contiguous()
+    if legalMovesNMove is not None:
+        batch["legalMovesNMove"] = legalMovesNMove.contiguous()
     return batch
 
 
 # KataGame fork (2026-11-02, abscls-xtoh): np.unpackbits(packed, axis=2), cut to the board's points, in torch, on the
 # packed rows' device: the planes (N, C, pos_len, pos_len) in float32 of the rows (N, C, (pos_len^2 + 7) // 8), whose
 # bytes hold their points' bits the highest first.
+def unpack_legal_moves(packed, moves):
+    """The bits of packed rows (N, (moves + 7) // 8), the first the highest of its byte, as booleans (N, moves)."""
+    shifts = 7 - torch.arange(8, dtype=torch.uint8, device=packed.device)
+    bits = torch.bitwise_right_shift(packed.unsqueeze(-1), shifts).bitwise_and_(1).flatten(1)
+    return bits[:, :moves] > 0
+
+
 def unpack_binary_inputs(packed, pos_len):
     shifts = 7 - torch.arange(8, dtype=torch.uint8, device=packed.device)
     bits = torch.bitwise_right_shift(packed.unsqueeze(-1), shifts).bitwise_and_(1).flatten(2)

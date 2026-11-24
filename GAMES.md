@@ -45,8 +45,9 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/tests/checkgamelayer.py` | The check that no code outside the game layer names a game. Each build of `katago` and `tests/enclosure/build.sh` run it. |
 | `cpp/tests/checkgamelayer_test.py` | The test of the check, on temporary trees with planted uses (Enclosure, Connect-4 and a made-up game with a short name). |
 | `cpp/tests/enclosure/testgameinterface.cpp` | Enclosure's members, against the front's code where the front still has a copy, the next player after each action (no player has two turns in a row), and the defaults of the optional members with a stub game. |
+| `cpp/tests/enclosure/testlegalrows.cpp` | The legal moves in the training rows (`LEGAL_MOVES_IN_ROWS`), for the build's game: the mask of each kind of row against the rules' legal moves, the array's absence in a game without the member, and the writer's stops. |
 | `cpp/tests/enclosure/testgameends.cpp` | The end of a game through the front, for the build's game: the rules' end and draws as a class of their own (optional members) in the history, the evaluator, the search's terminal nodes, self-play's targets and rows, and RGSC's outcome, also of a game at the move cap. |
-| `cpp/tests/games/<game>/` | A game of the tests: both parts of a small game, for members that no game of `cpp/game/` builds with yet ("Choosing the game"). `endings` has every kind of ending. |
+| `cpp/tests/games/<game>/` | A game of the tests: both parts of a small game, for members that no game of `cpp/game/` builds with yet ("Choosing the game"). `endings` has every kind of ending and `LEGAL_MOVES_IN_ROWS`. `slides` has 469 policy slots, two sizes of board and an opening, and `LEGAL_MOVES_IN_ROWS`. |
 | `cpp/tests/enclosure/testgameareas.cpp` | The look-ahead area and the komi area (optional members of the encoding part) through the front, for the build's game: the short-term value targets' lambdas and the komi draw's standard deviation, against each game's pinned areas, and the defaults with stub games. |
 | `cpp/tests/enclosure/testcheapsearch.cpp` | Self-play's full and cheap searches (`play.cpp`'s `GameRunner`), for the build's game: the share of full searches among the actions that draw one, with `cheapSearchPerMove`, the search of an action that continues a move, and with `cheapSearchPerTurn`, the search of an action in the turn of the action before it. |
 | `cpp/tests/enclosure/testselfplayviews.cpp` | Self-play's search of the root's views (`PlaySettings::rootViews`), for a game with views: each move in its view, the replay, the full searches' visits, `view_action`, RGSC's played entries, the rows and records for `check_rows.py --records`, the passes of a full search with `rootViewsCheapPasses`, and the player's own diversity term in each pass (abscls-e0gz). |
@@ -591,6 +592,7 @@ pin them), and the front computes each slot of `FRONT_TARGETS` in their `TARGETS
 | `NUM_AREA_SPATIAL_INPUTS` | The game's planes of closed areas, which input version 12 adds to version 11's: areas that the rules close to a player for the rest of the game. Whether a point is closed depends on cells beyond the convolutions' reach, so the game computes it, as KataGo gives Go's pass-alive areas as input planes. With `options.areas`, `spatial_inputs` also sets the planes after the extended ones, and the front puts them after V11's planes. They are points of the board: the symmetries move them as pixels. | 0: V12 is V11 (`areaSpatialInputs`) | 2: the hexes of the areas closed by the mover's walls and by the opponent's walls, which the other player can never fill (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `DRAWS_AS_NO_RESULT` | True for a game whose draws are a class of their own, KataGo's no result. A game that its rules end without a winner is then a no result (`BoardHistory::isNoResult`), its rows' value target is no result with probability 1, and the evaluator keeps the network's no-result output (`nneval.cpp`). The search values a draw at `noResultUtilityForWhite`: keep it and `noResultStdev` at 0, and a draw is half a win, as in KataGo's split. `drawEquivalentWinsForWhite` and `drawRandRadius` do not act on it. A draw's SGF record gives `0`, as in the other games, not KataGo's `Void`. A game that stops before its rules end it (the move cap) is never a no result. The rows of a no result hold no score, no ownership and no target of the game's own (KataGo's rule), unless the game has classes of endings (`ENDING_CLASSES`). | False: a draw is `drawEquivalentWinsForWhite` wins, and the evaluator removes the output unless the rules have a simple ko or territory scoring (`drawsAsNoResult`) | None |
 | `ENDING_CLASSES`, `ending_class(end, mover)` | The classes of the game's endings, for a game whose targets differ by ending ("The targets of one ending", below). `ending_class` gives the class, 0 to `ENDING_CLASSES - 1`, of the rules' end (the `GameEnd` of the rules part's `game_end`, which the game then gives, each end with its kind) in the view of the player `mover`, 0 or 1: the mover's win is another class than the opponent's. A game gives both or neither. | None: KataGo's C27, no target of its own in a no result, and no ending head (`endingClasses`, `endingClass`) | None. Tak's are planned: 6, a road or a flat count won by the mover or by the opponent, a flat tie and the 50-ply rule. |
+| `LEGAL_MOVES_IN_ROWS` | True for a game whose training rows hold the moves that the rules make legal in the row's position, a bit for each policy index ("The legal moves in the rows and the policy's masks", below). It is for a game whose policy has many more slots than a position has legal moves: KataGo's floor of the soft policy's target is on every slot of the board, and the sum over many illegal slots can outweigh the visited moves. | False: the rows have no such array (`legalMovesInRows`) | None. Tak's is planned: 9,181 slots, 1,148 bytes a row. |
 | `CanonicalActionMap` | A type, for a game whose position holds labels that no rule reads: input version 13 reads the labels in an order that depends only on what they label, so that two positions that differ only in their labels give the same inputs. With `options.canonical`, `spatial_inputs` and `global_inputs` write each label's inputs at its place in that order. `CanonicalActionMap(p)` gives the network's frame of p's actions: `operator()` maps each legal action and pass to its policy index in that order, and `listed(action)` says whether the search lists the action. An action that gives the same position as a listed action, up to the labels, is not listed, and it maps to that action's index: the two are one edge of the search, with one prior. The order must not depend on the symmetries, so the front maps an action through `SymActionMap`, then through this (`NNInputs`' `NetActionMap`), and the network's evaluation lists the listed actions only. The training rows of V13 write the policy targets at these indices, the next move's in the next position's frame. The trainer reads that target with the row's inputs, so wherever it weighs that target (the game's `mask_targets`), the next position's order of the next mover's labels must be the row's. The rules keep every action legal. | None: every action listed at its own index, and V13 is V12 (`CanonicalActions`) | Each hand in the order of its blueprints' cells: more cells first, then more stars, then more walls, then the lesser shape up to the hex grid's 12 symmetries, then the lowest number of the blueprint's equal blueprints, then the blueprint with the pick, then the lower number. Of equal blueprints, the lowest-numbered one's actions are listed (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `NUM_REACH_SPATIAL_INPUTS` | The game's planes of reach, which input version 15 adds to version 14's: how far each player's pieces are from a capture by the other player, a graded measure that depends on cells beyond the convolutions' reach. With `options.reach`, `spatial_inputs` also sets the planes after its planes of closed areas, and the front puts them after V14's planes. They are points of the board: the symmetries move them as pixels. | 0: V15 is V14 (`reachSpatialInputs`) | 9: on each star of the view, whether the other player needs more than 1, 2, 3 and 6 placements to capture it (`game/blueprints/starreach.h`), the mover's stars, then the opponent's, and the stars whose reach is not known (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `Diversity` | A type, for AZdb's reward ("AZdb's members", below): the statistics of a position, φ before its normalization. `NUM_STATISTICS` counts them, `statistics(p, player, out)` writes them from the player's side for the position after a move of that player, `MOVES` is each player's moves in a game (the reward's divisor), and `Normalizer`, built from each statistic's mean and standard deviation, gives the normalized statistics (`z(x, out)`), moves its running estimates by one finished side (`update(x, positions)`) and gives them (`mean(i)`, `sd(i)`) for self-play's league. | None: 0 statistics, 1 move, and every reward is 0 (`diversityStatistics`, `diversityMoves`, `diversityStatisticsOf`, `DiversityNormalizer`) | Its 57 statistics, standardized with a floor of 0.1 on the standard deviation, clipped to [-3, 3] and weighted by group (`game/blueprints/diversity.h`), and 60 moves |
@@ -743,6 +745,61 @@ sum of those weights. All three are per row of all rows, so `endloss / endw` and
 over the rows that carry an ending. `loss_gradients.py` gives its gradient ("how the game ends"), and
 `holdout_losses.py` its loss.
 
+### The legal moves in the rows and the policy's masks
+
+A game whose policy has many slots for each legal move gives `LEGAL_MOVES_IN_ROWS` (C++ and the trainer's module) and
+`policy_mask(on_board)` (the trainer's module). Both are off by default. A game without them has the same rows, batches
+and losses as before. Each is on by its game, with no flag of a run.
+
+**The rows** of a game with `LEGAL_MOVES_IN_ROWS` have one more array, `legalMovesNMovePacked`: for each row, the moves
+that the rules make legal in the row's position (`GameRules::legal_actions`), a bit for each policy index, packed as
+`binaryInputNCHWPacked` is (numpy's `packbits`, the highest bit first), zero-padded to a round byte. The bits are at the
+indices of the policy targets of the same row: the labels' frame of input version 13 too. Every kind of row has the
+position that the row's inputs show: a row of the game, a side position, a reanalyzed row, a row in the view of its
+turn's search, and a row of a size of board below the largest, whose slots off the board have no bit. A move in the
+opening has its own legal moves (Tak's first two plies place the opponent's flat). Each row has at least one bit,
+because it is a searched position. The array is its own, so that a reader of the other arrays does not see it, and a
+file of the rows of a game without the member has no such array.
+
+**The stops.** The row writer (`TrainingWriteBuffers::addRow`) stops, with the row's turn and game, at a position
+without legal moves, and at a move of the row's policy target with a visit that is not legal in the row's position. The
+loader
+(`data_processing_pytorch.check_policy_masks`) reads each file's rows and stops, with the file, the row and its turn, at
+a row with visits on a move outside its own legal moves, at a legal move outside `policy_mask`, at visits of either
+policy target outside `policy_mask`, and at an array of another size than the policy's. A policy target whose weight
+(C26, C28) is 0 is no target and is not checked. The loader refuses the array in the rows of a game whose trainer
+module does not give `LEGAL_MOVES_IN_ROWS`. Without these stops, a visit outside a mask would drop from the loss without
+a word.
+
+**A window of both kinds.** A row of 0 bits has no mask. The shuffle (`shuffle.py`) merges files with the array and
+without it, and gives the rows of the files without it 0 bits, when any file has the array. A shuffle of files that all
+lack it writes no array, as before. The loader reads the array of a file that has it, and 0 bits for a file that does
+not, so a run trains on its older rows from before the member. A batch of such a game always has `legalMovesNMove`, a
+row of it all False for a row without a mask. The trainer logs `lmrows`, the share of the rows that have one.
+
+**The symmetries.** The loader maps the mask with the same `apply_symmetry_policy` as the mover's q-value targets, with
+the row's planes from before the symmetry, so that it follows the policy targets' map. Where a game's map adds two slots
+up, the mask is set when either is (`> 0`).
+
+**The masks of each policy output.** A slot outside the softmax's mask has the logit -5000, as the model gives the slots
+off the board, so it has no probability and no gradient. The softmax's mask is the game's static mask (`policy_mask`) of
+the row's board, or KataGo's on-board slots without one. The next mover's targets are of a later position of the same
+game, which has the same size of board, so they read the same static mask. The row does not hold the legal moves of that
+later position.
+
+| Policy output (`p0`/`p1` is the mover's / the next mover's) | Its softmax is on | The floor of its soft target |
+|---|---|---|
+| 0, the mover's (`p0loss`) | the static mask | None. It has no floor. |
+| 1, the next mover's (`p1loss`) | the static mask | None |
+| 2, the mover's soft policy (`p0softloss`) | the static mask | the row's legal moves, or the static mask for a row without a mask |
+| 3, the next mover's soft policy (`p1softloss`) | the static mask | the static mask, because the row does not hold the next position's legal moves |
+| 4 and 5, the mover's optimistic policies (`p0lopt`, `p0sopt`) | the static mask | None |
+| 6 and 7, the Q values (from model version 16) | None: they are not a softmax. Each reads the visited moves. | None |
+
+A soft target is `(target + 1e-7) * mask` to the power 0.25, normalized to sum 1 over the mask. KataGo's floor, the
+1e-7 to the power 0.25, is 0.0178 on a slot without visits. Over a mask of S such slots it sums to 0.0178 S.
+The C++ evaluator needs no mask: it reads the legal moves only. The exported network has none.
+
 ### Connect-4's encoding part
 
 `game/connect4/gameencoding.h` is a short example of the part. The engine repository's `games/connect4/README.md`,
@@ -823,7 +880,9 @@ points. Training moves the score's standard deviation and the score belief.
 | `CANONICAL_LABELS` (optional) | True for a game with a canonical order of its labels (C++ `CanonicalActionMap`), which V13's rows hold. The order does not depend on the symmetries, so the augmentation maps V13's rows as V12's. Blueprints: True. | None: False, V13 is V12 (`games.canonical_labels`) | None |
 | `DRAWS_AS_NO_RESULT` (optional) | As in C++. The trainer trains the three value outputs in every game, and does not read it. `enclosure_nn_check.py` and `nn_rows_check.py` do: the evaluator keeps the third output. | None: False (`games.draws_as_no_result`) | None |
 | `ENDING_CLASSES` (optional) | As in C++: the trainer then weighs the targets of one ending apart from C27, and a model can have the ending head ("The targets of one ending"). | None: 0 (`games.ending_classes`) | None |
-| `legal_moves(binary_inputs, global_inputs)` (optional) | The moves that the rows' inputs make legal, as booleans in the policy's order, from the rows as read (no symmetry), or None for rows without the planes it reads (`games.legal_moves`). Only `python/holdout_losses.py` reads it: the policy's mass outside these moves is an error that the search hides. Blueprints gives a placement on its plane of anchors that fit while no pick waits, a pick or a drop on its plane of legal hand actions, and no pass. | None | None |
+| `LEGAL_MOVES_IN_ROWS` (optional) | As in C++: the rows hold their legal moves (the array `legalMovesNMovePacked`), which the loader gives the batch as `legalMovesNMove` ("The legal moves in the rows and the policy's masks"). | None: False (`games.legal_moves_in_rows`) | None |
+| `policy_mask(on_board)` (optional) | The slots that some position of the rows' size of board can make legal, from the on-board plane (N, y, x) of the rows at their symmetry, as booleans (N, policy), pass included. The policy losses have their softmax on them. | None: the board's slots (`games.policy_mask` gives None) | None |
+| `legal_moves(binary_inputs, global_inputs)` (optional) | The moves that the rows' inputs make legal, as booleans in the policy's order, from the rows as read (no symmetry), or None for rows without the planes it reads (`games.legal_moves`). Only `python/holdout_losses.py` reads it, not the losses: the policy's mass outside these moves is an error that the search hides. Blueprints gives a placement on its plane of anchors that fit while no pick waits, a pick or a drop on its plane of legal hand actions, and no pass. | None | None |
 
 The model's heads are the same in every game, but for the ending head ("The targets of one ending"). The rows give
 each slot that the game does not write the weight 0, but not C0 (above). So the trainer leaves out C0 for a game
@@ -937,6 +996,16 @@ deviation for one configured as 100 points. It prints the lambdas of the short-t
 with the board's area, and the score table's reach and memory beside those of the network's board side. A new game
 fails it until the test pins the game's areas and side. It builds and runs as `testgameinterface` does, with no
 argument. In the engine repository, `games/blueprints/tools/td_lambdas.py` checks the lambdas in Blueprints' rows.
+
+**The legal moves in the rows:** `testlegalrows` runs on a build of any game, with no argument and no network. In a game
+without `LEGAL_MOVES_IN_ROWS` it checks that the rows have no array of them. In a game with it, it plays self-play games
+with side positions, and compares each row's mask, of the game's rows, the side positions' and the reanalyzed ones, with
+the legal moves that it computes itself from the board's pieces, at each of the sizes of board of the game and in its
+opening: on the test games `endings` and `slides` (`-DGAME=slides`: 469 slots, 5 x 5 and 6 x 6 boards, an opening that
+places the opponent's pieces). It checks that the writer stops, with the row's turn and game, at a visited move that is
+not legal and at a position without legal moves. `testlegalrows DIR` writes the rows as a training file to DIR.
+`python/tests/test_legal_moves.py` has the same game as `slides_game.py` and checks the loader, the shuffle, the
+symmetries and the losses.
 
 **The end of a game:** `testgameends` runs on a build of any game, with no argument and no network. It plays random
 games at several komis and checks the history at each end: the winner, the final score, `isScored`, `isNoResult`, the

@@ -97,6 +97,8 @@ struct GameEncoding {
 
   static constexpr bool DRAWS_AS_NO_RESULT = true;
 
+  static constexpr bool LEGAL_MOVES_IN_ROWS = true;
+
   // A line and a count, each for the mover and for the opponent, then the two draws.
   static constexpr int ENDING_CLASSES = 6;
   static int ending_class(const GameInterface::GameEnd& end, int mover) {
