@@ -17,9 +17,9 @@
 //   the board (support); and the height of its tallest stack, over the board's side N.
 // - Roads (6): for P, then O: log(1 + n) of the empty squares where a flat of the player completes its road, 0 when the
 //   road is complete already (a complete road is the result), whatever its reserve; the player's longest reach, the
-//   larger of the rows and the columns that one road group spans, over N; and the road pieces of its largest road
-//   group, as a share of its road pieces. A road piece is a flat or a capstone on top, and a road group is a set of
-//   them joined by orthogonal steps.
+//   larger of the rows and the columns that one road group spans, at most N - 1 (N holds exactly when the road is
+//   complete, the result), over N; and the road pieces of its largest road group, as a share of its road pieces. A road
+//   piece is a flat or a capstone on top, and a road group is a set of them joined by orthogonal steps.
 // - Contact (4): for P, then O: the player's top pieces with an orthogonal neighbour of the other player's, as a share
 //   of its top pieces; and the player's walls next to a road piece of the other player's, as a share of its walls.
 // - Edges (2): for P, then O: the player's top pieces on the edge squares, as a share of its top pieces, over the edge
@@ -223,7 +223,7 @@ struct Diversity {
 
       const Roads r = roads(p, who);
       out[ROADS + 3 * side] = std::log1p(double(r.threats));
-      out[ROADS + 3 * side + 1] = r.extent / N;
+      out[ROADS + 3 * side + 1] = std::min(r.extent, p.size - 1) / N;
       out[ROADS + 3 * side + 2] = share(r.largest, r.pieces);
 
       const uint64_t walls = mine & p.walls;

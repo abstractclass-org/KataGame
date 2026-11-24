@@ -58,6 +58,7 @@ tak::Position position(const string& text) {
 
 const string ROW = "x5/x5/x5/x5/1,1,1,1,x 1 4 0";            // a white row of four: e1 completes a road
 const string FULL_ROW = "x5/x5/x5/x5/1,1,1,1,1 1 4 0";       // a white road, the game's end
+const string FULL_COLUMN = "2,x4/2,x4/2,x4/2,x4/2,x4 1 4 0";  // a black road
 const string STACKS = "x5/x5/x2,21,x2/x5/1221,x4 1 3 0";     // white tops on c3 (over B) and a1 (over W, B, B)
 const string WALLS = "1C,x3,1S/x5/x,2,x3/x,1S,x,2S,x/x5 1 4 0";
 const string MIXED = "1,1,x,1,1/x5/2,2,2,x2/x2,1S,x2/x,12,x3 1 6 0";
@@ -73,6 +74,11 @@ void byHand() {
   near(x[tak::Diversity::TEMPO], 0.0, "no spread");
   GameInterface::diversityStatisticsOf<StubEncoding>(position(FULL_ROW), 0, x);
   near(x[tak::Diversity::ROADS], 0.0, "a complete road leaves no threat");
+  near(x[tak::Diversity::ROADS + 1], 0.8, "a complete road of White reaches N - 1");
+  GameInterface::diversityStatisticsOf<StubEncoding>(position(FULL_COLUMN), 1, x);
+  near(x[tak::Diversity::ROADS + 1], 0.8, "a complete road of Black reaches N - 1");
+  GameInterface::diversityStatisticsOf<StubEncoding>(position(FULL_COLUMN), 0, x);
+  near(x[tak::Diversity::ROADS + 4], 0.8, "and so from the other player's side");
   GameInterface::diversityStatisticsOf<StubEncoding>(position(STACKS), 0, x);
   near(x[tak::Diversity::STACKS], 1.0, "White's captives are all of Black's three pieces");
   near(x[tak::Diversity::STACKS + 1], 1.0 / 3.0, "White has one piece of its own under a top piece");
@@ -113,7 +119,7 @@ tak::Position image(const tak::Position& p, int symmetry) {
 }
 
 void symmetries() {
-  for(const string& text : {WALLS, STACKS, MIXED, ROW}) {
+  for(const string& text : {WALLS, STACKS, MIXED, ROW, FULL_ROW, FULL_COLUMN}) {
     const tak::Position p = position(text);
     for(int player = 0; player < 2; player++) {
       double expected[24];
