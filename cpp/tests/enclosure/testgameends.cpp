@@ -12,8 +12,8 @@
 //    isNoResult, the kind of ending and the SGF record's result, also after a second call of endAndScoreGameNow and in a
 //    history that starts at the end. And the same game stopped at each position before its end, as at the move cap:
 //    KataGo's rule, no kind, and never a no result.
-// 2. The evaluator: the no-result output is kept for a game with draws as a class, and 0 in every other game, under the
-//    default rules (positional ko: KataGo keeps the output under a simple ko). The three outputs sum to 1.
+// 2. The evaluator: the no-result output is kept for a game with draws as a class. In every other game it is 0 under
+//    the default rules (positional ko) and kept under a simple ko, as KataGo does. The three outputs sum to 1.
 // 3. The search: the value of each terminal child of the positions before the end (win-loss and no result), and that a
 //    draw is worth half a win.
 // 4. Self-play: a game's value targets (the last one is the result) and its rows (C0-2, C20, C27, C52 and C62), for games
@@ -57,6 +57,14 @@ static constexpr bool OWN_END = GameInterface::hasGameEnd<GameRules>();
 static constexpr bool DRAW_CLASS = GameInterface::drawsAsNoResult<GameEncoding>();
 static const bool TEST_GAME = string(GameRules::NAME) == "endings";
 
+//KataGo's rule: White's minus Black's score with komi, and the winner by its sign.
+static double marginOf(const Board& board, double komi) {
+  return board.getScore(P_WHITE) - board.getScore(P_BLACK) + komi;
+}
+static Player winnerOfMargin(double margin) { return margin > 0 ? P_WHITE : margin < 0 ? P_BLACK : C_EMPTY; }
+//White's return of a winner.
+static double returnOf(Player winner) { return winner == P_WHITE ? 1.0 : winner == P_BLACK ? -1.0 : 0.0; }
+
 //An end as the test expects it.
 struct Expected {
   Player winner = C_EMPTY;
@@ -72,8 +80,8 @@ enum { LINE = 0, COUNT = 1, COUNT_TIE = 2, EMPTY_CORNER = 3 };
 //board, then the empty corner. In another game KataGo's rule.
 static Expected expectedEnd(const Board& board, double komi) {
   Expected e;
-  e.margin = board.getScore(P_WHITE) - board.getScore(P_BLACK) + komi;
-  e.winner = e.margin > 0 ? P_WHITE : e.margin < 0 ? P_BLACK : C_EMPTY;
+  e.margin = marginOf(board, komi);
+  e.winner = winnerOfMargin(e.margin);
   if(!TEST_GAME)
     return e;
   const int n = board.x_size;
@@ -104,7 +112,7 @@ static Expected expectedEnd(const Board& board, double komi) {
     e.scored = false;
   }
   else if(pieces == n * n) {
-    e.winner = e.margin > 0 ? P_WHITE : e.margin < 0 ? P_BLACK : C_EMPTY;
+    e.winner = winnerOfMargin(e.margin);
     e.kind = e.winner == C_EMPTY ? COUNT_TIE : COUNT;
   }
   else {
@@ -161,14 +169,22 @@ static Loc randomMove(const Board& board, Rand& rand) {
 //A name of an end for the counts: the kind, and for a line whether the score says another result.
 static string endName(const Expected& e) {
   string name = "kind " + to_string(e.kind) + (e.winner == P_WHITE ? " white" : e.winner == P_BLACK ? " black" : " draw");
-  if(!e.scored) {
-    const Player byScore = e.margin > 0 ? P_WHITE : e.margin < 0 ? P_BLACK : C_EMPTY;
-    name += byScore == e.winner ? " as the score" : " against the score";
-  }
+  if(!e.scored)
+    name += winnerOfMargin(e.margin) == e.winner ? " as the score" : " against the score";
   return name;
 }
 
-static void checkHistory(int games, map<string, int>& ends) {
+//The ends that a check saw: how many of each name, and the kinds.
+struct Ends {
+  map<string, int> counts;
+  set<int> kinds;
+  void add(const Expected& e) {
+    counts[endName(e)]++;
+    kinds.insert(e.kind);
+  }
+};
+
+static void checkHistory(int games, Ends& ends) {
   Rand rand("testgameends history");
   const double komis[] = {0.0, 0.5, -0.5, 2.0, -2.0, 7.5, -7.5};
   int stopped = 0;
@@ -184,9 +200,8 @@ static void checkHistory(int games, map<string, int>& ends) {
       {
         BoardHistory copy(hist);
         copy.endAndScoreGameNow(board);
-        const double margin = board.getScore(P_WHITE) - board.getScore(P_BLACK) + rules.komi;
-        const Player bySign = margin > 0 ? P_WHITE : margin < 0 ? P_BLACK : C_EMPTY;
-        check(copy.isGameFinished && copy.isScored && !copy.isNoResult && copy.winner == bySign &&
+        const double margin = marginOf(board, rules.komi);
+        check(copy.isGameFinished && copy.isScored && !copy.isNoResult && copy.winner == winnerOfMargin(margin) &&
               copy.rulesEnd.kind == -1 && std::fabs(copy.finalWhiteMinusBlackScore - margin) < 1e-4,
               game + ": stopped after " + to_string(hist.moveHistory.size()) + " moves, not KataGo's rule");
         stopped++;
@@ -195,7 +210,7 @@ static void checkHistory(int games, map<string, int>& ends) {
       hist.makeBoardMoveAssumeLegal(board, loc, board.nextPla(), NULL);
     }
     const Expected e = expectedEnd(board, rules.komi);
-    ends[endName(e)]++;
+    ends.add(e);
     checkEnd(hist, e, game);
     BoardHistory again(hist);
     again.endAndScoreGameNow(board);
@@ -206,6 +221,21 @@ static void checkHistory(int games, map<string, int>& ends) {
     check(!again.isGameFinished && !again.isNoResult && again.rulesEnd.kind == -1, game + ": clear keeps the end");
   }
   printf("the history: %d games, stopped at %d positions before their ends\n", games, stopped);
+}
+
+//The records of ends that the score did not decide, each with a margin: no score, whatever score the caller gives
+//(GTP's printsgf), also for a draw of a game whose draws are no class of their own, which no game here has.
+static void checkUnscoredRecords() {
+  BoardHistory hist;
+  hist.isGameFinished = true;
+  hist.finalWhiteMinusBlackScore = 3.0f;
+  for(const Player winner : {C_EMPTY, P_WHITE, P_BLACK}) {
+    hist.winner = winner;
+    const string expected = winner == P_WHITE ? "W+" : winner == P_BLACK ? "B+" : "0";
+    for(const double score : {std::nan(""), 3.0, -3.0, 0.0})
+      check(WriteSgf::gameResultNoSgfTag(hist, score) == expected,
+            "the record of an unscored end, " + expected + ", with the score " + to_string(score));
+  }
 }
 
 static NNEvaluator* newEvaluator(Logger& logger) {
@@ -226,16 +256,22 @@ static void checkEvaluator(NNEvaluator* nnEval) {
   int evaluated = 0;
   double largest = 0.0;
   for(int i = 0; i < 10 && !hist.isGameFinished; i++) {
-    NNResultBuf buf;
-    MiscNNInputParams params;
-    nnEval->evaluate(board, hist, board.nextPla(), params, buf, false, false);
-    const NNOutput& out = *buf.result;
-    const string where = "the evaluation after " + to_string(i) + " moves";
-    check(std::fabs(out.whiteWinProb + out.whiteLossProb + out.whiteNoResultProb - 1.0) < 1e-5,
-          where + ": the value outputs do not sum to 1");
-    check(DRAW_CLASS ? out.whiteNoResultProb > 0.0f : out.whiteNoResultProb == 0.0f,
-          where + ": the no-result output is " + to_string(out.whiteNoResultProb));
-    largest = std::max(largest, (double)out.whiteNoResultProb);
+    for(const int koRule : {Rules::KO_POSITIONAL, Rules::KO_SIMPLE}) {
+      BoardHistory h(hist);
+      h.rules.koRule = koRule;
+      const bool kept = DRAW_CLASS || koRule == Rules::KO_SIMPLE;
+      NNResultBuf buf;
+      MiscNNInputParams params;
+      nnEval->evaluate(board, h, board.nextPla(), params, buf, true, false);
+      const NNOutput& out = *buf.result;
+      const string where = "the evaluation after " + to_string(i) + " moves, ko rule " + to_string(koRule);
+      check(std::fabs(out.whiteWinProb + out.whiteLossProb + out.whiteNoResultProb - 1.0) < 1e-5,
+            where + ": the value outputs do not sum to 1");
+      check(kept ? out.whiteNoResultProb > 0.0f : out.whiteNoResultProb == 0.0f,
+            where + ": the no-result output is " + to_string(out.whiteNoResultProb));
+      if(koRule == Rules::KO_POSITIONAL)
+        largest = std::max(largest, (double)out.whiteNoResultProb);
+    }
     evaluated++;
     const Loc loc = randomMove(board, rand);
     hist.makeBoardMoveAssumeLegal(board, loc, board.nextPla(), NULL);
@@ -252,7 +288,7 @@ static SearchParams testParams(int64_t visits) {
 }
 
 //The children that end the game, of the positions one move before the end of random games.
-static void checkSearch(NNEvaluator* nnEval, Logger& logger, int games, map<string, int>& ends) {
+static void checkSearch(NNEvaluator* nnEval, Logger& logger, int games, Ends& ends) {
   Rand rand("testgameends search");
   const SearchParams params = testParams(60);
   check(params.noResultUtilityForWhite == 0.0, "noResultUtilityForWhite is not 0 by default");
@@ -285,14 +321,14 @@ static void checkSearch(NNEvaluator* nnEval, Logger& logger, int games, map<stri
         continue;
       const Expected e = expectedEnd(after, rules.komi);
       const string where = "the search of game " + to_string(g) + ", a child with " + endName(e);
-      const double winLoss = e.winner == P_WHITE ? 1.0 : e.winner == P_BLACK ? -1.0 : 0.0;
+      const double winLoss = returnOf(e.winner);
       const double noResult = DRAW_CLASS && e.winner == C_EMPTY ? 1.0 : 0.0;
       check(std::fabs(values.winLossValue - winLoss) < 1e-6 && std::fabs(values.noResultValue - noResult) < 1e-6,
             where + ": the value " + to_string(values.winLossValue) + ", no result " + to_string(values.noResultValue));
       //A draw is worth half a win, as KataGo's split gives: the utility is the win-loss value's.
       check(std::fabs(values.utility - winLoss * params.winLossUtilityFactor) < 1e-6,
             where + ": the utility " + to_string(values.utility));
-      ends[endName(e)]++;
+      ends.add(e);
     }
   }
 }
@@ -330,7 +366,7 @@ static void checkRows(const TrainingWriteBuffers& b, const FinishedGameData& dat
   }
 }
 
-static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, map<string, int>& ends) {
+static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& ends) {
   MatchPairer::BotSpec botSpec;
   botSpec.botIdx = 0;
   botSpec.botName = "test";
@@ -378,24 +414,23 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, map<st
             data->endHist.rulesEnd.kind == -1, where + ": the game did not stop at the cap");
       check(!Rgsc::gameOutcome(data->endHist, data->hitTurnLimit).has_value(), where + ": RGSC has an outcome");
       const Board& end = data->endHist.getRecentBoard(0);
-      margin = end.getScore(P_WHITE) - end.getScore(P_BLACK) + rules.komi;
-      winner = margin > 0 ? P_WHITE : margin < 0 ? P_BLACK : C_EMPTY;
+      margin = marginOf(end, rules.komi);
+      winner = winnerOfMargin(margin);
     }
     else {
       const Board& end = data->endHist.getRecentBoard(0);
       const Expected e = expectedEnd(end, rules.komi);
       check(!data->hitTurnLimit, where + ": the game hit the cap");
       checkEnd(data->endHist, e, where);
-      ends[endName(e)]++;
+      ends.add(e);
       winner = e.winner;
       margin = e.margin;
       const optional<double> outcome = Rgsc::gameOutcome(data->endHist, data->hitTurnLimit);
-      check(outcome.has_value() && *outcome == (winner == P_WHITE ? 1.0 : winner == P_BLACK ? -1.0 : 0.0),
-            where + ": RGSC's outcome");
+      check(outcome.has_value() && *outcome == returnOf(winner), where + ": RGSC's outcome");
     }
     const bool draw = DRAW_CLASS && !stops && winner == C_EMPTY;
     check(last.noResult == (draw ? 1.0f : 0.0f), where + ": the no-result target " + to_string(last.noResult));
-    check(last.win == (draw ? 0.0f : winner == P_WHITE ? 1.0f : winner == P_BLACK ? 0.0f : 0.5f),
+    check(last.win == (draw ? 0.0f : (float)ScoreValue::whiteWinsOfWinner(winner, 0.5)),
           where + ": the win target " + to_string(last.win));
     check(last.loss == (draw ? 0.0f : 1.0f - last.win), where + ": the loss target " + to_string(last.loss));
     if(draw)
@@ -416,9 +451,9 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, map<st
          counts.rows, counts.capRows, counts.drawRows);
 }
 
-static void printEnds(const char* where, const map<string, int>& ends) {
+static void printEnds(const char* where, const Ends& ends) {
   printf("  %s:", where);
-  for(const auto& [name, count] : ends)
+  for(const auto& [name, count] : ends.counts)
     printf(" %s %d;", name.c_str(), count);
   printf("\n");
 }
@@ -430,14 +465,16 @@ int main() {
   printf("%s: the rules' end %s, draws as a class %s\n", GameRules::NAME, OWN_END ? "yes" : "no", DRAW_CLASS ? "yes" : "no");
   check(!TEST_GAME || (OWN_END && DRAW_CLASS), "the test game has both members");
 
-  map<string, int> historyEnds, searchEnds, selfplayEnds;
+  Ends historyEnds, searchEnds, selfplayEnds;
   checkHistory(TEST_GAME ? 4000 : 20, historyEnds);
   printEnds("the games' ends", historyEnds);
   if(TEST_GAME)
     for(const char* name : {"kind 0 white as the score", "kind 0 white against the score", "kind 0 black as the score",
                             "kind 0 black against the score", "kind 1 white", "kind 1 black", "kind 2 draw",
                             "kind 3 draw as the score", "kind 3 draw against the score"})
-      check(historyEnds.count(name) > 0, string("no game of the history's ended by ") + name);
+      check(historyEnds.counts.count(name) > 0, string("no game of the history's ended by ") + name);
+
+  checkUnscoredRecords();
 
   Logger logger(nullptr, false, false, false);
   NNEvaluator* nnEval = newEvaluator(logger);
@@ -447,12 +484,9 @@ int main() {
   checkSelfplay(nnEval, logger, TEST_GAME ? 200 : 5, selfplayEnds);
   printEnds("self-play's ends", selfplayEnds);
   if(TEST_GAME)
-    for(const auto* ends : {&searchEnds, &selfplayEnds}) {
-      set<char> kinds;
-      for(const auto& [name, count] : *ends)
-        kinds.insert(name[5]);
-      check(kinds.size() == 4, "the search or self-play saw " + to_string(kinds.size()) + " of the 4 kinds of ending");
-    }
+    for(const Ends* ends : {&searchEnds, &selfplayEnds})
+      check(ends->kinds.size() == 4,
+            "the search or self-play saw " + to_string(ends->kinds.size()) + " of the 4 kinds of ending");
   delete nnEval;
   NeuralNet::globalCleanup();
   ScoreValue::freeTables();

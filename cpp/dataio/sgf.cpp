@@ -1926,9 +1926,9 @@ string WriteSgf::gameResultNoSgfTag(const BoardHistory& hist, double overrideFin
     return "B+R";
   else if(hist.isResignation && hist.winner == C_WHITE)
     return "W+R";
-  //KataGame fork: a win that the score did not decide (GameInterface::gameEnd) has no score, which SGF makes optional.
-  else if(!hist.isScored && hist.winner != C_EMPTY)
-    return hist.winner == C_BLACK ? "B+" : "W+";
+  //KataGame fork: a result that the score did not decide (GameInterface::gameEnd) has no score, as SGF allows.
+  else if(!hist.isScored)
+    return hist.winner == C_BLACK ? "B+" : hist.winner == C_WHITE ? "W+" : "0";
 
   if(!std::isnan(overrideFinishedWhiteScore)) {
     if(overrideFinishedWhiteScore < 0)

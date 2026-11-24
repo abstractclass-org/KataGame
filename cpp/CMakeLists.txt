@@ -592,17 +592,18 @@ set(GAME "enclosure" CACHE STRING "The game that the binary plays")
 set_property(CACHE GAME PROPERTY STRINGS ${KATAGAME_GAMES})
 # A game of the tests (tests/games/<game>/, GAMES.md) builds as a game of game/ does. It is not in the list of games.
 set(GAME_FOLDER "game")
-if(NOT GAME IN_LIST KATAGAME_GAMES)
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/games/${GAME}/gamerules.h")
-    set(GAME_FOLDER "tests/games")
-  else()
-    message(FATAL_ERROR "Unknown game: -DGAME=${GAME}. The games (folders of game/ with gamerules.h): ${KATAGAME_GAMES}")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/games/${GAME}/gamerules.h")
+  if(GAME IN_LIST KATAGAME_GAMES)
+    message(FATAL_ERROR "-DGAME=${GAME} names two games, game/${GAME} and the tests' tests/games/${GAME}: rename one.")
   endif()
+  set(GAME_FOLDER "tests/games")
+elseif(NOT GAME IN_LIST KATAGAME_GAMES)
+  message(FATAL_ERROR "Unknown game: -DGAME=${GAME}. The games (folders of game/ with gamerules.h): ${KATAGAME_GAMES}")
 endif()
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${GAME_FOLDER}/${GAME}/gameencoding.h")
-  message(FATAL_ERROR "-DGAME=${GAME}: ${GAME} has its rules part only (game/${GAME}/gamerules.h). The katago binary "
-                      "also needs its network encoding part, game/${GAME}/gameencoding.h. The Python binding builds "
-                      "from the rules part alone.")
+  message(FATAL_ERROR "-DGAME=${GAME}: ${GAME} has its rules part only (${GAME_FOLDER}/${GAME}/gamerules.h). The "
+                      "katago binary also needs its network encoding part, ${GAME_FOLDER}/${GAME}/gameencoding.h. The "
+                      "Python binding builds from the rules part alone.")
 endif()
 # The game's own code outside the game layer (game/<game>/ownfiles.txt): only the game's binary compiles its .cpp files.
 set(GAME_OWN_SOURCES "")

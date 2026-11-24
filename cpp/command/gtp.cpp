@@ -1688,12 +1688,10 @@ struct GTPEngine {
     BoardHistory hist = bot->getRootHist();
     Player pla = bot->getRootPla();
 
-    //Tromp-taylorish scoring, or finished territory game scoring (including noresult)
-    if(hist.isGameFinished && (
-         (hist.rules.scoringRule == Rules::SCORING_AREA && !hist.rules.friendlyPassOk) ||
-         (hist.rules.scoringRule == Rules::SCORING_TERRITORY)
-       )
-    ) {
+    //KataGame fork: a finished game has its result in the history, under any rules: these games end by their rules,
+    //with no dead stones to judge. Under rules with a friendly pass (chinese) KataGo took the else branch, whose search
+    //has no legal move at a finished position, so the evaluator stops katago.
+    if(hist.isGameFinished) {
       //For GTP purposes, we treat noResult as a draw since there is no provision for anything else.
       winner = hist.winner;
       finalWhiteMinusBlackScore = hist.finalWhiteMinusBlackScore;

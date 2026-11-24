@@ -63,9 +63,9 @@ the WebAssembly build, the binding and the standalone tests need no new source f
   unknown name stops `cmake` with the list of games. A game without `gameencoding.h` also stops it: `katago` needs
   both parts, and the Python binding needs only the rules part. The option defines `KATAGAME_GAME=<name>`.
 - **A game of the tests:** `cpp/tests/games/<name>/` holds both parts of a small game. `-DGAME=<name>` builds it as
-  the games of `cpp/game/`, and CMake does not list it. It is not in the game layer, so it is not a game for the
-  binding, the conformance suite or the check of the game layer. Use it to test an optional member before a game
-  has it.
+  the games of `cpp/game/`, and CMake does not list it. A name that a game of `cpp/game/` has too stops `cmake`. It is
+  not in the game layer, so it is not a game for the binding, the conformance suite or the check of the game layer.
+  Use it to test an optional member before a game has it.
 - **The headers:** `chosenrules.h` includes `<name>/gamerules.h` and makes `chosengame` the alias of the namespace
   `<name>`. `chosengame.h` includes `<name>/gameencoding.h`. A game's folder and its namespace have the same name.
 - **Other builds** (the WebAssembly module, the fork's standalone tests) define nothing and get Enclosure. So every
