@@ -142,8 +142,8 @@ LOSS_COEFFICIENTS = {
     "futurepos": 0.25,  # C2-3, KataGo's: in the loss (fploss), before the far horizon's 0.25
     "scoring": 0.25,    # C4, KataGo's: in loss_sum only (sloss is without it)
     "income": 1.5,      # C5-6, Enclosure's
-    "ending": 0.25,     # the ending head, KataGo's weight of its auxiliary spatial targets (C2-3, C4), assumed: in
-                        # loss_sum only (endloss is the cross-entropy)
+    "ending": 0.25,     # the ending head: assumed, KataGo's weight of its auxiliary spatial targets (C2-3, C4). In
+                        # loss_sum only: endloss is the cross-entropy
 }
 
 # The factor on the gradient that a head sends back into the layers that it shares with the other heads, which a

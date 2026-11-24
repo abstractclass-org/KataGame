@@ -931,7 +931,9 @@ void TrainingWriteBuffers::addRow(
       rowGlobal[68] = (gameTargets & GameInterface::TARGET_SEKI) ? 1.0f : 0.0f;
       rowGlobal[69] = (gameTargets & GameInterface::TARGET_INCOME) ? 1.0f : 0.0f;
       if(numEndingClasses > 0) {
-        //The ending and its weight. C27 weighs the game's C0 with the score's targets, so C0 is on the same rows.
+        //The ending and its weight. C27 weighs the game's C0 with the score's targets, so C0 is on the same rows. A
+        //game that its rules ended has a kind of ending: without one its rows would lose both without a word.
+        testAssert(endedByRules || !actualGameEndHist.isGameFinished || actualGameEndHist.isResignation);
         testAssert(rowGlobal[GameInterface::TargetValues::ENDING_CLASS] == 0.0f &&
                    rowGlobal[GameInterface::TargetValues::ENDING_WEIGHT] == 0.0f);
         testAssert((ownTargets & GameInterface::TARGET_OWNERSHIP) == 0 ||

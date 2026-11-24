@@ -287,9 +287,9 @@
  *   ENDING_CLASSES, ending_class(end, mover)
  *                           int, int: the classes of the game's endings, for a game whose targets differ by ending: a
  *                           road of Tak gives no score, and its flat count no road. ending_class gives the class, 0 to
- *                           ENDING_CLASSES - 1, of the rules' end (the GameEnd of game_end, which the game then gives)
- *                           in the view of the player mover, 0 or 1: a win's class is not a loss's. The training rows
- *                           of such a game (TrainingWriteBuffers::addRow):
+ *                           ENDING_CLASSES - 1, of the rules' end (the GameEnd of game_end, which the game then gives,
+ *                           each end with its kind) in the view of the player mover, 0 or 1: a win's class is not a
+ *                           loss's. The training rows of such a game (TrainingWriteBuffers::addRow):
  *                           - hold the ending's class for the row's mover in the global target G76, and the value's
  *                             weight in G77. Without the rules' end (a game at the move cap, a side position) G77 is
  *                             0. The game's training_targets leaves both to the front.

@@ -570,18 +570,16 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& 
       writer.writeGame(*data);
       writer.flushIfNonempty();
     };
-    //The game's own rows, its side positions' alone, and its own rows again as reanalyzed without the outcome.
-    vector<SidePosition*> sidePositions;
-    sidePositions.swap(data->sidePositions);
-    write([&](const TrainingWriteBuffers& b) { checkRows(b, *data, last, counts, where); });
+    //The side positions' rows alone, then the game's own, then its own again as reanalyzed without the outcome.
     const vector<float> weights = data->targetWeightByTurn;
     data->targetWeightByTurn.assign(weights.size(), 0.0f);
-    data->sidePositions.swap(sidePositions);
     write([&](const TrainingWriteBuffers& b) {
       checkRowsWithoutOutcome(b, counts.sideRows, where + ", a side position");
     });
-    data->sidePositions.swap(sidePositions);
     data->targetWeightByTurn = weights;
+    vector<SidePosition*> sidePositions;
+    sidePositions.swap(data->sidePositions);
+    write([&](const TrainingWriteBuffers& b) { checkRows(b, *data, last, counts, where); });
     ReanalysisData reanalyzed;
     reanalyzed.wasReanalyzed = true;
     reanalyzed.usedOutcomeTargets = false;
@@ -589,7 +587,7 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& 
     write([&](const TrainingWriteBuffers& b) {
       checkRowsWithoutOutcome(b, counts.reanalyzedRows, where + ", reanalyzed");
     });
-    data->sidePositions.swap(sidePositions);
+    data->sidePositions.swap(sidePositions);  //data owns them
     delete data;
   }
   check(counts.rows > 0 && counts.capRows > 0, "the rows: none, or none of a game at the cap");

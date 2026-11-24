@@ -17,6 +17,7 @@ from katago.train.metrics_pytorch import Metrics  # noqa: E402
 from katago.train.model_pytorch import Model  # noqa: E402
 from test_diversity_members import export_header  # noqa: E402
 from test_game_module import loss_sums, random_batch, stub_game  # noqa: E402
+from test_loss_gradients import SCALES  # noqa: E402
 
 CLASSES = 6
 # Columns of the global targets.
@@ -204,12 +205,10 @@ def test_the_loss_groups_add_up_with_the_head():
     model = model_of("endingsgame", "ending")
     model.train()
     metrics = Metrics(1, model)
-    scales = dict(soft_policy_weight_scale=8.0, value_loss_scale=0.6, td_value_loss_scales=[0.6, 0.6, 0.6],
-                  seki_loss_scale=1.0, variance_time_loss_scale=1.0)
-    lines = dict(loss_gradients.measure(model, metrics, rows(model), scales))  # it checks the sum
+    lines = dict(loss_gradients.measure(model, metrics, rows(model), SCALES))  # it checks the sum
     per_row, trunk = lines["how the game ends"][:2]
     assert per_row > 0 and trunk > 0
     # A model without the head has no such group.
     plain = model_of("endingsgame")
     plain.train()
-    assert "how the game ends" not in dict(loss_gradients.measure(plain, Metrics(1, plain), rows(plain), scales))
+    assert "how the game ends" not in dict(loss_gradients.measure(plain, Metrics(1, plain), rows(plain), SCALES))

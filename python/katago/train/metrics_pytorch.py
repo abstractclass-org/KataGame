@@ -1149,8 +1149,8 @@ class Metrics:
                 ending_logits, target_ending, target_weight_ending, global_weight,
             ).sum()
             loss_sum = loss_sum + loss_ending * self.loss_coefficients["ending"]
-            # The loss and the accuracy, sums over the rows, and the share of the rows that carry an ending: endloss and
-            # endacc1 divided by endw are the means over those rows.
+            # The loss and the accuracy, and the rows' weights (C25 x G77), as sums: endloss and endacc1 divided by endw
+            # are the weighted means over the rows that carry an ending.
             right = torch.argmax(ending_logits, dim=1) == target_ending
             ending_results = {
                 "endloss_sum": loss_ending,
