@@ -756,20 +756,19 @@ that the rules make legal in the row's position (`GameRules::legal_actions`), a 
 `binaryInputNCHWPacked` is (numpy's `packbits`, the highest bit first), zero-padded to a round byte. The bits are at the
 indices of the policy targets of the same row: the labels' frame of input version 13 too. Every kind of row has the
 position that the row's inputs show: a row of the game, a side position, a reanalyzed row, a row in the view of its
-turn's search, and a row of a size of board below the largest, whose slots off the board have no bit. A move in the
-opening has its own legal moves (Tak's first two plies place the opponent's flat). Each row has at least one bit,
+turn's search, and a row of a size of board below the largest, whose slots off the board have no bit. A position of the
+opening has the opening's legal moves (Tak's first two plies place the opponent's flat). Each row has at least one bit,
 because it is a searched position. The array is its own, so that a reader of the other arrays does not see it, and a
 file of the rows of a game without the member has no such array.
 
 **The stops.** The row writer (`TrainingWriteBuffers::addRow`) stops, with the row's turn and game, at a position
 without legal moves, and at a move of the row's policy target with a visit that is not legal in the row's position. The
-loader
-(`data_processing_pytorch.check_policy_masks`) reads each file's rows and stops, with the file, the row and its turn, at
-a row with visits on a move outside its own legal moves, at a legal move outside `policy_mask`, at visits of either
-policy target outside `policy_mask`, and at an array of another size than the policy's. A policy target whose weight
-(C26, C28) is 0 is no target and is not checked. The loader refuses the array in the rows of a game whose trainer
-module does not give `LEGAL_MOVES_IN_ROWS`. Without these stops, a visit outside a mask would drop from the loss without
-a word.
+loader (`data_processing_pytorch.check_policy_masks`) reads each file's rows and stops, with the file, the row and its
+turn, at a row with visits on a move outside its own legal moves, at a legal move outside `policy_mask`, and at visits
+of either policy target outside `policy_mask`. A policy target whose weight (C26, C28) is 0 is no target and is not
+checked. The loader also stops, with the file, at an array of another size than the policy's, and at the array in the
+rows of a game whose trainer module does not give `LEGAL_MOVES_IN_ROWS`. Without these stops, a visit outside a mask
+would drop from the loss without a word.
 
 **A window of both kinds.** A row of 0 bits has no mask. The shuffle (`shuffle.py`) merges files with the array and
 without it, and gives the rows of the files without it 0 bits, when any file has the array. A shuffle of files that all
@@ -881,7 +880,7 @@ points. Training moves the score's standard deviation and the score belief.
 | `DRAWS_AS_NO_RESULT` (optional) | As in C++. The trainer trains the three value outputs in every game, and does not read it. `enclosure_nn_check.py` and `nn_rows_check.py` do: the evaluator keeps the third output. | None: False (`games.draws_as_no_result`) | None |
 | `ENDING_CLASSES` (optional) | As in C++: the trainer then weighs the targets of one ending apart from C27, and a model can have the ending head ("The targets of one ending"). | None: 0 (`games.ending_classes`) | None |
 | `LEGAL_MOVES_IN_ROWS` (optional) | As in C++: the rows hold their legal moves (the array `legalMovesNMovePacked`), which the loader gives the batch as `legalMovesNMove` ("The legal moves in the rows and the policy's masks"). | None: False (`games.legal_moves_in_rows`) | None |
-| `policy_mask(on_board)` (optional) | The slots that some position of the rows' size of board can make legal, from the on-board plane (N, y, x) of the rows at their symmetry, as booleans (N, policy), pass included. The policy losses have their softmax on them. | None: the board's slots (`games.policy_mask` gives None) | None |
+| `policy_mask(on_board)` (optional) | The slots that some position of the rows' size of board can make legal, from the on-board plane (N, y, x) of the rows at their symmetry, as booleans (N, policy), pass included. The policy losses have their softmax on them. | None: the board's slots | None |
 | `legal_moves(binary_inputs, global_inputs)` (optional) | The moves that the rows' inputs make legal, as booleans in the policy's order, from the rows as read (no symmetry), or None for rows without the planes it reads (`games.legal_moves`). Only `python/holdout_losses.py` reads it, not the losses: the policy's mass outside these moves is an error that the search hides. Blueprints gives a placement on its plane of anchors that fit while no pick waits, a pick or a drop on its plane of legal hand actions, and no pass. | None | None |
 
 The model's heads are the same in every game, but for the ending head ("The targets of one ending"). The rows give

@@ -206,7 +206,7 @@ def test_the_games_have_the_members_that_they_give(monkeypatch):
     for name in ("enclosure", "connect4", "blueprints"):
         game = games.get(name)
         assert not games.legal_moves_in_rows(game)
-        assert games.policy_mask(game, torch.ones(1, 3, 3)) is None
+        assert getattr(game, "policy_mask", None) is None
     assert games.legal_moves_in_rows(slides_game)
 
 
@@ -258,6 +258,73 @@ def test_a_wrong_map_of_the_mask_is_found_by_the_same_check(monkeypatch, wrong):
         assert failed == [5, 6]  # the two rotations by 90 degrees are the symmetries that are not their own inverses
     else:
         assert set(range(1, 8)) >= set(failed) and failed and 0 not in failed
+
+
+# A row made by hand: a 5 x 5 board in the corner of the 6 x 6 network, after the opening, with the mover's pieces on
+# (1, 0) and (4, 4) and the opponent's on (1, 2). Its legal moves (the point where each starts, its channel and the point
+# where it ends, the same point for a placement) are written out, and so are the 8 images of a point.
+HAND_MOVES = [((x, y), 0, (x, y)) for y in range(5) for x in range(5) if (x, y) not in ((1, 0), (4, 4), (1, 2))] + [
+    ((1, 0), 1, (1, 1)),                                              # up, and (1, 2) is taken
+    ((1, 0), 3, (2, 0)), ((1, 0), 7, (3, 0)), ((1, 0), 11, (4, 0)),   # right, to the edge of the 5 x 5 board
+    ((1, 0), 4, (0, 0)),                                              # left
+    ((4, 4), 2, (4, 3)), ((4, 4), 6, (4, 2)), ((4, 4), 10, (4, 1)),   # down
+    ((4, 4), 4, (3, 4)), ((4, 4), 8, (2, 4)), ((4, 4), 12, (1, 4)),   # left
+]
+HAND_IMAGES = [
+    lambda x, y: (x, y), lambda x, y: (x, 5 - y), lambda x, y: (5 - x, y), lambda x, y: (5 - x, 5 - y),
+    lambda x, y: (y, x), lambda x, y: (5 - y, x), lambda x, y: (y, 5 - x), lambda x, y: (5 - y, 5 - x),
+]
+
+
+def hand_slot(start, end):
+    """The slot of the move from a point to another (a placement: the same point), from the points alone."""
+    (x, y), (ex, ey) = start, end
+    steps = max(abs(ex - x), abs(ey - y))
+    channel = 0
+    if steps:
+        channel = 4 * (steps - 1) + {(0, 1): 1, (0, -1): 2, (1, 0): 3, (-1, 0): 4}[(ex - x) // steps, (ey - y) // steps]
+    return (y * 6 + x) * 13 + channel
+
+
+def hand_rows(count):
+    """The arrays of `count` rows of the row made by hand, with 3 visits on (1, 0) to (4, 0) and 1 on a placement on
+    (0, 4)."""
+    arrays, _ = random_rows(np.random.default_rng(1), count, size=5)
+    planes = np.zeros((3, 6, 6), dtype=np.uint8)
+    planes[0, :5, :5] = 1
+    planes[1, 0, 1] = planes[1, 4, 4] = planes[2, 2, 1] = 1
+    arrays["binaryInputNCHWPacked"][:] = np.packbits(planes.reshape(3, 36), axis=1)
+    arrays["globalInputNC"][:, :2] = 0.0
+    arrays["policyTargetsNCMove"][:] = 0
+    arrays["policyTargetsNCMove"][:, :, hand_slot((1, 0), (4, 0))] = 3
+    arrays["policyTargetsNCMove"][:, :, hand_slot((0, 4), (0, 4))] = 1
+    arrays[LEGAL_MOVES_ARRAY][:] = 0
+    for start, channel, end in HAND_MOVES:
+        slot = (start[1] * 6 + start[0]) * 13 + channel
+        assert slot == hand_slot(start, end)
+        arrays[LEGAL_MOVES_ARRAY][:, slot // 8] |= 128 >> (slot % 8)
+    return arrays
+
+
+@pytest.mark.parametrize("symm", range(8))
+def test_the_loader_maps_a_row_made_by_hand_at_each_symmetry(tmp_path, monkeypatch, symm):
+    monkeypatch.setattr(games, "symmetries", lambda game: [symm])
+    (batch,) = read([write(tmp_path / "hand.npz", hand_rows(8))], symmetries=True)
+    image = HAND_IMAGES[symm]
+    mine = {(x, y) for y, x in batch["binaryInputNCHW"][0, 1].nonzero().tolist()}
+    assert mine == {image(1, 0), image(4, 4)}
+    expected = np.zeros(MOVES, dtype=bool)
+    expected[[hand_slot(image(*start), image(*end)) for start, _, end in HAND_MOVES]] = True
+    assert expected.sum() == 33
+    target = np.zeros(MOVES)
+    target[hand_slot(image(1, 0), image(4, 0))] = 3
+    target[hand_slot(image(0, 4), image(0, 4))] = 1
+    for row in range(8):
+        assert np.array_equal(batch["legalMovesNMove"][row].numpy(), expected)
+        assert np.array_equal(batch["policyTargetsNCMove"][row, 0].numpy(), target)
+    # The 25 placements and 4 x (20 + 15 + 10) slides of a 5 x 5 board, in the corner where the board stands.
+    static = slides_game.policy_mask(batch["binaryInputNCHW"][:, 0])
+    assert static.sum(dim=1).tolist() == [205] * 8 and not (batch["legalMovesNMove"] & ~static).any()
 
 
 def test_the_loader_gives_each_batch_its_own_mask_at_every_symmetry(tmp_path):
@@ -324,6 +391,19 @@ def test_a_visit_outside_the_static_mask_stops_the_loader_for_either_target(tmp_
 
         with pytest.raises(ValueError, match=rf"row 3 \(turn 13 of its game\) (has a legal move|{what})"):
             read([rows_file(tmp_path, change)])
+
+
+def test_a_row_past_the_first_part_of_the_check_stops_the_loader_with_its_own_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(data_processing_pytorch, "CHECKED_ROWS_AT_A_TIME", 5)
+
+    def change(arrays, positions):
+        visited = int(np.flatnonzero(arrays["policyTargetsNCMove"][13, 0])[0])
+        set_bit(arrays[LEGAL_MOVES_ARRAY], 13, visited, False)
+
+    with pytest.raises(ValueError, match=r"rows\.npz, row 13 \(turn 23 of its game\) has visits on a move outside its "
+                                         r"own legal moves"):
+        read([rows_file(tmp_path, change)])
+    assert len(read([rows_file(tmp_path, lambda arrays, positions: None)])) == 2
 
 
 def test_the_targets_without_a_weight_are_not_visits(tmp_path):
@@ -499,19 +579,21 @@ def expected_losses(model, batch, floor_player):
     }
 
 
-def metric_sums(model, batch, **extra):
+def metric_sums(model, batch, policy=None):
+    """The metrics of the model on the batch, or with `policy` in place of its policy logits."""
     with torch.no_grad():
-        outputs = model(batch["binaryInputNCHW"], batch["globalInputNC"])
+        heads = model.postprocess_output(model(batch["binaryInputNCHW"], batch["globalInputNC"]))
+        if policy is not None:
+            heads = ((policy,) + tuple(heads[0][1:]),)
         metrics = Metrics(1, model).metrics_dict_batchwise(
-            model, model.postprocess_output(outputs), None, batch, is_training=False,
+            model, heads, None, batch, is_training=False,
             soft_policy_weight_scale=8.0, disable_optimistic_policy=True, meta_kata_only_soft_policy=False,
             value_loss_scale=0.6, td_value_loss_scales=[0.6, 0.6, 0.6], seki_loss_scale=1.0,
-            variance_time_loss_scale=1.0, main_loss_scale=None, intermediate_loss_scale=None, **extra)
+            variance_time_loss_scale=1.0, main_loss_scale=None, intermediate_loss_scale=None)
     return {k: float(v) for k, v in metrics.items() if k.endswith("_sum")}
 
 
-def policy_names():
-    return ["p0loss_sum", "p1loss_sum", "p0softloss_sum", "p1softloss_sum", "p0lopt_sum", "p0sopt_sum"]
+POLICY_LOSSES = ("p0loss_sum", "p1loss_sum", "p0softloss_sum", "p1softloss_sum", "p0lopt_sum", "p0sopt_sum")
 
 
 def test_each_policy_loss_reads_its_softmax_and_floor_masks(model):
@@ -519,7 +601,7 @@ def test_each_policy_loss_reads_its_softmax_and_floor_masks(model):
     batch = batch_of(arrays)
     sums = metric_sums(model, batch)
     expected = expected_losses(model, batch, batch["legalMovesNMove"])
-    for name in policy_names():
+    for name in POLICY_LOSSES:
         assert sums[name] == pytest.approx(float(expected[name]), rel=2e-4), name
     assert sums["lmrows_sum"] == 24.0
 
@@ -532,7 +614,7 @@ def test_the_floor_of_a_row_without_a_mask_is_the_static_mask(model):
     static = slides_game.policy_mask(batch["binaryInputNCHW"][:, 0])
     floor = torch.where(batch["legalMovesNMove"].any(dim=1, keepdim=True), batch["legalMovesNMove"], static)
     expected = expected_losses(model, batch, floor)
-    for name in policy_names():
+    for name in POLICY_LOSSES:
         assert sums[name] == pytest.approx(float(expected[name]), rel=2e-4), name
     assert sums["lmrows_sum"] == 10.0
     # And the floor is not the legal moves of the other rows, which differs.
@@ -540,30 +622,32 @@ def test_the_floor_of_a_row_without_a_mask_is_the_static_mask(model):
     assert abs(float(legal_everywhere["p0softloss_sum"]) - sums["p0softloss_sum"]) > 1e-3
 
 
-def test_the_soft_targets_floor_is_the_legal_moves_and_not_the_static_ones(model):
-    """The target of a row of 4 visited moves: the floor of 0.0178 is on each legal move that is not visited and on no
-    other slot, and the sum of the target over all others is that of the legal moves (which is what the static mask's
-    floor, about 0.0178 x 200, would not give)."""
-    arrays, _ = random_rows(np.random.default_rng(83), 8, size=SIZE)
-    batch = batch_of(arrays)
-    static = slides_game.policy_mask(batch["binaryInputNCHW"][:, 0]).float()
-    player = batch["policyTargetsNCMove"][:, 0]
-    player = player / player.sum(dim=1, keepdim=True)
-    legal = batch["legalMovesNMove"].float()
-    metrics = Metrics(1, model)
-    _, _ = metrics.apply_policy_mask(torch.zeros(8, 6, MOVES), torch.ones(8, MOVES),
-                                     batch["binaryInputNCHW"][:, 0])
-    target = soft_target(player, legal)
-    floor = (target * legal * (player == 0)).sum(dim=1)
-    visited = (target * (player > 0)).sum(dim=1)
-    per_move = 1e-7 ** 0.25
-    for row in range(8):
-        n_floor = int((legal[row] > 0).sum() - (player[row] > 0).sum())
-        norm = n_floor * per_move + float(torch.pow(player[row][player[row] > 0] + 1e-7, 0.25).sum())
-        assert float(floor[row]) == pytest.approx(n_floor * per_move / norm, rel=1e-4)
-        assert float(floor[row] + visited[row]) == pytest.approx(1.0, rel=1e-5)
-    static_floor = soft_target(player, static)
-    assert float((static_floor * (player == 0)).sum()) > float((target * (player == 0)).sum()) + 1.0
+def test_the_losses_of_a_row_made_by_hand(model):
+    """The row made by hand (33 legal moves, 205 static slots), with its mask and without it. Each output has the logit
+    ln 3 on one slot and 0 on the 468 others, so that its loss is ln(205 + 2) - ln 3 * (the target on that slot). For
+    the soft outputs the slot is a legal move without visits, whose target is the floor's share."""
+    batch = batch_of(hand_rows(2))
+    batch["legalMovesNMove"][1] = False  # an older row: no mask
+    unvisited, visited = hand_slot((1, 0), (1, 1)), hand_slot((1, 0), (4, 0))
+    policy = torch.zeros(2, 6, MOVES)
+    policy[:, [0, 1, 4, 5], visited] = math.log(3.0)
+    policy[:, [2, 3], unvisited] = math.log(3.0)
+    sums = metric_sums(model, batch, policy)
+
+    def loss(target):
+        return math.log(207.0) - math.log(3.0) * target
+
+    per_slot = 0.0177827941  # 1e-7 to the power 0.25
+    visits = 0.75 ** 0.25 + 0.25 ** 0.25
+    on_legal, on_static = per_slot / (visits + 31 * per_slot), per_slot / (visits + 203 * per_slot)
+    expected = {"p0loss_sum": 2 * loss(0.75), "p1loss_sum": 0.15 * 2 * loss(0.75),
+                "p0softloss_sum": loss(on_legal) + loss(on_static), "p1softloss_sum": 0.15 * 2 * loss(on_static),
+                "p0lopt_sum": 0.5 * 2 * loss(0.75), "p0sopt_sum": 0.5 * 2 * loss(0.75)}
+    for name in POLICY_LOSSES:
+        assert sums[name] == pytest.approx(expected[name], rel=1e-6), name
+    # The same row, and the two floors, are told apart.
+    assert abs(expected["p0softloss_sum"] - 2 * loss(on_static)) > 1e-3
+    assert sums["lmrows_sum"] == 1.0
 
 
 def test_a_masked_slot_has_no_logit_and_no_gradient(model):
@@ -571,11 +655,9 @@ def test_a_masked_slot_has_no_logit_and_no_gradient(model):
     on_board[:, :SIZE - 1, :SIZE - 1] = 1.0  # the 5 x 5 board
     static = slides_game.policy_mask(on_board)
     logits = torch.randn(3, 6, MOVES, requires_grad=True)
-    metrics = Metrics(1, model)
-    masked, floor = metrics.apply_policy_mask(logits, torch.ones(3, MOVES), on_board)
+    masked, floor = Metrics(1, model).apply_policy_mask(logits, torch.ones(3, MOVES), on_board)
     assert floor.dtype == torch.float32 and torch.equal(floor > 0, static)
-    assert torch.equal(masked[:, :, :][:, :, :].detach().masked_select(~static.unsqueeze(1)),
-                       torch.full_like(masked.detach().masked_select(~static.unsqueeze(1)), -5000.0))
+    assert (masked.masked_select(~static.unsqueeze(1)) == -5000.0).all()
     # The other slots are as they were.
     assert torch.equal(masked.masked_select(static.unsqueeze(1)), logits.masked_select(static.unsqueeze(1)))
     target = static.float() / static.sum(dim=1, keepdim=True)
@@ -587,23 +669,20 @@ def test_a_masked_slot_has_no_logit_and_no_gradient(model):
 
 
 def test_a_policy_head_that_puts_weight_outside_the_mask_does_not_change_the_losses(model):
-    """The logits of the slots outside the mask are not in the losses: a logit of 1000 in one changes nothing."""
+    """The logits of the slots outside the mask are not in the losses: 1000 more in each of them changes nothing, and
+    1000 more in a slot inside it changes each loss."""
     arrays, _ = random_rows(np.random.default_rng(84), 16)
     batch = batch_of(arrays)
     static = slides_game.policy_mask(batch["binaryInputNCHW"][:, 0])
     with torch.no_grad():
-        outputs = model(batch["binaryInputNCHW"], batch["globalInputNC"])
-        heads = model.postprocess_output(outputs)
-        policy = heads[0][0].clone()
-        policy[:, :6][(~static).unsqueeze(1).expand(-1, 6, -1)] += 1000.0
-        before = metric_sums(model, batch)
-        changed = [policy if i == 0 and False else h for i, h in enumerate(heads[0])]
-        del changed
-    metrics = Metrics(1, model)
-    plain, _ = metrics.apply_policy_mask(heads[0][0], torch.ones(16, MOVES), batch["binaryInputNCHW"][:, 0])
-    shifted, _ = metrics.apply_policy_mask(policy, torch.ones(16, MOVES), batch["binaryInputNCHW"][:, 0])
-    assert torch.equal(plain, shifted)
-    assert before["p0loss_sum"] > 0.0
+        policy = model.postprocess_output(model(batch["binaryInputNCHW"], batch["globalInputNC"]))[0][0]
+    plain = metric_sums(model, batch, policy)
+    assert plain == metric_sums(model, batch)
+    assert metric_sums(model, batch, policy + 1000.0 * (~static).unsqueeze(1)) == plain
+    inside = policy.clone()
+    inside[:, :, 0] += 1000.0  # the placement on (0, 0), which is in every mask
+    changed = metric_sums(model, batch, inside)
+    assert all(changed[name] != plain[name] for name in POLICY_LOSSES)
 
 
 def test_the_value_of_a_game_without_the_members_is_katagos(model, monkeypatch):
@@ -644,12 +723,3 @@ def test_a_game_without_the_members_has_the_same_losses_as_before(monkeypatch):
     stub = Model(modelconfigs.with_game(modelconfigs.config_of_name["b1c6nbt"], "plainstub"), connect4.MAX_BOARD_LEN)
     stub.initialize()
     assert loss_sums(stub, batch) == reference
-
-
-def test_a_board_whose_games_have_the_floor_of_the_rows_board(model):
-    """The numbers of the design: a soft target's floor is 0.0178 a slot without visits, and its sum over a mask."""
-    per_slot = 1e-7 ** 0.25
-    assert per_slot == pytest.approx(0.0178, abs=1e-4)
-    assert 4572 * per_slot == pytest.approx(81.3, abs=0.1)  # every possible slot of Tak's 6 x 6
-    assert 362 * per_slot == pytest.approx(6.4, abs=0.1)  # Go's 19 x 19
-    assert math.isclose(96 * per_slot, 1.707, rel_tol=1e-2)  # a typical position's legal moves

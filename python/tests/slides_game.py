@@ -89,16 +89,11 @@ def policy_mask(on_board):
     channels = [on_board]
     for length in range(1, MAX_SLIDE + 1):
         for dx, dy in DIRECTIONS:
-            inside = on_board
-            for step in range(1, length + 1):
-                # The points whose step-th point in the direction is on the board.
-                shifted = torch.zeros_like(on_board)
-                ys = slice(max(0, -dy * step), size - max(0, dy * step))
-                xs = slice(max(0, -dx * step), size - max(0, dx * step))
-                y2 = slice(max(0, dy * step), size - max(0, -dy * step))
-                x2 = slice(max(0, dx * step), size - max(0, -dx * step))
-                shifted[:, ys, xs] = on_board[:, y2, x2]
-                inside = inside & shifted
-            channels.append(inside)
+            # The points whose point `length` steps on is on the board. The board is a square, so the path is on it too.
+            x, y = dx * length, dy * length
+            end = torch.zeros_like(on_board)
+            end[:, max(0, -y):size - max(0, y), max(0, -x):size - max(0, x)] = \
+                on_board[:, max(0, y):size - max(0, -y), max(0, x):size - max(0, -x)]
+            channels.append(on_board & end)
     moves = torch.stack(channels, dim=3).reshape(n, -1)
     return torch.cat((moves, torch.zeros((n, 1), dtype=torch.bool, device=moves.device)), dim=1)

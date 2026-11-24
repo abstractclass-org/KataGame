@@ -509,12 +509,12 @@ static void checkOptionalMembers() {
                     !GameInterface::drawsAsNoResult<stub::DrawsAsHalfWins>() &&
                     GameInterface::drawsAsNoResult<stub::DrawsAsNoResult>(),
                   "a draw is no result where the game says so");
-    //The classes of a game's endings: none by default, and no class. A game's own class reads the rules' end and the
-    //mover's side: the first player's win is the first player's class 0 and the second player's class 1.
     static_assert(!GameInterface::legalMovesInRows<E>() && !GameInterface::legalMovesInRows<stub::NoDrawMember>() &&
                     !GameInterface::legalMovesInRows<stub::NoLegalMovesInRows>() &&
                     GameInterface::legalMovesInRows<stub::LegalMovesInRows>(),
                   "Enclosure and the stub games have the legal moves in their rows only when they give it");
+    //The classes of a game's endings: none by default, and no class. A game's own class reads the rules' end and the
+    //mover's side: the first player's win is the first player's class 0 and the second player's class 1.
     static_assert(GameInterface::endingClasses<E>() == 0 && GameInterface::endingClasses<stub::NoDrawMember>() == 0 &&
                     GameInterface::endingClasses<stub::WithEndings>() == 2,
                   "a game has the ending classes that it gives");

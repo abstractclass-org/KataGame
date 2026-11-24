@@ -382,6 +382,14 @@ static void uniformPolicyTarget(int policySize, int16_t* target) {
 //(GameInterface::CanonicalActions), or none (NULL) in the rows before.
 typedef GameInterface::CanonicalActions<GameEncoding> RowLabels;
 
+//A move's index in the row's policy arrays: its policy index, and with labels that index in the network's frame of the
+//game's labels. The policy targets, the q-value targets and the legal moves (KataGame fork, abscls-shfz.9) share it.
+static int policyIndexOfMove(Loc loc, int policySize, int dataXLen, int dataYLen, int boardXSize, const RowLabels* labels) {
+  const int pos = NNPos::locToPos(loc, boardXSize, dataXLen, dataYLen);
+  testAssert(pos >= 0 && pos < policySize);
+  return labels == NULL ? pos : (*labels)(pos);
+}
+
 //Copy playouts into target, expanding out the sparse representation into a full plane.
 //KataGame fork (2026-10-29): with labels, each move at its index in the network's frame of the game's labels, where
 //the moves that give the same position up to the labels add up (a search lists one of them from V13).
@@ -390,27 +398,20 @@ static void fillPolicyTarget(const vector<PolicyTargetMove>& policyTargetMoves, 
   size_t size = policyTargetMoves.size();
   for(size_t i = 0; i<size; i++) {
     const PolicyTargetMove& move = policyTargetMoves[i];
-    int pos = NNPos::locToPos(move.loc, boardXSize, dataXLen, dataYLen);
-    testAssert(pos >= 0 && pos < policySize);
+    const int pos = policyIndexOfMove(move.loc, policySize, dataXLen, dataYLen, boardXSize, labels);
     if(labels == NULL)
       target[pos] = move.policyTarget;
-    else {
-      pos = (*labels)(pos);
+    else
       target[pos] = (int16_t)std::min(32767, (int)target[pos] + (int)move.policyTarget);
-    }
   }
 }
 
 //KataGame fork (abscls-shfz.9): the row's legal moves (TrainingWriteBuffers::legalMovesNMovePacked), a bit for each
-//policy index, at the indices where fillPolicyTarget puts the same moves. The rules' own list, not the board's cache of
-//it (Board::legalActions). It stops, with the row's name, at a position without legal moves and at a visited move of
-//the row's policy target (policyTarget, can be null) that is not legal, whose visits would silently drop from the loss.
+//policy index. The rules' own list, not the board's cache of it (Board::legalActions). It stops, with the row's name,
+//at a position without legal moves and at a visited move of the row's policy target (policyTarget, can be null) that
+//is not legal, whose visits would silently drop from the loss.
 static void fillLegalMoves(const Board& board, const vector<PolicyTargetMove>* policyTarget, int policySize, int dataXLen, int dataYLen, const RowLabels* labels, const string& rowName, uint8_t* bits) {
-  auto indexOf = [&](Loc loc) {
-    int pos = NNPos::locToPos(loc, board.x_size, dataXLen, dataYLen);
-    testAssert(pos >= 0 && pos < policySize);
-    return labels == NULL ? pos : (*labels)(pos);
-  };
+  auto indexOf = [&](Loc loc) { return policyIndexOfMove(loc, policySize, dataXLen, dataYLen, board.x_size, labels); };
   std::fill(bits, bits + (policySize + 7) / 8, (uint8_t)0);
   vector<int> legalActions;
   GameRules::legal_actions(board.pos, legalActions);
@@ -477,10 +478,7 @@ static void fillQValueTarget(const vector<QValueTargetMove>& whiteQValueTargets,
   size_t size = entries->size();
   for(size_t i = 0; i<size; i++) {
     const QValueTargetMove& entry = (*entries)[i];
-    int pos = NNPos::locToPos(entry.loc, boardXSize, dataXLen, dataYLen);
-    testAssert(pos >= 0 && pos < policySize);
-    if(labels != NULL)
-      pos = (*labels)(pos);
+    const int pos = policyIndexOfMove(entry.loc, policySize, dataXLen, dataYLen, boardXSize, labels);
 
     float winLoss = nextPlayer == P_WHITE ? entry.winLoss : -entry.winLoss;
     float score = nextPlayer == P_WHITE ? entry.score : -entry.score;

@@ -121,8 +121,7 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         moves alone, and the soft targets' floor too, but for the mover's on the rows that hold their
                         legal moves. A module gives it for a game with many slots that no position of a board can use.
                         The loader refuses a row whose legal moves or visited moves are not all in it. Default: none,
-                        and the softmax is on every slot of the board's points, as KataGo's (policy_mask below gives
-                        None).
+                        and the softmax is on every slot of the board's points, as KataGo's.
   legal_moves(binary_inputs, global_inputs)
                         the moves that the rows' inputs make legal (N, policy) as booleans, in the policy's order (the
                         point's index * POLICY_CHANNELS + the channel, then pass), from the rows as read (no symmetry).
@@ -239,12 +238,6 @@ def legal_moves_in_rows(game):
 def packed_policy_len(policy_len):
     """The bytes of a row's legal moves, a bit for each of the policy's policy_len moves (C++ packedPolicyLen)."""
     return (policy_len + 7) // 8
-
-
-def policy_mask(game, on_board):
-    """The game's policy_mask of the rows' on-board plane (N, y, x), or None for a game without it."""
-    mask = getattr(game, "policy_mask", None)
-    return None if mask is None else mask(on_board)
 
 
 def num_global_inputs(game, inputs_version):

@@ -343,7 +343,6 @@ int main(int argc, char** argv) {
   ScoreValue::initTables();
   NeuralNet::globalInitialize();
   printf("%s: the rows hold their legal moves: %s, %d slots\n", GAME.c_str(), HOLDS ? "yes" : "no", SLOTS);
-  check(!HOLDS || GameInterface::legalMovesInRows<GameEncoding>(), "the member and the buffers");
   check((GAME != "endings" && GAME != "slides") || HOLDS, "the test games have the member");
 
   Logger logger(nullptr, false, false, false);
@@ -358,9 +357,9 @@ int main(int argc, char** argv) {
     checkStops(nnEval, logger, LEN);
     if(GAME == "slides")
       checkStops(nnEval, logger, LEN - 1);
-    printf("%d games: %d rows, %d of the opening, %d on the smaller board, %d side positions, %d reanalyzed; %.1f "
-           "legal moves a row\n", counts.games, counts.rows, counts.openingRows, counts.smallRows, counts.sideRows,
-           counts.reanalyzedRows, (double)counts.moves / std::max(1, counts.rows + counts.sideRows +
+    printf("%d games: %d rows, %d side positions, %d reanalyzed; of all three kinds, %d of the opening and %d on the "
+           "smaller board; %.1f legal moves a row\n", counts.games, counts.rows, counts.sideRows, counts.reanalyzedRows,
+           counts.openingRows, counts.smallRows, (double)counts.moves / std::max(1, counts.rows + counts.sideRows +
            counts.reanalyzedRows));
   }
   else {

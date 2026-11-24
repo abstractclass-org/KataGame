@@ -393,9 +393,9 @@ struct TrainingWriteBuffers {
 
   //KataGame fork (abscls-shfz.9): the moves that the rules make legal in the row's position, a bit for each policy
   //index of policyTargetsNCMove, in the same frame (the labels of the inputs version 13), packed as
-  //binaryInputNCHWPacked is, zero-padded to a round byte. Only in a game that asks for it (HAS_LEGAL_MOVES): else it has one row, unused, and the
-  //file has no such array. A row has at least one bit, so that a row of 0 bits has no mask (the shuffle gives it to the
-  //rows of files without the array).
+  //binaryInputNCHWPacked is, zero-padded to a round byte. Only in a game that asks for it (HAS_LEGAL_MOVES): else it has
+  //one row, unused, and the file has no such array. A row has at least one bit, so that a row of 0 bits has no mask (the
+  //shuffle gives it to the rows of files without the array).
   NumpyBuffer<uint8_t> legalMovesNMovePacked;
 
   NumpyBuffer<float> metadataInputNC;

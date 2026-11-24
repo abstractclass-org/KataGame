@@ -82,6 +82,22 @@ def pad_value_targets_nchw(valueTargetsNCHW: np.ndarray) -> np.ndarray:
 # (shuffle.py has the same name), and the rows of a file that this reader reads without it.
 LEGAL_MOVES_ARRAY = "legalMovesNMovePacked"
 
+# The rows that check_policy_masks reads at a time: a row's moves are a byte each there, in about 6 arrays (28 MB at
+# 9,181 moves).
+CHECKED_ROWS_AT_A_TIME = 512
+
+def read_legal_moves(npz_file, npz, num_samples, moves):
+    """The rows' legal moves of the open file npz, packed (N, (moves + 7) // 8). A file without the array gives 0 bits:
+    a run's window can hold rows from before the game's LEGAL_MOVES_IN_ROWS. Refuses an array of another size."""
+    shape = (num_samples, games.packed_policy_len(moves))
+    if LEGAL_MOVES_ARRAY not in npz.files:
+        return np.zeros(shape, dtype=np.uint8)
+    packed = npz[LEGAL_MOVES_ARRAY]
+    if packed.dtype != np.uint8 or packed.shape != shape:
+        raise ValueError(f"{npz_file}: {LEGAL_MOVES_ARRAY} is {packed.dtype} of the shape {packed.shape}, not uint8 of "
+                         f"{shape}")
+    return packed
+
 def describe_row(npz_file, row, globalTargetsNC):
     """The row's name: the file, the row's index among those that this rank reads, and its turn (C51)."""
     return f"{npz_file}, row {row} (turn {int(globalTargetsNC[row, 51])} of its game)"
@@ -97,9 +113,8 @@ def check_policy_masks(npz_file, game, binaryInputNCHWPacked, policyTargetsNCMov
         return
     moves = policyTargetsNCMove.shape[2]
     size = game.MAX_BOARD_LEN
-    step = 4096  # rows at a time: a row's moves are a byte each here
-    for start in range(0, policyTargetsNCMove.shape[0], step):
-        part = slice(start, start + step)
+    for start in range(0, policyTargetsNCMove.shape[0], CHECKED_ROWS_AT_A_TIME):
+        part = slice(start, start + CHECKED_ROWS_AT_A_TIME)
         targets = globalTargetsNC[part]
         visited = [(policyTargetsNCMove[part, channel] > 0) & (targets[:, weight] != 0)[:, None]
                    for channel, weight in ((0, 26), (1, 28))]
@@ -225,19 +240,11 @@ def read_npz_training_data(
                 qValueTargetsNCMove = select_rank_rows(npz["qValueTargetsNCMove"])
             else:
                 qValueTargetsNCMove = None
-            # KataGame fork (abscls-shfz.9): the rows' legal moves, 0 bits in a file without the array: a run's window
-            # can hold rows from before the game's LEGAL_MOVES_IN_ROWS.
+            # KataGame fork (abscls-shfz.9): the rows' legal moves, for a game whose rows hold them.
             legalMovesPacked = None
             if include_legal_moves:
-                packed_len = games.packed_policy_len(policyTargetsNCMove.shape[2])
-                if LEGAL_MOVES_ARRAY in npz.files:
-                    legalMovesPacked = npz[LEGAL_MOVES_ARRAY]
-                    if legalMovesPacked.dtype != np.uint8 or legalMovesPacked.shape != (num_samples, packed_len):
-                        raise ValueError(f"{npz_file}: {LEGAL_MOVES_ARRAY} is {legalMovesPacked.dtype} of the shape "
-                                         f"{legalMovesPacked.shape}, not uint8 of {(num_samples, packed_len)}")
-                    legalMovesPacked = select_rank_rows(legalMovesPacked)
-                else:
-                    legalMovesPacked = np.zeros((used // world_size, packed_len), dtype=np.uint8)
+                legalMovesPacked = select_rank_rows(
+                    read_legal_moves(npz_file, npz, num_samples, policyTargetsNCMove.shape[2]))
             elif LEGAL_MOVES_ARRAY in npz.files:
                 raise ValueError(f"{npz_file}: the rows hold {LEGAL_MOVES_ARRAY}, and the trainer's module of the "
                                  f"game {game.NAME!r} does not give LEGAL_MOVES_IN_ROWS")
@@ -393,19 +400,22 @@ def finish_batch(game, inputs_version, symm, binaryInputNCHW, globalInputNC, pol
     return batch
 
 
-# KataGame fork (2026-11-02, abscls-xtoh): np.unpackbits(packed, axis=2), cut to the board's points, in torch, on the
-# packed rows' device: the planes (N, C, pos_len, pos_len) in float32 of the rows (N, C, (pos_len^2 + 7) // 8), whose
-# bytes hold their points' bits the highest first.
+# KataGame fork (2026-11-02, abscls-xtoh): np.unpackbits(packed, axis=-1) in torch, on the packed rows' device: the bits
+# of each byte, the highest first.
+def unpack_bits(packed):
+    shifts = 7 - torch.arange(8, dtype=torch.uint8, device=packed.device)
+    return torch.bitwise_right_shift(packed.unsqueeze(-1), shifts).bitwise_and_(1).flatten(-2)
+
+
 def unpack_legal_moves(packed, moves):
-    """The bits of packed rows (N, (moves + 7) // 8), the first the highest of its byte, as booleans (N, moves)."""
-    shifts = 7 - torch.arange(8, dtype=torch.uint8, device=packed.device)
-    bits = torch.bitwise_right_shift(packed.unsqueeze(-1), shifts).bitwise_and_(1).flatten(1)
-    return bits[:, :moves] > 0
+    """KataGame fork (abscls-shfz.9): the legal moves (N, moves), as booleans, of the packed rows (N, (moves + 7) // 8)."""
+    return unpack_bits(packed)[:, :moves] > 0
 
 
+# KataGame fork (2026-11-02, abscls-xtoh): the bits of the packed planes, cut to the board's points: the planes
+# (N, C, pos_len, pos_len) in float32 of the rows (N, C, (pos_len^2 + 7) // 8).
 def unpack_binary_inputs(packed, pos_len):
-    shifts = 7 - torch.arange(8, dtype=torch.uint8, device=packed.device)
-    bits = torch.bitwise_right_shift(packed.unsqueeze(-1), shifts).bitwise_and_(1).flatten(2)
+    bits = unpack_bits(packed)
     # The cast to float32 makes a contiguous tensor, also from a cut that is not contiguous, so the view needs no copy.
     return bits[:, :, :pos_len * pos_len].to(torch.float32).view(packed.shape[0], packed.shape[1], pos_len, pos_len)
 
