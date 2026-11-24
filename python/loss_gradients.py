@@ -75,7 +75,14 @@ def groups(version, scales, coefficients):
         ("C5-6 income slot", [("iloss_sum", 1.0)]),
         ("regret", [("rgloss_sum", 1.0), ("rkloss_sum", 1.0), ("swloss_sum", 1.0), ("swkloss_sum", 1.0)]),
         ("AZdb intrinsic", [("intaloss_sum", value), ("intbloss_sum", value)]),
+        ("how the game ends", [("endloss_sum", coefficients["ending"])]),  # a model with the ending head
     ]
+
+
+def terms(results, version, scales, coefficients):
+    """The groups that the metrics' results hold, each with its term of loss_sum: [(name, term)]."""
+    return [(name, sum(results[k] * scale for k, scale in parts))
+            for name, parts in groups(version, scales, coefficients) if all(k in results for k, _ in parts)]
 
 
 def parse_settings(text, known, what):
@@ -147,15 +154,14 @@ def measure(model, metrics, batch, scales, lr=0.00003, momentum=0.9, head_lr_fac
         model, model.postprocess_output(outputs)[0], batch, is_training=False, disable_optimistic_policy=False,
         meta_kata_only_soft_policy=False, is_intermediate=True, **scales,
     )
-    terms = [(name, sum(results[k] * scale for k, scale in parts))
-             for name, parts in groups(model.config["version"], scales, metrics.loss_coefficients)]
-    total = sum(t for _, t in terms)
+    group_terms = terms(results, model.config["version"], scales, metrics.loss_coefficients)
+    total = sum(t for _, t in group_terms)
     assert torch.isclose(total, results["loss_sum"], rtol=1e-4, atol=1e-4), (float(total), float(results["loss_sum"]))
 
     # Each group's loss per row, the norm of its gradient on the trunk's output, and its gradients on the trunk's
     # parameters and the heads' (zeros where it does not reach).
     measured = []
-    for name, term in terms + [("all", total)]:
+    for name, term in group_terms + [("all", total)]:
         loss = float(term.detach() if torch.is_tensor(term) else term) / rows
         if not torch.is_tensor(term) or not term.requires_grad:
             measured.append((name, loss, 0.0, [torch.zeros_like(p) for p in trunk], [torch.zeros_like(p) for p in heads]))

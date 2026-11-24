@@ -1,6 +1,7 @@
 #pragma once
 // A game of the tests, not of the game layer (GAMES.md, "A game of the tests"): the rules part of a small game with
-// every kind of ending, for the optional members that no game of game/ builds with yet (game_end, DRAWS_AS_NO_RESULT).
+// every kind of ending, for the optional members that no game of game/ builds with yet (game_end, DRAWS_AS_NO_RESULT,
+// ENDING_CLASSES).
 //
 // The board is 4 x 4. A move puts the mover's piece on an empty point, and the players alternate. Pass is never legal.
 // - A full row or column of one player's pieces wins for that player, whatever the score (LINE).
@@ -31,6 +32,33 @@ struct Position {
   }
 };
 
+// The player with a full row or column, or -1.
+inline int line_winner(const Position& p) {
+  for(int i = 0; i < LEN; i++) {
+    const int row = p.cell[i * LEN], column = p.cell[i];
+    bool isRow = row >= 0, isColumn = column >= 0;
+    for(int j = 1; j < LEN; j++) {
+      isRow = isRow && p.cell[i * LEN + j] == row;
+      isColumn = isColumn && p.cell[j * LEN + i] == column;
+    }
+    if(isRow)
+      return row;
+    if(isColumn)
+      return column;
+  }
+  return -1;
+}
+// Whether the point is on a full row or column of one player's pieces.
+inline bool on_line(const Position& p, int point) {
+  const int x = point % LEN, y = point / LEN, owner = p.cell[point];
+  bool isRow = owner >= 0, isColumn = owner >= 0;
+  for(int j = 0; j < LEN; j++) {
+    isRow = isRow && p.cell[y * LEN + j] == owner;
+    isColumn = isColumn && p.cell[j * LEN + x] == owner;
+  }
+  return isRow || isColumn;
+}
+
 struct GameRules {
   static constexpr const char* NAME = "endings";
   using Position = endings::Position;
@@ -48,22 +76,6 @@ struct GameRules {
   static int turn_moves_left(const Position&) { return 1; }
   static int moves_played(const Position& p) { return p.moves; }
 
-  // The player with a full row or column, or -1.
-  static int line_winner(const Position& p) {
-    for(int i = 0; i < LEN; i++) {
-      const int row = p.cell[i * LEN], column = p.cell[i];
-      bool isRow = row >= 0, isColumn = column >= 0;
-      for(int j = 1; j < LEN; j++) {
-        isRow = isRow && p.cell[i * LEN + j] == row;
-        isColumn = isColumn && p.cell[j * LEN + i] == column;
-      }
-      if(isRow)
-        return row;
-      if(isColumn)
-        return column;
-    }
-    return -1;
-  }
   static bool terminal(const Position& p) {
     return line_winner(p) >= 0 || p.moves == POINTS || (p.moves >= CORNER_MOVES && p.cell[0] < 0);
   }

@@ -373,8 +373,9 @@ def test_a_module_that_sets_an_unknown_loss_coefficient_is_refused(monkeypatch):
 
 
 # KataGo's ownership 1.5, scoring slot 0.25 and future positions 0.25, Enclosure's 1 for the seki slot and 1.5 for the
-# income slot (games.LOSS_COEFFICIENTS).
-DEFAULT_COEFFICIENTS = {"ownership": 1.5, "seki": 1.0, "income": 1.5, "scoring": 0.25, "futurepos": 0.25}
+# income slot, and 0.25 for the ending head, which these games do not have (games.LOSS_COEFFICIENTS).
+DEFAULT_COEFFICIENTS = {"ownership": 1.5, "seki": 1.0, "income": 1.5, "scoring": 0.25, "futurepos": 0.25,
+                        "ending": 0.25}
 
 
 def test_every_game_has_katagos_and_enclosures_coefficients_and_blueprints_reads_361_hexes():

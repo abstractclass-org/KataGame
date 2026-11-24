@@ -269,6 +269,8 @@ struct TrainingWriteBuffers {
 
   //C26: Weight assigned to the policy target
   //C27: Weight assigned to the final board ownership target and score distr targets. Most training rows will have this be 1, some will be 0.
+  //     KataGame fork: in a game with ending classes (GameInterface: ENDING_CLASSES) it is also 0 on the rows of a game
+  //     that its rules did not end by the score (another ending, the move cap), and set on those of a tied score.
   //C28: Weight assigned to the next move policy target
   //C29: Weight assigned to the lead target
   //C30: Policy Surprise (for statistical purposes)
@@ -323,8 +325,9 @@ struct TrainingWriteBuffers {
   //probability of this position being selected for reanalysis, recorded for statistical purposes.
   //C67: If C64, the number of visits of the original cheap search (the reanalysis search's visits are in C60).
   //C68: Enclosure fork: 1 if valueTargetsNCHW C1 holds the game's target (GameInterface::TARGET_SEKI, Enclosure's
-  //cut-edge target). Rows before 2026-10-03 have 0: no target. In rows with C27 0, KataGo's flag of the pass-alive
-  //mode (BoardHistoryModes), which C27 cancels.
+  //cut-edge target). Rows before 2026-10-03 have 0: no target. In rows with no target of the game's own, KataGo's flag
+  //of the pass-alive mode (BoardHistoryModes), which C27, 0 there, cancels. A game with ending classes has 0 in them,
+  //as its C27 does not weigh C1.
   //C69: Enclosure fork: 1 if valueTargetsNCHW C5-6 hold the game's target (GameInterface::TARGET_INCOME, Enclosure's
   //territory income). 0 in rows written before it, which the shuffle pads to 7 channels, and in rows with no turn end
   //left.
@@ -340,6 +343,9 @@ struct TrainingWriteBuffers {
   //move, and in rows written before it, which the shuffle pads to 8 channels).
   //C76-79: KataGame fork: the game's own global targets (GameInterface::TargetValues), 0 where the game writes none.
   //Blueprints: C76 who makes the next move (+1 the mover, -1 the opponent, 0 none), C77 the version of its targets.
+  //In a game with ending classes (GameInterface: ENDING_CLASSES), the front's: C76 the class of the game's ending in
+  //the view of the player to move, C77 its weight, the value's weight on each row of a game that its rules ended, else 0
+  //(the move cap, a side position, a reanalyzed row without the game's outcome).
   //C80-83: KataGame fork (2026-10-29), in the rows of the inputs version 14 only (numGlobalTargetChannels): AZdb's
   //targets of the intrinsic value head (program/azdb.h, rowTargets): output A's target, its weight, output B's target,
   //its weight. The rows of earlier versions end at C79, as before.

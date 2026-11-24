@@ -18,11 +18,17 @@
 //    draw is worth half a win.
 // 4. Self-play: a game's value targets (the last one is the result) and its rows (C0-2, C20, C27, C52 and C62), for games
 //    that end by their rules and for games at the move cap, with RGSC's outcome of each (Rgsc::gameOutcome).
+// 5. The targets of one ending (GameInterface::endingClasses), in the same rows: which rows hold the score's targets
+//    (C27), the game's own (C33, C34, C68, C69 and the spatial slots) and the ending (G76, G77), for each kind of
+//    ending, at the cap, in side positions and in reanalyzed rows without the game's outcome. A game without ending
+//    classes keeps KataGo's C27. The test game has them, and the test computes each of its targets from the game's
+//    boards.
 //
 // Prints each failure and the counts of the endings. Exits 1 on a failure.
 
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -55,6 +61,7 @@ static void check(bool ok, const string& what) {
 
 static constexpr bool OWN_END = GameInterface::hasGameEnd<GameRules>();
 static constexpr bool DRAW_CLASS = GameInterface::drawsAsNoResult<GameEncoding>();
+static constexpr bool ENDINGS = GameInterface::endingClasses<GameEncoding>() > 0;
 static const bool TEST_GAME = string(GameRules::NAME) == "endings";
 
 //KataGo's rule: White's minus Black's score with komi, and the winner by its sign.
@@ -335,7 +342,114 @@ static void checkSearch(NNEvaluator* nnEval, Logger& logger, int games, Ends& en
 
 struct RowCounts {
   int rows = 0, capRows = 0, drawRows = 0;
+  int sideRows = 0, reanalyzedRows = 0;  //the rows that do not hold the game's outcome
+  map<int, int> endings;                 //the rows of each ending's class
 };
+
+//The class of the test game's ending for the row's mover: its line, the opponent's line, its count, the opponent's
+//count, a tie of the count, a draw by the corner.
+static int expectedClass(const Expected& e, Player mover) {
+  switch(e.kind) {
+  case LINE: return e.winner == mover ? 0 : 1;
+  case COUNT: return e.winner == mover ? 2 : 3;
+  case COUNT_TIE: return 4;
+  default: return 5;
+  }
+}
+
+//A row's score distribution: its bins sum to 100, and their mean is the score, 0 without a score's target.
+static void checkScoreDistribution(const TrainingWriteBuffers& b, int64_t r, double score, const string& row) {
+  const int64_t len = b.scoreDistrN.shape[1];
+  const int8_t* s = b.scoreDistrN.data + r * len;
+  int sum = 0;
+  double mean = 0.0;
+  for(int64_t i = 0; i < len; i++) {
+    sum += s[i];
+    mean += s[i] * ((double)(i - len / 2) + 0.5) * NNPos::SCORE_SCALE / 100.0;
+  }
+  check(sum == 100, row + ": the score distribution sums to " + to_string(sum));
+  check(std::fabs(mean - score) < 1e-6, row + ": the score distribution's mean " + to_string(mean));
+}
+
+//The test game's targets of a row of a game, from the game's boards: boards[turn] is the row's, and the last one is the
+//game's end, or its position at the cap.
+static void checkEndingTargets(const TrainingWriteBuffers& b, int64_t r, const FinishedGameData& data,
+                               const vector<Board>& boards, int turn, Player mover, RowCounts& counts,
+                               const string& where) {
+  const float* c = b.globalTargetsNC.data + r * b.globalTargetsNC.shape[1];
+  const bool ended = !data.hitTurnLimit;
+  const Expected e = expectedEnd(boards.back(), data.endHist.rules.komi);
+  const bool line = ended && e.kind == LINE, count = ended && (e.kind == COUNT || e.kind == COUNT_TIE);
+  const bool reply = turn + 2 < (int)boards.size();
+  const double score = count ? (mover == P_WHITE ? e.margin : -e.margin) : 0.0;
+  const string row = where + (ended ? ", of a game that ended by " + endName(e) : ", of a game at the cap");
+  check(c[27] == (count ? 1.0f : 0.0f), row + ": C27 " + to_string(c[27]));
+  check(std::fabs(c[20] - score) < 1e-6, row + ": C20 " + to_string(c[20]));
+  checkScoreDistribution(b, r, score, row);
+  check(c[34] == (line ? 1.0f : 0.0f), row + ": C34 " + to_string(c[34]));
+  check(c[33] == 1.0f, row + ": C33 " + to_string(c[33]));
+  check(c[68] == (ended ? 1.0f : 0.0f), row + ": C68 " + to_string(c[68]));
+  check(c[69] == (reply ? 1.0f : 0.0f), row + ": C69 " + to_string(c[69]));
+  const int endingClass = expectedClass(e, mover);
+  check(c[76] == (ended ? (float)endingClass : 0.0f), row + ": G76 " + to_string(c[76]));
+  check(c[77] == (ended ? 1.0f : 0.0f), row + ": G77 " + to_string(c[77]));
+  if(ended)
+    counts.endings[endingClass]++;
+
+  const int n = boards.back().x_size, area = n * n;
+  const int8_t* v = b.valueTargetsNCHW.data + r * b.valueTargetsNCHW.shape[1] * area;
+  auto side = [&](const Board& board, int x, int y) {
+    const Color color = board.colors[Location::getLoc(x, y, n)];
+    return color == C_EMPTY ? 0 : color == mover ? 1 : -1;
+  };
+  const int last = (int)boards.size() - 1, winnerSide = e.winner == mover ? 1 : -1;
+  vector<string> bad(8);
+  for(int y = 0; y < n; y++)
+    for(int x = 0; x < n; x++) {
+      int inRow = 0, inColumn = 0;  //the line winner's pieces in the point's row and column
+      for(int j = 0; line && j < n; j++) {
+        inRow += side(boards.back(), j, y) == winnerSide;
+        inColumn += side(boards.back(), x, j) == winnerSide;
+      }
+      const int now = side(boards[turn], x, y), end = side(boards.back(), x, y);
+      const int expected[8] = {
+        count ? 120 * end : 0,
+        !ended ? 0 : now != 0 ? 2 : end,
+        side(boards[std::min(turn + 2, last)], x, y),
+        side(boards[std::min(turn + 4, last)], x, y),
+        inRow == n || inColumn == n ? 120 * end : 0,
+        reply && side(boards[turn + 1], x, y) != now ? 120 : 0,
+        reply && side(boards[turn + 2], x, y) != side(boards[turn + 1], x, y) ? 120 : 0,
+        0};
+      for(int i = 0; i < 8; i++)
+        if(v[i * area + y * n + x] != expected[i])
+          bad[i] = to_string(v[i * area + y * n + x]) + " in place of " + to_string(expected[i]) + " at " +
+            to_string(x) + "," + to_string(y);
+    }
+  for(int i = 0; i < 8; i++)
+    check(bad[i].empty(), row + ": the slot C" + to_string(i) + " holds " + bad[i]);
+}
+
+//The rows that do not hold the game's outcome: a side position's, and a reanalyzed one's that leaves it out. They hold
+//no target but the policy's and the values'.
+static void checkRowsWithoutOutcome(const TrainingWriteBuffers& b, int& rows, const string& where) {
+  for(int64_t r = 0; r < b.curRows; r++) {
+    const float* c = b.globalTargetsNC.data + r * b.globalTargetsNC.shape[1];
+    const string row = where + ", row " + to_string(r);
+    for(const int i : {20, 27, 33, 34, 69, 76, 77})
+      check(c[i] == 0.0f, row + ": C" + to_string(i) + " " + to_string(c[i]));
+    //KataGo's flag of the pass-alive mode, which is on in these games (checkSelfplay). C27 cancels it, but not in a
+    //game with ending classes, where C68 is C1's flag alone.
+    check(c[68] == (ENDINGS ? 0.0f : 1.0f), row + ": C68 " + to_string(c[68]));
+    checkScoreDistribution(b, r, 0.0, row);
+    const int64_t size = b.valueTargetsNCHW.shape[1] * b.valueTargetsNCHW.shape[2] * b.valueTargetsNCHW.shape[3];
+    bool empty = true;
+    for(int64_t i = 0; i < size; i++)
+      empty = empty && b.valueTargetsNCHW.data[r * size + i] == 0;
+    check(empty, row + ": a spatial target");
+    rows++;
+  }
+}
 
 //A game's rows: the final result (C0-2, in the mover's view), the score target and its weight (C20, C27), and the flags
 //of the move cap and of a finished game (C52, C62).
@@ -343,10 +457,16 @@ static void checkRows(const TrainingWriteBuffers& b, const FinishedGameData& dat
                       RowCounts& counts, const string& where) {
   const int64_t n = b.globalTargetsNC.shape[1];
   const bool capped = data.hitTurnLimit;
-  //The mover's side of each turn of the game.
+  //The mover's side of each turn of the game, and its boards from its first row on.
   vector<Player> movers;
   for(const Move& m : data.endHist.moveHistory)
     movers.push_back(m.pla);
+  const int startTurn = (int)data.startHist.moveHistory.size();
+  vector<Board> boards = {data.startBoard};
+  for(size_t t = startTurn; t < movers.size(); t++) {
+    boards.push_back(boards.back());
+    boards.back().playMoveAssumeLegal(data.endHist.moveHistory[t].loc, movers[t]);
+  }
   for(int64_t r = 0; r < b.curRows; r++) {
     const float* c = b.globalTargetsNC.data + r * n;
     const int turn = (int)c[51];
@@ -356,8 +476,12 @@ static void checkRows(const TrainingWriteBuffers& b, const FinishedGameData& dat
           row + ": the result " + to_string(c[0]) + ", " + to_string(c[1]) + ", " + to_string(c[2]));
     check(std::fabs(c[0] + c[1] + c[2] - 1.0f) < 1e-6f, row + ": the result does not sum to 1");
     const bool noResult = data.endHist.isNoResult;
-    check(c[27] == (noResult ? 0.0f : 1.0f), row + ": C27 " + to_string(c[27]));
-    check(c[20] == (noResult ? 0.0f : white ? last.score : -last.score), row + ": C20 " + to_string(c[20]));
+    if(TEST_GAME)
+      checkEndingTargets(b, r, data, boards, turn - startTurn, movers.at(turn), counts, row);
+    else {
+      check(c[27] == (noResult ? 0.0f : 1.0f), row + ": C27 " + to_string(c[27]));
+      check(c[20] == (noResult ? 0.0f : white ? last.score : -last.score), row + ": C20 " + to_string(c[20]));
+    }
     check(c[52] == (capped ? 1.0f : 0.0f) && c[62] == (capped ? 0.0f : 1.0f), row + ": C52 and C62");
     check(c[70] == 0.0f && c[71] == 0.0f, row + ": a regret target without RGSC");
     counts.rows++;
@@ -375,8 +499,10 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& 
   botSpec.baseParams.chosenMoveTemperature = 1.0;
   botSpec.baseParams.chosenMoveTemperatureEarly = 1.0;
   botSpec.baseParams.rootNoiseEnabled = true;
+  botSpec.baseParams.alwaysComputePassAliveUnderSuicideRules = enabled_t::True;  //KataGo's C68
   PlaySettings playSettings;
   playSettings.forSelfPlay = true;
+  playSettings.sidePositionProb = 0.2;
   const int len = NNPos::MAX_BOARD_LEN;
   const int inputsVersion = NNModelVersion::getInputsVersion(NNModelVersion::defaultModelVersion);
   RowCounts counts;
@@ -437,18 +563,50 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& 
       check(last.score == 0.0f, where + ": the score target of a draw");
     else if(winner != C_EMPTY)
       check(std::fabs(last.score - margin) < 1e-4, where + ": the score target " + to_string(last.score));
-    ostream nowhere(nullptr);  //the rows are read in memory (beforeWrite)
-    TrainingDataWriter writer(&nowhere, inputsVersion, 4096, 1.0, len, len, 1, "testgameends writer");
-    writer.beforeWrite = [&](const TrainingWriteBuffers& b) { checkRows(b, *data, last, counts, where); };
-    writer.writeGame(*data);
-    writer.flushIfNonempty();
+    auto write = [&](const function<void(const TrainingWriteBuffers&)>& checkWritten) {
+      ostream nowhere(nullptr);  //the rows are read in memory (beforeWrite)
+      TrainingDataWriter writer(&nowhere, inputsVersion, 4096, 1.0, len, len, 1, "testgameends writer");
+      writer.beforeWrite = checkWritten;
+      writer.writeGame(*data);
+      writer.flushIfNonempty();
+    };
+    //The game's own rows, its side positions' alone, and its own rows again as reanalyzed without the outcome.
+    vector<SidePosition*> sidePositions;
+    sidePositions.swap(data->sidePositions);
+    write([&](const TrainingWriteBuffers& b) { checkRows(b, *data, last, counts, where); });
+    const vector<float> weights = data->targetWeightByTurn;
+    data->targetWeightByTurn.assign(weights.size(), 0.0f);
+    data->sidePositions.swap(sidePositions);
+    write([&](const TrainingWriteBuffers& b) {
+      checkRowsWithoutOutcome(b, counts.sideRows, where + ", a side position");
+    });
+    data->sidePositions.swap(sidePositions);
+    data->targetWeightByTurn = weights;
+    ReanalysisData reanalyzed;
+    reanalyzed.wasReanalyzed = true;
+    reanalyzed.usedOutcomeTargets = false;
+    data->reanalysisByTurn.assign(weights.size(), reanalyzed);
+    write([&](const TrainingWriteBuffers& b) {
+      checkRowsWithoutOutcome(b, counts.reanalyzedRows, where + ", reanalyzed");
+    });
+    data->sidePositions.swap(sidePositions);
     delete data;
   }
   check(counts.rows > 0 && counts.capRows > 0, "the rows: none, or none of a game at the cap");
+  check(counts.reanalyzedRows > 0, "the rows: none reanalyzed");
   if(TEST_GAME)
-    check(counts.drawRows > 0, "the rows: none of a draw");
+    check(counts.drawRows > 0 && counts.sideRows > 0 && counts.endings.size() == 6,
+          "the rows: none of a draw, none of a side position, or not every ending's class");
   printf("self-play: %d games, %d at the cap; %d rows, %d of them at the cap, %d of a draw as no result\n", games, capped,
          counts.rows, counts.capRows, counts.drawRows);
+  printf("  the rows without the game's outcome: %d of side positions, %d reanalyzed\n", counts.sideRows,
+         counts.reanalyzedRows);
+  if(!counts.endings.empty()) {
+    printf("  the rows' endings:");
+    for(const auto& [endingClass, n] : counts.endings)
+      printf(" class %d %d;", endingClass, n);
+    printf("\n");
+  }
 }
 
 static void printEnds(const char* where, const Ends& ends) {
@@ -462,8 +620,9 @@ int main() {
   Board::initHash();
   ScoreValue::initTables();
   NeuralNet::globalInitialize();
-  printf("%s: the rules' end %s, draws as a class %s\n", GameRules::NAME, OWN_END ? "yes" : "no", DRAW_CLASS ? "yes" : "no");
-  check(!TEST_GAME || (OWN_END && DRAW_CLASS), "the test game has both members");
+  printf("%s: the rules' end %s, draws as a class %s, ending classes %d\n", GameRules::NAME, OWN_END ? "yes" : "no",
+         DRAW_CLASS ? "yes" : "no", GameInterface::endingClasses<GameEncoding>());
+  check(!TEST_GAME || (OWN_END && DRAW_CLASS && ENDINGS), "the test game has the members");
 
   Ends historyEnds, searchEnds, selfplayEnds;
   checkHistory(TEST_GAME ? 4000 : 20, historyEnds);

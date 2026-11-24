@@ -874,28 +874,27 @@ void TrainingWriteBuffers::addRow(
   constexpr unsigned frontTargets = GameEncoding::TARGETS & GameInterface::FRONT_TARGETS & ~ownTargets;
   unsigned gameTargets = 0;
   std::fill(rowOwnership, rowOwnership + VALUE_SPATIAL_TARGET_NUM_CHANNELS * posArea, (int8_t)0);
-  if(finalOwnership == NULL || (actualGameEndHist.isGameFinished && actualGameEndHist.isNoResult)) {
-    rowGlobal[27] = 0.0f;
-    rowGlobal[20] = 0.0f;
+  //KataGame fork (abscls-shfz.8): the row's targets of the game's outcome. KataGo's rule: the score's targets and the
+  //game's own come together, on the rows with the game's end, and a no result has none. In a game with ending classes
+  //(GameInterface: ENDING_CLASSES) a drawn game's rows hold the game's own targets too, and the score's targets are on
+  //the rows of a game that its rules ended by the score alone.
+  constexpr int numEndingClasses = GameInterface::endingClasses<GameEncoding>();
+  const GameInterface::GameEnd& rulesEnd = actualGameEndHist.rulesEnd;
+  const bool endedByRules = actualGameEndHist.isGameFinished && rulesEnd.kind >= 0;
+  const bool isNoResult = actualGameEndHist.isGameFinished && actualGameEndHist.isNoResult;
+  const bool hasGameTargets = finalOwnership != NULL && (numEndingClasses > 0 || !isNoResult);
+  const bool hasScoreTargets = hasGameTargets && (numEndingClasses == 0 || (endedByRules && rulesEnd.scored));
+  if(!hasGameTargets) {
     rowGlobal[69] = 0.0f;  //KataGame fork: no game targets either
-    for(int i = 0; i<scoreDistrLen; i++)
-      rowScoreDistr[i] = 0;
-    //Dummy value, to make sure it still sums to 100
-    rowScoreDistr[scoreDistrMid-1] = 50;
-    rowScoreDistr[scoreDistrMid] = 50;
+    //The trainer weighs C1 by C68 without C27 in a game with ending classes, so KataGo's mode flag goes too.
+    if(numEndingClasses > 0)
+      rowGlobal[68] = 0.0f;
   }
   else {
     testAssert(finalFullArea != NULL);
     testAssert(finalBoard != NULL);
     //KataGame fork: KataGo's final scoring of Go is no game's target (C4 is the game's own).
     (void)finalWhiteScoring;
-
-    //Ownership weight scales by value weight
-    rowGlobal[27] = valueTargetWeight;
-    //Fill score info
-    const ValueTargets& lastTargets = whiteValueTargets[whiteValueTargets.size()-1];
-    float score = nextPlayer == P_WHITE ? lastTargets.score : -lastTargets.score;
-    rowGlobal[20] = score;
 
     //KataGame fork: the game's own targets (GameInterface::ownTargets: Enclosure's C0-1, C4 and C5-6), from the
     //game's positions from this row on (posHistForFutureBoards, one move apart), and its global targets C76-79.
@@ -931,7 +930,37 @@ void TrainingWriteBuffers::addRow(
           values[GameInterface::TargetValues::NUM_CHANNELS * boardArea + i];
       rowGlobal[68] = (gameTargets & GameInterface::TARGET_SEKI) ? 1.0f : 0.0f;
       rowGlobal[69] = (gameTargets & GameInterface::TARGET_INCOME) ? 1.0f : 0.0f;
+      if(numEndingClasses > 0) {
+        //The ending and its weight. C27 weighs the game's C0 with the score's targets, so C0 is on the same rows.
+        testAssert(rowGlobal[GameInterface::TargetValues::ENDING_CLASS] == 0.0f &&
+                   rowGlobal[GameInterface::TargetValues::ENDING_WEIGHT] == 0.0f);
+        testAssert((ownTargets & GameInterface::TARGET_OWNERSHIP) == 0 ||
+                   ((gameTargets & GameInterface::TARGET_OWNERSHIP) != 0) == hasScoreTargets);
+        if(endedByRules) {
+          const int endingClass = GameInterface::endingClass<GameEncoding>(rulesEnd, Board::indexOfPlayer(nextPlayer));
+          testAssert(endingClass >= 0 && endingClass < numEndingClasses);
+          rowGlobal[GameInterface::TargetValues::ENDING_CLASS] = (float)endingClass;
+          rowGlobal[GameInterface::TargetValues::ENDING_WEIGHT] = valueTargetWeight;
+        }
+      }
     }
+  }
+  if(!hasScoreTargets) {
+    rowGlobal[27] = 0.0f;
+    rowGlobal[20] = 0.0f;
+    for(int i = 0; i<scoreDistrLen; i++)
+      rowScoreDistr[i] = 0;
+    //Dummy value, to make sure it still sums to 100
+    rowScoreDistr[scoreDistrMid-1] = 50;
+    rowScoreDistr[scoreDistrMid] = 50;
+  }
+  else {
+    //Ownership weight scales by value weight
+    rowGlobal[27] = valueTargetWeight;
+    //Fill score info
+    const ValueTargets& lastTargets = whiteValueTargets[whiteValueTargets.size()-1];
+    float score = nextPlayer == P_WHITE ? lastTargets.score : -lastTargets.score;
+    rowGlobal[20] = score;
     //Fill score vector "onehot"-like
     //Enclosure fork (D1): bins SCORE_SCALE points wide; in bin units the split between the two nearest bin
     //centres is KataGo's.

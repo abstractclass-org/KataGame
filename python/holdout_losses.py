@@ -11,8 +11,9 @@ JSON object for both:
 - Each of the trainer's losses (metrics_pytorch, at train.py's default loss scales) as its mean over the rows that hold
   its target, as enclosure_checkpoint_losses.py divides them: p0loss over the weight C26, p1loss over C28, vloss and
   the score's losses over the rows, oloss over C27, the spatial targets' losses over their own weights (fploss C33,
-  sloss C34, skloss C27 x C68, iloss C27 x C69), and the intrinsic value head's intaloss and intbloss over C81 and
-  C83. The trainer's logs divide each loss by all rows, so a loss of a target that few rows hold reads low there.
+  sloss C34, skloss C27 x C68, iloss C27 x C69, the value's weight in place of C27 in a game with ENDING_CLASSES), the
+  intrinsic value head's intaloss and intbloss over C81 and C83, and the ending head's endloss over G77. The trainer's
+  logs divide each loss by all rows, so a loss of a target that few rows hold reads low there.
 - pacc1: the share of the rows with a policy target (C26) whose policy's top move is the target's top move.
 - illegal: the policy's mean mass on the moves that the row's inputs do not make legal (games.legal_moves), over the
   rows with a policy target. The search never plays such a move, so a network that puts mass there misreads the
@@ -44,7 +45,7 @@ from katago.train.metrics_pytorch import Metrics
 LOSSES = {
     "p0loss": "p0w", "p1loss": "p1w", "vloss": "wsum", "tdvloss1": "wsum", "tdvloss2": "wsum", "tdvloss3": "wsum",
     "oloss": "ow", "sloss": "sw_sum", "fploss": "fpw_sum", "skloss": "skw_sum", "iloss": "iw_sum", "smloss": "ow",
-    "leadloss": "leadw", "intaloss": "intarows_sum", "intbloss": "intbrows_sum", "loss": "wsum",
+    "leadloss": "leadw", "intaloss": "intarows_sum", "intbloss": "intbrows_sum", "endloss": "endw_sum", "loss": "wsum",
 }
 
 

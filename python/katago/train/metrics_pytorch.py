@@ -57,6 +57,9 @@ class Metrics:
         # KataGame fork: the area that the spatial losses read where KataGo reads the board's area (katago/train/games:
         # LOSS_AREA), None for the row's on-board points.
         self.loss_area = games.loss_area(game)
+        # KataGame fork (abscls-shfz.8): the classes of the game's endings (katago/train/games: ENDING_CLASSES), 0 for a
+        # game whose rows keep KataGo's C27.
+        self.ending_classes = games.ending_classes(game)
         self.value_len = 3
         self.num_td_values = 3
         self.num_futurepos_values = 2
@@ -115,6 +118,12 @@ class Metrics:
         assert target_probs.shape == pred_logits.shape
         loss = cross_entropy(pred_logits, target_probs, dim=1)
         return 0.15 * global_weight * weight * loss
+
+    def score_surprise(self, stdevs_excess, score_weight):
+        # KataGo's term of the optimistic policies' weights for a score of around 1.5 sigma more than expected. KataGame
+        # fork (abscls-shfz.8): in a game with classes of endings, only on the rows with a score's target (C27).
+        surprise = torch.sigmoid((stdevs_excess - 1.5) * 3.0)
+        return surprise * (score_weight > 0).to(surprise.dtype) if self.ending_classes > 0 else surprise
 
     def loss_qvalues_samplewise(self, pred_wl_pretanh, pred_score_prescaled, target_wl, target_score, target_visits, global_weight):
         n = pred_wl_pretanh.shape[0]
@@ -244,6 +253,12 @@ class Metrics:
         # KataGame fork (2026-10-29): AZdb's intrinsic value head, the paper's squared error against the N-step return
         # (the rows' C80-83), weighted as the value's loss: its 1.20 here, and value_loss_scale in the sum.
         return 1.20 * global_weight * weight * torch.square(pred - target)
+
+    def loss_ending_samplewise(self, pred_logits, target_class, weight, global_weight):
+        # KataGame fork (abscls-shfz.8): the ending head, the cross-entropy of the game's ending in the mover's view
+        # (the rows' G76, its weight G77). loss_sum multiplies the game's coefficient (games.LOSS_COEFFICIENTS: ending).
+        assert pred_logits.shape == (target_class.shape[0], self.ending_classes)
+        return global_weight * weight * torch.nn.functional.cross_entropy(pred_logits, target_class, reduction="none")
 
     def loss_regret_ranking(self, pred_ranking, target_regret, weight, global_weight, group_size: int = 32):
         # Enclosure fork (owner, 2026-10-04): RGSC's ranking loss as the authors' code computes it
@@ -698,6 +713,7 @@ class Metrics:
             pred_swing,
             pred_swing_ranking,
             pred_intrinsic,
+            ending_logits,
         ) = model_output_postprocessed
 
         input_binary_nchw = batch["binaryInputNCHW"]
@@ -753,8 +769,20 @@ class Metrics:
         target_weight_ownership_slot = (
             target_weight_ownership if self.writes_ownership else torch.zeros_like(target_weight_ownership)
         )
-        target_weight_seki = target_weight_ownership * target_global_nc[:, 68]
-        target_weight_income = target_weight_ownership * target_global_nc[:, 69]
+        # KataGame fork (abscls-shfz.8): KataGo's C27 weighs more than the score's targets and C0: C1 and C5-6 (with
+        # their flags), and the losses of the game's outcome (the optimistic policies, the short-term value's error, the
+        # variance of the game's time), on the rows that "actually ended in full ownership and score, not a sidepos".
+        # In a game with classes of endings (ENDING_CLASSES) C27 is 0 in the games that the score did not decide, where
+        # these targets exist too. So C1 and C5-6 read the value's weight (their flags give the rows), and the losses of
+        # the outcome read the ending's weight G77, the value's on the rows of a game that its rules ended.
+        if self.ending_classes > 0:
+            target_weight_slots = target_weight_value
+            target_weight_outcome = target_global_nc[:, games.ENDING_WEIGHT_TARGET]
+        else:
+            target_weight_slots = target_weight_ownership
+            target_weight_outcome = target_weight_ownership
+        target_weight_seki = target_weight_slots * target_global_nc[:, 68]
+        target_weight_income = target_weight_slots * target_global_nc[:, 69]
 
         target_score_distribution = score_distribution_ns / 100.0
 
@@ -853,14 +881,14 @@ class Metrics:
             # Add a small amount to the variance to avoid division by zero or overly small numbers
             longterm_score_stdevs_excess = (target_global_nc[:, 3] - pred_scoremean.detach()) / torch.sqrt(torch.square(pred_scorestdev.detach()) + 0.25)
             target_weight_longoptimistic_policy = torch.clamp(
-                win_squared + torch.sigmoid((longterm_score_stdevs_excess - 1.5) * 3.0),
+                win_squared + self.score_surprise(longterm_score_stdevs_excess, target_weight_ownership),
                 min=0.0,
                 max=1.0,
             )
             target_weight_longoptimistic_policy = (
                 target_weight_longoptimistic_policy
                 * target_weight_policy_player # game has normal target
-                * target_weight_ownership # and also actually ended in full ownership and score, not a sidepos
+                * target_weight_outcome # and also actually ended in full ownership and score, not a sidepos
             )
             loss_longoptimistic_policy = self.loss_policy_player_samplewise(
                 policy_logits[:, 4, :],
@@ -897,14 +925,14 @@ class Metrics:
             # Add a small amount to the variance to avoid division by zero or overly small numbers
             shortterm_score_stdevs_excess = (target_global_nc[:, 15] - pred_td_score[:,2].detach()) / torch.sqrt(pred_shortterm_score_error.detach() + 0.25)
             target_weight_shortoptimistic_policy = torch.clamp(
-                torch.sigmoid((shortterm_value_stdevs_excess - 1.5) * 3.0) + torch.sigmoid((shortterm_score_stdevs_excess - 1.5) * 3.0),
+                torch.sigmoid((shortterm_value_stdevs_excess - 1.5) * 3.0) + self.score_surprise(shortterm_score_stdevs_excess, target_weight_ownership),
                 min=0.0,
                 max=1.0,
             )
             target_weight_shortoptimistic_policy = (
                 target_weight_shortoptimistic_policy
                 * target_weight_policy_player # game has normal target
-                * target_weight_ownership # and also actually ended in full ownership and score, not a sidepos
+                * target_weight_outcome # and also actually ended in full ownership and score, not a sidepos
             )
             loss_shortoptimistic_policy = self.loss_policy_player_samplewise(
                 policy_logits[:, 5, :],
@@ -1041,14 +1069,14 @@ class Metrics:
         loss_variance_time = self.loss_variance_time_samplewise(
             pred_variance_time,
             target_variance_time,
-            target_weight_ownership,
+            target_weight_outcome,
             global_weight,
         ).sum()
         loss_shortterm_value_error = self.loss_shortterm_value_error_samplewise(
             pred_shortterm_value_error,
             td_value_logits,
             target_td_value,
-            target_weight_ownership,
+            target_weight_outcome,
             global_weight,
         ).sum()
         loss_shortterm_score_error = self.loss_shortterm_score_error_samplewise(
@@ -1111,6 +1139,25 @@ class Metrics:
             + loss_qvalues_score
         )
 
+        # KataGame fork (abscls-shfz.8): the ending head. A model without it (the intermediate heads too) has no output
+        # there, and its results have no line of it.
+        ending_results = {}
+        if ending_logits.shape[1] > 0:
+            target_ending = target_global_nc[:, games.ENDING_CLASS_TARGET].long()
+            target_weight_ending = target_global_nc[:, games.ENDING_WEIGHT_TARGET]
+            loss_ending = self.loss_ending_samplewise(
+                ending_logits, target_ending, target_weight_ending, global_weight,
+            ).sum()
+            loss_sum = loss_sum + loss_ending * self.loss_coefficients["ending"]
+            # The loss and the accuracy, sums over the rows, and the share of the rows that carry an ending: endloss and
+            # endacc1 divided by endw are the means over those rows.
+            right = torch.argmax(ending_logits, dim=1) == target_ending
+            ending_results = {
+                "endloss_sum": loss_ending,
+                "endw_sum": (target_weight_ending * global_weight).sum(),
+                "endacc1_sum": (target_weight_ending * global_weight * right).sum(),
+            }
+
         policy_acc1 = self.accuracy1(
             policy_logits[:, 0, :],
             target_policy_player,
@@ -1170,6 +1217,7 @@ class Metrics:
             "pacc1_sum": policy_acc1,
             "vsquare_sum": square_value,
         }
+        results.update(ending_results)
 
         if is_intermediate:
             return results

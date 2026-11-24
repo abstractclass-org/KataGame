@@ -114,6 +114,7 @@ def main(args):
             pred_swing,         # N
             pred_swing_ranking, # N
             pred_intrinsic,     # N, {A, B}
+            ending_logits,      # N, the game's ending classes
         ) = results
 
         for batch_idx in range(batch["binaryInputNCHW"].shape[0]):

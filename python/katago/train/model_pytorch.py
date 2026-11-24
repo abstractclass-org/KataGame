@@ -2980,7 +2980,7 @@ class PolicyHead(torch.nn.Module):
 
 class ValueHead(torch.nn.Module):
     def __init__(self, c_in, c_v1, c_v2, c_sv2, num_scorebeliefs, config, activation, pos_len, regret_heads=False,
-                 swing_heads=False, intrinsic_head=False):
+                 swing_heads=False, intrinsic_head=False, ending_classes=0):
         super(ValueHead, self).__init__()
         self.activation = activation
         # Enclosure fork (owner, 2026-10-04): RGSC's regret value and regret ranking heads, when the config has
@@ -3045,6 +3045,13 @@ class ValueHead(torch.nn.Module):
         self.linear_s3 = torch.nn.Linear(c_sv2, num_scorebeliefs, bias=True)
         self.linear_smix = torch.nn.Linear(3 * c_v1, num_scorebeliefs, bias=True)
 
+        # KataGame fork (abscls-shfz.8): the ending head, when the config has ending_head (modelconfigs.HEADS): a logit
+        # for each class of the game's endings, from the value head's layer that its other global outputs read. In
+        # training only: the export leaves it out.
+        self.ending_classes = ending_classes
+        if ending_classes > 0:
+            self.linear_ending = torch.nn.Linear(c_v2, ending_classes, bias=True)
+
         # Enclosure fork: bin centres in points of margin, the game's SCORE_SCALE apart.
         score_bin_width = modelconfigs.get_game(config).SCORE_SCALE
         self.register_buffer("score_belief_offset_vector", torch.tensor(
@@ -3106,6 +3113,9 @@ class ValueHead(torch.nn.Module):
             self.swing_ranking.initialize()
         if self.intrinsic_head:
             self.intrinsic_value.initialize()
+        if self.ending_classes > 0:
+            init_weights(self.linear_ending.weight, "identity", scale=1.0)
+            init_weights(self.linear_ending.bias, "identity", scale=bias_scale, fan_tensor=self.linear_ending.weight)
 
     def add_reg_dict(self, reg_dict:Dict[str,List]):
         reg_dict["output"].append(self.conv1.weight)
@@ -3138,6 +3148,9 @@ class ValueHead(torch.nn.Module):
             self.swing_ranking.add_reg_dict(reg_dict)
         if self.intrinsic_head:
             self.intrinsic_value.add_reg_dict(reg_dict)
+        if self.ending_classes > 0:
+            reg_dict["output"].append(self.linear_ending.weight)
+            reg_dict["output_noreg"].append(self.linear_ending.bias)
 
     def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
         pass
@@ -3202,7 +3215,8 @@ class ValueHead(torch.nn.Module):
         # train the trunk): the regret value before its sigmoid x 4, then the ranking score; then the same for the
         # swing regret. KataGame fork (2026-10-29): then AZdb's intrinsic A and B, on the shared trunk, as the
         # paper's three heads share the torso and train it. Zeros for heads that the model does not have, so the
-        # outputs keep one shape.
+        # outputs keep one shape. KataGame fork (abscls-shfz.8): then the ending head's logits, as many columns as the
+        # head has outputs, none without the head.
         heads = []
         if self.regret_heads:
             heads += [self.regret_value, self.regret_ranking]
@@ -3216,6 +3230,8 @@ class ValueHead(torch.nn.Module):
             outs.append(self.intrinsic_value(x, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum))
         else:
             outs.append(torch.zeros((x.shape[0], 2), dtype=x.dtype, device=x.device))
+        if self.ending_classes > 0:
+            outs.append(self.linear_ending(outv2))
         out_extra = torch.cat(outs, dim=1)
 
         return (
@@ -3939,6 +3955,7 @@ class Model(torch.nn.Module):
             regret_heads=bool(self.config.get("regret_heads", False)),
             swing_heads=bool(self.config.get("swing_heads", False)),
             intrinsic_head=bool(self.config.get("intrinsic_head", False)),
+            ending_classes=modelconfigs.get_ending_classes(self.config),
         )
         if self.has_intermediate_head:
             self.norm_intermediate_trunkfinal = NormMask(self.c_trunk, self.config, fixup_use_gamma=False, is_last_batchnorm=True)
@@ -4697,6 +4714,8 @@ class Model(torch.nn.Module):
         pred_swing_ranking = out_extra[:, 3]
         # KataGame fork (2026-10-29): AZdb's intrinsic returns A and B, raw (returns, not probabilities).
         pred_intrinsic = out_extra[:, 4:6]
+        # KataGame fork (abscls-shfz.8): the ending head's logits.
+        ending_logits = out_extra[:, 6:]
 
         return (
             policy_logits,      # N, num_policy_outputs, move
@@ -4719,4 +4738,5 @@ class Model(torch.nn.Module):
             pred_swing,         # N (2.0 without swing_heads)
             pred_swing_ranking, # N
             pred_intrinsic,     # N, {A, B} (0 without intrinsic_head)
+            ending_logits,      # N, the game's ending classes (N, 0 without ending_head)
         )

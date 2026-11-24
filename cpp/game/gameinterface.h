@@ -284,6 +284,24 @@
  *                           after komi and the 50-ply rule. Default: false, KataGo's rule: a draw is
  *                           drawEquivalentWinsForWhite wins, and the evaluator removes the output unless the rules have
  *                           a simple ko or territory scoring (drawsAsNoResult).
+ *   ENDING_CLASSES, ending_class(end, mover)
+ *                           int, int: the classes of the game's endings, for a game whose targets differ by ending: a
+ *                           road of Tak gives no score, and its flat count no road. ending_class gives the class, 0 to
+ *                           ENDING_CLASSES - 1, of the rules' end (the GameEnd of game_end, which the game then gives)
+ *                           in the view of the player mover, 0 or 1: a win's class is not a loss's. The training rows
+ *                           of such a game (TrainingWriteBuffers::addRow):
+ *                           - hold the ending's class for the row's mover in the global target G76, and the value's
+ *                             weight in G77. Without the rules' end (a game at the move cap, a side position) G77 is
+ *                             0. The game's training_targets leaves both to the front.
+ *                           - hold the score's targets (C27) in the games that the score decided alone (GameEnd's
+ *                             scored, a tie too). Such a game's own C0 is a target of the same games, as C27 weighs it.
+ *                           - hold the game's own targets (training_targets) in a drawn game too, where KataGo gives a
+ *                             no result none. C33, C34, C68 and C69 follow the slots that training_targets returns.
+ *                           The trainer then weighs what C27 weighs beside the score and C0 by the value's weight
+ *                           (metrics_pytorch, katago/train/games: ENDING_CLASSES), and a model can have an ending head.
+ *                           A game gives both or neither. Default: none, and KataGo's rule: C27 on every row with the
+ *                           game's end, and no target but the policy's and the value's in a no result (endingClasses,
+ *                           endingClass).
  *   CanonicalActionMap      a type, for a game whose position holds labels that no rule reads (Blueprints' numbers of
  *                           the blueprints): the inputs version 13 (NNInputs V13, model version 22) reads the labels
  *                           in an order that depends only on what they label, so that two positions that differ only
@@ -387,12 +405,13 @@ constexpr unsigned FRONT_TARGETS = TARGET_FUTURE_PIECES | TARGET_NEXT_PIECES;
 //- C1 (seki), C2-3 (future pieces), C7 (next pieces): an integer, as it is (KataGo's seki and future positions: -1, 0
 //  or 1).
 //- The global targets G76 to G79 of the row (globalTargetsNC), which KataGo leaves unused: values[NUM_CHANNELS * area +
-//  i] is G(FIRST_GLOBAL + i), as it is.
+//  i] is G(FIRST_GLOBAL + i), as it is. In a game with ending classes (ENDING_CLASSES) G76 and G77 are the front's.
 struct TargetValues {
   static constexpr int NUM_CHANNELS = 8;  //C0 to C7 (the rows' valueTargetsNCHW)
   static constexpr float STORAGE_SCALE = 120.0f;
   static constexpr bool storedAsIs(int channel) { return channel == 1 || channel == 2 || channel == 3 || channel == 7; }
   static constexpr int FIRST_GLOBAL = 76, NUM_GLOBALS = 4;
+  static constexpr int ENDING_CLASS = 76, ENDING_WEIGHT = 77;  //the ending's class and its weight (ENDING_CLASSES)
   //The floats of a row's values on a board of that area.
   static constexpr int size(int area) { return NUM_CHANNELS * area + NUM_GLOBALS; }
 };
@@ -910,6 +929,8 @@ namespace encoding {
   GAMEINTERFACE_DETECT(HasAreaSpatialInputs, int, std::integral_constant<int, G::NUM_AREA_SPATIAL_INPUTS>::value)
   GAMEINTERFACE_DETECT(HasReachSpatialInputs, int, std::integral_constant<int, G::NUM_REACH_SPATIAL_INPUTS>::value)
   GAMEINTERFACE_DETECT(HasDrawsAsNoResult, bool, std::integral_constant<bool, G::DRAWS_AS_NO_RESULT>::value)
+  GAMEINTERFACE_DETECT(HasEndingClasses, int, std::integral_constant<int, G::ENDING_CLASSES>::value)
+  GAMEINTERFACE_DETECT(HasEndingClass, int, G::ending_class(std::declval<const GameEnd&>(), 0))
   template<class G, class = void> struct HasCanonicalActionMap : std::false_type {};
   template<class G> struct HasCanonicalActionMap<G, std::enable_if_t<std::is_convertible<
     decltype(std::declval<const typename G::CanonicalActionMap&>()(0)), int>::value &&
@@ -966,6 +987,23 @@ template<class E> constexpr bool drawsAsNoResult() {
     return E::DRAWS_AS_NO_RESULT;
   else
     return false;
+}
+
+//The classes of the game's endings (ENDING_CLASSES): the game's, else 0, a game whose rows keep KataGo's rule.
+template<class E> constexpr int endingClasses() {
+  if constexpr(encoding::HasEndingClasses<E>::value)
+    return E::ENDING_CLASSES;
+  else
+    return 0;
+}
+//The class of the rules' end in the view of the player mover (ending_class): the game's, else -1, none.
+template<class E> int endingClass(const GameEnd& end, int mover) {
+  if constexpr(encoding::HasEndingClass<E>::value)
+    return E::ending_class(end, mover);
+  else {
+    (void)end; (void)mover;
+    return -1;
+  }
 }
 
 //Whether the game has a canonical order of its labels (CanonicalActionMap), which the inputs version 13 reads.
@@ -1107,6 +1145,13 @@ template<class E> constexpr bool checkEncoding() {
   static_assert(extendedSpatialInputs<E>() >= 0 && extendedGlobalInputs<E>() >= 0,
                 "game interface, encoding part: the extended inputs are 0 or more");
   static_assert(turnGlobalInputs<E>() >= 0, "game interface, encoding part: the turn inputs are 0 or more");
+  static_assert(HasEndingClasses<E>::value == HasEndingClass<E>::value,
+                "game interface, encoding part: the game gives both ENDING_CLASSES (constexpr int) and "
+                "ending_class(const GameEnd&, int mover) -> int, or neither");
+  if constexpr(HasRules<E>::value && HasEndingClasses<E>::value)
+    static_assert(E::ENDING_CLASSES > 0 && hasGameEnd<typename E::Rules>(),
+                  "game interface, encoding part: ENDING_CLASSES is positive, and the rules part gives game_end, whose "
+                  "kinds the classes read");
   static_assert(areaSpatialInputs<E>() >= 0, "game interface, encoding part: the planes of closed areas are 0 or more");
   static_assert(reachSpatialInputs<E>() >= 0, "game interface, encoding part: the planes of reach are 0 or more");
   return true;

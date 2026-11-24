@@ -58,8 +58,8 @@ import torch
 from katago.train.data_processing_pytorch import read_npz_training_data
 from katago.train.load_model import load_model
 from katago.train.metrics_pytorch import Metrics
-from loss_gradients import (HEADS, dot, group_factors, groups, norm, parse_coefficients, parse_scales,
-                            set_shared_gradient_scales, shared_gradient_scales)
+from loss_gradients import (HEADS, dot, group_factors, norm, parse_coefficients, parse_scales,
+                            set_shared_gradient_scales, shared_gradient_scales, terms as group_terms)
 
 SCALES = dict(soft_policy_weight_scale=8.0, value_loss_scale=0.6, td_value_loss_scales=[0.6, 0.6, 0.6],
               seki_loss_scale=1.0, variance_time_loss_scale=1.0)  # train.py's defaults
@@ -101,8 +101,7 @@ def terms(model, metrics, batch, outputs):
     results = metrics.metrics_dict_batchwise_single_heads_output(
         model, model.postprocess_output(outputs)[0], batch, is_training=False, disable_optimistic_policy=False,
         meta_kata_only_soft_policy=False, is_intermediate=True, **SCALES)
-    out = {name: sum(results[k] * scale for k, scale in parts)
-           for name, parts in groups(model.config["version"], SCALES, metrics.loss_coefficients)}
+    out = dict(group_terms(results, model.config["version"], SCALES, metrics.loss_coefficients))
     out["all"] = results["loss_sum"]
     return out
 

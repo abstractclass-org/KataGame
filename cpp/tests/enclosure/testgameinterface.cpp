@@ -310,6 +310,13 @@ static_assert(GameInterface::checkRules<WithGameEnd>(), "the stub game with its 
 struct DrawsAsNoResult { static constexpr bool DRAWS_AS_NO_RESULT = true; };
 struct DrawsAsHalfWins { static constexpr bool DRAWS_AS_NO_RESULT = false; };
 struct NoDrawMember {};
+//The optional members of the encoding part for the classes of the endings, alone: a win and a loss.
+struct WithEndings {
+  static constexpr int ENDING_CLASSES = 2;
+  static int ending_class(const GameInterface::GameEnd& end, int mover) {
+    return end.result == (mover == 0 ? 1 : -1) ? 0 : 1;
+  }
+};
 }  // namespace stub
 
 //The hashes of before the interface, pinned: the values that KataGame main (192acb41) gives in the fixture's first
@@ -499,6 +506,18 @@ static void checkOptionalMembers() {
                     !GameInterface::drawsAsNoResult<stub::DrawsAsHalfWins>() &&
                     GameInterface::drawsAsNoResult<stub::DrawsAsNoResult>(),
                   "a draw is no result where the game says so");
+    //The classes of a game's endings: none by default, and no class. A game's own class reads the rules' end and the
+    //mover's side: the first player's win is the first player's class 0 and the second player's class 1.
+    static_assert(GameInterface::endingClasses<E>() == 0 && GameInterface::endingClasses<stub::NoDrawMember>() == 0 &&
+                    GameInterface::endingClasses<stub::WithEndings>() == 2,
+                  "a game has the ending classes that it gives");
+    {
+      const GameInterface::GameEnd end = GameInterface::gameEnd<stub::WithGameEnd>(stub::Position(), 0.0);
+      if(GameInterface::endingClass<E>(end, 0) != -1 || GameInterface::endingClass<stub::NoDrawMember>(end, 1) != -1 ||
+         GameInterface::endingClass<stub::WithEndings>(end, 0) != 0 ||
+         GameInterface::endingClass<stub::WithEndings>(end, 1) != 1)
+        fail("the ending's class: none by default, and the game's own in the mover's view");
+    }
     for(const double komi : {-0.5, 0.0, 0.5, 2.0}) {
       const GameInterface::GameEnd end = GameInterface::gameEnd<S>(stub::Position(), komi);
       if(end.result != (komi > 0 ? -1 : komi < 0 ? 1 : 0) || end.kind != -1 || !end.scored)

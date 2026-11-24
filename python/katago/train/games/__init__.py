@@ -98,6 +98,15 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         trainer trains the three outputs in every game. The checks of the network against the engine
                         read it (enclosure_nn_check.py, nn_rows_check.py). Default: False, and the evaluator removes
                         the third output, unless the rules have a simple ko (draws_as_no_result).
+  ENDING_CLASSES        the classes of the game's endings, for a game whose targets differ by ending (C++ GameInterface:
+                        ENDING_CLASSES and ending_class). The rows hold the ending's class for the row's mover in the
+                        global target G76 and its weight in G77, and their C27 is 0 in a game that the score did not
+                        decide. So C27 weighs the score's targets and C0 alone, and the trainer weighs the rest of what
+                        KataGo weighs by C27 apart from it (metrics_pytorch): C1 and C5-6 by the value's weight, and the
+                        optimistic policies, the short-term value's error and the variance of the game's time by G77.
+                        The score's surprise of the optimistic policies reads C27. A model can then have the ending head
+                        (train.py's -heads ending), which learns the class, in training only: the export leaves it out.
+                        Default: 0, KataGo's C27 and no ending head (ending_classes).
   legal_moves(binary_inputs, global_inputs)
                         the moves that the rows' inputs make legal (N, policy) as booleans, in the policy's order (the
                         point's index * POLICY_CHANNELS + the channel, then pass), from the rows as read (no symmetry).
@@ -120,6 +129,11 @@ TARGET_FUTURE_PIECES = 1 << 2  # C2-3, its weight C33
 TARGET_SCORING = 1 << 3        # C4, its weight C34
 TARGET_INCOME = 1 << 4         # C5-6, flagged in C69
 TARGET_NEXT_PIECES = 1 << 5    # C7, flagged in C75: the next mover's pieces after the row's move (not a loss)
+# The global targets that hold the ending in the rows of a game with ENDING_CLASSES (C++ TargetValues): its class in
+# the view of the row's mover, and its weight, the value's on the rows of a game that its rules ended and 0 on the
+# others (the move cap, a side position). Another game's G76 and G77 are its own.
+ENDING_CLASS_TARGET = 76
+ENDING_WEIGHT_TARGET = 77
 
 # The trainer's losses whose coefficients a game's LOSS_COEFFICIENTS can set, and their defaults (metrics_pytorch).
 LOSS_COEFFICIENTS = {
@@ -128,6 +142,8 @@ LOSS_COEFFICIENTS = {
     "futurepos": 0.25,  # C2-3, KataGo's: in the loss (fploss), before the far horizon's 0.25
     "scoring": 0.25,    # C4, KataGo's: in loss_sum only (sloss is without it)
     "income": 1.5,      # C5-6, Enclosure's
+    "ending": 0.25,     # the ending head, KataGo's weight of its auxiliary spatial targets (C2-3, C4), assumed: in
+                        # loss_sum only (endloss is the cross-entropy)
 }
 
 # The factor on the gradient that a head sends back into the layers that it shares with the other heads, which a
@@ -192,6 +208,11 @@ def draws_as_no_result(game):
     """Whether the game's draws are KataGo's no result, so that the evaluator keeps the value head's third output
     (False: it removes the output, and win and loss share the probability)."""
     return getattr(game, "DRAWS_AS_NO_RESULT", False)
+
+
+def ending_classes(game):
+    """The classes of the game's endings (0 for a game without, whose rows keep KataGo's C27)."""
+    return getattr(game, "ENDING_CLASSES", 0)
 
 
 def num_global_inputs(game, inputs_version):
