@@ -54,9 +54,9 @@ static_assert(GameInterface::scoreTableSide<OwnTableSide>(67) == 19, "a game's o
 
 //The areas of each game of KataGame on its standard board, the look-ahead area and the komi area, and the side of its
 //score table. Blueprints gives Go's 361 for both areas (its 67 x 67 view holds the window, and its moves do not reach
-//that far) and Go's 19 for the side (the view's 67 made a table of 331 MB). The other games give none, so they keep
-//their board's area, as before the areas were the game's, and the network's board side, so their tables stay as they
-//were.
+//that far) and Go's 19 for the side (the view's 67 made a table of 331 MB). Tak gives 361 for the komi area alone: its
+//sampler draws the flats of the config on either size. The other games give none, so they keep their board's area, as
+//before the areas were the game's, and the network's board side, so their tables stay as they were.
 static bool pinnedValues(double& lookahead, double& komi, int& tableSide) {
   if(strcmp(GameRules::NAME, "blueprints") == 0) {
     lookahead = komi = 361.0;
@@ -71,6 +71,12 @@ static bool pinnedValues(double& lookahead, double& komi, int& tableSide) {
   if(strcmp(GameRules::NAME, "connect4") == 0) {
     lookahead = komi = 7.0 * 6.0;
     tableSide = 7;
+    return true;
+  }
+  if(strcmp(GameRules::NAME, "tak") == 0) {
+    lookahead = 6.0 * 6.0;
+    komi = 361.0;
+    tableSide = 6;
     return true;
   }
   return false;

@@ -7,14 +7,14 @@ Enclosure directly, with the member that replaced each reference. The decision a
 engine repository (`docs/design/07-game-interface.md`), and the record of what the second game showed is its design 06,
 step 6. Enclosure's own design stays in [ENCLOSURE.md](ENCLOSURE.md).
 
-The interface exists. Enclosure and Connect-4 (`cpp/game/connect4/`) implement both parts, and each game has its
-`katago` binary. The front (`Board`, `BoardHistory`), the search, self-play, GTP and the analysis engine reach the
-rules through the rules part. The network code reaches the encoding part: the policy layout and the backends
+The interface exists. Enclosure, Connect-4 (`cpp/game/connect4/`), Blueprints and Tak implement both parts, and each
+game has its `katago` binary. The front (`Board`, `BoardHistory`), the search, self-play, GTP and the analysis engine
+reach the rules through the rules part. The network code reaches the encoding part: the policy layout and the backends
 (`NNPos`), the inputs (`NNInputs`), the symmetries (`SymmetryHelpers`) and the training rows (`TrainingWriteBuffers`).
-No C++ code outside the game layer names a game, and a check keeps it so ("The game layer"). The trainer reads a
-game's facts from the game's module (`python/katago/train/games/`), and a model file names its game ("The model file's
-game"). The training scripts (`python/selfplay/`) run a run of any game, and `katago version` names the binary's game
-("The training scripts"). The map below gives each step's work.
+No C++ code outside the game layer names a game, and a check keeps it so ("The game layer"). The trainer reads a game's
+facts from the game's module (`python/katago/train/games/`), and a model file names its game ("The model file's game").
+The training scripts (`python/selfplay/`) run a run of any game, and `katago version` names the binary's game ("The
+training scripts"). The map below gives each step's work.
 
 * [The files](#the-files)
 * [Choosing the game](#choosing-the-game)
@@ -53,6 +53,8 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/tests/enclosure/testselfplayviews.cpp` | Self-play's search of the root's views (`PlaySettings::rootViews`), for a game with views: each move in its view, the replay, the full searches' visits, `view_action`, RGSC's played entries, the rows and records for `check_rows.py --records`, the passes of a full search with `rootViewsCheapPasses`, and the player's own diversity term in each pass (abscls-e0gz). |
 | `cpp/tests/enclosure/testdiversityinputs.cpp` | AZdb's latent in the network's inputs and cache, for any game: member 0 keeps the cache's hash of an evaluation without a member and the members' hashes differ, the rows of V14 are V13's with the member's one-hot after V13's global inputs (the float rows and the packed rows at each allowed symmetry), the rows of V13 do not read the member, and the training rows have 80 global targets before V14 and 84 in its rows. |
 | `cpp/tests/enclosure/testdiversitysearch.cpp` | AZdb's diversity term in the search, for a build's game that gives AZdb's statistics (Blueprints): member 0's search against KataGo's, D on chains, a transposition, the member's choice by its reward, each member's evaluations, the refusals, the tree's clear, and the checks of the root's views with the member's term (abscls-e0gz). |
+| `cpp/tests/enclosure/testrows.cpp` | Self-play's games of a config with fixed seeds, and from states of a file: their training rows, and a plain record of each game, for a check of a game's rows outside the C++ code (Tak's `games/tak/tools/check_rows.py` in the engine repository). |
+| `cpp/tests/enclosure/testpositions.h`, `tpsboard.h` | The positions of a test's file (`tests/data/<game>_positions.txt`), as the game's actions or as states. And a reader of Tak's positions from their text with none of the game's code, for the tests of Tak's build. |
 | `cpp/tests/enclosure/testkomi.cpp` | Komi through the front, for the build's game: the result and the value targets at komis that decide a game, the global inputs at the history's komi, the even-komi search's bracket (an optional member of the encoding part) against KataGo's code and each game's pinned bracket, the two rules where the win-loss value keeps its sign up to the limit (no even komi, or KataGo's bracket end), each game's pinned lead step, the komi draws of each size of board, and a self-play config's komi draws. |
 
 All members are static, and every file is a header. So the compiler sees the same code as in a build for one game, and
@@ -67,6 +69,12 @@ the WebAssembly build, the binding and the standalone tests need no new source f
   the games of `cpp/game/`, and CMake does not list it. A name that a game of `cpp/game/` has too stops `cmake`. It is
   not in the game layer, so it is not a game for the binding, the conformance suite or the check of the game layer.
   Use it to test an optional member before a game has it.
+- **The network's board:** CMake reads the line `MAX_BOARD_LEN = N` of the game's trainer module
+  (`python/katago/train/games/<name>.py`) and gives `katago`'s build the number as `KATAGAME_NETWORK_BOARD_LEN`, or 0
+  for a module that does not write a number (Enclosure's) and for a game without one. A game whose rules play several
+  largest boards takes its own from it: Tak's rules part plays 8 x 8 in every other build, and 6 x 6 in `katago`'s. So
+  the trainer's module is the one place of the number. In every game `chosengame.h` stops the compile when the game's
+  `MAX_BOARD_LEN` is not that number. Tak's `katago` does not compile without the module.
 - **The headers:** `chosenrules.h` includes `<name>/gamerules.h` and makes `chosengame` the alias of the namespace
   `<name>`. `chosengame.h` includes `<name>/gameencoding.h`. A game's folder and its namespace have the same name.
 - **Other builds** (the WebAssembly module, the fork's standalone tests) define nothing and get Enclosure. So every
@@ -548,7 +556,7 @@ the helper. The rules part's check requires only that the members of a pair come
 | Members | Meaning | Default (helper) | Enclosure |
 |---|---|---|---|
 | `protocol_text(action)`, `parse_protocol_text(text, action)` | An action other than pass as the engine protocol (GTP, the analysis engine) writes and reads it. The parser reads trimmed text in any case, does not check legality, and returns false for text that names no action. The front reads and writes pass (`pass`). | `action_text`, and the action whose `action_text` is the text, ignoring case (`protocolText`, `parseProtocolText`). The parser tries each action, so it suits games with few actions. | The form of the move server and the sites: column letters A to S (I included, unlike the notation), such as `D10-D13` |
-| `NUM_LOCAL_KEYS`, `LOCAL_WINDOW`, `local_hash(p, cx, cy, xRadius, yRadius, flipPlayers, keys)` | The position near the point (cx, cy), in the window of xRadius and yRadius: the search's local pattern hash (the subtree value bias, the pattern bonus). The front draws `NUM_LOCAL_KEYS` random keys for it, after KataGo's keys. `flipPlayers` swaps the players. `LOCAL_WINDOW` is the side of the subtree value bias's window (odd), large enough for a move's reach. | Each point of the window on the board hashed with its piece (`pieces`), as KataGo hashes stones: KataGo's keys `zobristLocalPattern` by its colors (empty, the first player, the second), without its atari flag. KataGo's window of 5 (`localHash`, `localWindow`). | The edges of either player with an end in the window, and whether each is invincible: the hash of before the interface, byte for byte (3 × 17,328 keys, in the order that the hasher drew them). The window of 7, which covers a whole edge from its source. |
+| `NUM_LOCAL_KEYS`, `LOCAL_WINDOW`, `local_hash(p, cx, cy, xRadius, yRadius, flipPlayers, keys)` | The position near the point (cx, cy), in the window of xRadius and yRadius: the search's local pattern hash (the subtree value bias, the pattern bonus). The front draws `NUM_LOCAL_KEYS` random keys for it, after KataGo's keys. `flipPlayers` swaps the players. `LOCAL_WINDOW` is the side of the subtree value bias's window (odd), large enough for a move's reach. | Each point of the window on the board hashed with its piece (`pieces`), as KataGo hashes stones: KataGo's keys `zobristLocalPattern` by its colors (empty, the first player, the second), without its atari flag. KataGo's window of 5 (`localHash`, `localWindow`). | The edges of either player with an end in the window, and whether each is invincible: the hash of before the interface, byte for byte (3 × 17,328 keys, in the order that the hasher drew them). The window of 7, which covers a whole edge from its source. Tak gives each square's state in the window of 5, at its place in the window: empty, or its top piece by owner and kind with whether the stack holds more than one piece (13 states, 1,053 keys up to the pattern bonus's window of 9). |
 | `QUERY_POSITION_FIELD`, `parse_query_position(value, p, why)` | A position field of the game's own in an analysis query, beside the generic field `position` (the one-line position): its key, and the reader of its value. The reader is a template on the JSON type, so that the rules part does not need the JSON library. It may throw the JSON library's exceptions, which the analysis engine catches. | None: the analysis engine takes `position` only (`queryPositionField`, `parseQueryPosition`) | `enclosurePosition` (`queryposition.h`): the fields of `Position` as JSON, with the last turns' edges for the history planes, which the one-line position leaves out. The move server sends it. |
 | `STANDARD_X_SIZE`, `STANDARD_Y_SIZE` | The game's standard board, on which `new_game` succeeds: the front's default board (`Board()`, `Board::DEFAULT_X_SIZE` and `DEFAULT_Y_SIZE`, GTP's board when its config names none) and the Python binding's `Position()`. | The largest board, `MAX_BOARD_LEN` × `MAX_BOARD_LEN` (`standardXSize`, `standardYSize`) | None: the default gives 19 × 19. Connect-4 gives 7 × 6. |
 | `TURN_MOVES` | The moves of a full turn, after which the clock's increment comes. The time controls give each move its share of the increment (`increment / TURN_MOVES`), and a move with more of its turn to come takes at most the time left divided by the moves left (`turn_moves_left`). | 1, a game that alternates (`turnMoves`) | 2: the site's increment comes once a turn of two edges (games/enclosure/docs/design/18-play-through-gtp.md) |
@@ -557,7 +565,7 @@ the helper. The rules part's check requires only that the members of a pair come
 | `SETTINGS`, `set_setting(name, value, why)` | The game's own settings: each one's key in a config (a `std::array` of `const char*`), and the setter, which reads a value's text and returns false with the reason for a name or a value that the game does not have. Every command reads them from its config before its first game (`Setup::initializeSession`). A setting holds for the whole process, and the rules can read it, so a game replays only under the settings that played it. A config without a setting's key keeps the game's default. The Python binding gives `SETTINGS` and `set_setting(name, value)`. | None (`settingNames`, `setSetting`) | None. Blueprints gives `viewOrientation`, the rule of its views' orientations (the engine repository's `games/blueprints/README.md`). |
 | `view_text(p)`, `set_view(p, text, why)`, `view_cover(p, views)`, `view_in_frame(p, frame)`, `view_action(p, action, other)` | The views of a game whose network sees a part of a larger board, each a text of the game's own (`""` for the view that the rules give the position). `view_text` gives the view that a caller set on `p`, or `""`. `set_view` sets `p`'s view until `p`'s next action, which ends it: the legal actions, what each action means, the inputs, the symmetries' images and the hash are then that view's, and every later position has the rules' view. `""` gives the rules' view back, and a text that names no view returns false with the reason. `view_cover` gives views that hold every legal move of `p` between them, each move an action of `p` with one of them set: `{""}` when the rules' view holds them all. The analysis engine's, GTP's and self-play's `rootViews` search each view of the cover (`docs/Analysis_Engine.md`, `docs/GTP_Extensions.md`, `PlaySettings::rootViews`). `view_in_frame` gives `p`'s rules' view as the frame of `frame`'s view sees it, `frame` another position: self-play's rows write their second policy target in it, `frame` the row's position and `p` the position after its move (`""` when it is `p`'s own view). `view_action` gives the action of `other`, `p` in another view, that plays what `p`'s legal action plays (the same child position), or -1 when `other`'s view does not name it. The Python binding gives `Position.view()`, `set_view(text)`, `view_cover()`, `view_in_frame(frame)` and `view_action(action, other)`. | One view, `""` (`viewText`, `setView`, `viewCover`, `viewInFrame`), and `viewAction` gives the action itself | None. Blueprints' views are `q,r,o`: the middle's site coordinates and the orientation (the engine repository's `games/blueprints/README.md`). |
 | `game_end(p, komi)` | The end of the game at the terminal position `p` under the rules' komi (a `GameInterface::GameEnd`): the first player's return, the kind of ending (a number of the game's own from 0), and whether the score with komi decided it. For a game whose winner is not always the sign of the margin. `BoardHistory::endAndScoreGameNow` reads it and keeps it in `rulesEnd`, so the search's terminal nodes, the rows, the records and the matches have the rules' winner. The final score stays the margin with komi. A win that the score did not decide is not scored (`isScored`), and its SGF record and GTP's `final_score` give the winner without a score (`B+`). The front calls it for a terminal position only: a game that stops earlier (self-play's move cap) keeps KataGo's rule, without a kind. The Python binding gives `Position.game_end(komi)`, `None` before the end. | KataGo's rule: the sign of the margin with komi, no kind (-1), scored (`gameEnd`, `hasGameEnd`) | None. Tak gives it: a road wins whatever the flat count, and the 50-ply rule draws at any count. |
-| `state_text(p)`, `parse_state(text, p, why)` | The whole state that the network reads, as one line: the one-line position and what it leaves out that the inputs read (`input_hash`: the earlier turns of the history planes). Equal states give equal texts. `parse_state` gives the state back, with the same `hash`, `input_hash`, legal actions and inputs, or returns false and the reason. A view that a caller set is not part of the text. RGSC's buffer (`program/rgsc.h`) keeps a game's states in it: its entries are then exact states, each with the context of its evaluation (the komi and the asymmetric playouts), and a restart starts from the state itself with that context. Self-play's starts from a file of people's positions (`program/humanstarts.h`) are such texts too. `testrgscstates` checks a game's round trip at every position of random games. | None: RGSC keeps the moves from the empty board, with their unordered key (`hasStateText`, `stateText`, `parseState`) | None: Enclosure's buffer keeps moves. Blueprints gives it: its one-line position with each blueprint's cells sorted, then the hexes that the last 4 actions filled and captured (the engine repository's `games/blueprints/README.md`, "RGSC"). |
+| `state_text(p)`, `parse_state(text, p, why)` | The whole state that the network reads, as one line: the one-line position and what it leaves out that the inputs read (`input_hash`: the earlier turns of the history planes). Equal states give equal texts. `parse_state` gives the state back, with the same `hash`, `input_hash`, legal actions and inputs, or returns false and the reason. A view that a caller set is not part of the text. RGSC's buffer (`program/rgsc.h`) keeps a game's states in it: its entries are then exact states, each with the context of its evaluation (the komi and the asymmetric playouts), and a restart starts from the state itself with that context. Self-play's starts from a file of people's positions (`program/humanstarts.h`) are such texts too. `testrgscstates` checks a game's round trip at every position of random games. | None: RGSC keeps the moves from the empty board, with their unordered key (`hasStateText`, `stateText`, `parseState`) | None: Enclosure's buffer keeps moves. Blueprints gives it: its one-line position with each blueprint's cells sorted, then the hexes that the last 4 actions filled and captured (the engine repository's `games/blueprints/README.md`, "RGSC"). Tak gives its TPS with the draw clock, then the squares that each of the last 5 moves changed. |
 | `draw_start(p, random)` | The game's own draws in the start position `p` of a new game. Self-play makes them for each game from the standard start (`GameInitializer`, `play.cpp`), and for each game from a file of people's positions (`program/humanstarts.h`) on its state, which is in the middle of a game: so a game's draws must suit every state that such a file can hold. `random()` gives a uniform `uint64_t` from self-play's random numbers, and the game calls it only for the draws that it makes: a game that draws nothing leaves self-play's other draws as they are. The position then holds the draws, its one-line position too, so a replay or an analysis from that text gives them back. Self-play's SGF records do not hold them. The commands that start a game in another way (GTP, the analysis engine) draw nothing. The Python binding gives `Position.draw_start(random)`. | None: no draw (`drawStart`) | None. Blueprints draws the view's orientation of a game under `viewOrientation = randomGame`. |
 
 ### A game's notation, and a site's own terms
@@ -645,11 +653,11 @@ pin them), and the front computes each slot of `FRONT_TARGETS` in their `TARGETS
 | `NUM_TURN_GLOBAL_INPUTS` | The game's turn inputs, which input version 11 adds to version 10's, for a game whose history planes count actions, not turns. With `options.turnHistory`, the history planes show the game's last turns in place of its last actions, and `global_inputs` writes the turn inputs after its extended global inputs: what the planes do not show of those turns. The front puts them after V10's global inputs. Without `options.history` they are 0, as the history planes. | 0: V11 is V10 (`turnGlobalInputs`), as its history planes already count turns | 8: for each of the 4 turns of the history planes (the turn in progress, then the 3 whole turns before it) and each of its 2 moves, 1 when the move was an edit, a pick and its drop (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `NUM_AREA_SPATIAL_INPUTS` | The game's planes of closed areas, which input version 12 adds to version 11's: areas that the rules close to a player for the rest of the game. Whether a point is closed depends on cells beyond the convolutions' reach, so the game computes it, as KataGo gives Go's pass-alive areas as input planes. With `options.areas`, `spatial_inputs` also sets the planes after the extended ones, and the front puts them after V11's planes. They are points of the board: the symmetries move them as pixels. | 0: V12 is V11 (`areaSpatialInputs`) | 2: the hexes of the areas closed by the mover's walls and by the opponent's walls, which the other player can never fill (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `DRAWS_AS_NO_RESULT` | True for a game whose draws are a class of their own, KataGo's no result. A game that its rules end without a winner is then a no result (`BoardHistory::isNoResult`), its rows' value target is no result with probability 1, and the evaluator keeps the network's no-result output (`nneval.cpp`). The search values a draw at `noResultUtilityForWhite`: keep it and `noResultStdev` at 0, and a draw is half a win, as in KataGo's split. `drawEquivalentWinsForWhite` and `drawRandRadius` do not act on it. A draw's SGF record gives `0`, as in the other games, not KataGo's `Void`. A game that stops before its rules end it (the move cap) is never a no result. The rows of a no result hold no score, no ownership and no target of the game's own (KataGo's rule), unless the game has classes of endings (`ENDING_CLASSES`). | False: a draw is `drawEquivalentWinsForWhite` wins, and the evaluator removes the output unless the rules have a simple ko or territory scoring (`drawsAsNoResult`) | None |
-| `ENDING_CLASSES`, `ending_class(end, mover)` | The classes of the game's endings, for a game whose targets differ by ending ("The targets of one ending", below). `ending_class` gives the class, 0 to `ENDING_CLASSES - 1`, of the rules' end (the `GameEnd` of the rules part's `game_end`, which the game then gives, each end with its kind) in the view of the player `mover`, 0 or 1: the mover's win is another class than the opponent's. A game gives both or neither. | None: KataGo's C27, no target of its own in a no result, and no ending head (`endingClasses`, `endingClass`) | None. Tak's are planned: 6, a road or a flat count won by the mover or by the opponent, a flat tie and the 50-ply rule. |
-| `LEGAL_MOVES_IN_ROWS` | True for a game whose training rows hold the moves that the rules make legal in the row's position, a bit for each policy index ("The legal moves in the rows and the policy's masks", below). It is for a game whose policy has many more slots than a position has legal moves: KataGo's floor of the soft policy's target is on every slot of the board, and the sum over many illegal slots can outweigh the visited moves. | False: the rows have no such array (`legalMovesInRows`) | None. Tak's is planned: 9,181 slots, 1,148 bytes a row. |
+| `ENDING_CLASSES`, `ending_class(end, mover)` | The classes of the game's endings, for a game whose targets differ by ending ("The targets of one ending", below). `ending_class` gives the class, 0 to `ENDING_CLASSES - 1`, of the rules' end (the `GameEnd` of the rules part's `game_end`, which the game then gives, each end with its kind) in the view of the player `mover`, 0 or 1: the mover's win is another class than the opponent's. A game gives both or neither. | None: KataGo's C27, no target of its own in a no result, and no ending head (`endingClasses`, `endingClass`) | None. Tak gives 6: a road and a flat count, each won by the mover or by the opponent, a flat tie and the 50-ply rule. |
+| `LEGAL_MOVES_IN_ROWS` | True for a game whose training rows hold the moves that the rules make legal in the row's position, a bit for each policy index ("The legal moves in the rows and the policy's masks", below). It is for a game whose policy has many more slots than a position has legal moves: KataGo's floor of the soft policy's target is on every slot of the board, and the sum over many illegal slots can outweigh the visited moves. | False: the rows have no such array (`legalMovesInRows`) | None. Tak gives it: 9,181 slots, 1,148 bytes a row. |
 | `CanonicalActionMap` | A type, for a game whose position holds labels that no rule reads: input version 13 reads the labels in an order that depends only on what they label, so that two positions that differ only in their labels give the same inputs. With `options.canonical`, `spatial_inputs` and `global_inputs` write each label's inputs at its place in that order. `CanonicalActionMap(p)` gives the network's frame of p's actions: `operator()` maps each legal action and pass to its policy index in that order, and `listed(action)` says whether the search lists the action. An action that gives the same position as a listed action, up to the labels, is not listed, and it maps to that action's index: the two are one edge of the search, with one prior. The order must not depend on the symmetries, so the front maps an action through `SymActionMap`, then through this (`NNInputs`' `NetActionMap`), and the network's evaluation lists the listed actions only. The training rows of V13 write the policy targets at these indices, the next move's in the next position's frame. The trainer reads that target with the row's inputs, so wherever it weighs that target (the game's `mask_targets`), the next position's order of the next mover's labels must be the row's. The rules keep every action legal. | None: every action listed at its own index, and V13 is V12 (`CanonicalActions`) | Each hand in the order of its blueprints' cells: more cells first, then more stars, then more walls, then the lesser shape up to the hex grid's 12 symmetries, then the lowest number of the blueprint's equal blueprints, then the blueprint with the pick, then the lower number. Of equal blueprints, the lowest-numbered one's actions are listed (the engine repository's `games/blueprints/README.md`, "The network"). |
 | `NUM_REACH_SPATIAL_INPUTS` | The game's planes of reach, which input version 15 adds to version 14's: how far each player's pieces are from a capture by the other player, a graded measure that depends on cells beyond the convolutions' reach. With `options.reach`, `spatial_inputs` also sets the planes after its planes of closed areas, and the front puts them after V14's planes. They are points of the board: the symmetries move them as pixels. | 0: V15 is V14 (`reachSpatialInputs`) | 9: on each star of the view, whether the other player needs more than 1, 2, 3 and 6 placements to capture it (`game/blueprints/starreach.h`), the mover's stars, then the opponent's, and the stars whose reach is not known (the engine repository's `games/blueprints/README.md`, "The network"). |
-| `Diversity` | A type, for AZdb's reward ("AZdb's members", below): the statistics of a position, φ before its normalization. `NUM_STATISTICS` counts them, `statistics(p, player, out)` writes them from the player's side for the position after a move of that player, `MOVES` is each player's moves in a game (the reward's divisor), and `Normalizer`, built from each statistic's mean and standard deviation, gives the normalized statistics (`z(x, out)`), moves its running estimates by one finished side (`update(x, positions)`) and gives them (`mean(i)`, `sd(i)`) for self-play's league. | None: 0 statistics, 1 move, and every reward is 0 (`diversityStatistics`, `diversityMoves`, `diversityStatisticsOf`, `DiversityNormalizer`) | Its 57 statistics, standardized with a floor of 0.1 on the standard deviation, clipped to [-3, 3] and weighted by group (`game/blueprints/diversity.h`), and 60 moves |
+| `Diversity` | A type, for AZdb's reward ("AZdb's members", below): the statistics of a position, φ before its normalization. `NUM_STATISTICS` counts them, `statistics(p, player, out)` writes them from the player's side for the position after a move of that player, `MOVES` is each player's moves in a game (the reward's divisor), and `Normalizer`, built from each statistic's mean and standard deviation, gives the normalized statistics (`z(x, out)`), moves its running estimates by one finished side (`update(x, positions)`) and gives them (`mean(i)`, `sd(i)`) for self-play's league. | None: 0 statistics, 1 move, and every reward is 0 (`diversityStatistics`, `diversityMoves`, `diversityStatisticsOf`, `DiversityNormalizer`) | Its 57 statistics, standardized with a floor of 0.1 on the standard deviation, clipped to [-3, 3] and weighted by group (`game/blueprints/diversity.h`), and 60 moves. Tak's 24 statistics and 28 moves (`game/tak/diversity.h`). |
 
 `InputOptions` holds what the front gives the input members:
 
@@ -875,6 +883,34 @@ The value and score targets are KataGo's, from the rules' result and score. A dr
 inputs do not show a draw's value. A row's score target is the solver's score of the game's end, from the view of the
 row's player to move.
 
+### Tak's encoding part
+
+`game/tak/gameencoding.h`. The engine repository's `games/tak/docs/design/` gives the decisions and their reasons (03
+the policy, 05 the inputs, 06 the targets, 10 the additions).
+
+| Member | Tak |
+|---|---|
+| The largest board | 6 x 6 in `katago`'s build, from the trainer's module ("Choosing the game"). 5 x 5 is in its corner. |
+| `NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS` | 35 planes: each square's top piece, the pieces to depth 7 and whether pieces lie deeper, the edges that its road group touches, the squares that complete a road, and the squares that each of the last 5 moves changed (`HISTORY_PLANE` 30). 14 global inputs. Inputs version 14: no other version adds an input of Tak's. |
+| `input_hash` | The squares of the last 5 moves. The position holds them, and no rule reads them. |
+| `POLICY_CHANNELS` | 255: a placement's kind, or a spread's drop pattern and direction |
+| `SYMMETRIES`, `sym_position`, `SymActionMap` | All 8. A spread's direction, and the planes of the edges, turn with the board. |
+| `TARGETS`, `OWN_TARGETS` | C0 the final flats (flat endings), C1 the squares captured before the end, C2-3 the top owners 4 and 16 plies later, C4 the winning road (road endings), C5-6 the captures of this move and of the reply. All of them are the game's own. |
+| `DRAWS_AS_NO_RESULT`, `ENDING_CLASSES`, `LEGAL_MOVES_IN_ROWS` | True, 6 and true |
+| `SCORE_SCALE`, `SCORE_UNIT`, `GAME_LENGTH` | 0.15625, the board's side, and 57. The first and the last are assumed until the pilot. |
+| `KOMI_AREA`, `KOMI_LEAD_STEP` | 361 and 0. The look-ahead area, the score table's side and the komi's bracket are the defaults. |
+| `Diversity` | The 24 statistics of `game/tak/diversity.h` |
+
+The road groups, the squares that complete a road and the winning road are `game/tak/roads.h`, which the statistics read
+too. The planes of a road in one placement and the statistic of the road threats are the same set of squares: the planes
+go by the side to move, and the statistic by the player who moved.
+
+A larger board is one number, `MAX_BOARD_LEN` of the trainer's module, and then these parts: the planes of the pieces
+below the top (a compile stops until `TOP_DEPTHS` is the side plus 1), the stops of a policy of more than 32,768 moves
+(the CUDA backend's gather, and `Loc`, a 16-bit number: 8 x 8 has 65,473), and the rows and networks of the smaller
+board, which a migration converts (design 03, "Consequences"). Any build refuses a network of another board: the model
+file's policy has other channels, and the message names the board (`desc.cpp`).
+
 ### The trainer's module
 
 The trainer reads a game's facts from the game's module, `python/katago/train/games/<game>.py`, which mirrors the
@@ -953,6 +989,12 @@ to parse unused params"). A file that writes `enclosure` there (no export writes
 ONNX metadata (`neuralnet/onnxmodelbuilder.cpp`) does not carry the game yet, so a `.onnx` file is not checked: its
 change waits for the TensorRT and ONNX backends (abscls-bd7). Design 07 of the engine repository, "The model file's
 game", gives the reasons.
+
+A network of another largest board than the binary's (Tak's policy grows with its board) has other policy channels, so
+the loader refuses it too: `p2Conv.outChannels (1022) != 510: the network's policy is not this binary's, which has 255
+channels a point on its largest board, 6 x 6 (a network of another largest board or of another game)`. The trainer's
+reader refuses rows of another board in the same way (`check_board`), and rows of a game with classes of endings whose
+score target (C27) has no weight of its ending (G77), which a binary without the classes wrote (`check_ending_weights`).
 
 ## The bot part
 
@@ -1055,10 +1097,11 @@ without `LEGAL_MOVES_IN_ROWS` it checks that the rows have no array of them. In 
 with side positions, and compares each row's mask, of the game's rows, the side positions' and the reanalyzed ones, with
 the legal moves that it computes itself from the board's pieces, at each of the sizes of board of the game and in its
 opening: on the test games `endings` and `slides` (`-DGAME=slides`: 469 slots, 5 x 5 and 6 x 6 boards, an opening that
-places the opponent's pieces). It checks that the writer stops, with the row's turn and game, at a visited move that is
-not legal and at a position without legal moves. `testlegalrows DIR` writes the rows as a training file to DIR.
-`python/tests/test_legal_moves.py` has the same game as `slides_game.py` and checks the loader, the shuffle, the
-symmetries and the losses.
+places the opponent's pieces) and on Tak (9,181 slots, the same boards and kind of opening), whose legal moves the test
+computes from the text of the position (`tpsboard.h`). It checks that the writer stops, with the row's turn and game, at
+a visited move that is not legal and at a position without legal moves. `testlegalrows DIR` writes the rows as a
+training file to DIR. `python/tests/test_legal_moves.py` has the same game as `slides_game.py` and checks the loader,
+the shuffle, the symmetries and the losses.
 
 **The end of a game:** `testgameends` runs on a build of any game, with no argument and no network. It plays random
 games at several komis and checks the history at each end: the winner, the final score, `isScored`, `isNoResult`, the
@@ -1072,7 +1115,11 @@ line that it does not, for each player, a count for each player, a tie of the co
 game has classes of endings and a target of its own in each slot but C7. There the test computes every target of every
 row from the game's boards ("The targets of one ending"): C20, C27, C33, C34, C68, C69, G76, G77, the score's
 distribution and the slots, for each kind of ending and at the cap. The side positions' rows, and the rows reanalyzed
-without the game's outcome, hold no target but the policy's and the values', in every game.
+without the game's outcome, hold no target but the policy's and the values', in every game. On Tak's build it does the
+same on both sizes of board: the ends, the classes and every target come from the text of the positions and of the
+moves. There it also reads every position of its random games, and each position that the engine has ended (in the
+search and in self-play), with a reader of the text alone: an engine that ends a game too early or too late fails. A
+self-play game from a late start that its rules end before its move cap is an ended game there.
 `testrgsc` checks RGSC's outcome alone (`Rgsc::gameOutcome`), and that a restart's state leaves the buffer at the move
 cap.
 
@@ -1163,19 +1210,32 @@ own diversity term and no reward at their root (abscls-e0gz). After the search, 
 only a check of the root's views sets, is off.
 
 **AZdb's latent:** `testdiversityinputs POSITIONS_FILE` names no game, so it runs on any game's build, with the game's
-positions (Blueprints': `tests/data/blueprints_positions.txt`). It needs no network. It checks the cache's hash of each
+positions (Blueprints': `tests/data/blueprints_positions.txt`, Tak's: `tests/data/tak_positions.txt`). It needs no
+network. It checks the cache's hash of each
 member, the rows of V14 against V13's at each allowed symmetry, and the count of the training rows' global targets.
 
 **AZdb's search:** `testdiversitysearch MODEL MODEL_WITHOUT_HEAD [POSITIONS]` runs on a build of a game that gives
-AZdb's statistics (Blueprints), with two networks of the game of the inputs version 14: one with the intrinsic value
-head, one without it. Small random ones are enough (the test's header gives the commands). POSITIONS is a file of
+AZdb's statistics (Blueprints, Tak), with two networks of the game of the inputs version 14: one with the intrinsic
+value head, one without it. Small random ones are enough (the test's header gives the commands). POSITIONS is a file of
 positions whose covers have several views, by default `tests/data/blueprints_root_views.txt`. It checks that member 0
 searches as KataGo's search, and D at each node of chains where each depth allows one move. It checks a node that two
 orders of P's moves share, a member's choice of the move with the larger reward, and each node's reward in a member's
 search with self-play's weightings. It also checks the members' evaluations in one cache, the refusals, and when the
 search keeps and clears its tree. The checks of the root's views keep the member's term: on chains, a check has the
 tree, the reward and the value of its candidate's node in the pass, and with `RootViews::Searches` and
-`RootViews::search` on POSITIONS, `done()` gives the setting to the checks only.
+`RootViews::search` on POSITIONS, `done()` gives the setting to the checks only (a game with views). In a game whose
+turns have one action (Tak) the transposition is P's two moves in both orders around the opponent's reply, and the test
+counts the nodes that paths of other numbers of moves reach and whose statistics differ from path to path: the search
+keeps the reward of the path that created the node. The test prints the counts and the largest differences. In Tak it
+also builds one such node: a placement that two players' spreads, each taken back by the next move, lead to by paths of
+0 and of 4 moves.
+
+**A game's rows outside the C++ code:** `testrows SELFPLAY_CONFIG MODEL GAMES OUT_DIR [OVERRIDES [STARTS]]` runs on a
+build of any game. It plays self-play's games of the config with fixed seeds, every second one from a state of STARTS
+when the file is given, and writes their training rows with a plain record of each game: its hash, its komi, the state
+of its first row, its moves, the move cap and its side positions' states. The engine repository's
+`games/tak/tools/check_rows.py` then computes every input and every target of Tak's rows from the records, with the
+config `tests/data/configs/tak_rows.cfg`, and the trainer's batches at each symmetry.
 
 **Connect-4's encoding part.** The conformance suite checks that its mirror maps the legal moves onto the image's. With
 a Connect-4 binary and network, the engine repository's `games/connect4/tests/test_network.py` checks two more things.
@@ -1223,8 +1283,9 @@ code and the work that remains for a third game.
 5. **The trainer's module.** Add `python/katago/train/games/<game>.py` with the members of `games/__init__.py` ("The
    trainer's module"), the values of the game's encoding part. `train.py -game <game>` then makes a model of the game,
    and its exported files name the game. Check the network against PyTorch: a random test network
-   (`python/enclosure_nn_check.py make CHECKPOINT -game <game>`, then its export), `testnnoutputs` on positions of the
-   game in `cpp/tests/data/`, then `enclosure_nn_check.py compare CHECKPOINT DUMP`. The engine repository's
+   (`python/enclosure_nn_check.py make CHECKPOINT -game <game>`, with `-heads regret,intrinsic` for a network with
+   these heads, then its export), `testnnoutputs` on positions of the game in `cpp/tests/data/` (as actions, or as
+   states on any board), then `enclosure_nn_check.py compare CHECKPOINT DUMP`. The engine repository's
    `build_verify.sh` and `verify_build.sh` are Enclosure's own, so a new game runs these by hand (Connect-4's README,
    "The network").
 6. **The run.** Add the game's self-play config `cpp/configs/training/selfplay_<game>.cfg` and its analysis config

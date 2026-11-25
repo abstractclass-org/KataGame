@@ -1,6 +1,8 @@
 // KataGame fork (2026-10-29): AZdb's diversity term in the search (Search::diversityWeight, program/azdb.h), on the
-// build's game, which must give AZdb's statistics (GameInterface: Diversity, as Blueprints does). The engine
-// repository's games/blueprints/docs/research/diversity-players.md, "The search". The checks:
+// build's game, which must give AZdb's statistics (GameInterface: Diversity, as Blueprints and Tak do). The engine
+// repository's games/blueprints/docs/research/diversity-players.md, "The search". In a game whose turns have one action
+// (Tak), the chains are the last 3 and 4 actions, and the transposition is P's two moves in both orders around the
+// opponent's reply. The checks:
 //   - member 0 with the term's settings (λ and a state) searches as the search without them: the same visits, values
 //     and moves (w = 0);
 //   - D on chains, where each depth allows one move, so that the searches with and without the term have the same
@@ -25,11 +27,15 @@
 //   - the checks of the root's views (abscls-e0gz). On chains, a search of a candidate's child that continues P's
 //     search (Search::diversityMoverIntoRoot) has the tree, the reward and the value of the candidate's node in P's
 //     search, both where the opponent moves next and where P moves again. Without the setting (a search for the
-//     child's player to move), the value differs. With RootViews::Searches on the positions of POSITIONS, whose covers
-//     have several views: done() sets the setting for the checks only, a check's root has its candidate's reward and
-//     P's term, a check of 1 visit has the value of its candidate's node of 1 visit in a pass and the value of the
-//     term's formula, and the end of the searches leaves the setting off. RootViews::search (the analysis engine's)
-//     answers with checks, and leaves the setting off at its end and when it stops during a check.
+//     child's player to move), the value differs. In a game with views, with RootViews::Searches on the positions of
+//     POSITIONS, whose covers have several views: done() sets the setting for the checks only, a check's root has its
+//     candidate's reward and P's term, a check of 1 visit has the value of its candidate's node of 1 visit in a pass
+//     and the value of the term's formula, and the end of the searches leaves the setting off. RootViews::search (the
+//     analysis engine's) answers with checks, and leaves the setting off at its end and when it stops during a check.
+//   - the statistics of a node that several paths reach (abscls-shfz.11): the search keeps the reward of the path that
+//     created the node, so it counts the nodes whose statistics another path gives differently, and prints by how much
+//     the statistics and the rewards differ. A game's statistic can read what its position's hash leaves out (Tak's
+//     share of spreads reads the move number).
 //   - AZdb's team (abscls-hqyw.15, SearchParams::diversityTeam = value): the team's member is the member whose network
 //     gives the player to move the highest value at the root, its search is that member's search, the members' values
 //     come from one symmetry when the evaluator draws them at random, the response reports the member and each
@@ -87,6 +93,10 @@ static bool near(double a, double b, double tolerance = 1e-9) {
   return std::fabs(a - b) <= tolerance * std::max(1.0, std::fabs(a) + std::fabs(b));
 }
 
+//Whether a turn of the game has several actions (Blueprints' moves and edits).
+static constexpr bool TURNS =
+  GameInterface::turnMoves<GameRules>() > 1 || GameInterface::rules::HasContinuesMove<GameRules>::value;
+
 //A position of a game.
 struct Position {
   Board board;
@@ -104,9 +114,8 @@ struct Position {
   bool endsMove() const { return !GameInterface::continuesMove<GameRules>(board.pos); }
 };
 
-//A random game from the start of the game's standard board to its end, the position after each action.
-static vector<Position> randomGame(Rand& rand) {
-  Board board;
+//A random game from the start of the game's standard board, or of another, to its end, the position after each action.
+static vector<Position> randomGame(Rand& rand, const Board& board = Board()) {
   vector<Position> game = {Position{board, BoardHistory(board, P_BLACK, Rules(), 0)}};
   vector<Loc> legal;
   while(!game.back().hist.isGameFinished) {
@@ -521,6 +530,207 @@ static bool commutingMoves(
   return false;
 }
 
+//A transposition of a game whose turns have one action: a position R of the game where P's two moves m1 and m2 and the
+//opponent's reply x reach one node in the orders m1 x m2 and m2 x m1, through other nodes. After it, none of the three
+//is legal (placements). one and two are the positions along both orders. False when the game has none.
+static bool commutingMovesAroundAReply(
+  NNEvaluator* nnEval, const vector<Position>& game, Rand& rand, vector<Position>& one, vector<Position>& two
+) {
+  for(size_t i = 2; i + 10 < game.size(); i++) {
+    const Position& R = game[i];
+    for(int tries = 0; tries < 20; tries++) {
+      const vector<Loc> moves = searchableMoves(nnEval, R);
+      const Loc m1 = moves[rand.nextUInt((uint32_t)moves.size())], m2 = moves[rand.nextUInt((uint32_t)moves.size())];
+      const Position after1 = R.after(m1);
+      if(m1 == m2 || after1.hist.isGameFinished)
+        continue;
+      const vector<Loc> replies = searchableMoves(nnEval, after1);
+      const Loc x = replies[rand.nextUInt((uint32_t)replies.size())];
+      one = play(R, {m1, x, m2});
+      two = play(R, {m2, x, m1});
+      if(one.size() != 4 || two.size() != 4 || one[3].hist.isGameFinished || graphKey(one[3]) != graphKey(two[3]) ||
+         graphKey(one[1]) == graphKey(two[1]) || graphKey(one[2]) == graphKey(two[2]) ||
+         one[2].legal(m1) || two[2].legal(m2) || one[3].legal(x))
+        continue;
+      bool all = true;
+      for(int j = 0; j < 3 && all; j++)
+        all = searchable(nnEval, one[j], one[j + 1].lastLoc()) && searchable(nnEval, two[j], two[j + 1].lastLoc());
+      if(all)
+        return true;
+    }
+  }
+  return false;
+}
+
+//The moves at p that end the game: those of the last move's check.
+static int endingMoves(const Position& p) {
+  vector<Loc> legal;
+  p.board.getLegalMoveLocs(legal);
+  int ending = 0;
+  for(Loc loc: legal)
+    ending += p.after(loc).hist.isGameFinished ? 1 : 0;
+  return ending;
+}
+
+//What the paths to one node give (transposedStatisticsTest).
+struct TransposedCounts {
+  int searches = 0, nodes = 0;
+  int transposed = 0;    //nodes that several edges of the searched graph lead into
+  int otherNumber = 0;   //of them, nodes that paths of another number of moves reach
+  int differ = 0;        //of them, nodes of another statistic on some path
+  //The largest differences of a statistic and of a reward, and the largest node constant.
+  double statistic = 0.0, reward = 0.0, largest = 0.0;
+  int64_t visits = 0, differVisits = 0;  //the visits of the nodes, and of those that differ
+};
+
+//A search of member at root: each node's statistics and reward on the paths that reach it, one path for each number of
+//moves played, against those of the least number.
+static void countTransposed(
+  const Search& search, const Position& root, int member, const shared_ptr<const State>& state, TransposedCounts& counts
+) {
+  const Player P = root.pla();
+  map<const SearchNode*, set<const SearchNode*>> parents;
+  map<const SearchNode*, map<int, Position>> byNumber;  //one position of each number of moves played
+  vector<pair<const SearchNode*, Position>> stack = {{search.rootNode, root}};
+  byNumber[search.rootNode].emplace(GameRules::moves_played(root.board.pos), root);
+  while(!stack.empty()) {
+    const pair<const SearchNode*, Position> top = std::move(stack.back());
+    stack.pop_back();
+    for(const Child& c: childrenOf(*top.first)) {
+      parents[c.node].insert(top.first);
+      Position after = top.second.after(c.loc);
+      const int number = GameRules::moves_played(after.board.pos);
+      if(byNumber[c.node].emplace(number, after).second)
+        stack.push_back({c.node, std::move(after)});
+    }
+  }
+  vector<double> x(State::N), first(State::N), phi(State::N);
+  for(const auto& [node, positions]: byNumber) {
+    counts.nodes++;
+    counts.visits += visitsOf(*node);
+    counts.largest = std::max(counts.largest, std::fabs(node->diversityReward));
+    if(parents[node].size() < 2 && positions.size() < 2)
+      continue;
+    counts.transposed++;
+    if(positions.size() < 2)
+      continue;
+    counts.otherNumber++;
+    double most = 0.0, mostReward = 0.0;
+    const Position& p0 = positions.begin()->second;
+    const int player = Board::indexOfPlayer(p0.lastPla());
+    GameInterface::diversityStatisticsOf<GameEncoding>(p0.board.pos, player, first.data());
+    for(const auto& entry: positions) {
+      const Position& p = entry.second;
+      GameInterface::diversityStatisticsOf<GameEncoding>(p.board.pos, player, x.data());
+      for(int s = 0; s < State::N; s++)
+        most = std::max(most, std::fabs(x[s] - first[s]));
+      mostReward = std::max(mostReward, std::fabs(rewardFor(*state, member, p, P) - rewardFor(*state, member, p0, P)));
+    }
+    if(most > 0.0) {
+      counts.differ++;
+      counts.differVisits += visitsOf(*node);
+      counts.statistic = std::max(counts.statistic, most);
+      counts.reward = std::max(counts.reward, mostReward);
+    }
+  }
+  counts.searches++;
+}
+
+//In Tak, a position R where the player to move has a placement m, and each player has a spread of one piece by one
+//square that the next move of theirs takes back, so that m reaches one node after the 4 spreads and without them. A
+//search that may play only these moves, and the counts of its nodes. False when the game has no such position.
+static bool constructedTransposition(
+  NNEvaluator* nnEval, Logger& logger, const vector<Position>& game, int member, double lambda,
+  const shared_ptr<const State>& state, TransposedCounts& counts
+) {
+  const string forth = "+-><", back = "-+<>";
+  auto textOf = [](const Position& p, Loc loc) { return Location::toString(loc, p.board); };
+  //The spreads of one piece by one square, such as c3>, and the move of p that the text names, if any.
+  auto steps = [&](const Position& p) {
+    vector<Loc> legal, out;
+    p.board.getLegalMoveLocs(legal);
+    for(Loc loc: legal) {
+      const string text = textOf(p, loc);
+      if(text.size() == 3 && forth.find(text[2]) != string::npos)
+        out.push_back(loc);
+    }
+    return out;
+  };
+  auto named = [&](const Position& p, const string& name) {
+    vector<Loc> legal;
+    p.board.getLegalMoveLocs(legal);
+    for(Loc loc: legal)
+      if(textOf(p, loc) == name)
+        return loc;
+    return Board::NULL_LOC;
+  };
+  auto reverse = [&](const string& text) {
+    const size_t d = forth.find(text[2]);
+    const int dx[4] = {0, 0, 1, -1}, dy[4] = {1, -1, 0, 0};
+    return string(1, (char)(text[0] + dx[d])) + (char)(text[1] + dy[d]) + back[d];
+  };
+  for(size_t i = 6; i + 6 < game.size(); i++) {
+    const Position& R = game[i];
+    for(Loc s1: steps(R)) {
+      const Position a = R.after(s1);
+      if(a.hist.isGameFinished)
+        continue;
+      for(Loc t1: steps(a)) {
+        const Position b = a.after(t1);
+        const Loc s2 = b.hist.isGameFinished ? Board::NULL_LOC : named(b, reverse(textOf(R, s1)));
+        if(s2 == Board::NULL_LOC)
+          continue;
+        const Position c = b.after(s2);
+        const Loc t2 = c.hist.isGameFinished ? Board::NULL_LOC : named(c, reverse(textOf(a, t1)));
+        if(t2 == Board::NULL_LOC)
+          continue;
+        const Position d = c.after(t2);
+        if(d.hist.isGameFinished)
+          continue;
+        vector<Loc> legal;
+        R.board.getLegalMoveLocs(legal);
+        for(Loc m: legal) {
+          if(textOf(R, m).size() != 2 || !d.legal(m))
+            continue;
+          const Position n1 = R.after(m), n2 = d.after(m);
+          if(n1.hist.isGameFinished || graphKey(n1) != graphKey(n2))
+            continue;
+          SearchParams p = params(400, member, lambda);
+          p.rootPolicyTemperature = p.rootPolicyTemperatureEarly = 1000.0;
+          p.rootFpuReductionMax = 0.0;
+          unique_ptr<Search> search = runSearch(
+            nnEval, logger, p, R, state, onlyMoves({{m, 0}, {s1, 0}, {s2, 0}}), onlyMoves({{t1, 0}, {t2, 0}}));
+          countTransposed(*search, R, member, state, counts);
+          if(counts.otherNumber > 0) {
+            //The node's constant is the reward of the path that created it, one of the two.
+            for(const Child& child: childrenOf(*search->rootNode))
+              if(child.loc == m) {
+                const double wP = signedWeight(R.pla(), lambda);
+                const double r1 = wP * rewardFor(*state, member, n1, R.pla());
+                const double r2 = wP * rewardFor(*state, member, n2, R.pla());
+                check(near(child.node->diversityReward, r1) || near(child.node->diversityReward, r2),
+                      "the constructed transposition: the node's constant is a path's reward");
+                printf("the constructed transposition: at action %d, %s after 0 and after 4 spreads: the rewards "
+                       "times w are %.6f and %.6f, the node's constant is %.6f\n", (int)i, textOf(R, m).c_str(), r1,
+                       r2, child.node->diversityReward);
+              }
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+static void printTransposed(const char* label, const TransposedCounts& c, double lambda) {
+  printf("the paths to a node, %s: %d searches, %d nodes, %d that several edges lead into, %d of them by paths of "
+         "other numbers of moves, %d of these with another statistic on some path (%.4f%% of the nodes, %.4f%% of the "
+         "visits): a statistic by up to %.4f, a reward by up to %.6f (the largest node constant is %.6f, w is %.4f)\n",
+         label, c.searches, c.nodes, c.transposed, c.otherNumber, c.differ, 100.0 * c.differ / std::max(1, c.nodes),
+         100.0 * c.differVisits / std::max((int64_t)1, c.visits), c.statistic, c.reward, c.largest, weightOf(lambda));
+}
+
 //The utility of p's network evaluation alone, as the search without the term counts a leaf: a search of one visit at p.
 static double nnUtility(NNEvaluator* nnEval, Logger& logger, const Position& p, int member) {
   return utilityOf(*runSearch(nnEval, logger, params(1, member, 1.0), p, nullptr)->rootNode);
@@ -701,8 +911,10 @@ int main(int argc, char** argv) {
   ConfigParser cfg(kvs);
   Logger logger(nullptr, false, true, false, false);
   const int S = NNPos::MAX_BOARD_LEN;
+  GameRules::Position smaller;
+  const bool playsSmaller = !TURNS && GameRules::new_game(S - 1, S - 1, smaller);
   auto newEvaluator = [&](const string& file) {
-    const bool exact = NNPos::fillsNNBoard(Board::DEFAULT_X_SIZE, Board::DEFAULT_Y_SIZE);
+    const bool exact = NNPos::fillsNNBoard(Board::DEFAULT_X_SIZE, Board::DEFAULT_Y_SIZE) && !playsSmaller;
     NNEvaluator* nnEval = new NNEvaluator(
       "test", file, "", &logger, 8, S, S, exact, true, 16, 4, false, "", enabled_t::False, 1, {0},
       "testdiversitysearch", false, 0, cfg);
@@ -716,26 +928,29 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  //A random game whose last 5 actions are whole moves (no edit) and make chains, so that the chains of its last 3 and 5
-  //actions start with each player, and which has a transposition (commutingMoves).
+  //A random game whose last actions (LONG) are whole moves (no edit) and make chains, so that the chains of its last 3
+  //and LONG actions start with each player, which has a transposition (commutingMoves), and whose last move has two
+  //moves that end the game.
+  const int LONG = TURNS ? 5 : 4, MAX_SEEDS = TURNS ? 50 : 1000;
   vector<Position> game, one, two;
   int seed = 0;
   bool found = false;
-  for(; seed < 50 && !found; seed++) {
+  for(; seed < MAX_SEEDS && !found; seed++) {
     Rand rand("testdiversitysearch game " + Global::intToString(seed));
     game = randomGame(rand);
     const int G = (int)game.size() - 1;
     if(G < 16)
       continue;
     bool whole = true;
-    for(int j = G - 4; j <= G; j++)
+    for(int j = G - LONG + 1; j <= G; j++)
       whole = whole && game[j].endsMove();
-    const vector<Position> last3 = lineOf(game, G - 3), last5 = lineOf(game, G - 5);
-    found = whole && last3[0].pla() != last5[0].pla() && chainBelow(last3, chainMoves(last3)) &&
-      chainBelow(last5, chainMoves(last5)) && commutingMoves(nnEval, game, rand, one, two);
+    const vector<Position> last3 = lineOf(game, G - 3), lastLong = lineOf(game, G - LONG);
+    found = whole && last3[0].pla() != lastLong[0].pla() && chainBelow(last3, chainMoves(last3)) &&
+      chainBelow(lastLong, chainMoves(lastLong)) && (TURNS || endingMoves(game[G - 1]) >= 2) &&
+      (TURNS ? commutingMoves(nnEval, game, rand, one, two) : commutingMovesAroundAReply(nnEval, game, rand, one, two));
   }
   if(!found) {
-    fprintf(stderr, "no random game of 50 has the chains and the transposition that the test needs\n");
+    fprintf(stderr, "no random game of %d has the chains and the transposition that the test needs\n", MAX_SEEDS);
     return 1;
   }
   const int G = (int)game.size() - 1;
@@ -773,35 +988,37 @@ int main(int argc, char** argv) {
     printf("member 0: 3 positions, %d root children with the same visits, utilities and moves\n", compared);
   }
 
-  //D on chains to the game's end, for P = each player: its last 3 and its last 5 actions.
+  //D on chains to the game's end, for P = each player: its last 3 and its last LONG actions.
   {
-    const Player Pa = game[G - 3].pla(), Pb = game[G - 5].pla();
+    const Player Pa = game[G - 3].pla(), Pb = game[G - LONG].pla();
     chainTest(nnEval, logger, lineOf(game, G - 3), member, lambda, state, 8, "chain of 3");
-    chainTest(nnEval, logger, lineOf(game, G - 5), member, lambda, state, 12, "chain of 5");
-    printf("chains: D at each node, with P %s on the chain of 3 and %s on the chain of 5\n",
-           PlayerIO::playerToString(Pa).c_str(), PlayerIO::playerToString(Pb).c_str());
+    chainTest(nnEval, logger, lineOf(game, G - LONG), member, lambda, state, 12, "chain of " + to_string(LONG));
+    printf("chains: D at each node, with P %s on the chain of 3 and %s on the chain of %d\n",
+           PlayerIO::playerToString(Pa).c_str(), PlayerIO::playerToString(Pb).c_str(), LONG);
   }
 
-  //A transposition: P's moves m1 then m2, and m2 then m1, reach one node N. The search may play only their actions,
-  //from the root on, and the opponent nothing, so that N is a leaf.
+  //A transposition: P's moves m1 then m2, and m2 then m1, reach one node N, the last of each order's LAST actions. The
+  //search may play only their actions, from the root on, and the opponent its reply between them where the turns have
+  //one action, else nothing, so that N is a leaf.
   {
     const Position& R = one[0];
     const Player P = R.pla();
-    vector<pair<Loc, int>> allowed;
-    for(int j = 1; j <= 4; j++) {
-      allowed.push_back({one[j].lastLoc(), 0});
-      allowed.push_back({two[j].lastLoc(), 0});
-    }
+    const int LAST = (int)one.size() - 1;
+    vector<pair<Loc, int>> allowed, allowedReplies;
+    for(int j = 1; j <= LAST; j++)
+      for(const vector<Position>* line: {&one, &two})
+        ((*line)[j].lastPla() == P ? allowed : allowedReplies).push_back({(*line)[j].lastLoc(), 0});
     //A flat root policy, so that both orders get visits whatever their priors.
     SearchParams flat = params(60, member, lambda);
     flat.rootPolicyTemperature = flat.rootPolicyTemperatureEarly = 1000.0;
     flat.rootFpuReductionMax = 0.0;
-    unique_ptr<Search> graph = runSearch(nnEval, logger, flat, R, state, onlyMoves(allowed), onlyMoves({}));
+    unique_ptr<Search> graph =
+      runSearch(nnEval, logger, flat, R, state, onlyMoves(allowed), onlyMoves(allowedReplies));
     //The nodes along each order, NULL from where the search did not go, and how deep it went.
     auto follow = [&](const vector<Position>& line, int& depth) {
       vector<const SearchNode*> nodes = {graph->rootNode};
       depth = 0;
-      for(int j = 1; j <= 4; j++) {
+      for(int j = 1; j <= LAST; j++) {
         const SearchNode* next = NULL;
         if(nodes.back() != NULL)
           for(const Child& c: childrenOf(*nodes.back()))
@@ -815,16 +1032,16 @@ int main(int argc, char** argv) {
     };
     int depth1, depth2;
     const vector<const SearchNode*> nodes1 = follow(one, depth1), nodes2 = follow(two, depth2);
-    const bool shared = nodes1[4] != NULL && nodes1[4] == nodes2[4];
+    const bool shared = nodes1[LAST] != NULL && nodes1[LAST] == nodes2[LAST];
     check(shared, "transposition: both orders reach one node (depths " + Global::intToString(depth1) + " and " +
-          Global::intToString(depth2) + " of 4, root children " +
+          Global::intToString(depth2) + " of " + Global::intToString(LAST) + ", root children " +
           Global::intToString((int)childrenOf(*graph->rootNode).size()) + ")");
-    for(int j = 1; j < 4; j++)
+    for(int j = 1; j < LAST; j++)
       check(nodes1[j] != NULL && nodes2[j] != NULL && nodes1[j] != nodes2[j],
             where("transposition: other nodes at", j));
     const double wP = signedWeight(P, lambda);
     double sum1 = 0.0, sum2 = 0.0;
-    for(int j = 1; j <= 4; j++) {
+    for(int j = 1; j <= LAST; j++) {
       const double r1 = rewardFor(*state, member, one[j], P), r2 = rewardFor(*state, member, two[j], P);
       sum1 += r1;
       sum2 += r2;
@@ -837,14 +1054,18 @@ int main(int argc, char** argv) {
     if(shared) {
       //N's value holds its own reward once and none of either order's earlier rewards: KataGo's utility of its
       //evaluation, plus w s_P times its reward and the head's return after it (output B: the opponent moves).
-      const SearchNode& N = *nodes1[4];
+      const SearchNode& N = *nodes1[LAST];
       const NNOutput* out = N.getNNOutput();
-      const double rN = rewardFor(*state, member, one[4], P);
+      const double rN = rewardFor(*state, member, one[LAST], P);
       check(childrenOf(N).empty() && out != NULL && N.nextPla != P && rN != 0.0, "transposition: the node is a leaf");
       if(out != NULL) {
-        const double expected = nnUtility(nnEval, logger, one[4], member) + wP * (rN + out->intrinsicB);
-        check(near(utilityOf(N), expected), "transposition: the node's value (" + Global::doubleToString(utilityOf(N)) +
-              " vs " + Global::doubleToString(expected) + ")");
+        //The node's evaluation has the history of the order that created it.
+        double expected[2];
+        for(int k = 0; k < 2; k++)
+          expected[k] =
+            nnUtility(nnEval, logger, (k == 0 ? one : two)[LAST], member) + wP * (rN + out->intrinsicB);
+        check(near(utilityOf(N), expected[0]) || near(utilityOf(N), expected[1]), "transposition: the node's value (" +
+              Global::doubleToString(utilityOf(N)) + " vs " + Global::doubleToString(expected[0]) + ")");
       }
       printf("transposition: at action %d, two orders of P's moves meet in one node of %lld visits; the orders' "
              "rewards before it sum to %.6f and %.6f\n", (int)R.hist.moveHistory.size(), (long long)visitsOf(N),
@@ -1003,14 +1224,15 @@ int main(int argc, char** argv) {
 
     //The search: on a chain, the node constants are the scaled rows' rewards, and D holds (chainTest). In self-play's
     //kind of search, each node constant is k times w s_P times the reward of the move into it at k = 1.
-    chainTest(nnEval, logger, lineOf(game, G - 5), member, lambda, scaled, 12, "chain of 5 at k = 100");
+    chainTest(nnEval, logger, lineOf(game, G - LONG), member, lambda, scaled, 12,
+              "chain of " + to_string(LONG) + " at k = 100");
     int nodes = 0, rewarded = 0;
     selfplayRewardsTest(nnEval, logger, game[G / 2], member, lambda, scaled, *state, k,
                         "the reward's scale: self-play's search", nodes, rewarded);
     check(rewarded > 0, "the reward's scale: some node has a reward");
     printf("the reward's scale: k = %g gives %d rows (%d with a reward, %d with a target) k times their rewards and "
-           "targets, a chain of 5 its D, and %d nodes of self-play's search (%d with a reward) k times their "
-           "rewards\n", k, G, rewards, targets, nodes, rewarded);
+           "targets, a chain of %d its D, and %d nodes of self-play's search (%d with a reward) k times their "
+           "rewards\n", k, G, rewards, targets, LONG, nodes, rewarded);
   }
 
   //AZdb's team (abscls-hqyw.15), the value rule, at roots along the random game: the team's member is the member whose
@@ -1204,16 +1426,55 @@ int main(int argc, char** argv) {
           break;
         }
       }
-      check(kept >= 1 && cleared, label + ": a move within the turn and a change of P");
+      check((kept >= 1 || !TURNS) && cleared, label + ": a move within the turn and a change of P");
     }
-    printf("tree: kept within P's turn, cleared when P changes with the term only\n");
+    printf("tree: %scleared when P changes with the term only\n", TURNS ? "kept within P's turn, " : "");
   }
 
-  //The checks of the root's views (abscls-e0gz). On the chain of the game's last 5 actions and its later parts: a check
-  //has the value of its candidate's node in a pass, where the opponent moves next and where P moves again.
+  //The statistics of a node that several paths reach, in a game whose turns have one action: on random positions, and
+  //on positions of games that searches of a few visits play, as self-play's.
+  if(!TURNS) {
+    const int64_t visits = 4000;
+    TransposedCounts randomly, played, constructed;
+    Rand rand("testdiversitysearch transposed");
+    auto startOf = [&](int g) { return playsSmaller && g % 2 == 1 ? Board(S - 1, S - 1) : Board(); };
+    auto count = [&](const Position& root, TransposedCounts& counts) {
+      const unique_ptr<Search> search = runSearch(nnEval, logger, selfplayParams(visits, member, lambda), root, state);
+      countTransposed(*search, root, member, state, counts);
+    };
+    bool built = false;
+    for(int g = 0; g < 8; g++) {
+      const vector<Position> other = randomGame(rand, startOf(g));
+      for(size_t at = other.size() / 6; at + 2 < other.size(); at += std::max((size_t)1, other.size() / 5))
+        count(other[at], randomly);
+      built = built || constructedTransposition(nnEval, logger, other, member, lambda, state, constructed);
+    }
+    for(int g = 0; g < 4; g++) {
+      const Board start = startOf(g);
+      Position p{start, BoardHistory(start, P_BLACK, Rules(), 0)};
+      for(int move = 0; !p.hist.isGameFinished && move < 200; move++) {
+        if(move % 10 == 5)
+          count(p, played);
+        SearchParams quick = selfplayParams(24, 0, 1.0);
+        quick.rootNoiseEnabled = true;
+        quick.chosenMoveTemperature = quick.chosenMoveTemperatureEarly = 1.0;
+        Search bot(quick, nnEval, &logger, "testdiversitysearch played " + to_string(g) + " " + to_string(move));
+        bot.setPosition(p.pla(), p.board, p.hist);
+        p = p.after(bot.runWholeSearchAndGetMove(p.pla()));
+      }
+    }
+    check(randomly.transposed > 0 && played.transposed > 0, "the paths to a node: nodes that several paths reach");
+    check(built && constructed.differ > 0, "the paths to a node: a constructed transposition whose statistics differ");
+    printTransposed("random positions", randomly, lambda);
+    printTransposed("played positions", played, lambda);
+    printTransposed("the constructed transposition", constructed, lambda);
+  }
+
+  //The checks of the root's views (abscls-e0gz). On the chain of the game's last LONG actions and its later parts: a
+  //check has the value of its candidate's node in a pass, where the opponent moves next and where P moves again.
   {
     int opponentNext = 0, playerNext = 0;
-    for(int from = G - 5; from <= G - 2; from++) {
+    for(int from = G - LONG; from <= G - 2; from++) {
       const vector<Position> line = lineOf(game, from);
       if(chainBelow(line, chainMoves(line)))
         chainCheckTest(nnEval, logger, line, member, lambda, state, 10,
@@ -1225,8 +1486,8 @@ int main(int argc, char** argv) {
   }
 
   //With RootViews::Searches and RootViews::search, at the positions of POSITIONS, whose covers have several views (a
-  //random game's positions have none).
-  {
+  //random game's positions have none), in a game with views.
+  if(GameInterface::hasViews<GameRules>()) {
     vector<Position> roots;
     {
       ifstream in(positionsFile);

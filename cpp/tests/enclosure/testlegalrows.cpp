@@ -7,9 +7,10 @@
 // A game without the member: the rows have no legal moves, and the file of rows no array of them. A game with it: each
 // row of self-play's games holds the moves that the rules make legal in its position, and no other, a bit for each
 // policy index. The rows are those of the game, of its side positions, and of a reanalyzed game. The test computes the
-// legal moves of the test games from the board's colors alone (expectedLegal), for endings (4 x 4, a point a move) and
-// for slides (5 x 5 and 6 x 6 boards in the policy of 6 x 6, with an opening that places the opponent's pieces, 13
-// channels a point and several hundred slots).
+// legal moves from the board alone (expectedLegal), for the test games endings (4 x 4, a point a move) and slides
+// (5 x 5 and 6 x 6 boards in the policy of 6 x 6, with an opening that places the opponent's pieces, 13 channels a
+// point and several hundred slots) and for Tak (the same boards and kind of opening, 255 channels), from its position's
+// text (tpsboard.h).
 // The writer stops at a row with visits on a move that is not legal in its position, and at a row whose position has
 // no legal move, with the row's name.
 //
@@ -35,6 +36,7 @@
 #include "../../neuralnet/nninputs.h"
 #include "../../program/play.h"
 #include "../../search/search.h"
+#include "tpsboard.h"
 
 using namespace std;
 
@@ -49,14 +51,21 @@ static void check(bool ok, const string& what) {
 
 static constexpr bool HOLDS = TrainingWriteBuffers::HAS_LEGAL_MOVES;
 static const string GAME = GameRules::NAME;
+//A game of two sizes of board in the largest one's policy, with an opening of 2 plies that places pieces alone.
+static const bool TWO_SIZES = GAME == "slides" || GAME == "tak";
 static constexpr int SLOTS = NNPos::POLICY_CHANNELS * NNPos::MAX_BOARD_AREA + 1;
 static constexpr int LEN = NNPos::MAX_BOARD_LEN;
 static const int DX[4] = {0, 0, 1, -1}, DY[4] = {1, -1, 0, 0};
 
 //The legal moves of a position as policy indices, for a test game, from the board's colors and the turn, which the
-//side positions and the game's positions give. An independent copy of the rules.
+//side positions and the game's positions give, and for Tak from its position's text. An independent copy of the rules.
 static set<int> expectedLegal(const Board& board, int turn) {
   set<int> legal;
+  if(GAME == "tak") {
+    const Tps::Board tps(GameRules::position_text(board.pos));
+    check(tps.ply == turn, "the turn of a position is its ply");
+    return tps.legalMoves(LEN);
+  }
   const int n = board.x_size;
   auto at = [&](int x, int y) { return board.colors[Location::getLoc(x, y, n)]; };
   const Player mover = board.nextPla();
@@ -121,10 +130,10 @@ static void checkRow(const TrainingWriteBuffers& b, int64_t r, const Board& boar
       check((a / NNPos::POLICY_CHANNELS) % LEN < board.x_size && (a / NNPos::POLICY_CHANNELS) / LEN < board.y_size,
             where + ": a move off the smaller board");
   }
-  if(GAME == "slides" && turn < 2) {
+  if(TWO_SIZES && turn < 2) {
     counts.openingRows++;
     for(const int a : mask)
-      check(a % NNPos::POLICY_CHANNELS == 0, where + ": a slide in the opening");
+      check(a % NNPos::POLICY_CHANNELS == 0, where + ": a move in the opening that is not the first channel's");
   }
   counts.moves += (int64_t)mask.size();
 }
@@ -264,7 +273,7 @@ static void checkHeld(NNEvaluator* nnEval, Logger& logger, const string& outDir,
   if(!outDir.empty())
     files = new TrainingDataWriter(outDir, NNModelVersion::getInputsVersion(NNModelVersion::defaultModelVersion), 4096,
                                    1.0, LEN, LEN, "testlegalrows files");
-  const vector<int> sizes = GAME == "slides" ? vector<int>{LEN, LEN - 1} : vector<int>{LEN};
+  const vector<int> sizes = TWO_SIZES ? vector<int>{LEN, LEN - 1} : vector<int>{LEN};
   for(int g = 0; g < 40; g++) {
     const int size = sizes[g % sizes.size()];
     FinishedGameData* data = playGame(nnEval, logger, size, to_string(g));
@@ -319,7 +328,7 @@ static void checkHeld(NNEvaluator* nnEval, Logger& logger, const string& outDir,
   }
   check(counts.rows > 0 && counts.sideRows > 0 && counts.reanalyzedRows == counts.rows,
         "the rows: none of a game, of a side position, or of a reanalyzed game");
-  if(GAME == "slides")
+  if(TWO_SIZES)
     check(counts.openingRows > 0 && counts.smallRows > 0, "the rows: none of the opening, or of the smaller board");
   if(files != nullptr) {
     files->flushIfNonempty();
@@ -343,7 +352,7 @@ int main(int argc, char** argv) {
   ScoreValue::initTables();
   NeuralNet::globalInitialize();
   printf("%s: the rows hold their legal moves: %s, %d slots\n", GAME.c_str(), HOLDS ? "yes" : "no", SLOTS);
-  check((GAME != "endings" && GAME != "slides") || HOLDS, "the test games have the member");
+  check((GAME != "endings" && !TWO_SIZES) || HOLDS, "the test games and Tak have the member");
 
   Logger logger(nullptr, false, false, false);
   NNEvaluator* nnEval = newEvaluator(logger);
@@ -355,7 +364,7 @@ int main(int argc, char** argv) {
   if(HOLDS) {
     checkHeld(nnEval, logger, argc > 1 ? argv[1] : "", counts);
     checkStops(nnEval, logger, LEN);
-    if(GAME == "slides")
+    if(TWO_SIZES)
       checkStops(nnEval, logger, LEN - 1);
     printf("%d games: %d rows, %d side positions, %d reanalyzed; of all three kinds, %d of the opening and %d on the "
            "smaller board; %.1f legal moves a row\n", counts.games, counts.rows, counts.sideRows, counts.reanalyzedRows,

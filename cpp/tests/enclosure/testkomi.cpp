@@ -87,8 +87,8 @@ static_assert(GameInterface::komiBracketStep<OwnBracket>() == 6.0 &&
 
 //The even-komi search of each game of KataGame: its bracket's first offset and limit, whether the bracket's end counts
 //as the even komi, and the lead's step. Blueprints' scores reach thousands of points, and its margins have no parity.
-//The other games, and the games of the tests, give none of these, so they keep KataGo's bracket and rule, and KataGo's
-//lead step times SCORE_SCALE.
+//Tak's margins have no parity either, and it keeps KataGo's bracket and rule. The other games, and the games of the
+//tests, give none of these, so they keep KataGo's bracket and rule, and KataGo's lead step times SCORE_SCALE.
 static bool pinnedSearch(double& step, double& limit, bool& endIsEven, double& leadStep) {
   if(strcmp(GameRules::NAME, "blueprints") == 0) {
     step = 20.0;
@@ -98,11 +98,12 @@ static bool pinnedSearch(double& step, double& limit, bool& endIsEven, double& l
     return true;
   }
   if(strcmp(GameRules::NAME, "enclosure") == 0 || strcmp(GameRules::NAME, "connect4") == 0 ||
-     strcmp(GameRules::NAME, "endings") == 0 || strcmp(GameRules::NAME, "slides") == 0) {
+     strcmp(GameRules::NAME, "tak") == 0 || strcmp(GameRules::NAME, "endings") == 0 ||
+     strcmp(GameRules::NAME, "slides") == 0) {
     step = 1.0;
     limit = 32.0;
     endIsEven = true;
-    leadStep = strcmp(GameRules::NAME, "enclosure") == 0 ? 6.0 : 0.5;
+    leadStep = strcmp(GameRules::NAME, "enclosure") == 0 ? 6.0 : strcmp(GameRules::NAME, "tak") == 0 ? 0.0 : 0.5;
     return true;
   }
   return false;
@@ -678,6 +679,11 @@ static unique_ptr<ConfigParser> configOf(const vector<int>& sizes, const string&
   return make_unique<ConfigParser>(in);
 }
 
+//The spreads of this test's own configs, as a share of the numbers below. A config's spreads are at most KataGo's
+//bounds times SCORE_SCALE (60 for komiStdev), which is less than these numbers in a game of small scores (Tak).
+static constexpr double SPREAD = NNPos::SCORE_SCALE < 1.0 ? NNPos::SCORE_SCALE : 1.0;
+static string spread(double points) { return numbers({points * SPREAD}); }
+
 static Draws drawsWith(
   const vector<double>& means, const vector<double>& shares, double stdev, double bigProb, double big,
   double biggerProb, double bigger, double integerProb, double forkProb
@@ -685,11 +691,11 @@ static Draws drawsWith(
   Draws d;
   d.means = means;
   d.shares = shares;
-  d.stdev = stdev;
+  d.stdev = stdev * SPREAD;
   d.bigProb = bigProb;
-  d.big = big;
+  d.big = big * SPREAD;
   d.biggerProb = biggerProb;
-  d.bigger = bigger;
+  d.bigger = bigger * SPREAD;
   d.integerProb = integerProb;
   d.forkProb = forkProb;
   return d;
@@ -708,8 +714,9 @@ static Sgf::PositionSample startOn(int size) {
 //The sizes (two, or the game's only one) with draws of their own, at every start of GameInitializer. The config gives
 //no general mean, and general spreads and shares that no size here has.
 static void checkSizes(const vector<int>& sizes, const vector<Draws>& draws, const string& name) {
-  string lines = "komiStdev = 40\nkomiBigStdevProb = 0.5\nkomiBigStdev = 45\nkomiBiggerStdevProb = 0.5\n"
-                 "komiBiggerStdev = 50\nkomiAllowIntegerProb = 0.6\nforkCompensateKomiProb = 0.6\n";
+  string lines = "komiStdev = " + spread(40) + "\nkomiBigStdevProb = 0.5\nkomiBigStdev = " + spread(45) +
+                 "\nkomiBiggerStdevProb = 0.5\nkomiBiggerStdev = " + spread(50) +
+                 "\nkomiAllowIntegerProb = 0.6\nforkCompensateKomiProb = 0.6\n";
   for(size_t i = 0; i < sizes.size(); i++)
     lines += linesOf(draws[i], sizes[i]);
   Logger logger(nullptr, false, false, false, false);
@@ -778,8 +785,8 @@ static void checkSizes(const vector<int>& sizes, const vector<Draws>& draws, con
 
 //The general spreads of the next two tests, as drawsWith(..., 3, 0.2, 8, 0.05, 20, 0.5, ...) has them.
 static const string GENERAL_SPREADS =
-  "komiStdev = 3\nkomiBigStdevProb = 0.2\nkomiBigStdev = 8\nkomiBiggerStdevProb = 0.05\nkomiBiggerStdev = 20\n"
-  "komiAllowIntegerProb = 0.5\n";
+  "komiStdev = " + spread(3) + "\nkomiBigStdevProb = 0.2\nkomiBigStdev = " + spread(8) +
+  "\nkomiBiggerStdevProb = 0.05\nkomiBiggerStdev = " + spread(20) + "\nkomiAllowIntegerProb = 0.5\n";
 
 //The random numbers of a new game, taken here in KataGo's order: the size, the rules, the game's own draws at its
 //start, the spreads and the whole komi, then the komi. Several means take one before the spreads, and a single mean
@@ -810,7 +817,7 @@ static void checkStream(const vector<int>& sizes) {
       const double mean = d.means.size() > 1 ? d.means[rand.nextUInt(d.shares.data(), d.shares.size())] : d.means[0];
       BoardHistory hist(board, P_BLACK, Rules(), 0);
       const ExtraBlackAndKomi extra = PlayUtils::chooseExtraBlackAndKomi(
-        (float)mean, 3.0f, 0.5, 0.0, 0, 0.2, 8.0f, 0.05, 20.0f, board, rand
+        (float)mean, (float)(3 * SPREAD), 0.5, 0.0, 0, 0.2, (float)(8 * SPREAD), 0.05, (float)(20 * SPREAD), board, rand
       );
       PlayUtils::setKomiWithNoise(extra, hist, rand);
       const Drawn game = drawGame(gameInit, NULL, NULL);
@@ -843,12 +850,12 @@ static void checkGeneralKeys(const vector<int>& sizes) {
 
   const Draws generalFair = drawsWith({}, {}, 3, 0.2, 8, 0.05, 20, 0.5, 0.75);
   const struct { string general, own; Draws draws; } merged[] = {
-    {mean, "komiStdev" + S + " = 5\n", drawsWith({2}, {1}, 5, 0.2, 8, 0.05, 20, 0.5, 0.75)},
+    {mean, "komiStdev" + S + " = " + spread(5) + "\n", drawsWith({2}, {1}, 5, 0.2, 8, 0.05, 20, 0.5, 0.75)},
     {mean, "komiMeans" + S + " = -1\n", drawsWith({-1}, {1}, 3, 0.2, 8, 0.05, 20, 0.5, 0.75)},
     {mean, "komiBigStdevProb" + S + " = 0\n", drawsWith({2}, {1}, 3, 0, 8, 0.05, 20, 0.5, 0.75)},
-    {mean, "komiBigStdev" + S + " = 4\n", drawsWith({2}, {1}, 3, 0.2, 4, 0.05, 20, 0.5, 0.75)},
+    {mean, "komiBigStdev" + S + " = " + spread(4) + "\n", drawsWith({2}, {1}, 3, 0.2, 4, 0.05, 20, 0.5, 0.75)},
     {mean, "komiBiggerStdevProb" + S + " = 1\n", drawsWith({2}, {1}, 3, 0.2, 8, 1, 20, 0.5, 0.75)},
-    {mean, "komiBiggerStdev" + S + " = 25\n", drawsWith({2}, {1}, 3, 0.2, 8, 0.05, 25, 0.5, 0.75)},
+    {mean, "komiBiggerStdev" + S + " = " + spread(25) + "\n", drawsWith({2}, {1}, 3, 0.2, 8, 0.05, 25, 0.5, 0.75)},
     {mean, "komiAllowIntegerProb" + S + " = 0\n", drawsWith({2}, {1}, 3, 0.2, 8, 0.05, 20, 0, 0.75)},
     {mean, "komiAllowIntegerProb" + S + " = 1\n", drawsWith({2}, {1}, 3, 0.2, 8, 0.05, 20, 1, 0.75)},
     {mean, "forkCompensateKomiProb" + S + " = 0.1\n", drawsWith({2}, {1}, 3, 0.2, 8, 0.05, 20, 0.5, 0.1)},
@@ -926,7 +933,7 @@ static void checkRectangles(const vector<int>& sizes) {
   const Draws general = drawsWith({1}, {1}, 5, 0, 10, 0, 30, 0.5, 0);
   Logger logger(nullptr, false, false, false, false);
   const unique_ptr<ConfigParser> cfg = configOf(
-    sizes, "allowRectangleProb = 0.8\nkomiMean = 1\nkomiStdev = 5\nkomiAllowIntegerProb = 0.5\n" +
+    sizes, "allowRectangleProb = 0.8\nkomiMean = 1\nkomiStdev = " + spread(5) + "\nkomiAllowIntegerProb = 0.5\n" +
              linesOf(small, other) + linesOf(large, size));
   GameInitializer gameInit(*cfg, logger, "testkomi rectangles");
   map<pair<int, int>, Counted> counted;
@@ -1024,9 +1031,10 @@ static void checkRefusals(const vector<int>& sizes) {
 //A start from a position of another size than the config's (bSizes) has the general draws. Without a general komi, the
 //load stops at such a position of hintPosesDir, and a game's start at another. A frozen start needs no general komi.
 static void checkOtherBoards(int size, int other) {
-  const string general = "komiMean = -3\nkomiStdev = 8\nkomiAllowIntegerProb = 0\n";
+  const string general = "komiMean = -3\nkomiStdev = " + spread(8) + "\nkomiAllowIntegerProb = 0\n";
   const string S = to_string(size), O = to_string(other);
-  const string own = "komiMeans" + S + " = 5\nkomiStdev" + S + " = 1\nkomiAllowIntegerProb" + S + " = 1\n";
+  const string own =
+    "komiMeans" + S + " = 5\nkomiStdev" + S + " = " + spread(1) + "\nkomiAllowIntegerProb" + S + " = 1\n";
   const Draws draws = drawsWith({-3}, {1}, 8, 0, 10, 0, 30, 0, 0);
   Logger logger(nullptr, false, false, false, false);
   Sgf::PositionSample start = startOn(other);

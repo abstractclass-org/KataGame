@@ -6,7 +6,9 @@
 //
 // A game without the members keeps KataGo's rule: the winner is the sign of the margin with komi, and a draw is a scored
 // game without a winner, half a win. The test game endings (tests/games/endings, -DGAME=endings) has both members and
-// every kind of ending. There the test computes each end from the board's pieces alone (expectedEnd).
+// every kind of ending. There the test computes each end from the board's pieces alone (expectedEnd). Tak has both too,
+// on two sizes of board, and the test computes its ends and targets from the text of its positions and of its moves
+// (tpsboard.h). Half of its random games prefer spreads, so that they reach the 50-ply rule.
 //
 // 1. The history (BoardHistory) at the end of random games, at several komis: the winner, the final score, isScored,
 //    isNoResult, the kind of ending and the SGF record's result, also after a second call of endAndScoreGameNow and in a
@@ -21,11 +23,12 @@
 // 5. The targets of one ending (GameInterface::endingClasses), in the same rows: which rows hold the score's targets
 //    (C27), the game's own (C33, C34, C68, C69 and the spatial slots) and the ending (G76, G77), for each kind of
 //    ending, at the cap, in side positions and in reanalyzed rows without the game's outcome. A game without ending
-//    classes keeps KataGo's C27. The test game has them, and the test computes each of its targets from the game's
-//    boards.
+//    classes keeps KataGo's C27. The test game and Tak have them, and the test computes each of their targets from the
+//    game's boards.
 //
 // Prints each failure and the counts of the endings. Exits 1 on a failure.
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -47,6 +50,7 @@
 #include "../../program/rgsc.h"
 #include "../../search/search.h"
 #include "../../search/searchnode.h"
+#include "tpsboard.h"
 
 using namespace std;
 
@@ -63,6 +67,9 @@ static constexpr bool OWN_END = GameInterface::hasGameEnd<GameRules>();
 static constexpr bool DRAW_CLASS = GameInterface::drawsAsNoResult<GameEncoding>();
 static constexpr bool ENDINGS = GameInterface::endingClasses<GameEncoding>() > 0;
 static const bool TEST_GAME = string(GameRules::NAME) == "endings";
+static const bool TAK = string(GameRules::NAME) == "tak";
+//The games whose ends and targets the test computes itself.
+static const bool OWN_EXPECTED = TEST_GAME || TAK;
 
 //KataGo's rule: White's minus Black's score with komi, and the winner by its sign.
 static double marginOf(const Board& board, double komi) {
@@ -80,15 +87,41 @@ struct Expected {
   bool scored = true;
 };
 
-//The kinds of the test game's endings (tests/games/endings/gamerules.h).
+//The kinds of the test game's endings (tests/games/endings/gamerules.h), and of Tak's: a road is the line, the flat
+//count the count, and the 50-ply rule the empty corner.
 enum { LINE = 0, COUNT = 1, COUNT_TIE = 2, EMPTY_CORNER = 3 };
 
+//Tak's position, from its text.
+static Tps::Board tpsOf(const Board& board) { return Tps::Board(GameRules::position_text(board.pos)); }
+
+//The end of Tak from the position's text: a road, then the flat count, then the 50-ply rule. Before the end (a game at
+//the move cap), KataGo's rule, without a kind.
+static Expected expectedTakEnd(const Board& board, double komi) {
+  const Tps::Board tps = tpsOf(board);
+  Expected e;
+  e.margin = tps.flats(1) - tps.flats(0) + komi;
+  int roadWinner;
+  const Tps::Board::How how = tps.ending(roadWinner);
+  if(how == Tps::Board::ONGOING) {
+    e.winner = winnerOfMargin(e.margin);
+    return e;
+  }
+  e.winner = how == Tps::Board::ROAD ? (roadWinner == 0 ? P_BLACK : P_WHITE)
+    : how == Tps::Board::FLATS ? winnerOfMargin(e.margin) : C_EMPTY;
+  e.kind = how == Tps::Board::ROAD ? LINE : how == Tps::Board::FIFTY ? EMPTY_CORNER
+    : e.winner == C_EMPTY ? COUNT_TIE : COUNT;
+  e.scored = how == Tps::Board::FLATS;
+  return e;
+}
+
 //The end of the test game from the board's pieces: a full row or column, then the count of the upper rows on a full
-//board, then the empty corner. In another game KataGo's rule.
+//board, then the empty corner. Tak's from its text. In another game KataGo's rule.
 static Expected expectedEnd(const Board& board, double komi) {
   Expected e;
   e.margin = marginOf(board, komi);
   e.winner = winnerOfMargin(e.margin);
+  if(TAK)
+    return expectedTakEnd(board, komi);
   if(!TEST_GAME)
     return e;
   const int n = board.x_size;
@@ -130,6 +163,14 @@ static Expected expectedEnd(const Board& board, double komi) {
   return e;
 }
 
+//The expected end of a position that the engine has ended. In Tak it must be an end by the test's own reading of its
+//text too (an ending without a kind is KataGo's rule for a position that is not over).
+static Expected endOf(const Board& board, double komi) {
+  const Expected e = expectedEnd(board, komi);
+  check(!TAK || e.kind != -1, "a position of Tak that the engine has ended and the test has not");
+  return e;
+}
+
 static void checkEnd(const BoardHistory& hist, const Expected& e, const string& where) {
   const bool noResult = DRAW_CLASS && e.winner == C_EMPTY;
   check(hist.isGameFinished && !hist.isResignation, where + ": the game is not over");
@@ -166,11 +207,24 @@ static bool sameEnd(const BoardHistory& a, const BoardHistory& b) {
     a.rulesEnd.result == b.rulesEnd.result;
 }
 
-//A random legal move of the position.
-static Loc randomMove(const Board& board, Rand& rand) {
+//A random legal move of the position. With spreads, in Tak, a random spread in 9 of 10 positions that have one.
+static Loc randomMove(const Board& board, Rand& rand, bool spreads = false) {
   static vector<int> legal;
   GameRules::legal_actions(board.pos, legal);
+  if(TAK && spreads && rand.nextBool(0.9)) {
+    vector<int> some;
+    for(const int a : legal)
+      if(a % NNPos::POLICY_CHANNELS >= 3)
+        some.push_back(a);
+    if(!some.empty())
+      return Board::moveLocOfAction(some[rand.nextUInt((uint32_t)some.size())]);
+  }
   return Board::moveLocOfAction(legal[rand.nextUInt((uint32_t)legal.size())]);
+}
+
+//The board of a game's start: the game's standard board, and in Tak the smaller one too.
+static Board startBoard(int game) {
+  return TAK && game % 4 >= 2 ? Board(NNPos::MAX_BOARD_LEN - 1, NNPos::MAX_BOARD_LEN - 1) : Board();
 }
 
 //A name of an end for the counts: the kind, and for a line whether the score says another result.
@@ -198,11 +252,15 @@ static void checkHistory(int games, Ends& ends) {
   for(int g = 0; g < games; g++) {
     Rules rules;
     rules.komi = (float)komis[g % 7];
-    Board board;
+    Board board = startBoard(g);
     BoardHistory hist(board, P_BLACK, rules, 0);
     const string game = "game " + to_string(g) + " at komi " + to_string(rules.komi);
     while(!hist.isGameFinished) {
       check(hist.rulesEnd.kind == -1, game + ": a kind before the end");
+      if(TAK) {
+        int roadWinner;
+        check(tpsOf(board).ending(roadWinner) == Tps::Board::ONGOING, game + ": a position that is over, not ended");
+      }
       //Stopped here, as at the move cap: the sign of the margin, scored, no kind.
       {
         BoardHistory copy(hist);
@@ -213,10 +271,10 @@ static void checkHistory(int games, Ends& ends) {
               game + ": stopped after " + to_string(hist.moveHistory.size()) + " moves, not KataGo's rule");
         stopped++;
       }
-      const Loc loc = randomMove(board, rand);
+      const Loc loc = randomMove(board, rand, g % 2 == 1);
       hist.makeBoardMoveAssumeLegal(board, loc, board.nextPla(), NULL);
     }
-    const Expected e = expectedEnd(board, rules.komi);
+    const Expected e = endOf(board, rules.komi);
     ends.add(e);
     checkEnd(hist, e, game);
     BoardHistory again(hist);
@@ -302,12 +360,12 @@ static void checkSearch(NNEvaluator* nnEval, Logger& logger, int games, Ends& en
   for(int g = 0; g < games; g++) {
     Rules rules;
     rules.komi = g % 2 == 0 ? 0.0f : 0.5f;
-    Board board, before;
+    Board board = startBoard(g), before;
     BoardHistory hist(board, P_BLACK, rules, 0), histBefore(hist);
     while(!hist.isGameFinished) {
       before = board;
       histBefore = hist;
-      const Loc loc = randomMove(board, rand);
+      const Loc loc = randomMove(board, rand, g % 3 == 1);
       hist.makeBoardMoveAssumeLegal(board, loc, board.nextPla(), NULL);
     }
     Search bot(params, nnEval, &logger, "testgameends search " + to_string(g));
@@ -326,7 +384,7 @@ static void checkSearch(NNEvaluator* nnEval, Logger& logger, int games, Ends& en
       ReportedSearchValues values;
       if(!histAfter.isGameFinished || !bot.getNodeValues(child, values))
         continue;
-      const Expected e = expectedEnd(after, rules.komi);
+      const Expected e = endOf(after, rules.komi);
       const string where = "the search of game " + to_string(g) + ", a child with " + endName(e);
       const double winLoss = returnOf(e.winner);
       const double noResult = DRAW_CLASS && e.winner == C_EMPTY ? 1.0 : 0.0;
@@ -347,7 +405,7 @@ struct RowCounts {
 };
 
 //The class of the test game's ending for the row's mover: its line, the opponent's line, its count, the opponent's
-//count, a tie of the count, a draw by the corner.
+//count, a tie of the count, a draw by the corner. Tak's are in the same order.
 static int expectedClass(const Expected& e, Player mover) {
   switch(e.kind) {
   case LINE: return e.winner == mover ? 0 : 1;
@@ -371,23 +429,97 @@ static void checkScoreDistribution(const TrainingWriteBuffers& b, int64_t r, dou
   check(std::fabs(mean - score) < 1e-6, row + ": the score distribution's mean " + to_string(mean));
 }
 
-//The test game's targets of a row of a game, from the game's boards: boards[turn] is the row's, and the last one is the
-//game's end, or its position at the cap.
-static void checkEndingTargets(const TrainingWriteBuffers& b, int64_t r, const FinishedGameData& data,
-                               const vector<Board>& boards, int turn, Player mover, RowCounts& counts,
-                               const string& where) {
-  const float* c = b.globalTargetsNC.data + r * b.globalTargetsNC.shape[1];
-  const bool ended = !data.hitTurnLimit;
-  const Expected e = expectedEnd(boards.back(), data.endHist.rules.komi);
+//A row's spatial targets as the rows store them, at the points (x, y) of the board.
+using SpatialTargets = function<array<int, 8>(int x, int y)>;
+
+//The test game's: the final board (C0), the final owner of the points that are empty now (C1), the boards 2 and 4 moves
+//later (C2-3), the winner's lines (C4) and the points of this move and of the next (C5-6).
+static SpatialTargets testGameTargets(const vector<Board>& boards, int turn, Player mover, const Expected& e,
+                                      bool ended) {
+  const int n = boards.back().x_size, last = (int)boards.size() - 1, winnerSide = e.winner == mover ? 1 : -1;
   const bool line = ended && e.kind == LINE, count = ended && (e.kind == COUNT || e.kind == COUNT_TIE);
   const bool reply = turn + 2 < (int)boards.size();
+  auto side = [n, mover](const Board& board, int x, int y) {
+    const Color color = board.colors[Location::getLoc(x, y, n)];
+    return color == C_EMPTY ? 0 : color == mover ? 1 : -1;
+  };
+  return [=, &boards](int x, int y) {
+    int inRow = 0, inColumn = 0;  //the line winner's pieces in the point's row and column
+    for(int j = 0; line && j < n; j++) {
+      inRow += side(boards.back(), j, y) == winnerSide;
+      inColumn += side(boards.back(), x, j) == winnerSide;
+    }
+    const int now = side(boards[turn], x, y), end = side(boards.back(), x, y);
+    return array<int, 8>{
+      count ? 120 * end : 0,
+      !ended ? 0 : now != 0 ? 2 : end,
+      side(boards[std::min(turn + 2, last)], x, y),
+      side(boards[std::min(turn + 4, last)], x, y),
+      inRow == n || inColumn == n ? 120 * end : 0,
+      reply && side(boards[turn + 1], x, y) != now ? 120 : 0,
+      reply && side(boards[turn + 2], x, y) != side(boards[turn + 1], x, y) ? 120 : 0,
+      0};
+  };
+}
+
+//Tak's, from the texts of the positions and of the moves (moves[j] leads from boards[j] to boards[j + 1]): the final
+//flats of a flat ending (C0), the squares captured before the end (C1), the top owners 4 and 16 plies later (C2-3), the
+//winning road (C4), and the captures of this move and of the reply (C5-6). A move captures a square when it drops on it
+//and the square's top passes to the other player.
+static SpatialTargets takTargets(const vector<Board>& boards, const vector<string>& moves, int turn, Player mover,
+                                 const Expected& e, bool ended) {
+  vector<Tps::Board> tps;
+  for(const Board& board : boards)
+    tps.push_back(tpsOf(board));
+  const int n = boards.back().x_size, last = (int)boards.size() - 1, me = mover == P_BLACK ? 0 : 1;
+  //captured[j][p]: the squares of player p that move j captures.
+  vector<array<set<int>, 2>> captured(last);
+  for(int j = 0; j < last; j++)
+    for(const int i : Tps::dropSquares(moves[j], n)) {
+      const int before = tps[j].owner(i);
+      if(before >= 0 && tps[j + 1].owner(i) != before)
+        captured[j][before].insert(i);
+    }
+  auto side = [me](int owner) { return owner < 0 ? 0 : owner == me ? 1 : -1; };
+  const bool flats = ended && (e.kind == COUNT || e.kind == COUNT_TIE), future = ended || turn + 16 <= last;
+  const set<int> road = ended && e.kind == LINE ? tps[last].road(e.winner == P_BLACK ? 0 : 1) : set<int>();
+  return [=](int x, int y) {
+    const int i = y * n + x, now = tps[turn].owner(i);
+    bool taken = false;
+    for(int j = turn; now >= 0 && j < last; j++)
+      taken = taken || captured[j][now].count(i) > 0;
+    return array<int, 8>{
+      !flats ? 0 : tps[last].flat(i, me) ? 120 : tps[last].flat(i, 1 - me) ? -120 : 0,
+      !ended ? 0 : now < 0 ? 2 : taken ? side(now) : 0,
+      future ? side(tps[std::min(turn + 4, last)].owner(i)) : 0,
+      future ? side(tps[std::min(turn + 16, last)].owner(i)) : 0,
+      road.count(i) == 0 ? 0 : e.winner == mover ? 120 : -120,
+      captured[turn][1 - me].count(i) > 0 && (ended || turn + 2 <= last) ? 120 : 0,
+      turn + 2 <= last && now == me && captured[turn + 1][me].count(i) > 0 ? 120 : 0,
+      0};
+  };
+}
+
+//The targets of a row of a game of OWN_EXPECTED, from the game's boards: boards[turn] is the row's, and the last one is
+//the game's end, or its position at the cap. moves are the moves between them, as the protocol writes them.
+static void checkEndingTargets(const TrainingWriteBuffers& b, int64_t r, const FinishedGameData& data,
+                               const vector<Board>& boards, const vector<string>& moves, int turn, Player mover,
+                               RowCounts& counts, const string& where) {
+  const float* c = b.globalTargetsNC.data + r * b.globalTargetsNC.shape[1];
+  const bool ended = !data.hitTurnLimit;
+  const Expected e = ended ? endOf(boards.back(), data.endHist.rules.komi)
+                           : expectedEnd(boards.back(), data.endHist.rules.komi);
+  const bool line = ended && e.kind == LINE, count = ended && (e.kind == COUNT || e.kind == COUNT_TIE);
+  //A row of Tak whose move ends the game has C5-6 too, and C2-3 need the later ply or the game's end.
+  const bool reply = turn + 2 < (int)boards.size() || (TAK && ended);
+  const bool future = !TAK || ended || turn + 16 < (int)boards.size();
   const double score = count ? (mover == P_WHITE ? e.margin : -e.margin) : 0.0;
   const string row = where + (ended ? ", of a game that ended by " + endName(e) : ", of a game at the cap");
   check(c[27] == (count ? 1.0f : 0.0f), row + ": C27 " + to_string(c[27]));
   check(std::fabs(c[20] - score) < 1e-6, row + ": C20 " + to_string(c[20]));
   checkScoreDistribution(b, r, score, row);
   check(c[34] == (line ? 1.0f : 0.0f), row + ": C34 " + to_string(c[34]));
-  check(c[33] == 1.0f, row + ": C33 " + to_string(c[33]));
+  check(c[33] == (future ? 1.0f : 0.0f), row + ": C33 " + to_string(c[33]));
   check(c[68] == (ended ? 1.0f : 0.0f), row + ": C68 " + to_string(c[68]));
   check(c[69] == (reply ? 1.0f : 0.0f), row + ": C69 " + to_string(c[69]));
   const int endingClass = expectedClass(e, mover);
@@ -396,34 +528,18 @@ static void checkEndingTargets(const TrainingWriteBuffers& b, int64_t r, const F
   if(ended)
     counts.endings[endingClass]++;
 
-  const int n = boards.back().x_size, area = n * n;
+  //The rows' boards have the network's side: the points off a smaller board hold 0.
+  const int n = boards.back().x_size, len = NNPos::MAX_BOARD_LEN, area = len * len;
   const int8_t* v = b.valueTargetsNCHW.data + r * b.valueTargetsNCHW.shape[1] * area;
-  auto side = [&](const Board& board, int x, int y) {
-    const Color color = board.colors[Location::getLoc(x, y, n)];
-    return color == C_EMPTY ? 0 : color == mover ? 1 : -1;
-  };
-  const int last = (int)boards.size() - 1, winnerSide = e.winner == mover ? 1 : -1;
+  const SpatialTargets targets = TAK ? takTargets(boards, moves, turn, mover, e, ended)
+                                     : testGameTargets(boards, turn, mover, e, ended);
   vector<string> bad(8);
-  for(int y = 0; y < n; y++)
-    for(int x = 0; x < n; x++) {
-      int inRow = 0, inColumn = 0;  //the line winner's pieces in the point's row and column
-      for(int j = 0; line && j < n; j++) {
-        inRow += side(boards.back(), j, y) == winnerSide;
-        inColumn += side(boards.back(), x, j) == winnerSide;
-      }
-      const int now = side(boards[turn], x, y), end = side(boards.back(), x, y);
-      const int expected[8] = {
-        count ? 120 * end : 0,
-        !ended ? 0 : now != 0 ? 2 : end,
-        side(boards[std::min(turn + 2, last)], x, y),
-        side(boards[std::min(turn + 4, last)], x, y),
-        inRow == n || inColumn == n ? 120 * end : 0,
-        reply && side(boards[turn + 1], x, y) != now ? 120 : 0,
-        reply && side(boards[turn + 2], x, y) != side(boards[turn + 1], x, y) ? 120 : 0,
-        0};
+  for(int y = 0; y < len; y++)
+    for(int x = 0; x < len; x++) {
+      const array<int, 8> expected = x < n && y < n ? targets(x, y) : array<int, 8>{};
       for(int i = 0; i < 8; i++)
-        if(v[i * area + y * n + x] != expected[i])
-          bad[i] = to_string(v[i * area + y * n + x]) + " in place of " + to_string(expected[i]) + " at " +
+        if(v[i * area + y * len + x] != expected[i])
+          bad[i] = to_string(v[i * area + y * len + x]) + " in place of " + to_string(expected[i]) + " at " +
             to_string(x) + "," + to_string(y);
     }
   for(int i = 0; i < 8; i++)
@@ -463,7 +579,9 @@ static void checkRows(const TrainingWriteBuffers& b, const FinishedGameData& dat
     movers.push_back(m.pla);
   const int startTurn = (int)data.startHist.moveHistory.size();
   vector<Board> boards = {data.startBoard};
+  vector<string> moves;
   for(size_t t = startTurn; t < movers.size(); t++) {
+    moves.push_back(Location::toString(data.endHist.moveHistory[t].loc, boards.back()));
     boards.push_back(boards.back());
     boards.back().playMoveAssumeLegal(data.endHist.moveHistory[t].loc, movers[t]);
   }
@@ -476,8 +594,8 @@ static void checkRows(const TrainingWriteBuffers& b, const FinishedGameData& dat
           row + ": the result " + to_string(c[0]) + ", " + to_string(c[1]) + ", " + to_string(c[2]));
     check(std::fabs(c[0] + c[1] + c[2] - 1.0f) < 1e-6f, row + ": the result does not sum to 1");
     const bool noResult = data.endHist.isNoResult;
-    if(TEST_GAME)
-      checkEndingTargets(b, r, data, boards, turn - startTurn, movers.at(turn), counts, row);
+    if(OWN_EXPECTED)
+      checkEndingTargets(b, r, data, boards, moves, turn - startTurn, movers.at(turn), counts, row);
     else {
       check(c[27] == (noResult ? 0.0f : 1.0f), row + ": C27 " + to_string(c[27]));
       check(c[20] == (noResult ? 0.0f : white ? last.score : -last.score), row + ": C20 " + to_string(c[20]));
@@ -510,16 +628,20 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& 
   for(int g = 0; g < games; g++) {
     Rules rules;
     rules.komi = g % 4 == 0 ? 0.5f : 0.0f;
-    Board board;
+    Board board = startBoard(g);
     BoardHistory hist(board, P_BLACK, rules, 0);
     Rand rand("testgameends selfplay " + to_string(g));
     OtherGameProperties otherGameProps;
     const bool stops = g % 5 == 4;  //these games stop at a move cap of 5
-    //The test game starts from random openings, so that its games reach each kind of ending.
-    for(int i = TEST_GAME ? (stops ? g % 4 : g % 11) : 0; i > 0; i--) {
+    //The test game starts from random openings, so that its games reach each kind of ending. Tak's start later, and a
+    //third of them near the 50-ply rule.
+    const bool nearFifty = TAK && g % 3 == 1;
+    for(int i = TEST_GAME ? (stops ? g % 4 : g % 11) : TAK ? (nearFifty ? 1000 : 10 * (g % 12)) : 0; i > 0; i--) {
+      if(nearFifty && tpsOf(board).clock >= 46)
+        break;
       Board nextBoard(board);
       BoardHistory nextHist(hist);
-      nextHist.makeBoardMoveAssumeLegal(nextBoard, randomMove(board, rand), board.nextPla(), NULL);
+      nextHist.makeBoardMoveAssumeLegal(nextBoard, randomMove(board, rand, nearFifty), board.nextPla(), NULL);
       if(nextHist.isGameFinished)
         break;
       board = nextBoard;
@@ -533,7 +655,9 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& 
     const ValueTargets& last = data->whiteValueTargetsByTurn.back();
     Player winner;
     double margin;
-    if(stops) {
+    //A game from one of Tak's late starts can end by its rules before the cap.
+    const bool atCap = stops && !(TAK && data->endHist.isGameFinished);
+    if(atCap) {
       //The move cap: KataGo's rule for the value target, and no outcome for RGSC.
       capped++;
       check(data->hitTurnLimit && !data->endHist.isGameFinished && !data->endHist.isNoResult &&
@@ -545,7 +669,7 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& 
     }
     else {
       const Board& end = data->endHist.getRecentBoard(0);
-      const Expected e = expectedEnd(end, rules.komi);
+      const Expected e = endOf(end, rules.komi);
       check(!data->hitTurnLimit, where + ": the game hit the cap");
       checkEnd(data->endHist, e, where);
       ends.add(e);
@@ -554,7 +678,7 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& 
       const optional<double> outcome = Rgsc::gameOutcome(data->endHist, data->hitTurnLimit);
       check(outcome.has_value() && *outcome == returnOf(winner), where + ": RGSC's outcome");
     }
-    const bool draw = DRAW_CLASS && !stops && winner == C_EMPTY;
+    const bool draw = DRAW_CLASS && !atCap && winner == C_EMPTY;
     check(last.noResult == (draw ? 1.0f : 0.0f), where + ": the no-result target " + to_string(last.noResult));
     check(last.win == (draw ? 0.0f : (float)ScoreValue::whiteWinsOfWinner(winner, 0.5)),
           where + ": the win target " + to_string(last.win));
@@ -592,7 +716,7 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& 
   }
   check(counts.rows > 0 && counts.capRows > 0, "the rows: none, or none of a game at the cap");
   check(counts.reanalyzedRows > 0, "the rows: none reanalyzed");
-  if(TEST_GAME)
+  if(OWN_EXPECTED)
     check(counts.drawRows > 0 && counts.sideRows > 0 && counts.endings.size() == 6,
           "the rows: none of a draw, none of a side position, or not every ending's class");
   printf("self-play: %d games, %d at the cap; %d rows, %d of them at the cap, %d of a draw as no result\n", games, capped,
@@ -620,12 +744,12 @@ int main() {
   NeuralNet::globalInitialize();
   printf("%s: the rules' end %s, draws as a class %s, ending classes %d\n", GameRules::NAME, OWN_END ? "yes" : "no",
          DRAW_CLASS ? "yes" : "no", GameInterface::endingClasses<GameEncoding>());
-  check(!TEST_GAME || (OWN_END && DRAW_CLASS && ENDINGS), "the test game has the members");
+  check(!OWN_EXPECTED || (OWN_END && DRAW_CLASS && ENDINGS), "the test game and Tak have the members");
 
   Ends historyEnds, searchEnds, selfplayEnds;
-  checkHistory(TEST_GAME ? 4000 : 20, historyEnds);
+  checkHistory(TEST_GAME ? 4000 : TAK ? 600 : 20, historyEnds);
   printEnds("the games' ends", historyEnds);
-  if(TEST_GAME)
+  if(OWN_EXPECTED)
     for(const char* name : {"kind 0 white as the score", "kind 0 white against the score", "kind 0 black as the score",
                             "kind 0 black against the score", "kind 1 white", "kind 1 black", "kind 2 draw",
                             "kind 3 draw as the score", "kind 3 draw against the score"})
@@ -636,11 +760,11 @@ int main() {
   Logger logger(nullptr, false, false, false);
   NNEvaluator* nnEval = newEvaluator(logger);
   checkEvaluator(nnEval);
-  checkSearch(nnEval, logger, TEST_GAME ? 200 : 4, searchEnds);
+  checkSearch(nnEval, logger, OWN_EXPECTED ? 200 : 4, searchEnds);
   printEnds("the search's terminal children", searchEnds);
-  checkSelfplay(nnEval, logger, TEST_GAME ? 200 : 5, selfplayEnds);
+  checkSelfplay(nnEval, logger, OWN_EXPECTED ? 200 : 5, selfplayEnds);
   printEnds("self-play's ends", selfplayEnds);
-  if(TEST_GAME)
+  if(OWN_EXPECTED)
     for(const Ends* ends : {&searchEnds, &selfplayEnds})
       check(ends->kinds.size() == 4,
             "the search or self-play saw " + to_string(ends->kinds.size()) + " of the 4 kinds of ending");

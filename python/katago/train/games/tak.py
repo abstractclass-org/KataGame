@@ -34,7 +34,7 @@ SYMMETRIES = 0xFF
 # C0: the final flats, on flat endings. C1: the squares captured before the end. C2-3: the top owners 4 and 16 plies
 # later. C4: the winning road's squares, on road endings. C5-6: the captures of the row's move and of the reply.
 TARGETS = TARGET_OWNERSHIP | TARGET_SEKI | TARGET_FUTURE_PIECES | TARGET_SCORING | TARGET_INCOME
-SCORE_SCALE = 0.2        # assumed until the pilot measures the flat margins (gameencoding.h)
+SCORE_SCALE = 0.15625    # assumed until the pilot measures the flat margins (gameencoding.h)
 GAME_LENGTH = 57.0       # assumed until the pilot measures it
 DRAWS_AS_NO_RESULT = True
 # The mover's road, the opponent's road, the mover's flat win, the opponent's flat win, a flat tie, the 50-ply rule.

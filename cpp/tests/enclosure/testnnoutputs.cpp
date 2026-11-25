@@ -8,12 +8,13 @@
 //   testnnoutputs MODEL INPUTS_FILE OUT_FILE FP16 NHWC OUTPUTS [MEMBER]
 //
 // KataGame fork: it names no game, so it builds against any game's build (tests/enclosure/build.sh BUILD_DIR, with
-// TESTS=testnnoutputs). A position is the game's actions from the start of its standard board.
+// TESTS=testnnoutputs). A position is the game's actions from the start of its standard board, or a state's text
+// (testpositions.h).
 //
-// Replays each position of INPUTS_FILE (tests/data/enclosure_inputs.txt, the positions of testnninputs; Connect-4's:
-// tests/data/connect4_positions.txt), evaluates it at symmetry 0 (FP16, NHWC: 0 or 1, the CUDA backend's modes; the
-// Eigen backend needs NHWC 1), and writes per position the input rows the network got and the outputs of the groups
-// that OUTPUTS names (comma-separated):
+// Sets each position of INPUTS_FILE up (tests/data/enclosure_inputs.txt, the positions of testnninputs; Connect-4's:
+// tests/data/connect4_positions.txt; Tak's: tests/data/tak_positions.txt), evaluates it at symmetry 0 (FP16, NHWC: 0 or
+// 1, the CUDA backend's modes; the Eigen backend needs NHWC 1), and writes per position the input rows the network got
+// and the outputs of the groups that OUTPUTS names (comma-separated):
 //   position <label> <player to move: 1 black, 2 white> <input layout: nchw or nhwc>
 //   spatial <count> <index in that layout>:<value> ...
 //   global <values>
@@ -54,6 +55,7 @@
 #include "../../core/logger.h"
 #include "../../neuralnet/modelversion.h"
 #include "../../neuralnet/nneval.h"
+#include "testpositions.h"
 
 using namespace std;
 
@@ -102,9 +104,19 @@ int main(int argc, char** argv) {
   ConfigParser cfg(kvs);
   Logger logger(nullptr, false, true, false, false);
   const int S = NNPos::MAX_BOARD_LEN;  //the network's board, the game's largest
-  //The positions start on the game's standard board, which need not fill it (Connect-4: 7 x 6).
+  //The network reads boards that fill it without a mask. The standard board need not (Connect-4: 7 x 6), and a game can
+  //have positions on a smaller board (Tak's 5 x 5).
+  bool exact = NNPos::fillsNNBoard(Board::DEFAULT_X_SIZE, Board::DEFAULT_Y_SIZE);
+  {
+    ifstream sizes(argv[2]);
+    string sizesLabel;
+    Board sizesBoard;
+    BoardHistory sizesHist;
+    while(nextTestPosition(sizes, sizesLabel, sizesBoard, sizesHist))
+      exact = exact && NNPos::fillsNNBoard(sizesBoard.x_size, sizesBoard.y_size);
+  }
   NNEvaluator* nnEval = new NNEvaluator(
-    "test", modelFile, "", &logger, 8, S, S, NNPos::fillsNNBoard(Board::DEFAULT_X_SIZE, Board::DEFAULT_Y_SIZE), nhwc, 10, 4, false, "",
+    "test", modelFile, "", &logger, 8, S, S, exact, nhwc, 10, 4, false, "",
     fp16 ? enabled_t::True : enabled_t::False, 1, {0}, "testnnoutputs", false, 0, cfg);
   nnEval->spawnServerThreads();
   if(training && (!nnEval->hasAuxOutputs() || (regret && !nnEval->hasRegretHeads()))) {
@@ -120,30 +132,13 @@ int main(int argc, char** argv) {
     return 2;
   }
   out.precision(9);
-  string line;
+  string label;
+  Board board;
+  BoardHistory hist;
   int positions = 0;
   //One buffer for every position, as a search thread keeps (its input row refilled packed, NNEvaluator::fillRowBufs).
   NNResultBuf buf;
-  while(getline(in, line)) {
-    istringstream head(line);
-    string word, label;
-    int n;
-    if(!(head >> word >> label >> n) || word != "position")
-      continue;
-    Board board;
-    BoardHistory hist(board, P_BLACK, Rules(), 0);
-    bool legal = true;
-    for(int i = 0; i < n && legal; i++) {
-      int action;
-      head >> action;
-      Loc loc = Board::moveLocOfAction(action);
-      Player pla = hist.presumedNextMovePla;
-      legal = hist.isLegal(board, loc, pla);
-      if(legal)
-        hist.makeBoardMoveAssumeLegal(board, loc, pla, NULL);
-    }
-    if(!legal || hist.isGameFinished)
-      continue;
+  while(nextTestPosition(in, label, board, hist)) {
     const Player pla = hist.presumedNextMovePla;
     MiscNNInputParams params;
     params.symmetry = 0;

@@ -296,9 +296,12 @@ struct GameEncoding {
   // AZdb's statistics of a position (diversity.h).
   using Diversity = tak::Diversity;
 
-  // The score is the flat margin, in flats. Its scale against Go's is assumed until the pilot measures the margins of
-  // the games that end by the flat count (design 08, group 1: their median over KataGo's score of about 20).
-  static constexpr double SCORE_SCALE = 0.2;
+  // The score is the flat margin with komi, in flats. Its scale against Go's is assumed until the pilot measures the
+  // margins of the games that end by the flat count (design 08, group 1: their median over KataGo's score of about 20).
+  // The median of playtak's is 3 flats on 5 x 5 and on 6 x 6, so 0.15. 5 / 32 is the number next to it that ends the
+  // range of komi and of the score, (36 + 60) * SCORE_SCALE = 15 flats, on the half-flat grid (the front clips a komi
+  // there and rounds it to the grid).
+  static constexpr double SCORE_SCALE = 0.15625;
   // KataGo's rule, the square root of the area, on the largest board. Unused: Tak's searches have no score utility.
   static constexpr double SCORE_UNIT = MAX_LEN;
   // Assumed until the pilot measures it: people's 45.7 plies on 5 x 5 and 62.1 on 6 x 6, at the mix of 3 to 7.

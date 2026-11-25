@@ -2,14 +2,17 @@
 """Enclosure fork: the C++ network evaluation against a PyTorch forward pass (plan step 5), for any game.
 
     python enclosure_nn_check.py make CHECKPOINT [-config b6c96] [-seed 0] [-game enclosure] [-inputs-version V]
-                                       [-intrinsic-head]
+                                       [-intrinsic-head] [-heads regret,intrinsic]
     python export_model_pytorch.py -checkpoint CHECKPOINT -export-dir DIR -model-name NAME -filename-prefix NAME
     testnnoutputs DIR/NAME.bin ../cpp/tests/data/enclosure_inputs.txt DUMP FP16 NHWC search,ownership [MEMBER]
     python enclosure_nn_check.py compare CHECKPOINT DUMP [-tolerance 1e-3]
 
 KataGame fork: -game names the test network's game (katago/train/games). The checkpoint's config keeps it, so
 `compare` reads the game from there, and the export names it in the model file. testnnoutputs then runs on that
-game's build, on that game's positions (Connect-4: ../cpp/tests/data/connect4_positions.txt).
+game's build, on that game's positions (Connect-4: ../cpp/tests/data/connect4_positions.txt, Tak:
+../cpp/tests/data/tak_positions.txt). -heads gives the network the extra heads that it names (modelconfigs.HEADS), as
+train.py's -heads gives a new model: a file with the regret heads and the intrinsic value head loads only where the
+C++ reads both.
 
 `make` writes a randomly initialised model whose every parameter and normalisation statistic is then
 perturbed, so no layer is an identity (fixup initialises some to zero). `testnnoutputs` (the fork's test,
@@ -42,6 +45,7 @@ def make(args):
         config = dict(config, inputs_version=args.inputs_version)
     if args.intrinsic_head:
         config = dict(config, intrinsic_head=True)
+    config = modelconfigs.with_heads(config, modelconfigs.parse_heads(args.heads))
     model = Model(config, modelconfigs.get_game(config).MAX_BOARD_LEN)
     model.initialize()
     with torch.no_grad():
@@ -143,6 +147,7 @@ def main():
                    "model kind's, 8): 10 gives the game's extended inputs weights of their own")
     m.add_argument("-intrinsic-head", dest="intrinsic_head", action="store_true",
                    help="the test network has AZdb's intrinsic value head (with -inputs-version 14)")
+    m.add_argument("-heads", default="", help="the test network's extra heads, comma-separated (modelconfigs.HEADS)")
     c = sub.add_parser("compare")
     c.add_argument("checkpoint")
     c.add_argument("dump", help="testnnoutputs' output, with OUTPUTS search,ownership")

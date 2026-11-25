@@ -1,5 +1,5 @@
 // KataGame fork (2026-10-27, abscls-luzl.7): RGSC's exact states (program/rgsc.h), on a build of a game that gives
-// its whole state as a text (GameInterface::stateText: Blueprints).
+// its whole state as a text (GameInterface::stateText: Blueprints, Tak).
 //
 //   testrgscstates SCRATCH_DIR [GAMES] [--buffer FILE] [--write FILE] [SETTING=VALUE ...]
 //
@@ -16,8 +16,10 @@
 // The keys: an action played twice in a row by the same player cancels in the moves' unordered key (keyOf) and not
 // in the state key; two actions in either order give the same moves' key and two state keys; two edits in either
 // order (when the search finds a pair that commutes) give one state and one key; the komi and the asymmetric playouts
-// change the key, and a context of -0 or of no advantage is normalized.
-// The records: restoreState rejects a garbled text, a text of another state (a score changed) and a wrong key. The
+// change the key, and a context of -0 or of no advantage is normalized. In a game whose turns have one action (Tak),
+// the two actions are a player's, with the opponent's between them: one position, one moves' key, and two state keys,
+// for the history planes differ. A game that plays more than one size of square board plays its random games on two.
+// The records: restoreState rejects a garbled text, a text of another state and a wrong key. The
 // buffer: a state offered again is a duplicate, the same key with another state a collision; a save and a load give
 // the states back with their contexts, turn numbers, origins, and AZdb members and sides; a line of version 1 (before
 // the members) loads with its member and side unknown; a load rejects a line of another version, of another game, a
@@ -75,10 +77,24 @@ static void inputsOf(const Board& board, const Rgsc::Context& context, int symme
                                global.data(), symmetry);
 }
 
+//Whether a move of the game can take more than one action (Blueprints' edit), and whether a turn of the game has
+//several actions (Enclosure's two edges, Blueprints' moves and edits).
+static constexpr bool PENDING_MOVES = GameInterface::rules::HasContinuesMove<GameRules>::value;
+static constexpr bool TURNS = GameInterface::turnMoves<GameRules>() > 1 || PENDING_MOVES;
+
+//The start of a random game: the standard board, and every other game one size smaller where the game plays it.
+static Board startBoard() {
+  static int games = 0;
+  Board board;
+  GameRules::Position p;
+  const int side = board.x_size - 1;
+  return games++ % 2 == 1 && Rgsc::keepsStates() && GameRules::new_game(side, side, p) ? Board(side, side) : board;
+}
+
 //A random game of the legal actions from the game's start with its draws: the boards after each action, the first
 //included, and the moves.
 static void randomGame(Rand& rand, vector<Board>& boards, vector<Move>& moves) {
-  Board board;
+  Board board = startBoard();
   GameRules::Position start = board.pos;
   GameInterface::drawStart<GameRules>(start, [&rand]() { return rand.nextUInt64(); });
   board.setPosition(start);
@@ -287,7 +303,7 @@ int main(int argc, char** argv) {
       check(Rgsc::restoreState(e, restored, why) && restored.pos_hash == b.pos_hash, where + ": the entry restores");
     }
   }
-  check(pending > 0, "some positions have a pick waiting for its drop");
+  check(pending > 0 || !PENDING_MOVES, "some positions have a pick waiting for its drop");
   printf("round trips: %lld positions of %d games (%lld with a move pending, %lld games with an advantage)\n",
          (long long)positions, numGames, (long long)pending, (long long)withAdvantage);
   {
@@ -318,8 +334,8 @@ int main(int argc, char** argv) {
   // Two actions in either order: one moves' key, two states.
   {
     const Rgsc::Context context;
-    bool repeated = false, swapped = false;
-    for(int g = 0; g < 40 && !(repeated && swapped); g++) {
+    bool repeated = !TURNS, swapped = false;  //no action is played twice in a row where the turns have one
+    for(int g = 0; g < 40 && TURNS && !(repeated && swapped); g++) {
       randomGame(rand, boards, moves);
       for(size_t j = 0; j + 1 < boards.size() && !(repeated && swapped); j++) {
         const Board& b = boards[j];
@@ -367,10 +383,34 @@ int main(int argc, char** argv) {
         }
       }
     }
+    //A game whose turns have one action: a player's two actions in either order, with the opponent's between them.
+    for(int g = 0; g < 40 && !TURNS && !swapped; g++) {
+      randomGame(rand, boards, moves);
+      for(size_t j = 0; j + 3 < boards.size() && !swapped; j++) {
+        const Loc a = moves[j].loc, x = moves[j + 1].loc, c = moves[j + 2].loc;
+        Board second = boards[j];
+        bool legal = a != c;
+        for(const Loc loc : {c, x, a}) {
+          legal = legal && !second.isGameOver() && second.isLegal(loc, second.nextPla(), false);
+          if(legal)
+            second.playMoveAssumeLegal(loc, second.nextPla());
+        }
+        const Board& first = boards[j + 3];
+        if(!legal || second.pos_hash != first.pos_hash)
+          continue;
+        const vector<Move> axc(moves.begin() + j, moves.begin() + j + 3);
+        const vector<Move> cxa = {axc[2], axc[1], axc[0]};
+        check(Rgsc::keyOf(axc, 3) == Rgsc::keyOf(cxa, 3), "the moves' key ignores the order");
+        check(Rgsc::stateKey(first, context) != Rgsc::stateKey(second, context) &&
+                GameInterface::stateText<GameRules>(first.pos) != GameInterface::stateText<GameRules>(second.pos),
+              "two actions in either order: one position, two states by their history");
+        swapped = true;
+      }
+    }
     check(repeated && swapped, "the search found an action played twice and two actions in either order");
 
     // Two edits (a pick, then its drop) in either order: when both orders give one state, one key.
-    bool commuted = false;
+    bool commuted = !PENDING_MOVES;
     for(int g = 0; g < 40 && !commuted; g++) {
       randomGame(rand, boards, moves);
       for(size_t j = 0; j + 1 < boards.size() && !commuted; j++) {
@@ -443,10 +483,15 @@ int main(int argc, char** argv) {
     check(!Rgsc::restoreState(bad, r, why), "a truncated text is rejected");
     bad.state = good.state.substr(0, good.state.rfind(' '));
     check(!Rgsc::restoreState(bad, r, why), "a text without its footprints is rejected");
-    bad.state = good.state;
-    bad.state.replace(bad.state.find(' '), 1, " 9");  //the first score, 9 before its digits
+    if(PENDING_MOVES) {
+      bad.state = good.state;
+      bad.state.replace(bad.state.find(' '), 1, " 9");  //Blueprints' first score, 9 before its digits
+      check(!Rgsc::restoreState(bad, r, why) && why.find("key") != string::npos,
+            "another state's text is rejected: " + why);
+    }
+    bad.state = GameInterface::stateText<GameRules>(boards[boards.size() / 2 + 1].pos);
     check(!Rgsc::restoreState(bad, r, why) && why.find("key") != string::npos,
-          "another state's text is rejected: " + why);
+          "the next state's text is rejected: " + why);
     bad = good;
     bad.key ^= 1;
     check(!Rgsc::restoreState(bad, r, why), "a wrong key is rejected");
@@ -457,7 +502,9 @@ int main(int argc, char** argv) {
 
   // The buffer: duplicates and collisions, a save and a load, and the lines that a load rejects.
   {
-    randomGame(rand, boards, moves);
+    do
+      randomGame(rand, boards, moves);
+    while(boards.size() <= 50);
     Rgsc::Settings settings;
     settings.enabled = true;
     settings.bufferFile = dir + "/rgsc_states.txt";

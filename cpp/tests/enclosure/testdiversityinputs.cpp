@@ -8,8 +8,8 @@
 //   testdiversityinputs POSITIONS_FILE
 //
 // It names no game, so it builds against any game's build (tests/enclosure/build.sh BUILD_DIR, with
-// TESTS=testdiversityinputs). A position is the game's actions from the start of its standard board, as testnnoutputs
-// reads them (Blueprints': tests/data/blueprints_positions.txt). Exit code 0 when every check holds.
+// TESTS=testdiversityinputs). The positions are those that testnnoutputs reads (testpositions.h; Blueprints':
+// tests/data/blueprints_positions.txt, Tak's: tests/data/tak_positions.txt). Exit code 0 when every check holds.
 
 #include <cstdio>
 #include <fstream>
@@ -20,6 +20,7 @@
 #include "../../core/test.h"
 #include "../../dataio/trainingwrite.h"
 #include "../../neuralnet/nninputs.h"
+#include "testpositions.h"
 
 using namespace std;
 
@@ -44,30 +45,13 @@ int main(int argc, char** argv) {
     fprintf(stderr, "cannot open %s\n", argv[1]);
     return 2;
   }
-  string line;
+  string label;
+  Board board;
+  BoardHistory hist;
   int positions = 0, rows = 0;
   vector<float> bin13(spatial), glob13(n13), bin(spatial), glob(NNInputs::NUM_FEATURES_GLOBAL_V14), globSym13(n13);
   vector<uint32_t> bits13(words), bits(words);
-  while(getline(in, line)) {
-    istringstream head(line);
-    string word, label;
-    int n;
-    if(!(head >> word >> label >> n) || word != "position")
-      continue;
-    Board board;
-    BoardHistory hist(board, P_BLACK, Rules(), 0);
-    bool legal = true;
-    for(int i = 0; i < n && legal; i++) {
-      int action;
-      head >> action;
-      Loc loc = Board::moveLocOfAction(action);
-      Player pla = hist.presumedNextMovePla;
-      legal = hist.isLegal(board, loc, pla);
-      if(legal)
-        hist.makeBoardMoveAssumeLegal(board, loc, pla, NULL);
-    }
-    if(!legal || hist.isGameFinished)
-      continue;
+  while(nextTestPosition(in, label, board, hist)) {
     const Player pla = hist.presumedNextMovePla;
 
     //The cache's hash: member 0's is the default's, and the members' hashes differ.
