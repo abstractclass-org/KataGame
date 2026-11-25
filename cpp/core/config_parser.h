@@ -56,7 +56,7 @@ class ConfigParser {
   bool contains(const std::string& key) const;
   bool containsAny(const std::vector<std::string>& possibleKeys) const;
   bool containsAnyKeyContaining(const std::string& substring) const;
-  std::vector<std::string> keysWithPrefix(const std::string& prefix) const;  //KataGame fork (abscls-shfz.10)
+  std::vector<std::string> keys() const;  //KataGame fork (abscls-shfz.10)
   std::string firstFoundOrFail(const std::vector<std::string>& possibleKeys) const;
   std::string firstFoundOrEmpty(const std::vector<std::string>& possibleKeys) const;
 

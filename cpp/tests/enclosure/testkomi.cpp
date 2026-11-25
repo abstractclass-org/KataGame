@@ -27,7 +27,7 @@
 //     position, the forks, the komi around an even komi, and the frozen starts. Each key in place of the general one,
 //     with the other size at the general ones. A new game's random numbers are in KataGo's order, and a size's keys of
 //     the general values give the general games, draw for draw. The boards that are not square, and the positions of a
-//     size that the config does not have. The configs that cannot be meant stop at the load, with their key's name.
+//     size that the config does not have. The configs with a mistake stop at the load, with their key's name.
 //   - With a self-play config: its new games, on each of its boards.
 
 #include <stdlib.h>
@@ -391,6 +391,13 @@ struct Draws {
   double stdev = 0.0, bigProb = 0.0, big = 10.0, biggerProb = 0.0, bigger = 30.0, integerProb = 1.0, forkProb = 0.0;
 
   bool fair() const { return means.empty(); }
+  //These draws around one komi, in place of their own means or the fair komi: a fork's, and the even komi's.
+  Draws around(double base) const {
+    Draws d = *this;
+    d.means = {base};
+    d.shares = {1};
+    return d;
+  }
   vector<double> bases() const { return fair() ? vector<double>(1, 0.0) : means; }
   vector<double> baseShares() const {
     vector<double> result = fair() ? vector<double>(1, 1.0) : shares;
@@ -415,9 +422,8 @@ struct Draws {
 //Gaussian truncated at 3 standard deviations, rounded to one of its two nearest half points with the shares that keep
 //its mean, and clipped at the rules' range. A whole komi moves half a point up or down in the games that do not allow
 //it (setKomiWithNoise).
-static map<int, double> expectedKomis(
-  const Draws& draws, const Board& board, const vector<double>& bases, const vector<double>& baseShares
-) {
+static map<int, double> expectedKomis(const Draws& draws, const Board& board) {
+  const vector<double> bases = draws.bases(), baseShares = draws.baseShares();
   const int steps = 120000;
   static vector<double> z, weight;  //the truncated Gaussian, in steps
   if(z.empty()) {
@@ -542,11 +548,10 @@ struct Counted {
 
   //The means, the spreads, the whole komis and the evened games (makeGameFair, in a share evenedShare of the games).
   //Then each komi and the komis up to each: the single counts of a wide distribution are small, and the sums hold its
-  //form. fair: the games that are not evened have the fair komi.
-  void checkAgainst(
-    const Draws& draws, const Board& board, const vector<double>& bases, const vector<double>& baseShares,
-    double evenedShare, bool fair, const string& what
-  ) const {
+  //form. With a fair komi (draws.fair()), the games that are not evened have the fair komi.
+  void checkAgainst(const Draws& draws, const Board& board, double evenedShare, const string& what) const {
+    const vector<double> bases = draws.bases(), baseShares = draws.baseShares();
+    const bool fair = draws.fair();
     check(n > 0 && offGrid == 0, what + ": games, each with a komi on the half-point grid");
     check(fairGames == (fair ? n - evenedGames : 0), what + ": the games with the fair komi");
     string text;
@@ -576,7 +581,7 @@ struct Counted {
       text += Global::strprintf("; spread %.4g: ", s.first) +
               checkCount(stdevCounts[s.first], n, s.second, what + ", spread " + to_string(s.first));
 
-    const map<int, double> shares = expectedKomis(draws, board, bases, baseShares);
+    const map<int, double> shares = expectedKomis(draws, board);
     int whole = 0, upTo = 0;
     double wholeShare = 0.0, shareUpTo = 0.0;
     for(const pair<const int, int>& k : komis) {
@@ -639,8 +644,7 @@ static void checkDraws(const char* path) {
   for(const pair<const pair<int, int>, Counted>& c : counted) {
     const int x = c.first.first, y = c.first.second;
     const Draws draws = drawsOf(cfg, x, y);
-    c.second.checkAgainst(draws, Board(x, y), draws.bases(), draws.baseShares(), 0.0, draws.fair(),
-                          boardText(x, y) + ", new games");
+    c.second.checkAgainst(draws, Board(x, y), 0.0, boardText(x, y) + ", new games");
   }
 }
 
@@ -732,8 +736,8 @@ static void checkSizes(const vector<int>& sizes, const vector<Draws>& draws, con
     const Board board(size, size);
     const string what = name + ", " + boardText(size, size);
     checkCount(news[size].n, n, 1.0 / sizes.size(), what + ", the size's games");
-    news[size].checkAgainst(d, board, d.bases(), d.baseShares(), 0.0, d.fair(), what + ", new games");
-    uneven[size].checkAgainst(d, board, d.bases(), d.baseShares(), 0.4, d.fair(), what + ", asymmetric games");
+    news[size].checkAgainst(d, board, 0.0, what + ", new games");
+    uneven[size].checkAgainst(d, board, 0.4, what + ", asymmetric games");
 
     //The starts from a position of this size, with the forks' share of evened games (the config has no
     //sgfCompensateKomiProb). The forks of a game of this size, around its komi. And the komi around the even komi that
@@ -756,9 +760,9 @@ static void checkSizes(const vector<int>& sizes, const vector<Draws>& draws, con
       evened.add(s);
       forks.add(drawGame(gameInit, &fork, NULL));
     }
-    starts.checkAgainst(d, board, d.bases(), d.baseShares(), d.forkProb, d.fair(), what + ", starts from a position");
-    forks.checkAgainst(d, board, {parent}, {1.0}, d.forkProb, false, what + ", forks");
-    evened.checkAgainst(d, board, {6.5}, {1.0}, 0.0, false, what + ", around an even komi");
+    starts.checkAgainst(d, board, d.forkProb, what + ", starts from a position");
+    forks.checkAgainst(d.around(parent), board, d.forkProb, what + ", forks");
+    evened.checkAgainst(d.around(6.5), board, 0.0, what + ", around an even komi");
 
     //A start with its context frozen keeps its size and its komi.
     start.frozenContext = true;
@@ -772,6 +776,11 @@ static void checkSizes(const vector<int>& sizes, const vector<Draws>& draws, con
   }
 }
 
+//The general spreads of the next two tests, as drawsWith(..., 3, 0.2, 8, 0.05, 20, 0.5, ...) has them.
+static const string GENERAL_SPREADS =
+  "komiStdev = 3\nkomiBigStdevProb = 0.2\nkomiBigStdev = 8\nkomiBiggerStdevProb = 0.05\nkomiBiggerStdev = 20\n"
+  "komiAllowIntegerProb = 0.5\n";
+
 //The random numbers of a new game, taken here in KataGo's order: the size, the rules, the game's own draws at its
 //start, the spreads and the whole komi, then the komi. Several means take one before the spreads, and a single mean
 //takes none, so the games of a config without a size's key are those of the fork before these keys.
@@ -780,8 +789,7 @@ static void checkStream(const vector<int>& sizes) {
   const Draws means = drawsWith({-4, 1, 6}, {2, 1, 3}, 3, 0.2, 8, 0.05, 20, 0.5, 0);
   Logger logger(nullptr, false, false, false, false);
   for(const Draws& d : {single, means}) {
-    string lines = "komiMean = 2\nkomiStdev = 3\nkomiBigStdevProb = 0.2\nkomiBigStdev = 8\nkomiBiggerStdevProb = 0.05\n"
-                   "komiBiggerStdev = 20\nkomiAllowIntegerProb = 0.5\n";
+    string lines = "komiMean = 2\n" + GENERAL_SPREADS;
     if(d.means.size() > 1)
       for(int size : sizes)
         lines += linesOf(d, size);
@@ -817,8 +825,7 @@ static void checkStream(const vector<int>& sizes) {
 static void checkGeneralKeys(const vector<int>& sizes) {
   const int size = sizes.back(), other = sizes.front();
   const string S = to_string(size);
-  const string spreads = "komiStdev = 3\nkomiBigStdevProb = 0.2\nkomiBigStdev = 8\nkomiBiggerStdevProb = 0.05\n"
-                         "komiBiggerStdev = 20\nkomiAllowIntegerProb = 0.5\nforkCompensateKomiProb = 0.75\n";
+  const string spreads = GENERAL_SPREADS + "forkCompensateKomiProb = 0.75\n";
   const string mean = "komiMean = 2\n" + spreads, fair = "komiAuto = true\n" + spreads;
   Logger logger(nullptr, false, false, false, false);
 
@@ -864,11 +871,50 @@ static void checkGeneralKeys(const vector<int>& sizes) {
       forks.add(drawGame(gameInit, &fork, NULL));
     }
     const string what = "only " + m.own.substr(0, m.own.find('\n')) + (m.general == fair ? " (komiAuto)" : "");
-    own.checkAgainst(m.draws, board, m.draws.bases(), m.draws.baseShares(), 0.0, m.draws.fair(), what);
-    forks.checkAgainst(m.draws, board, {0.0}, {1.0}, m.draws.forkProb, false, what + ", forks");
+    own.checkAgainst(m.draws, board, 0.0, what);
+    forks.checkAgainst(m.draws.around(0.0), board, m.draws.forkProb, what + ", forks");
     const Draws& g = m.general == fair ? generalFair : general;
     if(other != size)
-      others.checkAgainst(g, Board(other, other), g.bases(), g.baseShares(), 0.0, g.fair(), what + ", the other size");
+      others.checkAgainst(g, Board(other, other), 0.0, what + ", the other size");
+  }
+}
+
+//The shares of the starts from a position and of the forks whose komi is evened. sgfCompensateKomiProb is for every
+//size, and a size's forkCompensateKomiProb is for its forks, and for its starts without it. Without either, the forks'
+//share is handicapCompensateKomiProb.
+static void checkCompensation(const vector<int>& sizes) {
+  const int size = sizes.back(), other = sizes.front();
+  const string S = to_string(size), O = to_string(other);
+  Logger logger(nullptr, false, false, false, false);
+  struct Case {
+    string lines;
+    double startOfSize, forkOfSize, startOfOther, forkOfOther;
+  };
+  const string fork = "forkCompensateKomiProb";
+  const string ofOther = other == size ? "" : fork + O + " = 0.9\n";  //a key of each size, once
+  const vector<Case> cases = {
+    {"sgfCompensateKomiProb = 0.35\n" + fork + S + " = 0.1\n" + ofOther, 0.35, 0.1, 0.35, 0.9},
+    {"handicapCompensateKomiProb = 0.3\n" + fork + S + " = 0.8\n", 0.8, 0.8, 0.3, 0.3},
+    {"handicapCompensateKomiProb = 0.3\n" + fork + " = 0.6\n", 0.6, 0.6, 0.6, 0.6},
+  };
+  for(const Case& c : cases) {
+    const unique_ptr<ConfigParser> cfg = configOf(sizes, "komiMean = 0\n" + c.lines);
+    GameInitializer gameInit(*cfg, logger, "testkomi compensation");
+    for(int s : sizes) {
+      const Draws d = drawsWith({0}, {1}, 0, 0, 10, 0, 30, 1, 0);
+      const Board board(s, s);
+      const Sgf::PositionSample start = startOn(s);
+      const InitialPosition forkOf(board, BoardHistory(board, P_BLACK, Rules(), 0), P_BLACK, true, false, false, 1.0);
+      Counted starts, forks;
+      for(int i = 0; i < 20000; i++) {
+        starts.add(drawGame(gameInit, NULL, &start));
+        forks.add(drawGame(gameInit, &forkOf, NULL));
+      }
+      const bool own = s == size;
+      const string what = c.lines.substr(0, c.lines.find('\n')) + ", " + boardText(s, s);
+      starts.checkAgainst(d, board, own ? c.startOfSize : c.startOfOther, what + ", starts from a position");
+      forks.checkAgainst(d, board, own ? c.forkOfSize : c.forkOfOther, what + ", forks");
+    }
   }
 }
 
@@ -892,7 +938,7 @@ static void checkRectangles(const vector<int>& sizes) {
   for(const pair<const pair<int, int>, Counted>& c : counted) {
     const int x = c.first.first, y = c.first.second;
     const Draws& d = x != y ? general : x == size ? large : small;
-    c.second.checkAgainst(d, Board(x, y), d.bases(), d.baseShares(), 0.0, false, "rectangles, " + boardText(x, y));
+    c.second.checkAgainst(d, Board(x, y), 0.0, "rectangles, " + boardText(x, y));
   }
 }
 
@@ -909,7 +955,7 @@ static string loadError(const vector<int>& sizes, const string& lines) {
   return "";
 }
 
-//A config that cannot be meant stops at the load, with the key's name.
+//A config with a mistake stops at the load, with the key's name.
 static void checkRefusals(const vector<int>& sizes) {
   const int size = sizes.back(), other = sizes.front();
   const string S = to_string(size), O = to_string(other), X = to_string(size + 1);  //X: of no size here
@@ -925,11 +971,16 @@ static void checkRefusals(const vector<int>& sizes) {
   refused.push_back({mean + "komiMeans99999999999 = 1\n", "'komiMeans99999999999'"});
   refused.push_back({mean + "komiMean" + S + " = 1\n", "'komiMean" + S + "'"});
   refused.push_back({mean + "komiMeansRelProbs" + S + " = 1\n", "'komiMeansRelProbs" + S + "'"});
+  refused.push_back({mean + "komi" + S + "Means = 1\n", "'komi" + S + "Means'"});
+  for(const string key : {"KomiMeans", "komimeans", "sgfCompensateKomiProb", "forkCompensateKomi", "fancyKomiVarying"})
+    refused.push_back({mean + key + S + " = 1\n", "'" + key + S + "'"});
   refused.push_back({mean + "komiMeans = 1\n", "'komiMeans'"});
   refused.push_back({mean + "komiMeanRelProbs = 1\n", "'komiMeanRelProbs'"});
   for(const string values : {"1", "1,1,1", "1,-1", "3,-1", "0,0", "1,nan", "1,x", "1,inf"})
     refused.push_back({mean + two + probs + " = " + values + "\n", probs});
   refused.push_back({mean + two, probs});
+  for(const string values : {",0", "0 2", "0,,2"})
+    refused.push_back({mean + "komiMeans" + S + " = " + values + "\n" + probs + " = 1,1\n", "'komiMeans" + S + "'"});
   refused.push_back({mean + probs + " = 1\n", probs});
   refused.push_back({mean + "komiMeans" + S + " = 0\n" + probs + " = 1,1\n", probs});
   refused.push_back({mean + "komiMeans" + S + " = 0\n" + probs + " = 0\n", probs});
@@ -960,13 +1011,13 @@ static void checkRefusals(const vector<int>& sizes) {
   vector<string> accepted = {
     mean, "komiAuto = true\n", own, own + "komiAuto" + S + " = false\n", "komiAuto = true\n" + own,
     mean + "komiMeans" + S + " = " + top + ", -" + top + "\n" + probs + " = 0, 1\n",
-    mean + "komiMeans" + S + " = 0.3\n" + probs + " = 1e-5\n"
+    mean + "komiMeans" + S + " = 0.3\n" + probs + " = 1e-5\n", mean + "maxVisits" + S + " = 5\n"
   };
   if(other != size)
     accepted.push_back(mean + own + "allowRectangleProb = 0.5\n");
   for(const string& lines : accepted)
     check(loadError(sizes, lines).empty(), "accepted: " + lines + "-> " + loadError(sizes, lines));
-  printf("%d configs that cannot be meant stop at the load with their key's name, and %d others load\n",
+  printf("%d configs with a mistake stop at the load with their key's name, and %d others load\n",
          (int)refused.size(), (int)accepted.size());
 }
 
@@ -985,7 +1036,7 @@ static void checkOtherBoards(int size, int other) {
     Counted starts;
     for(int i = 0; i < 20000; i++)
       starts.add(drawGame(gameInit, NULL, &start));
-    starts.checkAgainst(draws, start.board, draws.bases(), draws.baseShares(), 0.0, false,
+    starts.checkAgainst(draws, start.board, 0.0,
                         "starts from a position of another board, " + boardText(other, other));
   }
   {
@@ -1027,7 +1078,7 @@ static void checkOtherBoards(int size, int other) {
       hinted.add(d);
   }
   checkCount(hinted.n, 40000, 0.5, "the hint positions' games");
-  hinted.checkAgainst(draws, start.board, draws.bases(), draws.baseShares(), 0.0, false,
+  hinted.checkAgainst(draws, start.board, 0.0,
                       "hint positions of another board, " + boardText(other, other));
   remove(file.c_str());
   rmdir(dir);
@@ -1066,6 +1117,7 @@ static void checkKeysOfSizes() {
     checkSizes(sizes, vector<Draws>(configs[i].end() - sizes.size(), configs[i].end()), "config " + to_string(i + 1));
   checkStream(sizes);
   checkGeneralKeys(sizes);
+  checkCompensation(sizes);
   checkRefusals(sizes);
   if(sizes.size() > 1) {
     if(rectangles)

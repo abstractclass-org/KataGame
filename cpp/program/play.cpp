@@ -384,20 +384,18 @@ static const vector<string> KOMI_KEYS_OF_SIZES = {
   "komiBiggerStdev", "komiAllowIntegerProb", "forkCompensateKomiProb"
 };
 
-//A key that looks like one of a size, and is none, stops the load.
+//A key with "komi" in its name, in any case, and a digit is a size's key or a mistake in one, which stops the load. The
+//keys for every size have no digit.
 static void checkKomiKeysOfSizes(const ConfigParser& cfg, const vector<pair<int,int>>& bSizes) {
-  vector<string> keys = cfg.keysWithPrefix("komi");
-  for(const string& key : cfg.keysWithPrefix("forkCompensateKomiProb"))
-    keys.push_back(key);
-  for(const string& key : keys) {
-    const size_t nameLen = key.find_last_not_of("0123456789") + 1;
+  const string digits = "0123456789";
+  for(const string& key : cfg.keys()) {
+    if(key == KOMI_MEANS || key == KOMI_MEAN_REL_PROBS)
+      throw IOError("Key '" + key + "' must have the size of a board after it in config file " + cfg.getFileName());
+    if(Global::toLower(key).find("komi") == string::npos || key.find_first_of(digits) == string::npos)
+      continue;
+    const size_t nameLen = key.find_last_not_of(digits) + 1;
     const string name = key.substr(0,nameLen);
     const string size = key.substr(nameLen);
-    if(size.empty()) {
-      if(name == KOMI_MEANS || name == KOMI_MEAN_REL_PROBS)
-        throw IOError("Key '" + key + "' must have the size of a board after it in config file " + cfg.getFileName());
-      continue;
-    }
     if(!contains(KOMI_KEYS_OF_SIZES,name))
       throw IOError("Key '" + key + "' is no komi key of a size of board (" + Global::concat(KOMI_KEYS_OF_SIZES,", ") +
                     ", each with the size after it) in config file " + cfg.getFileName());

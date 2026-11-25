@@ -405,8 +405,8 @@ own (`play.cpp`'s `KomiDraws`, read by `GameInitializer::initKomiDraws`). Each k
 `komiAuto`, and its own `komiAuto6 = true` is in place of the general `komiMean`. A config without a size's key reads as
 KataGo's, and its games are the same draw for draw: a single mean takes no random number, and several take one. Every
 size's komi is on the half-point grid, and a mean off the grid is rounded up or down in the shares that keep it.
-`KOMI_AREA` scales a size's spreads as it does the general ones. `-override-config` splits its text at commas, so it can
-set one mean of a size and stops at several: these are in the config's file.
+`KOMI_AREA` scales a size's spreads as it does the general ones. `-override-config` splits its text at commas. So it can
+set one mean of a size, and it stops at a list of several. Put a list in the config's file.
 
 **The places that draw a komi:**
 
@@ -426,12 +426,17 @@ set one mean of a size and stops at several: these are in the config's file.
 **A board that is not square** (`allowRectangleProb`, `bSizesXY`) has the general keys, and so has a position of a size
 that `bSizes` does not have.
 
-**A config that cannot be meant stops at the load,** with the key's name: a key of a size that `bSizes` does not have, a
-key that begins with `komi` or `forkCompensateKomiProb` and ends in a number and is none of these keys (`komiMean6`),
-`komiMeans` without a size, shares of another count than the means, shares that are missing for several means, negative
-or sum to 0, shares without means, a size with both means and the fair komi, a value outside the general key's range,
-and a board of `bSizes`, `bSizesXY` or a start position without a mean or the fair komi where the config has no general
-one.
+**A config with a mistake stops at the load,** with the key's name, for:
+
+- a size's key for a size that `bSizes` and `bSizesXY` do not have
+- a key with `komi` in its name, in any case, and a digit, that is none of the keys above: `komiMean6`, `komi6Means`,
+  `KomiMeans6`, `sgfCompensateKomiProb6`. The keys for every size have no digit
+- `komiMeans` or `komiMeanRelProbs` without a size
+- shares that are missing for several means, of another count than the means, negative, of sum 0, or without means
+- a size with both its means and `komiAuto6 = true`
+- a value outside the general key's range
+- a board of `bSizes` or `bSizesXY`, or a start position, without a mean or the fair komi, where the config has no
+  general one
 
 ### Reproducible analysis and search in slices
 
@@ -1094,8 +1099,9 @@ Its own configs give the two largest sizes of square board that the game plays (
 mean, several, means off the grid and below 0, a mean of share 0, the fair komi, every spread, and whole komis at shares
 of 0, 0.5 and 1. They cover the new games, the asymmetric games, the starts from a position, the forks, the komi around
 an even komi, and the frozen starts. Then each size's key alone in place of the general one, the other size at the
-general ones, the boards that are not square, the positions of another size, and the configs that stop at the load. With
-a config, it makes 200,000 new games of it and checks those of each board. A game of one size of board checks one size.
+general ones, the keys of the compensation, the boards that are not square, the positions of another size, and the
+configs that stop at the load. With a config, it makes 200,000 new games of it and checks those of each board. A game of
+one size of board checks one size.
 
 **Self-play's cheap searches:** `testcheapsearch SELFPLAY_CONFIG MODEL GAMES [OVERRIDES]` runs on a build of any game,
 with a network of the game. A small random one is enough: `python/enclosure_nn_check.py make` with `-config b2c16`,
