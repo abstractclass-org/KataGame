@@ -614,6 +614,19 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/game/${GAME}/ownfiles.txt")
   list(FILTER GAME_OWN_SOURCES INCLUDE REGEX "[.]cpp$")
 endif()
 
+# The network's board: MAX_BOARD_LEN of the game's trainer module, where the module gives it as a number, else 0. The
+# trainer's module is the one place of it. A game whose rules play several largest boards takes its own from it (Tak),
+# and any other game's must be the same (game/chosengame.h).
+set(GAME_NETWORK_BOARD_LEN 0)
+set(GAME_TRAINER_MODULE "${CMAKE_CURRENT_SOURCE_DIR}/../python/katago/train/games/${GAME}.py")
+if(EXISTS "${GAME_TRAINER_MODULE}")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GAME_TRAINER_MODULE}")
+  file(STRINGS "${GAME_TRAINER_MODULE}" GAME_BOARD_LINE REGEX "^MAX_BOARD_LEN = [0-9]+")
+  if(GAME_BOARD_LINE MATCHES "^MAX_BOARD_LEN = ([0-9]+)")
+    set(GAME_NETWORK_BOARD_LEN "${CMAKE_MATCH_1}")
+  endif()
+endif()
+
 set(USE_TCMALLOC 0 CACHE BOOL "Use TCMalloc")
 set(NO_GIT_REVISION 0 CACHE BOOL "Disable embedding the git revision into the compiled exe")
 set(USE_AVX2 0 CACHE BOOL "Compile with AVX2")
@@ -1804,12 +1817,13 @@ if(USE_BIGGER_BOARDS_EXPENSIVE)
   target_compile_definitions(katago PRIVATE COMPILE_MAX_BOARD_LEN=50)
 endif()
 
-target_compile_definitions(katago PRIVATE KATAGAME_GAME=${GAME})
+target_compile_definitions(katago PRIVATE KATAGAME_GAME=${GAME} KATAGAME_NETWORK_BOARD_LEN=${GAME_NETWORK_BOARD_LEN})
 if(NOT GAME_FOLDER STREQUAL "game")
   # chosenrules.h includes <game>/gamerules.h: beside it in game/, or here.
   target_include_directories(katago PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/${GAME_FOLDER}")
 endif()
 message(STATUS "-DGAME=${GAME}: the binary plays ${GAME}, with its own sources: ${GAME_OWN_SOURCES}")
+message(STATUS "-DGAME=${GAME}: the network's board of the trainer's module: ${GAME_NETWORK_BOARD_LEN} (0: none given)")
 
 # KataGame: no code outside the game layer names a game (tests/checkgamelayer.py). Each build runs the check first.
 find_package(Python3 COMPONENTS Interpreter)

@@ -2327,6 +2327,15 @@ PolicyHeadDesc::PolicyHeadDesc(istream& in, int vrsn, bool binaryFloats) {
 
   if(in.fail())
     throw StringError(name + ": policy head istream fail after parsing layers");
+  //Enclosure fork: POLICY_CHANNELS channels per policy output (channel = output * POLICY_CHANNELS + policy channel).
+  //KataGame fork (abscls-shfz.11): in a game whose policy grows with its largest board (Tak), a network of another
+  //board than the binary's has other channels, so the message names the board.
+  if(p2Conv.outChannels != policyOutChannels * NNPos::POLICY_CHANNELS)
+    throw StringError(name + Global::strprintf(
+      ": p2Conv.outChannels (%d) != %d: the network's policy is not this binary's, which has %d channels a point on "
+      "its largest board, %d x %d (a network of another largest board or of another game)",
+      p2Conv.outChannels, policyOutChannels * NNPos::POLICY_CHANNELS, NNPos::POLICY_CHANNELS, NNPos::MAX_BOARD_LEN,
+      NNPos::MAX_BOARD_LEN));
   if(auxVersion >= 1) {
     if(p2ConvAux.inChannels != p2Conv.inChannels || p2ConvAux.outChannels != NUM_AUX_POLICIES * NNPos::POLICY_CHANNELS)
       throw StringError(name + ": p2ConvAux must map p1's channels to the aux policies");
@@ -2364,9 +2373,6 @@ PolicyHeadDesc::PolicyHeadDesc(istream& in, int vrsn, bool binaryFloats) {
                gpoolToPassMul.inChannels,
                g1BN.numChannels * 3));
   if(modelVersion >= 15) {
-    //Enclosure fork: POLICY_CHANNELS channels per policy output (channel = output * POLICY_CHANNELS + policy channel).
-    if(p2Conv.outChannels != policyOutChannels * NNPos::POLICY_CHANNELS)
-      throw StringError(name + Global::strprintf(": p2Conv.outChannels (%d) != %d", p2Conv.outChannels, policyOutChannels * NNPos::POLICY_CHANNELS));
     if(gpoolToPassMul.outChannels != gpoolToPassBias.numChannels)
       throw StringError(name + Global::strprintf(": gpoolToPassMul.outChannels (%d) != gpoolToPassBias.numChannels (%d)", gpoolToPassMul.outChannels, gpoolToPassBias.numChannels));
     if(gpoolToPassMul.outChannels != gpoolToPassMul2.inChannels)
@@ -2377,9 +2383,6 @@ PolicyHeadDesc::PolicyHeadDesc(istream& in, int vrsn, bool binaryFloats) {
       throw StringError(name + Global::strprintf(": gpoolToPassMul2.outChannels (%d) != %d", gpoolToPassMul2.outChannels, policyOutChannels));
   }
   else {
-    //Enclosure fork: POLICY_CHANNELS channels per policy output (channel = output * POLICY_CHANNELS + policy channel).
-    if(p2Conv.outChannels != policyOutChannels * NNPos::POLICY_CHANNELS)
-      throw StringError(name + Global::strprintf(": p2Conv.outChannels (%d) != %d", p2Conv.outChannels, policyOutChannels * NNPos::POLICY_CHANNELS));
     if(gpoolToPassMul.outChannels != policyOutChannels)
       throw StringError(name + Global::strprintf(": gpoolToPassMul.outChannels (%d) != %d", gpoolToPassMul.outChannels, policyOutChannels));
   }

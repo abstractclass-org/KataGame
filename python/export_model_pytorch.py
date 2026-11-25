@@ -875,6 +875,10 @@ def main(args):
 
 
     def write_value_head(name, valuehead):
+        # KataGame fork: the file has the layers that this function names, and no other. The ending head
+        # (linear_ending, of a game with classes of endings) is left out on purpose: it is in training only, and C++
+        # reads nothing of it. A checkpoint with it exports the file of the same checkpoint without it
+        # (tests/test_ending_head.py).
         writeln(name)
         if version >= 17:
             # Enclosure fork (owner, 2026-10-04): the first option is the aux version (1: the training-only outputs

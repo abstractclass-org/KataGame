@@ -146,6 +146,31 @@ def check_policy_masks(npz_file, game, binaryInputNCHWPacked, policyTargetsNCMov
                 raise ValueError(f"{describe_row(npz_file, start + row, globalTargetsNC)} {what}: the move {move} "
                                  f"({where})")
 
+def check_board(npz_file, game, binaryInputNCHWPacked, policyTargetsNCMove):
+    """Refuses rows of another network's board, or of another policy, than the game's module has: those of a binary that
+    was built for another largest board (Tak's policy grows with it). Read as the module's, they would be wrong planes
+    and wrong moves."""
+    plane_bytes = (game.MAX_BOARD_LEN ** 2 + 7) // 8
+    moves = game.MAX_BOARD_LEN ** 2 * game.POLICY_CHANNELS + 1
+    if binaryInputNCHWPacked.shape[2] != plane_bytes or policyTargetsNCMove.shape[2] != moves:
+        raise ValueError(f"{npz_file}: rows of {binaryInputNCHWPacked.shape[2]} bytes a plane and "
+                         f"{policyTargetsNCMove.shape[2]} moves, and the trainer's module of the game {game.NAME!r} "
+                         f"has a board of side {game.MAX_BOARD_LEN} with {plane_bytes} and {moves}: the binary that "
+                         "wrote them was built for another largest board or another game")
+
+def check_ending_weights(npz_file, game, globalTargetsNC):
+    """Refuses, with the row's name, a row of a game with classes of endings (ENDING_CLASSES) that has a score's target
+    (C27) without the weight of its ending (G77): a binary without the game's classes wrote it. Its G76 and G77 are then
+    the game's own columns, and the trainer would weigh the targets of every ending by them."""
+    if games.ending_classes(game) == 0:
+        return
+    outside = (globalTargetsNC[:, 27] > 0) & (globalTargetsNC[:, games.ENDING_WEIGHT_TARGET] <= 0)
+    if outside.any():
+        row = int(np.flatnonzero(outside)[0])
+        raise ValueError(f"{describe_row(npz_file, row, globalTargetsNC)} has a score's target (C27) and no weight of "
+                         f"its ending (G77): the binary that wrote it gives the game {game.NAME!r} no classes of "
+                         "endings")
+
 def read_npz_training_data(
     npz_files,
     batch_size: int,
@@ -251,13 +276,15 @@ def read_npz_training_data(
         del npz
 
         assert len(binaryInputNCHWPacked.shape) == 3
-        assert binaryInputNCHWPacked.shape[2] == (pos_len * pos_len + 7) // 8
+        assert pos_len == game.MAX_BOARD_LEN
+        check_board(npz_file, game, binaryInputNCHWPacked, policyTargetsNCMove)
         assert binaryInputNCHWPacked.shape[1] == num_bin_features
         assert globalInputNC.shape[1] == num_global_features
         if ENCLOSURE_ZERO_INPUT_CHANNELS:
             binaryInputNCHWPacked[:, ENCLOSURE_ZERO_INPUT_CHANNELS] = 0
         check_policy_masks(npz_file, game, binaryInputNCHWPacked, policyTargetsNCMove, globalTargetsNC,
                            legalMovesPacked)
+        check_ending_weights(npz_file, game, globalTargetsNC)
         return (npz_file, binaryInputNCHWPacked, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC, qValueTargetsNCMove, legalMovesPacked)
 
     if not npz_files:
