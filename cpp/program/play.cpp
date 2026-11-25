@@ -187,26 +187,11 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
       throw IOError("bSizeRelProbs must sum to a positive value");
   }
 
-  if(!cfg.contains("komiMean") && !(cfg.contains("komiAuto") && cfg.getBool("komiAuto")))
-    throw IOError("Must specify either komiMean=<komi value> or komiAuto=True in config");
-  if(cfg.contains("komiMean") && (cfg.contains("komiAuto") && cfg.getBool("komiAuto")))
-    throw IOError("Must specify only one of komiMean=<komi value> or komiAuto=True in config");
-
-  komiMean = cfg.contains("komiMean") ? cfg.getFloat("komiMean",Rules::MIN_USER_KOMI,Rules::MAX_USER_KOMI) : 0.0f;  //Enclosure fork (2026-10-04): komi 0 unless given (KataGo: 7.5)
-  komiStdev = cfg.contains("komiStdev") ? cfg.getFloat("komiStdev",0.0f,(float)(60.0 * NNPos::SCORE_SCALE)) : 0.0f;  //Enclosure fork: KataGo's bounds x SCORE_SCALE
   handicapProb = cfg.contains("handicapProb") ? cfg.getDouble("handicapProb",0.0,1.0) : 0.0;
   handicapCompensateKomiProb = cfg.contains("handicapCompensateKomiProb") ? cfg.getDouble("handicapCompensateKomiProb",0.0,1.0) : 0.0;
-  komiBigStdevProb = cfg.contains("komiBigStdevProb") ? cfg.getDouble("komiBigStdevProb",0.0,1.0) : 0.0;
-  komiBigStdev = cfg.contains("komiBigStdev") ? cfg.getFloat("komiBigStdev",0.0f,(float)(60.0 * NNPos::SCORE_SCALE)) : 10.0f;  //Enclosure fork: x SCORE_SCALE
-  komiBiggerStdevProb = cfg.contains("komiBiggerStdevProb") ? cfg.getDouble("komiBiggerStdevProb",0.0,1.0) : 0.0;
-  komiBiggerStdev = cfg.contains("komiBiggerStdev") ? cfg.getFloat("komiBiggerStdev",0.0f,(float)(120.0 * NNPos::SCORE_SCALE)) : 30.0f;  //Enclosure fork: x SCORE_SCALE
   handicapKomiInterpZeroProb = cfg.contains("handicapKomiInterpZeroProb") ? cfg.getDouble("handicapKomiInterpZeroProb",0.0,1.0) : 0.0;
   sgfKomiInterpZeroProb = cfg.contains("sgfKomiInterpZeroProb") ? cfg.getDouble("sgfKomiInterpZeroProb",0.0,1.0) : 0.0;
-  komiAuto = cfg.contains("komiAuto") ? cfg.getBool("komiAuto") : false;
-
-  forkCompensateKomiProb = cfg.contains("forkCompensateKomiProb") ? cfg.getDouble("forkCompensateKomiProb",0.0,1.0) : handicapCompensateKomiProb;
-  sgfCompensateKomiProb = cfg.contains("sgfCompensateKomiProb") ? cfg.getDouble("sgfCompensateKomiProb",0.0,1.0) : forkCompensateKomiProb;
-  komiAllowIntegerProb = cfg.contains("komiAllowIntegerProb") ? cfg.getDouble("komiAllowIntegerProb",0.0,1.0) : 1.0;
+  initKomiDraws(cfg);
 
   auto generateCumProbs = [](const vector<Sgf::PositionSample>& poses, double lambda, double& effectiveSampleSize) {
     int64_t minInitialTurnNumber = 0;
@@ -375,6 +360,12 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
     maxBoardYSize = std::max(maxBoardYSize, pos.board.y_size);
   }
 
+  //KataGame fork (abscls-shfz.10): the boards of the start positions have a komi, as those of bSizes (initKomiDraws).
+  for(const Sgf::PositionSample& pos : startPoses)
+    checkHasKomi(pos.board.x_size, pos.board.y_size, "startPosesFromSgfDir has a position of");
+  for(const Sgf::PositionSample& pos : hintPoses)
+    checkHasKomi(pos.board.x_size, pos.board.y_size, "hintPosesDir has a position of");
+
   noResultStdev = cfg.contains("noResultStdev") ? cfg.getDouble("noResultStdev",0.0,1.0) : 0.0;
   numExtraBlackFixed = cfg.contains("numExtraBlackFixed") ? cfg.getInt("numExtraBlackFixed",1,18) : 0;
   drawRandRadius = cfg.contains("drawRandRadius") ? cfg.getDouble("drawRandRadius",0.0,1.0) : 0.0;
@@ -382,6 +373,157 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
 
 GameInitializer::~GameInitializer()
 {}
+
+//KataGame fork (abscls-shfz.10): the komi's keys of a size of board. Each is a name here and the side of a square board
+//after it. The means and their shares are in place of komiMean. The others are the general key of the same name, for
+//their size.
+static const char* const KOMI_MEANS = "komiMeans";
+static const char* const KOMI_MEAN_REL_PROBS = "komiMeanRelProbs";
+static const vector<string> KOMI_KEYS_OF_SIZES = {
+  KOMI_MEANS, KOMI_MEAN_REL_PROBS, "komiAuto", "komiStdev", "komiBigStdevProb", "komiBigStdev", "komiBiggerStdevProb",
+  "komiBiggerStdev", "komiAllowIntegerProb", "forkCompensateKomiProb"
+};
+
+//A key that looks like one of a size, and is none, stops the load.
+static void checkKomiKeysOfSizes(const ConfigParser& cfg, const vector<pair<int,int>>& bSizes) {
+  vector<string> keys = cfg.keysWithPrefix("komi");
+  for(const string& key : cfg.keysWithPrefix("forkCompensateKomiProb"))
+    keys.push_back(key);
+  for(const string& key : keys) {
+    const size_t nameLen = key.find_last_not_of("0123456789") + 1;
+    const string name = key.substr(0,nameLen);
+    const string size = key.substr(nameLen);
+    if(size.empty()) {
+      if(name == KOMI_MEANS || name == KOMI_MEAN_REL_PROBS)
+        throw IOError("Key '" + key + "' must have the size of a board after it in config file " + cfg.getFileName());
+      continue;
+    }
+    if(!contains(KOMI_KEYS_OF_SIZES,name))
+      throw IOError("Key '" + key + "' is no komi key of a size of board (" + Global::concat(KOMI_KEYS_OF_SIZES,", ") +
+                    ", each with the size after it) in config file " + cfg.getFileName());
+    int n;
+    if(!Global::tryStringToInt(size,n) || Global::intToString(n) != size || !contains(bSizes,make_pair(n,n)))
+      throw IOError("Key '" + key + "': bSizes or bSizesXY has no " + size + "x" + size + " board in config file " +
+                    cfg.getFileName());
+  }
+}
+
+//The draws' keys but the mean's, each with suffix after it. A key that the config does not have leaves its value.
+static void readKomiDraws(ConfigParser& cfg, const string& suffix, KomiDraws& draws) {
+  auto readFloat = [&](const string& key, float max, float& value) {
+    if(cfg.contains(key + suffix))
+      value = cfg.getFloat(key + suffix,0.0f,max);
+  };
+  auto readProb = [&](const string& key, double& value) {
+    if(cfg.contains(key + suffix))
+      value = cfg.getDouble(key + suffix,0.0,1.0);
+  };
+  //Enclosure fork: KataGo's bounds x SCORE_SCALE
+  readFloat("komiStdev", (float)(60.0 * NNPos::SCORE_SCALE), draws.stdev);
+  readProb("komiBigStdevProb", draws.bigStdevProb);
+  readFloat("komiBigStdev", (float)(60.0 * NNPos::SCORE_SCALE), draws.bigStdev);
+  readProb("komiBiggerStdevProb", draws.biggerStdevProb);
+  readFloat("komiBiggerStdev", (float)(120.0 * NNPos::SCORE_SCALE), draws.biggerStdev);
+  readProb("komiAllowIntegerProb", draws.allowIntegerProb);
+  readProb("forkCompensateKomiProb", draws.forkCompensateProb);
+  draws.startPosCompensateProb =
+    cfg.contains("sgfCompensateKomiProb") ? cfg.getDouble("sgfCompensateKomiProb",0.0,1.0) : draws.forkCompensateProb;
+}
+
+//The means of a size of board and their shares, where the config has them.
+static void readKomiMeansOfSize(ConfigParser& cfg, const string& size, KomiDraws& draws) {
+  const string meansKey = KOMI_MEANS + size;
+  const string probsKey = KOMI_MEAN_REL_PROBS + size;
+  if(!cfg.contains(meansKey)) {
+    if(cfg.contains(probsKey))
+      throw IOError("Key '" + probsKey + "' needs " + meansKey + " in config file " + cfg.getFileName());
+    return;
+  }
+  draws.means = cfg.getFloats(meansKey,Rules::MIN_USER_KOMI,Rules::MAX_USER_KOMI);
+  if(draws.means.size() > 1 && !cfg.contains(probsKey))
+    throw IOError("Key '" + meansKey + "' has several values, so it needs " + probsKey + " in config file " +
+                  cfg.getFileName());
+  draws.meanRelProbs = cfg.contains(probsKey) ? cfg.getDoubles(probsKey,0.0,1e100) : vector<double>(1,1.0);
+  if(draws.means.size() != draws.meanRelProbs.size())
+    throw IOError(meansKey + " and " + probsKey + " must have same number of values in " + cfg.getFileName());
+  double relProbSum = 0.0;
+  for(const double p : draws.meanRelProbs)
+    relProbSum += p;
+  if(relProbSum <= 1e-100)
+    throw IOError(probsKey + " must sum to a positive value");
+}
+
+//Reads the komi's keys, after the sizes of board.
+void GameInitializer::initKomiDraws(ConfigParser& cfg) {
+  checkKomiKeysOfSizes(cfg,allowedBSizes);
+
+  const bool komiAuto = cfg.contains("komiAuto") && cfg.getBool("komiAuto");
+  if(cfg.contains("komiMean") && komiAuto)
+    throw IOError("Must specify only one of komiMean=<komi value> or komiAuto=True in config");
+  generalKomiDraws = KomiDraws();
+  generalKomiDraws.fair = komiAuto;
+  if(cfg.contains("komiMean")) {
+    generalKomiDraws.means.push_back(cfg.getFloat("komiMean",Rules::MIN_USER_KOMI,Rules::MAX_USER_KOMI));
+    generalKomiDraws.meanRelProbs.push_back(1.0);
+  }
+  generalKomiDraws.forkCompensateProb = handicapCompensateKomiProb;
+  readKomiDraws(cfg,"",generalKomiDraws);
+
+  komiDrawsOfSize.clear();
+  for(const std::pair<int,int>& bSize : allowedBSizes) {
+    if(bSize.first != bSize.second)
+      continue;
+    const string size = Global::intToString(bSize.first);
+    KomiDraws draws = generalKomiDraws;
+    //A size's own means or fair komi are in place of the general ones.
+    const string autoKey = "komiAuto" + size;
+    if(cfg.contains(autoKey) && cfg.getBool(autoKey)) {
+      if(cfg.contains(KOMI_MEANS + size))
+        throw IOError("Must specify only one of " + (KOMI_MEANS + size) + "=<komi values> or " + autoKey +
+                      "=True in config");
+      draws.fair = true;
+      draws.means.clear();
+      draws.meanRelProbs.clear();
+    }
+    else if(cfg.contains(autoKey) || cfg.contains(KOMI_MEANS + size))
+      draws.fair = false;
+    readKomiMeansOfSize(cfg,size,draws);
+    readKomiDraws(cfg,size,draws);
+    komiDrawsOfSize[bSize.first] = draws;
+  }
+
+  for(const std::pair<int,int>& bSize : allowedBSizes)
+    checkHasKomi(bSize.first,bSize.second,"bSizes or bSizesXY has");
+}
+
+//Throws when the games on this board have no komi. what is what has the board.
+void GameInitializer::checkHasKomi(int xSize, int ySize, const string& what) const {
+  if(komiDrawsOf(xSize,ySize).hasMean())
+    return;
+  const string x = Global::intToString(xSize);
+  const string y = Global::intToString(ySize);
+  const string own = contains(komiDrawsOfSize,xSize) && xSize == ySize ?
+    ", or " + (KOMI_MEANS + x) + "=<komi values> or komiAuto" + x + "=True" : "";
+  throw IOError("Must specify either komiMean=<komi value> or komiAuto=True in config" + own + ": " + what + " a " + x +
+                "x" + y + " board without a komi");
+}
+
+//The draws of the games on this board: its size's, and the general ones on a board that is not square and on one that
+//bSizes and bSizesXY do not have (a start position's).
+const KomiDraws& GameInitializer::komiDrawsOf(int xSize, int ySize) const {
+  auto iter = komiDrawsOfSize.find(xSize);
+  return xSize == ySize && iter != komiDrawsOfSize.end() ? iter->second : generalKomiDraws;
+}
+
+//A single mean takes no random number, so a config without keys of sizes draws as before them. With the fair komi the
+//search for it (Play::runGame) starts at 0.
+float GameInitializer::drawKomiMean(const KomiDraws& draws) {
+  if(draws.means.size() <= 0)
+    return 0.0f;
+  if(draws.means.size() == 1)
+    return draws.means[0];
+  return draws.means[rand.nextUInt(draws.meanRelProbs.data(),draws.meanRelProbs.size())];
+}
 
 void GameInitializer::createGame(
   Board& board, Player& pla, BoardHistory& hist,
@@ -503,11 +645,13 @@ void GameInitializer::createGameSharedUnsynchronized(
 
     //No handicap when starting from an initial position.
     double thisHandicapProb = 0.0;
+    //KataGame fork (abscls-shfz.10): around the komi of the game that it forks, with its size's spreads and shares.
+    const KomiDraws& komiDraws = komiDrawsOf(board.x_size,board.y_size);
     extraBlackAndKomi = PlayUtils::chooseExtraBlackAndKomi(
-      hist.rules.komi, komiStdev, komiAllowIntegerProb,
+      hist.rules.komi, komiDraws.stdev, komiDraws.allowIntegerProb,
       thisHandicapProb, numExtraBlackFixed,
-      komiBigStdevProb, komiBigStdev,
-      komiBiggerStdevProb, komiBiggerStdev,
+      komiDraws.bigStdevProb, komiDraws.bigStdev,
+      komiDraws.biggerStdevProb, komiDraws.biggerStdev,
       board, rand  //KataGame fork: the board, for its komi area (Board::komiArea)
     );
     testAssert(extraBlackAndKomi.extraBlack == 0);
@@ -520,13 +664,14 @@ void GameInitializer::createGameSharedUnsynchronized(
     otherGameProps.hintLoc = Board::NULL_LOC;
     otherGameProps.hintTurn = initialPosition->isHintFork ? (int)hist.moveHistory.size() : -1;
     otherGameProps.trainingWeight = initialPosition->trainingWeight;
-    extraBlackAndKomi.makeGameFair = rand.nextBool(forkCompensateKomiProb);
+    extraBlackAndKomi.makeGameFair = rand.nextBool(komiDraws.forkCompensateProb);
     extraBlackAndKomi.makeGameFairForEmptyBoard = false;
     extraBlackAndKomi.interpZero = false;
     return;
   }
 
   double makeGameFairProb = 0.0;
+  bool komiAuto = false;  //KataGame fork (abscls-shfz.10): the size's own (KomiDraws::fair)
 
   int bSizeIdx = rand.nextUInt(allowedBSizeRelProbs.data(),allowedBSizeRelProbs.size());
   Rules rules = createRulesUnsynchronized();
@@ -573,11 +718,17 @@ void GameInitializer::createGameSharedUnsynchronized(
 
     //No handicap when starting from a sampled position.
     double thisHandicapProb = 0.0;
+    //KataGame fork (abscls-shfz.10): the draws of the position's size. A start with its context frozen keeps its own
+    //komi (below), and needs no mean.
+    const KomiDraws& komiDraws = komiDrawsOf(board.x_size,board.y_size);
+    if(!startPos.frozenContext)
+      checkHasKomi(board.x_size,board.y_size,"a game starts from a position of");
+    komiAuto = komiDraws.fair;
     extraBlackAndKomi = PlayUtils::chooseExtraBlackAndKomi(
-      komiMean, komiStdev, komiAllowIntegerProb,
+      drawKomiMean(komiDraws), komiDraws.stdev, komiDraws.allowIntegerProb,
       thisHandicapProb, numExtraBlackFixed,
-      komiBigStdevProb, komiBigStdev,
-      komiBiggerStdevProb, komiBiggerStdev,
+      komiDraws.bigStdevProb, komiDraws.bigStdev,
+      komiDraws.biggerStdevProb, komiDraws.biggerStdev,
       board, rand  //KataGame fork: the board, for its komi area (Board::komiArea)
     );
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
@@ -591,7 +742,7 @@ void GameInitializer::createGameSharedUnsynchronized(
     otherGameProps.hintTurn = (int)hist.moveHistory.size();
     otherGameProps.hintPosHash = board.pos_hash;
     otherGameProps.trainingWeight = startPos.trainingWeight;
-    makeGameFairProb = sgfCompensateKomiProb;
+    makeGameFairProb = komiDraws.startPosCompensateProb;
     extraBlackAndKomi.interpZero = sgfKomiInterpZeroProb > 0 ? rand.nextBool(sgfKomiInterpZeroProb) : false;
   }
   else {
@@ -608,11 +759,13 @@ void GameInitializer::createGameSharedUnsynchronized(
     pla = P_BLACK;
     hist.clear(board,pla,rules,0);
 
+    const KomiDraws& komiDraws = komiDrawsOf(xSize,ySize);  //KataGame fork (abscls-shfz.10): the size's
+    komiAuto = komiDraws.fair;
     extraBlackAndKomi = PlayUtils::chooseExtraBlackAndKomi(
-      komiMean, komiStdev, komiAllowIntegerProb,
+      drawKomiMean(komiDraws), komiDraws.stdev, komiDraws.allowIntegerProb,
       handicapProb, numExtraBlackFixed,
-      komiBigStdevProb, komiBigStdev,
-      komiBiggerStdevProb, komiBiggerStdev,
+      komiDraws.bigStdevProb, komiDraws.bigStdev,
+      komiDraws.biggerStdevProb, komiDraws.biggerStdev,
       board, rand  //KataGame fork: the board, for its komi area (Board::komiArea)
     );
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);

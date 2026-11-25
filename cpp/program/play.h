@@ -72,6 +72,24 @@ struct OtherGameProperties {
   Player playoutDoublingAdvantagePla = C_EMPTY;
 };
 
+//KataGame fork (abscls-shfz.10): how GameInitializer draws the komi of the games on a board: the config's general keys,
+//or those of the board's own size, such as komiMeans6, komiMeanRelProbs6 and komiStdev6 on a 6 x 6 board (GAMES.md).
+struct KomiDraws {
+  std::vector<float> means;  //A new game draws one, with the shares below. Empty with fair, and without a mean.
+  std::vector<double> meanRelProbs;
+  bool fair = false;  //komiAuto: the network's fair komi of the empty board, in place of a mean.
+  float stdev = 0.0f;
+  double bigStdevProb = 0.0;
+  float bigStdev = 10.0f;
+  double biggerStdevProb = 0.0;
+  float biggerStdev = 30.0f;
+  double allowIntegerProb = 1.0;
+  double forkCompensateProb = 0.0;
+  double startPosCompensateProb = 0.0;  //sgfCompensateKomiProb, or else forkCompensateProb.
+
+  bool hasMean() const { return fair || means.size() > 0; }
+};
+
 //Object choosing random initial rules and board sizes for games. Threadsafe.
 class GameInitializer {
  public:
@@ -133,6 +151,10 @@ class GameInitializer {
     const BoardHistoryModes& gameHistoryModes
   );
   Rules createRulesUnsynchronized();
+  void initKomiDraws(ConfigParser& cfg);
+  void checkHasKomi(int xSize, int ySize, const std::string& what) const;
+  const KomiDraws& komiDrawsOf(int xSize, int ySize) const;
+  float drawKomiMean(const KomiDraws& draws);
 
   std::mutex createGameMutex;
   Rand rand;
@@ -150,20 +172,13 @@ class GameInitializer {
   std::vector<std::pair<int,int>> allowedBSizes;
   std::vector<double> allowedBSizeRelProbs;
 
-  float komiMean;
-  float komiStdev;
-  double komiAllowIntegerProb;
+  //KataGame fork (abscls-shfz.10): the komi's draws, of each size of square board and of every other board.
+  KomiDraws generalKomiDraws;
+  std::map<int,KomiDraws> komiDrawsOfSize;
   double handicapProb;
   double handicapCompensateKomiProb;
-  double forkCompensateKomiProb;
-  double sgfCompensateKomiProb;
-  double komiBigStdevProb;
-  float komiBigStdev;
-  double komiBiggerStdevProb;
-  float komiBiggerStdev;
   double handicapKomiInterpZeroProb;
   double sgfKomiInterpZeroProb;
-  bool komiAuto;
 
   int numExtraBlackFixed;
   double noResultStdev;

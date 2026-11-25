@@ -509,6 +509,15 @@ bool ConfigParser::containsAnyKeyContaining(const std::string& substring) const 
   return false;
 }
 
+vector<string> ConfigParser::keysWithPrefix(const string& prefix) const {
+  vector<string> keys;
+  for(auto it = keyValues.begin(); it != keyValues.end(); ++it) {
+    if(Global::isPrefix(it->first,prefix))
+      keys.push_back(it->first);
+  }
+  return keys;
+}
+
 std::string ConfigParser::firstFoundOrFail(const std::vector<std::string>& possibleKeys) const {
   for(const string& key : possibleKeys) {
     if(contains(key))

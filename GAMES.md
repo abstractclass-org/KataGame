@@ -53,7 +53,7 @@ game"). The training scripts (`python/selfplay/`) run a run of any game, and `ka
 | `cpp/tests/enclosure/testselfplayviews.cpp` | Self-play's search of the root's views (`PlaySettings::rootViews`), for a game with views: each move in its view, the replay, the full searches' visits, `view_action`, RGSC's played entries, the rows and records for `check_rows.py --records`, the passes of a full search with `rootViewsCheapPasses`, and the player's own diversity term in each pass (abscls-e0gz). |
 | `cpp/tests/enclosure/testdiversityinputs.cpp` | AZdb's latent in the network's inputs and cache, for any game: member 0 keeps the cache's hash of an evaluation without a member and the members' hashes differ, the rows of V14 are V13's with the member's one-hot after V13's global inputs (the float rows and the packed rows at each allowed symmetry), the rows of V13 do not read the member, and the training rows have 80 global targets before V14 and 84 in its rows. |
 | `cpp/tests/enclosure/testdiversitysearch.cpp` | AZdb's diversity term in the search, for a build's game that gives AZdb's statistics (Blueprints): member 0's search against KataGo's, D on chains, a transposition, the member's choice by its reward, each member's evaluations, the refusals, the tree's clear, and the checks of the root's views with the member's term (abscls-e0gz). |
-| `cpp/tests/enclosure/testkomi.cpp` | Komi through the front, for the build's game: the result and the value targets at komis that decide a game, the global inputs at the history's komi, the even-komi search's bracket (an optional member of the encoding part) against KataGo's code and each game's pinned bracket, the two rules where the win-loss value keeps its sign up to the limit (no even komi, or KataGo's bracket end), each game's pinned lead step, and a self-play config's komi draws. |
+| `cpp/tests/enclosure/testkomi.cpp` | Komi through the front, for the build's game: the result and the value targets at komis that decide a game, the global inputs at the history's komi, the even-komi search's bracket (an optional member of the encoding part) against KataGo's code and each game's pinned bracket, the two rules where the win-loss value keeps its sign up to the limit (no even komi, or KataGo's bracket end), each game's pinned lead step, the komi draws of each size of board, and a self-play config's komi draws. |
 
 All members are static, and every file is a header. So the compiler sees the same code as in a build for one game, and
 the WebAssembly build, the binding and the standalone tests need no new source file.
@@ -383,6 +383,55 @@ its tactics. A game can have Go's board and a shorter game, so the fork divides 
   329, 10th to 90th percentile 294 to 363. A later sample of 51,094 games: mean 328.1, median 327, 292 to 366. KataGo
   plays its games to the end and does not resign, so its games are longer than human games. The specific numbers are
   Go's, and a game can need other values later.
+
+### The komi of each size of board
+
+KataGo draws the komi of every size of board from the same keys. The fork lets a config give a size of square board its
+own (`play.cpp`'s `KomiDraws`, read by `GameInitializer::initKomiDraws`). Each key has the size after its name, such as
+`komiStdev6` on a 6 × 6 board:
+
+| A size's key | The general key | What it is |
+|---|---|---|
+| `komiMeans6` | `komiMean` | One or several means, such as `0,2`. Each game draws one of them. |
+| `komiMeanRelProbs6` | none | The means' shares, such as `1,1`. They need not sum to 1. A single mean needs none. |
+| `komiAuto6` | `komiAuto` | `true`: the network's fair komi, in place of a mean |
+| `komiStdev6` | `komiStdev` | The spread around the mean or the fair komi |
+| `komiBigStdevProb6`, `komiBigStdev6` | `komiBigStdevProb`, `komiBigStdev` | The share and the spread of the big draws |
+| `komiBiggerStdevProb6`, `komiBiggerStdev6` | `komiBiggerStdevProb`, `komiBiggerStdev` | The same for the bigger draws, which override the big ones |
+| `komiAllowIntegerProb6` | `komiAllowIntegerProb` | The share of the games that can have a whole komi |
+| `forkCompensateKomiProb6` | `forkCompensateKomiProb` | The share of the forks whose komi is evened |
+
+**A size without a key takes the general key,** key by key. A size's own means are in place of the general `komiMean` or
+`komiAuto`, and its own `komiAuto6 = true` is in place of the general `komiMean`. A config without a size's key reads as
+KataGo's, and its games are the same draw for draw: a single mean takes no random number, and several take one. Every
+size's komi is on the half-point grid, and a mean off the grid is rounded up or down in the shares that keep it.
+`KOMI_AREA` scales a size's spreads as it does the general ones. `-override-config` splits its text at commas, so it can
+set one mean of a size and stops at several: these are in the config's file.
+
+**The places that draw a komi:**
+
+| Place | What it reads |
+|---|---|
+| A new game (`createGame`) | Its board's draws: a mean or the fair komi, the spreads, the whole komis |
+| A start from a position (`startPosesFromSgfDir`, `hintPosesDir`, and RGSC's starts that keep their moves) | The draws of the position's board. `sgfCompensateKomiProb` has no key of a size. Without it, the share of these starts whose komi is evened is the size's `forkCompensateKomiProb`, as KataGo's default. |
+| A start with its context frozen (RGSC's restart from a state, people's starts) | Its own size and komi |
+| A fork | The komi of its game in place of a mean. The spreads, the whole komis and the compensation's share are its board's. |
+| An asymmetric game's compensation | `minAsymmetricCompensateKomiProb` for every size: it is a setting of the playouts (`PlaySettings`). The komi around the even one has the size's spreads and whole komis. |
+| The fair komi and every compensation (`Play::runGame`) | The search for the even komi reads no key. The komi around it has the size's spreads and whole komis. |
+| The policy's opening moves (`initGamesWithPolicy`) | Another draw around the game's own mean, with the same spread, as KataGo's |
+| `fancyKomiVarying` | Its two spreads read the board's area, for every size. The size's spread and whole komis come on top. |
+| Handicap games (`handicapProb`, `handicapCompensateKomiProb`, `handicapKomiInterpZeroProb`) | Keys for every size, around the size's draws |
+| The gatekeeper and the matches | The same class, so the same keys |
+
+**A board that is not square** (`allowRectangleProb`, `bSizesXY`) has the general keys, and so has a position of a size
+that `bSizes` does not have.
+
+**A config that cannot be meant stops at the load,** with the key's name: a key of a size that `bSizes` does not have, a
+key that begins with `komi` or `forkCompensateKomiProb` and ends in a number and is none of these keys (`komiMean6`),
+`komiMeans` without a size, shares of another count than the means, shares that are missing for several means, negative
+or sum to 0, shares without means, a size with both means and the fair komi, a value outside the general key's range,
+and a board of `bSizes`, `bSizesXY` or a start position without a mean or the fair komi where the config has no general
+one.
 
 ### Reproducible analysis and search in slices
 
@@ -1035,10 +1084,18 @@ code on 1,929 win-loss curves, each an even komi. With the game's bracket, it fi
 within half a point out to the limit, and the test prints how many values it reads. Where the value keeps its sign up
 to the limit (flat curves, and curves that cross beyond the limit, on KataGo's bracket and the game's), KataGo's rule
 gives KataGo's result, the far end, as an even komi. The other rule gives the far end at once, after the bracket's
-offsets, and no even komi. With a config, it makes 200,000 new games with `play.cpp`'s
-`GameInitializer`, as self-play does, and
-checks the shares of draws at 0 and beyond 3 standard deviations of `komiBigStdev` against the config's probabilities
-(the bigger draw overrides the big draw, which overrides `komiStdev`), and that each draw is on the half-point grid.
+offsets, and no even komi.
+
+`testkomi` also checks the draws of the komi ("The komi of each size of board"). It makes games with `play.cpp`'s
+`GameInitializer`, as self-play does, from fixed seeds, and counts each mean, each spread, the whole komis, the evened
+games, each komi and the komis up to each. Each count is within the binomial interval that leaves out 1e-7 on each side
+of the share that the config gives. The test computes these shares on its own, and every komi is on the half-point grid.
+Its own configs give the two largest sizes of square board that the game plays (or its only one) draws of their own: one
+mean, several, means off the grid and below 0, a mean of share 0, the fair komi, every spread, and whole komis at shares
+of 0, 0.5 and 1. They cover the new games, the asymmetric games, the starts from a position, the forks, the komi around
+an even komi, and the frozen starts. Then each size's key alone in place of the general one, the other size at the
+general ones, the boards that are not square, the positions of another size, and the configs that stop at the load. With
+a config, it makes 200,000 new games of it and checks those of each board. A game of one size of board checks one size.
 
 **Self-play's cheap searches:** `testcheapsearch SELFPLAY_CONFIG MODEL GAMES [OVERRIDES]` runs on a build of any game,
 with a network of the game. A small random one is enough: `python/enclosure_nn_check.py make` with `-config b2c16`,
