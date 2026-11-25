@@ -2,9 +2,9 @@
 // Tak's statistics of a position for AZdb's diversity reward (the engine repository's
 // games/tak/docs/design/10-katagame-additions.md, "AZdb for Tak"), and their running normalization. The reference is
 // the engine repository's games/tak/tools/diversity_stats.py: the same statistics in the same order, the same
-// transforms, and the same side. GameEncoding will give them to KataGame's front (GameInterface: Diversity, for Tak's
-// encoding part), whose training rows read them for the members' rewards (program/azdb.h). The Python binding gives
-// them to the tests (games/tak/binding/extras.h). No input or search reads them yet.
+// transforms, and the same side. GameEncoding gives them to KataGame's front (GameInterface: Diversity), whose training
+// rows and search read them for the members' rewards (program/azdb.h). The Python binding gives them to the tests
+// (games/tak/binding/extras.h). The roads are roads.h's, which the network's inputs read too.
 //
 // The statistics are from the side of a player P (AZdb takes the player who made the move), against its opponent O:
 // each exists for P and for O, so White and Black give the same features for the same play. None reads a frame or a
@@ -41,20 +41,15 @@
 #include <cstdint>
 
 #include "gamerules.h"
+#include "roads.h"
 
 namespace tak {
 
 struct DiversityNormalizer;
 
 namespace diversity_detail {
-// Column x's squares and the edge squares of each board side, at compile time (a constexpr function of the class could
-// not initialize the class's own constants).
-constexpr uint64_t column_bits(int x) {
-  uint64_t m = 0;
-  for(int y = 0; y < MAX_LEN; y++)
-    m |= uint64_t(1) << (y * MAX_LEN + x);
-  return m;
-}
+// The edge squares of each board side, at compile time (a constexpr function of the class could not initialize the
+// class's own constants).
 constexpr uint64_t edge_bits(int size) {
   uint64_t m = 0;
   for(int y = 0; y < size; y++)
@@ -69,8 +64,6 @@ constexpr std::array<uint64_t, MAX_LEN + 1> edge_table() {
     t[s] = edge_bits(s);
   return t;
 }
-constexpr uint64_t WEST = column_bits(0);
-constexpr uint64_t NOT_WEST = ~WEST, NOT_EAST = ~column_bits(MAX_LEN - 1);
 constexpr std::array<uint64_t, MAX_LEN + 1> EDGE = edge_table();
 }  // namespace diversity_detail
 
@@ -94,11 +87,6 @@ struct Diversity {
   // a / b, 0 when b is 0.
   static double share(int a, int b) { return b > 0 ? double(a) / double(b) : 0.0; }
   static uint64_t low_mask(int n) { return n >= 64 ? ~uint64_t(0) : (uint64_t(1) << n) - 1; }
-  // The squares that touch a square of m orthogonally.
-  static uint64_t neighbours(uint64_t m) {
-    return ((m & diversity_detail::NOT_EAST) << 1) | ((m & diversity_detail::NOT_WEST) >> 1) | (m << MAX_LEN) |
-           (m >> MAX_LEN);
-  }
   // The black pieces of the stack on square i (its colour bits, the top at bit 0).
   static int black_pieces(const Position& p, int i) {
     const int h = p.height[i];
@@ -112,8 +100,6 @@ struct Diversity {
   static int on_board(const Position& p, int who) {
     return STONES[p.size] + CAPSTONES[p.size] - p.stones[who] - p.capstones[who];
   }
-  // The flats and capstones on top, the pieces of a road.
-  static uint64_t road_pieces(const Position& p, int who) { return p.owner[who] & ~p.walls; }
 
   // The stacks of a player's top pieces.
   struct Stacks {
@@ -136,65 +122,6 @@ struct Diversity {
     }
     return s;
   }
-
-  // The roads of a player's flats and capstones.
-  struct Roads {
-    int pieces = 0, largest = 0, extent = 0, threats = 0;
-  };
-  static Roads roads(const Position& p, int who) {
-    enum { WEST = 1, EAST = 2, SOUTH = 4, NORTH = 8 };
-    const int n = p.size;
-    const uint64_t road = road_pieces(p, who);
-    const uint64_t westEdge = diversity_detail::WEST, eastEdge = westEdge << (n - 1);
-    const uint64_t southEdge = (uint64_t(1) << n) - 1, northEdge = southEdge << ((n - 1) * MAX_LEN);
-    Roads r;
-    r.pieces = popcount(road);
-    int8_t label[NUM_POINTS];
-    uint8_t flags[NUM_POINTS];
-    int groups = 0;
-    bool complete = false;
-    uint64_t left = road;
-    while(left) {
-      uint64_t group = left & (~left + 1), last = 0;
-      while(group != last) {
-        last = group;
-        group |= neighbours(group) & road;
-      }
-      left &= ~group;
-      const int f = ((group & westEdge) ? WEST : 0) | ((group & eastEdge) ? EAST : 0) |
-                    ((group & southEdge) ? SOUTH : 0) | ((group & northEdge) ? NORTH : 0);
-      flags[groups] = uint8_t(f);
-      complete = complete || spans(f);
-      uint64_t cols = 0;
-      for(int y = 0; y < n; y++)
-        cols |= (group >> (y * MAX_LEN)) & ((uint64_t(1) << MAX_LEN) - 1);
-      const int rows = (63 - __builtin_clzll(group)) / MAX_LEN - __builtin_ctzll(group) / MAX_LEN + 1;
-      const int columns = (63 - __builtin_clzll(cols)) - __builtin_ctzll(cols) + 1;
-      r.extent = std::max(r.extent, std::max(rows, columns));
-      r.largest = std::max(r.largest, popcount(group));
-      for(uint64_t g = group; g; g &= g - 1)
-        label[__builtin_ctzll(g)] = int8_t(groups);
-      groups++;
-    }
-    // A complete road cannot be completed (it is the result). Else an empty square joins the groups that touch it and
-    // the edges that it is on. A square beside no road piece is on no two opposite edges (N >= 3): it completes none.
-    if(complete)
-      return r;
-    uint64_t empty = board_mask(n) & ~occupied(p) & neighbours(road);
-    while(empty) {
-      const int e = __builtin_ctzll(empty);
-      empty &= empty - 1;
-      const int x = e % MAX_LEN, y = e / MAX_LEN;
-      int f = (x == 0 ? WEST : 0) | (x == n - 1 ? EAST : 0) | (y == 0 ? SOUTH : 0) | (y == n - 1 ? NORTH : 0);
-      for(uint64_t nb = neighbours(uint64_t(1) << e) & road; nb; nb &= nb - 1)
-        f |= flags[label[__builtin_ctzll(nb)]];
-      if(spans(f))
-        r.threats++;
-    }
-    return r;
-  }
-  // Whether the edges (the flags of roads) join opposite sides.
-  static bool spans(int f) { return (f & 3) == 3 || (f & 12) == 12; }
 
   // The share of the player's moves that were spreads (the header comment's "Tempo").
   static double spread_share(const Position& p, int who) {
@@ -221,8 +148,8 @@ struct Diversity {
       out[STACKS + 3 * side + 1] = share(s.support, on_board(p, who));
       out[STACKS + 3 * side + 2] = s.tallest / N;
 
-      const Roads r = roads(p, who);
-      out[ROADS + 3 * side] = std::log1p(double(r.threats));
+      const Roads r = roads(p, who);  // roads.h
+      out[ROADS + 3 * side] = std::log1p(double(popcount(r.completing)));
       out[ROADS + 3 * side + 1] = std::min(r.extent, p.size - 1) / N;
       out[ROADS + 3 * side + 2] = share(r.largest, r.pieces);
 

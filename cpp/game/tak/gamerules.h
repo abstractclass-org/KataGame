@@ -30,8 +30,14 @@
 // 2^(k-1) - 1 + code, where bit i - 1 of the (k-1)-bit code is 1 when a step ends after the i-th piece dropped (the
 // first piece dropped is the lowest piece carried). A flattening is a spread whose last step is the capstone alone.
 //
-// TAK_MAX_BOARD_LEN sets the largest board, 8 by default: the rules module plays every size. A build whose network's
-// largest board is smaller sets it (the first network's is 6: 255 channels and 9,181 actions).
+// TAK_MAX_BOARD_LEN sets the largest board. A build of katago takes it from its network's board: CMake reads
+// MAX_BOARD_LEN of the trainer's module (python/katago/train/games/tak.py), 6 for the first network (255 channels and
+// 9,181 actions), and gives it as KATAGAME_NETWORK_BOARD_LEN. The other builds keep 8, so the rules module plays every
+// size.
+//
+// Beyond the rules, a position keeps the squares that each of its last HISTORY moves changed, for the network's history
+// planes. No rule reads them, the one-line position leaves them out, and hash does too (gameencoding.h, input_hash).
+// The state's text (state_text) holds them, for RGSC's restarts.
 
 #include <array>
 #include <cctype>
@@ -44,7 +50,14 @@
 #include "../gameinterface.h"
 
 #ifndef TAK_MAX_BOARD_LEN
+#ifdef KATAGAME_NETWORK_BOARD_LEN
+#if KATAGAME_NETWORK_BOARD_LEN == 0
+#error "Tak's katago needs its network's board: MAX_BOARD_LEN of python/katago/train/games/tak.py, beside cpp/"
+#endif
+#define TAK_MAX_BOARD_LEN KATAGAME_NETWORK_BOARD_LEN
+#else
 #define TAK_MAX_BOARD_LEN 8
+#endif
 #endif
 
 namespace tak {
@@ -58,6 +71,7 @@ constexpr int NUM_PATTERNS = (1 << MAX_LEN) - 1;  // the drop patterns of a pick
 constexpr int CHANNELS = 3 + 4 * NUM_PATTERNS;
 constexpr int PASS = NUM_POINTS * CHANNELS;
 constexpr int FIFTY_PLIES = 50;  // playtak's draw: plies with no placement and no flattening
+constexpr int HISTORY = 5;       // the last moves whose squares a position keeps
 
 // The pieces a player on each board side (stones, then capstones).
 constexpr int STONES[9] = {0, 0, 0, 10, 15, 21, 30, 40, 50};
@@ -143,6 +157,9 @@ struct Position {
   int32_t drawClock = 0;  // the plies since the last placement or flattening
   int8_t end = ONGOING;
   int8_t roadWinner = -1;  // the player whose road ended the game
+  // The squares that each of the last moves changed, the newest first: a placement's square, or a spread's square and
+  // each square that it dropped on. 0 where the game has no such move, or where a parsed position does not say.
+  uint64_t history[HISTORY] = {};
 };
 
 inline uint64_t board_mask(int size) {
@@ -449,6 +466,7 @@ struct GameRules {
   static void play(Position& p, int action) {
     const int me = next_player(p);
     const int i = action_point(action), channel = action_channel(action);
+    uint64_t changed = bit(i);
     if(channel < 3) {
       const int colour = p.ply < 2 ? 1 - me : me;
       if(channel == CAP)
@@ -479,6 +497,7 @@ struct GameRules {
         x += DX[direction];
         y += DY[direction];
         const int j = point(x, y);
+        changed |= bit(j);
         flattened = flattened || (p.walls & bit(j)) != 0;
         put(p, j, carried >> (left - c), c);
         left -= c;
@@ -487,6 +506,9 @@ struct GameRules {
       }
       p.drawClock = flattened ? 0 : p.drawClock + 1;
     }
+    for(int h = HISTORY - 1; h > 0; h--)
+      p.history[h] = p.history[h - 1];
+    p.history[0] = changed;
     p.ply++;
     update_end(p);
   }
@@ -804,6 +826,90 @@ struct GameRules {
     update_end(q);
     p = q;
     return true;
+  }
+
+  // The whole state that the network reads (RGSC's exact restarts): the one-line position, whose move number also gives
+  // the opening's plies, then the squares that each of the last moves changed (history), the newest first. Commas
+  // separate the moves, each its squares from a1 along the ranks, or - for none: "... 2 4 0 c3,a1b1,b2,-,-". The
+  // opening's kind is a setting of the process, as in the one-line position.
+  static std::string state_text(const Position& p) {
+    std::string s = position_text(p) + ' ';
+    for(int h = 0; h < HISTORY; h++) {
+      if(h > 0)
+        s += ',';
+      for(uint64_t m = p.history[h]; m; m &= m - 1)
+        s += square_name(__builtin_ctzll(m));
+      if(!p.history[h])
+        s += '-';
+    }
+    return s;
+  }
+  // Reads the state back. The history's squares are on the board, each once and in their order, so that one state has
+  // one text.
+  static bool parse_state(const std::string& text, Position& p, std::string& why) {
+    const size_t space = text.rfind(' ');
+    if(space == std::string::npos || split(text, ' ').size() != 5) {
+      why = "a state is the one-line position with its four fields, then the squares of the last " +
+            std::to_string(HISTORY) + " moves";
+      return false;
+    }
+    Position q;
+    if(!parse_position(text.substr(0, space), q, why))
+      return false;
+    const std::vector<std::string> moves = split(text.substr(space + 1), ',');
+    if(int(moves.size()) != HISTORY) {
+      why = "the history has " + std::to_string(moves.size()) + " moves, not " + std::to_string(HISTORY);
+      return false;
+    }
+    for(int h = 0; h < HISTORY; h++) {
+      const std::string& m = moves[h];
+      if(m == "-")
+        continue;
+      if(m.empty() || m.size() % 2 != 0) {
+        why = "\"" + m + "\" is not the squares of a move, or -";
+        return false;
+      }
+      int last = -1;
+      for(size_t k = 0; k < m.size(); k += 2) {
+        const int x = m[k] - 'a', y = m[k + 1] - '1';
+        if(x < 0 || x >= q.size || y < 0 || y >= q.size || point(x, y) <= last) {
+          why = "\"" + m + "\" is not squares of the board, each once, from a1 along the ranks";
+          return false;
+        }
+        last = point(x, y);
+        q.history[h] |= bit(last);
+      }
+    }
+    p = q;
+    return true;
+  }
+
+  // The search's local pattern hash (the subtree value bias, the pattern bonus), in KataGo's window of 5 x 5 around the
+  // move's square. Each square of the window on the board is hashed with its state: empty, or its top piece by owner
+  // and kind with whether the stack holds more than one piece. The top owners alone miss the walls and the capstones,
+  // which decide where a spread can go and where a road can pass, and a stack of more than one piece can spread past
+  // its neighbour. A square's key is of its place in the window, as KataGo's, so the same local shape has the same hash
+  // anywhere on the board. The keys reach LOCAL_RADIUS, the radius of the pattern bonus's window of 9 x 9.
+  static constexpr int LOCAL_WINDOW = 5;
+  static constexpr int LOCAL_RADIUS = 4, LOCAL_SIDE = 2 * LOCAL_RADIUS + 1;
+  static constexpr int LOCAL_STATES = 1 + 2 * 3 * 2;
+  static constexpr int NUM_LOCAL_KEYS = LOCAL_STATES * LOCAL_SIDE * LOCAL_SIDE;
+  static Hash128 local_hash(const Position& p, int cx, int cy, int xRadius, int yRadius, bool flipPlayers,
+                            const Hash128* keys) {
+    const int rx = xRadius < LOCAL_RADIUS ? xRadius : LOCAL_RADIUS;
+    const int ry = yRadius < LOCAL_RADIUS ? yRadius : LOCAL_RADIUS;
+    Hash128 h;
+    for(int y = cy < ry ? 0 : cy - ry; y <= cy + ry && y < p.size; y++)
+      for(int x = cx < rx ? 0 : cx - rx; x <= cx + rx && x < p.size; x++) {
+        const int i = point(x, y);
+        int state = 0;
+        if(p.height[i] > 0) {
+          const int owner = (p.owner[1] & bit(i)) ? 1 : 0;
+          state = 1 + 6 * (flipPlayers ? 1 - owner : owner) + 2 * kind_at(p, i) + (p.height[i] > 1 ? 1 : 0);
+        }
+        h ^= keys[(state * LOCAL_SIDE + (y - cy + LOCAL_RADIUS)) * LOCAL_SIDE + (x - cx + LOCAL_RADIUS)];
+      }
+    return h;
   }
 
   // The game's settings: opening, swap (the default) or double black stack (PTN's Opening tag).
