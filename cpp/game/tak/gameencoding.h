@@ -2,11 +2,11 @@
 // Tak's network encoding part of the game interface (game/gameinterface.h). The engine repository's
 // games/tak/docs/design/ gives the reasons: 03 (the policy), 05 (the inputs), 06 (the targets) and 08 (the constants).
 //
-// - The inputs: 35 planes, all from the side of the player to move (the mover): the top pieces, the pieces below them
-//   to depth 7 and whether pieces lie deeper, each road group's edges, the empty squares that complete a road, and the
-//   squares that each of the last 5 moves changed. 14 global inputs: the reserves, the board's side, the komi, the flat
-//   margin, the seat, the opening and the draw clock. Inputs version 14 adds KataGo's 2 playout inputs and AZdb's
-//   latent.
+// - The inputs: 58 planes, all from the side of the player to move (the mover): the top pieces, the pieces below them
+//   to depth 13, each player's count of pieces deeper as thermometer planes (1, 2, 4 and 8 or more), each road group's
+//   edges, the empty squares that complete a road, and for each of the last 5 moves the square that a spread left and
+//   the squares where pieces landed. 14 global inputs: the reserves, the board's side, the komi, the flat margin, the
+//   seat, the opening and the draw clock. Inputs version 14 adds KataGo's 2 playout inputs and AZdb's latent.
 // - The policy: one action is one whole move, CHANNELS a square (gamerules.h). A smaller board is in the corner of the
 //   network's board, and an action keeps its number there.
 // - The symmetries: all 8. A square moves as a pixel of the board, and the directions of the spreads and of the edge
@@ -16,8 +16,8 @@
 //
 // The trainer's module has the same values (python/katago/train/games/tak.py). Its MAX_BOARD_LEN is the largest board
 // of this build of katago (gamerules.h, TAK_MAX_BOARD_LEN), so a larger board is the one number there. The planes of
-// the pieces below the top then need the depth of its carry limit plus one (TOP_DEPTHS), which the check at the end of
-// this file asks for.
+// the pieces below the top then need the depth of twice its carry limit plus one (TOP_DEPTHS), two moves' reach, which
+// the check at the end of this file asks for.
 
 #include <algorithm>
 #include <cstdint>
@@ -56,18 +56,20 @@ struct GameEncoding {
   using Rules = GameRules;
   using Position = GameRules::Position;
 
-  // The planes. A side is 0 for the mover and 1 for the opponent, a kind is FLAT, WALL or CAP, and a direction is PTN's
-  // (+, -, > and <, 0 to 3).
-  static constexpr int TOP_DEPTHS = 7;        // the depths from the top that have planes, the top piece's included
+  // The planes. A side is 0 for the mover and 1 for the opponent, a kind is FLAT, WALL or CAP, a direction is PTN's
+  // (+, -, > and <, 0 to 3), and a move of the history is 0 for the last one to HISTORY - 1.
+  static constexpr int TOP_DEPTHS = 13;       // the depths from the top that have planes, the top piece's included
+  static constexpr int COUNT_STEPS = 4;       // the thermometer's steps: 1, 2, 4 and 8 pieces or more
   static constexpr int TOP_PLANE = 0;         // + 3 * side + kind: the top piece
   static constexpr int BELOW_PLANE = 6;       // + 2 * (depth - 2) + side: the piece at depth 2 to TOP_DEPTHS
-  static constexpr int REST_PLANE = 18;       // + side: that player has a piece deeper than TOP_DEPTHS
-  static constexpr int EDGE_PLANE = 20;       // + 4 * side + direction: the square's road group touches that edge
-  static constexpr int COMPLETES_PLANE = 28;  // + side: a flat on this empty square completes that player's road
-  static constexpr int HISTORY_PLANE = 30, NUM_HISTORY_PLANES = HISTORY;  // the squares of the last moves, newest first
-  static constexpr int NUM_SPATIAL_INPUTS = 35;
-  static_assert(BELOW_PLANE == TOP_PLANE + 6 && REST_PLANE == BELOW_PLANE + 2 * (TOP_DEPTHS - 1) &&
-                  EDGE_PLANE == REST_PLANE + 2 && COMPLETES_PLANE == EDGE_PLANE + 8 &&
+  static constexpr int COUNT_PLANE = 30;      // + 4 * side + step: that player has 2^step pieces or more deeper
+  static constexpr int EDGE_PLANE = 38;       // + 4 * side + direction: the square's road group touches that edge
+  static constexpr int COMPLETES_PLANE = 46;  // + side: a flat on this empty square completes that player's road
+  // + 2 * move: the square that a spread left. + 2 * move + 1: the squares where pieces landed (a placement's square).
+  static constexpr int HISTORY_PLANE = 48, NUM_HISTORY_PLANES = 2 * HISTORY;
+  static constexpr int NUM_SPATIAL_INPUTS = 58;
+  static_assert(BELOW_PLANE == TOP_PLANE + 6 && COUNT_PLANE == BELOW_PLANE + 2 * (TOP_DEPTHS - 1) &&
+                  EDGE_PLANE == COUNT_PLANE + 2 * COUNT_STEPS && COMPLETES_PLANE == EDGE_PLANE + 8 &&
                   HISTORY_PLANE == COMPLETES_PLANE + 2 && NUM_SPATIAL_INPUTS == HISTORY_PLANE + NUM_HISTORY_PLANES,
                 "the planes follow one another");
 
@@ -92,8 +94,8 @@ struct GameEncoding {
         const int black = popcount(p.top[i] >> TOP_DEPTHS) + popcount(p.rest[i]);
         const int deep[2] = {height - TOP_DEPTHS - black, black};
         for(int side = 0; side < 2; side++)
-          if(deep[side == 0 ? me : 1 - me] > 0)
-            image(i, REST_PLANE + side);
+          for(int step = 0, count = deep[side == 0 ? me : 1 - me]; step < COUNT_STEPS && count >= 1 << step; step++)
+            image(i, COUNT_PLANE + COUNT_STEPS * side + step);
       }
     }
     for(int side = 0; side < 2; side++) {
@@ -103,8 +105,10 @@ struct GameEncoding {
       all(r.completing, COMPLETES_PLANE + side);
     }
     if(options.history)
-      for(int h = 0; h < HISTORY; h++)
-        all(p.historyLeft[h] | p.historyLanded[h], HISTORY_PLANE + h);
+      for(int h = 0; h < HISTORY; h++) {
+        all(p.historyLeft[h], HISTORY_PLANE + 2 * h);
+        all(p.historyLanded[h], HISTORY_PLANE + 2 * h + 1);
+      }
   }
 
   static constexpr int RESERVES_INPUT = 0;     // the mover's stones / 50 and capstones / 2, then the opponent's
@@ -137,14 +141,16 @@ struct GameEncoding {
     out[DRAW_CLOCK_INPUT] = p.drawClock / float(FIFTY_PLIES);
   }
 
-  // The inputs read the last moves' squares beyond hash(p), which holds the whole state of the rules.
+  // The inputs read the last moves' squares beyond hash(p), which holds the whole state of the rules (every piece of
+  // every stack, so the planes below the top too): each move's squares landed (key k) and its square left (key
+  // HISTORY + k), each hashed apart.
   static Hash128 input_hash(const Position& p) {
     Hash128 h;
-    for(int k = 0; k < HISTORY; k++) {
-      const uint64_t changed = p.historyLeft[k] | p.historyLanded[k];
-      if(changed)
-        h ^= Hash128(mix64(mix64(0xA4093822299F31D0ULL + uint64_t(k)) ^ changed),
-                     mix64(mix64(0x082EFA98EC4E6C89ULL + uint64_t(k)) ^ changed));
+    for(int k = 0; k < 2 * HISTORY; k++) {
+      const uint64_t squares = k < HISTORY ? p.historyLanded[k] : p.historyLeft[k - HISTORY];
+      if(squares)
+        h ^= Hash128(mix64(mix64(0xA4093822299F31D0ULL + uint64_t(k)) ^ squares),
+                     mix64(mix64(0x082EFA98EC4E6C89ULL + uint64_t(k)) ^ squares));
     }
     return h;
   }
@@ -318,9 +324,10 @@ struct GameEncoding {
 
 static_assert(GameInterface::checkEncoding<GameEncoding>(), "Tak's network encoding part");
 #ifdef KATAGAME_NETWORK_BOARD_LEN
-static_assert(GameEncoding::TOP_DEPTHS > MAX_LEN,
-              "a network's board of side N needs the planes of a stack to depth N + 1: a move picks up at most N "
-              "pieces, so the piece below them can come to the top");
+static_assert(GameEncoding::TOP_DEPTHS >= 2 * MAX_LEN + 1,
+              "a network's board of side N needs the planes of a stack to depth 2N + 1, two moves' reach (the engine "
+              "repository's games/tak/docs/design/05-network-inputs.md): a move picks up at most N pieces, so the "
+              "pieces of a stack to that depth can come to the top in two moves");
 #endif
 
 }  // namespace tak
