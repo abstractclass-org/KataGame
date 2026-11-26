@@ -35,9 +35,10 @@
 // 9,181 actions), and gives it as KATAGAME_NETWORK_BOARD_LEN. The other builds keep 8, so the rules module plays every
 // size.
 //
-// Beyond the rules, a position keeps the squares that each of its last HISTORY moves changed, for the network's history
-// planes. No rule reads them, the one-line position leaves them out, and hash does too (gameencoding.h, input_hash).
-// The state's text (state_text) holds them, for RGSC's restarts.
+// Beyond the rules, a position keeps the squares of each of its last HISTORY moves, for the network's history planes:
+// the square that a spread left, and the squares where pieces landed (a placement's square counts as landed). No rule
+// reads them, the one-line position leaves them out, and hash does too (gameencoding.h, input_hash). The state's text
+// (state_text) holds them, for RGSC's restarts.
 
 #include <array>
 #include <cctype>
@@ -157,9 +158,11 @@ struct Position {
   int32_t drawClock = 0;  // the plies since the last placement or flattening
   int8_t end = ONGOING;
   int8_t roadWinner = -1;  // the player whose road ended the game
-  // The squares that each of the last moves changed, the newest first: a placement's square, or a spread's square and
-  // each square that it dropped on. 0 where the game has no such move, or where a parsed position does not say.
-  uint64_t history[HISTORY] = {};
+  // The squares of each of the last moves, the newest first: the square that a spread left (0 for a placement), and
+  // the squares where pieces landed (a placement's square, or each square that a spread dropped on). 0 where the game
+  // has no such move, or where a parsed position does not say.
+  uint64_t historyLeft[HISTORY] = {};
+  uint64_t historyLanded[HISTORY] = {};
 };
 
 inline uint64_t board_mask(int size) {
@@ -466,8 +469,9 @@ struct GameRules {
   static void play(Position& p, int action) {
     const int me = next_player(p);
     const int i = action_point(action), channel = action_channel(action);
-    uint64_t changed = bit(i);
+    uint64_t leftSquare = 0, landed = 0;
     if(channel < 3) {
+      landed = bit(i);
       const int colour = p.ply < 2 ? 1 - me : me;
       if(channel == CAP)
         p.capstones[colour]--;
@@ -484,6 +488,7 @@ struct GameRules {
       const int pattern = channel_pattern(channel), direction = channel_direction(channel);
       const int k = pattern_pieces(pattern), code = pattern_code(pattern);
       const int kind = kind_at(p, i);
+      leftSquare = bit(i);
       uint64_t carried = take(p, i, k);
       set_top(p, i, FLAT);
       int x = i % MAX_LEN, y = i / MAX_LEN, left = k, piece = 0;
@@ -497,7 +502,7 @@ struct GameRules {
         x += DX[direction];
         y += DY[direction];
         const int j = point(x, y);
-        changed |= bit(j);
+        landed |= bit(j);
         flattened = flattened || (p.walls & bit(j)) != 0;
         put(p, j, carried >> (left - c), c);
         left -= c;
@@ -506,9 +511,12 @@ struct GameRules {
       }
       p.drawClock = flattened ? 0 : p.drawClock + 1;
     }
-    for(int h = HISTORY - 1; h > 0; h--)
-      p.history[h] = p.history[h - 1];
-    p.history[0] = changed;
+    for(int h = HISTORY - 1; h > 0; h--) {
+      p.historyLeft[h] = p.historyLeft[h - 1];
+      p.historyLanded[h] = p.historyLanded[h - 1];
+    }
+    p.historyLeft[0] = leftSquare;
+    p.historyLanded[0] = landed;
     p.ply++;
     update_end(p);
   }
@@ -829,23 +837,26 @@ struct GameRules {
   }
 
   // The whole state that the network reads (RGSC's exact restarts): the one-line position, whose move number also gives
-  // the opening's plies, then the squares that each of the last moves changed (history), the newest first. Commas
-  // separate the moves, each its squares from a1 along the ranks, or - for none: "... 2 4 0 c3,a1b1,b2,-,-". The
-  // opening's kind is a setting of the process, as in the one-line position.
+  // the opening's plies, then the squares of each of the last moves (the history), the newest first. Commas separate
+  // the moves. A placement is its square, a spread the square that it left, a colon and the squares where pieces landed
+  // from a1 along the ranks, and - is no move: "... 2 4 0 c3,a1:b1c1,b2,-,-". The opening's kind is a setting of the
+  // process, as in the one-line position.
   static std::string state_text(const Position& p) {
     std::string s = position_text(p) + ' ';
     for(int h = 0; h < HISTORY; h++) {
       if(h > 0)
         s += ',';
-      for(uint64_t m = p.history[h]; m; m &= m - 1)
+      if(p.historyLeft[h])
+        s += square_name(__builtin_ctzll(p.historyLeft[h])) + ':';
+      for(uint64_t m = p.historyLanded[h]; m; m &= m - 1)
         s += square_name(__builtin_ctzll(m));
-      if(!p.history[h])
+      if(!p.historyLanded[h])
         s += '-';
     }
     return s;
   }
-  // Reads the state back. The history's squares are on the board, each once and in their order, so that one state has
-  // one text.
+  // Reads the state back. A move's squares are on the board: a placement's one square, or a spread's square and the
+  // others, each once and in their order, so that one state has one text.
   static bool parse_state(const std::string& text, Position& p, std::string& why) {
     const size_t space = text.rfind(' ');
     if(space == std::string::npos || split(text, ' ').size() != 5) {
@@ -865,19 +876,36 @@ struct GameRules {
       const std::string& m = moves[h];
       if(m == "-")
         continue;
-      if(m.empty() || m.size() % 2 != 0) {
-        why = "\"" + m + "\" is not the squares of a move, or -";
+      const size_t colon = m.find(':');
+      const std::string left = colon == std::string::npos ? "" : m.substr(0, colon);
+      const std::string landed = colon == std::string::npos ? m : m.substr(colon + 1);
+      if(landed.empty() || landed.size() % 2 != 0 || (colon != std::string::npos && left.size() != 2) ||
+         (colon == std::string::npos && landed.size() != 2)) {
+        why = "\"" + m + "\" is not the squares of a move (a placement's square, or a spread's square, a colon and "
+              "the squares where it dropped), or -";
         return false;
       }
-      int last = -1;
-      for(size_t k = 0; k < m.size(); k += 2) {
-        const int x = m[k] - 'a', y = m[k + 1] - '1';
-        if(x < 0 || x >= q.size || y < 0 || y >= q.size || point(x, y) <= last) {
-          why = "\"" + m + "\" is not squares of the board, each once, from a1 along the ranks";
+      auto square = [&](const std::string& s, size_t k) {
+        const int x = s[k] - 'a', y = s[k + 1] - '1';
+        return x < 0 || x >= q.size || y < 0 || y >= q.size ? -1 : point(x, y);
+      };
+      if(!left.empty()) {
+        if(square(left, 0) < 0) {
+          why = "\"" + m + "\": \"" + left + "\" is not a square of the board";
           return false;
         }
-        last = point(x, y);
-        q.history[h] |= bit(last);
+        q.historyLeft[h] = bit(square(left, 0));
+      }
+      int last = -1;
+      for(size_t k = 0; k < landed.size(); k += 2) {
+        const int i = square(landed, k);
+        if(i < 0 || i <= last || (q.historyLeft[h] & bit(i))) {
+          why = "\"" + m + "\" does not land on squares of the board other than the square left, each once, from a1 "
+                "along the ranks";
+          return false;
+        }
+        last = i;
+        q.historyLanded[h] |= bit(i);
       }
     }
     p = q;

@@ -104,7 +104,7 @@ struct GameEncoding {
     }
     if(options.history)
       for(int h = 0; h < HISTORY; h++)
-        all(p.history[h], HISTORY_PLANE + h);
+        all(p.historyLeft[h] | p.historyLanded[h], HISTORY_PLANE + h);
   }
 
   static constexpr int RESERVES_INPUT = 0;     // the mover's stones / 50 and capstones / 2, then the opponent's
@@ -140,10 +140,12 @@ struct GameEncoding {
   // The inputs read the last moves' squares beyond hash(p), which holds the whole state of the rules.
   static Hash128 input_hash(const Position& p) {
     Hash128 h;
-    for(int k = 0; k < HISTORY; k++)
-      if(p.history[k])
-        h ^= Hash128(mix64(mix64(0xA4093822299F31D0ULL + uint64_t(k)) ^ p.history[k]),
-                     mix64(mix64(0x082EFA98EC4E6C89ULL + uint64_t(k)) ^ p.history[k]));
+    for(int k = 0; k < HISTORY; k++) {
+      const uint64_t changed = p.historyLeft[k] | p.historyLanded[k];
+      if(changed)
+        h ^= Hash128(mix64(mix64(0xA4093822299F31D0ULL + uint64_t(k)) ^ changed),
+                     mix64(mix64(0x082EFA98EC4E6C89ULL + uint64_t(k)) ^ changed));
+    }
     return h;
   }
 
@@ -174,8 +176,10 @@ struct GameEncoding {
     }
     for(uint64_t* squares: {&s.owner[0], &s.owner[1], &s.walls, &s.caps})
       *squares = sym_squares(*squares, symmetry, p.size);
-    for(uint64_t& squares: s.history)
-      squares = sym_squares(squares, symmetry, p.size);
+    for(int h = 0; h < HISTORY; h++) {
+      s.historyLeft[h] = sym_squares(p.historyLeft[h], symmetry, p.size);
+      s.historyLanded[h] = sym_squares(p.historyLanded[h], symmetry, p.size);
+    }
     return s;
   }
   // A placement's image is its square's. A spread's is its square's with its direction's, and the drop pattern stays.
