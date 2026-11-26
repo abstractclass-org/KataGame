@@ -68,7 +68,9 @@ def test_the_module_has_the_encoding_parts_numbers():
                         ("SCORE_SCALE", tak.SCORE_SCALE), ("GAME_LENGTH", tak.GAME_LENGTH),
                         ("TOP_PLANE", tak.MY_TOP), ("EDGE_PLANE", tak.EDGE_PLANE)):
         assert float(constant("gameencoding.h", name)) == value, name
-    assert int(constant("gamerules.h", "HISTORY")) == tak.NUM_HISTORY_PLANES
+    assert int(constant("gamerules.h", "HISTORY")) == tak.NUM_HISTORY_ITEMS
+    assert constant("gameencoding.h", "NUM_HISTORY_PLANES") == "2 * HISTORY"
+    assert tak.NUM_HISTORY_PLANES == 2 * tak.NUM_HISTORY_ITEMS
     assert constant("gameencoding.h", "SYMMETRIES") == "0xFF" and tak.SYMMETRIES == 0xFF
     for name in ("DRAWS_AS_NO_RESULT", "LEGAL_MOVES_IN_ROWS"):
         assert constant("gameencoding.h", name) == "true" and getattr(tak, name) is True
@@ -139,23 +141,53 @@ def test_a_move_maps_to_its_squares_and_its_directions_image_at_each_symmetry():
 
 
 def test_a_plane_maps_as_pixels_but_the_edges_turn():
-    planes = torch.zeros((1, 36, SIDE, SIDE))
-    for p in range(36):
+    # 59 planes with the on-board plane: the edges' planes are 39 to 46, and all the others (the pieces to depth 13,
+    # the counts deeper, the history's squares left and landed) move as pixels.
+    assert tak.NUM_SPATIAL_INPUTS == 58
+    edge = 39
+    planes = torch.zeros((1, 59, SIDE, SIDE))
+    for p in range(59):
         planes[0, p, 1, 4] = p + 1
     for s in range(8):
         mapped = tak.apply_symmetry_inputs(planes, s)
         ix, iy = image(4, 1, s)
-        want = list(range(36))
+        want = list(range(59))
         for side in range(2):
             for d, (dx, dy) in enumerate(DIRECTIONS):
                 ex, ey = image(4 + dx, 1 + dy, s)
-                want[21 + 4 * side + DIRECTIONS.index((ex - ix, ey - iy))] = 21 + 4 * side + d
+                want[edge + 4 * side + DIRECTIONS.index((ex - ix, ey - iy))] = edge + 4 * side + d
         assert mapped[0, :, iy, ix].tolist() == [p + 1 for p in want], s
-        assert int((mapped != 0).sum()) == 36
+        assert int((mapped != 0).sum()) == 59
+
+
+def test_the_history_dropout_clears_both_planes_of_a_move_together():
+    # KataGo's dropout of the 5 last moves, newest first: move k stays when none of k + 1 draws of 2% stops it, and a
+    # move's two planes (the square left, the squares landed) go together.
+    torch.manual_seed(0)
+    n = 40000
+    planes = torch.ones((n, 59, 2, 2))
+    out, _ = data_processing_pytorch.apply_history_dropout(tak, planes, torch.zeros((n, 21)), 14)
+    assert torch.equal(out[:, :49], planes[:, :49])
+    kept = out[:, 49:59, 0, 0]
+    assert torch.equal(out[:, 49:59], kept[:, :, None, None].expand(n, 10, 2, 2))
+    assert torch.equal(kept[:, 0::2], kept[:, 1::2])
+    moves = kept[:, 0::2]
+    assert torch.equal(moves, torch.cummin(moves, dim=1).values)  # an older move goes when a newer one goes
+    for k in range(5):
+        assert abs(float(moves[:, k].mean()) - 0.98 ** (k + 1)) < 0.006, k
+
+
+def test_the_items_of_the_history_divide_its_planes(monkeypatch):
+    monkeypatch.setattr(tak, "NUM_HISTORY_ITEMS", 3)
+    with pytest.raises(ValueError, match="NUM_HISTORY_ITEMS 3, which does not divide NUM_HISTORY_PLANES 10"):
+        games.get("tak")
+    for other in ("enclosure", "connect4", "blueprints"):  # no member: a draw for each plane
+        game = games.get(other)
+        assert games.history_items(game) == game.NUM_HISTORY_PLANES
 
 
 def test_the_income_mask_is_the_top_pieces_of_the_opponent_and_of_the_mover():
-    planes = torch.zeros((1, 36, SIDE, SIDE))
+    planes = torch.zeros((1, 1 + tak.NUM_SPATIAL_INPUTS, SIDE, SIDE))
     for kind in range(3):
         planes[0, 1 + kind, 0, kind] = 1      # the mover's flat, wall and capstone
         planes[0, 4 + kind, 1, kind] = 1      # the opponent's
@@ -185,7 +217,8 @@ def test_the_loader_refuses_a_score_target_without_its_endings_weight():
 def test_the_loader_refuses_rows_of_another_largest_board():
     def rows(side):
         moves = side * side * (3 + 4 * (2 ** side - 1)) + 1
-        return np.zeros((2, 36, (side * side + 7) // 8), np.uint8), np.zeros((2, 2, moves), np.int16)
+        planes = np.zeros((2, 1 + tak.NUM_SPATIAL_INPUTS, (side * side + 7) // 8), np.uint8)
+        return planes, np.zeros((2, 2, moves), np.int16)
 
     data_processing_pytorch.check_board("rows.npz", tak, 6, *rows(6))
     for side in (5, 7, 8):

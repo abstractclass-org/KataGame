@@ -570,7 +570,9 @@ def build_history_matrices(model_config: modelconfigs.ModelConfig, device):
 # (maxHistory <= 0) drops them all. A game without history planes draws nothing. KataGame fork (2026-10-27): in the rows
 # of the inputs version 11 the items are the game's turns (NUM_HISTORY_TURNS), one draw each, and a turn goes with its
 # planes and its turn inputs (games.turn_global_inputs), as KataGo's pass inputs go with their moves. The rows of the
-# other versions keep a draw for each plane.
+# other versions keep a draw for each plane. KataGame fork (abscls-shfz.35): or for each of the game's items
+# (games.history_items), whose planes go together: Tak's 5 last moves, each 2 planes (the square left, the squares
+# landed).
 # Enclosure fork, for input-plane comparisons (2026-10-02): ENCLOSURE_ZERO_INPUT_CHANNELS="200,201,209,210" blanks
 # those spatial input channels in every row read, training and validation alike (feature planes start at 193; per
 # player 9: node, enclosed, solid, reach 1-3, unreached, held ground, its openings). Unset: no change.
@@ -587,7 +589,7 @@ def apply_history_dropout(game, batch_binaryInputNCHW, batch_globalInputNC, inpu
     # inputs to it) each turn with its planes and its turn inputs, which follow the game's extended global inputs: the
     # last global inputs, but for version 14's latent after them.
     turns = games.turn_global_inputs(game) if inputs_version >= 11 else 0
-    items = game.NUM_HISTORY_TURNS if turns else num_history
+    items = game.NUM_HISTORY_TURNS if turns else games.history_items(game)
     should_stop_history = torch.rand((n, items), device=batch_binaryInputNCHW.device) >= 0.98
     include_history = (torch.cumsum(should_stop_history, axis=1, dtype=torch.float32) <= 0.1).to(batch_binaryInputNCHW.dtype)
     out = batch_binaryInputNCHW.clone()

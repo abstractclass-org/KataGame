@@ -72,6 +72,14 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         clears the turn's planes and turn inputs together
                         (data_processing_pytorch.apply_history_dropout). A game with turn inputs gives
                         NUM_HISTORY_TURNS, which divides both counts. Default: 0 and none (turn_global_inputs).
+  NUM_HISTORY_ITEMS     the items of the history planes, newest first, for a game with several planes of one earlier
+                        move: each item has NUM_HISTORY_PLANES // NUM_HISTORY_ITEMS planes, in a row. The history
+                        dropout draws once for each item and clears its planes together, as KataGo's dropout clears a
+                        move's plane and its pass input together (data_processing_pytorch.apply_history_dropout). In
+                        the rows of the inputs version 11 of a game with turn inputs, the items are the turns
+                        (NUM_HISTORY_TURNS). It divides NUM_HISTORY_PLANES. Tak: 5, the last moves, each the square
+                        that a spread left and the squares where pieces landed. Default: NUM_HISTORY_PLANES, a draw for
+                        each plane (history_items).
   NUM_AREA_SPATIAL_INPUTS
                         the game's planes of closed areas (C++ GameInterface), which the inputs version 12 adds after
                         version 11's planes. They are points of the board, so apply_symmetry_inputs moves them as
@@ -203,6 +211,12 @@ def turn_global_inputs(game):
     return getattr(game, "NUM_TURN_GLOBAL_INPUTS", 0)
 
 
+def history_items(game):
+    """The items of the game's history planes, of one draw each in the history dropout (NUM_HISTORY_PLANES for a game
+    without NUM_HISTORY_ITEMS: each plane)."""
+    return getattr(game, "NUM_HISTORY_ITEMS", game.NUM_HISTORY_PLANES)
+
+
 def area_spatial_inputs(game):
     """The game's planes of closed areas, which the inputs version 12 adds after version 11's (0 for a game without
     them)."""
@@ -321,6 +335,10 @@ def get(name: str):
                                          turn_global_inputs(game) % turns == 0):
         raise ValueError(f"the trainer's module of the game {name!r} has turn inputs, so it gives NUM_HISTORY_TURNS, "
                          "which divides NUM_HISTORY_PLANES and NUM_TURN_GLOBAL_INPUTS")
+    items = history_items(game)
+    if game.NUM_HISTORY_PLANES and not (items > 0 and game.NUM_HISTORY_PLANES % items == 0):
+        raise ValueError(f"the trainer's module of the game {name!r} gives NUM_HISTORY_ITEMS {items}, which does not "
+                         f"divide NUM_HISTORY_PLANES {game.NUM_HISTORY_PLANES}")
     return game
 
 

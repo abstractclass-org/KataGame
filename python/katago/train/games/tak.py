@@ -6,8 +6,9 @@ MAX_BOARD_LEN is the one place of the network's board. CMake reads its number fo
 
 A move is one action: the channel of its square says the placement's kind, or the spread's direction and drop pattern
 (C++ gamerules.h). A spread's direction turns with the board: a flip of x swaps > and <, a flip of y swaps + and -, and
-the transpose swaps + with > and - with <. The input planes of the road groups' edges turn alike. The other planes and
-the value targets move as pixels. The image of a row does not depend on its position, so both policy targets map alike.
+the transpose swaps + with > and - with <. The input planes of the road groups' edges turn alike. The other planes (the
+pieces to depth 13, the counts deeper, the history's squares left and landed) and the value targets move as pixels. The
+image of a row does not depend on its position, so both policy targets map alike.
 
 The rows of a 5 x 5 board are in the corner of the network's 6 x 6, and a flip moves them to another side, as KataGo's
 rows of a board smaller than the network's move. So the policy's mask reads the board from the on-board plane.
@@ -26,10 +27,11 @@ MAX_BOARD_LEN = 6        # the first network's board. A build of katago takes it
 PLACEMENTS, DIRECTIONS = 3, 4        # the channels of a flat, a wall and a capstone, then 4 of each drop pattern
 NUM_PATTERNS = 2 ** MAX_BOARD_LEN - 1  # the drop patterns of a pickup of 1 to MAX_BOARD_LEN pieces
 POLICY_CHANNELS = PLACEMENTS + DIRECTIONS * NUM_PATTERNS
-NUM_SPATIAL_INPUTS = 35  # 36 with the on-board plane
+NUM_SPATIAL_INPUTS = 58  # 59 with the on-board plane
 NUM_GLOBAL_INPUTS = 14
-HISTORY_PLANE = 30       # the squares that each of the last 5 moves changed, newest first
-NUM_HISTORY_PLANES = 5
+HISTORY_PLANE = 48       # each of the last 5 moves, newest first: the square that a spread left, the squares landed
+NUM_HISTORY_PLANES = 10
+NUM_HISTORY_ITEMS = 5    # the history dropout clears both planes of a move together
 SYMMETRIES = 0xFF
 # C0: the final flats, on flat endings. C1: the squares captured before the end. C2-3: the top owners 4 and 16 plies
 # later. C4: the winning road's squares, on road endings. C5-6: the captures of the row's move and of the reply.
@@ -44,7 +46,7 @@ LEGAL_MOVES_IN_ROWS = True
 # The input planes that the augmentation and the income mask read. A plane's index in a batch is 1 + its index here:
 # KataGo's on-board plane comes first.
 MY_TOP, THEIR_TOP = 0, 3   # + the kind (flat, wall, capstone): the top piece
-EDGE_PLANE = 20            # + 4 * side + direction: the square's road group touches the edge of that direction
+EDGE_PLANE = 38            # + 4 * side + direction: the square's road group touches the edge of that direction
 
 
 STEPS = ((0, 1), (0, -1), (1, 0), (-1, 0))  # each direction's step (x, y), + - > < numbered 0 to 3
