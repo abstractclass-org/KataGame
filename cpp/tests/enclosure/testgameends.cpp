@@ -664,6 +664,8 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& 
             data->endHist.rulesEnd.kind == -1, where + ": the game did not stop at the cap");
       check(!Rgsc::gameOutcome(data->endHist, data->hitTurnLimit).has_value(), where + ": RGSC has an outcome");
       const Board& end = data->endHist.getRecentBoard(0);
+      //A position that the engine has not ended is not over by the test's own reading either (a late end).
+      check(!TAK || expectedTakEnd(end, rules.komi).kind == -1, where + ": a position of Tak at the cap that is over");
       margin = marginOf(end, rules.komi);
       winner = winnerOfMargin(margin);
     }

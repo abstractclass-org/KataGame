@@ -146,10 +146,13 @@ def check_policy_masks(npz_file, game, binaryInputNCHWPacked, policyTargetsNCMov
                 raise ValueError(f"{describe_row(npz_file, start + row, globalTargetsNC)} {what}: the move {move} "
                                  f"({where})")
 
-def check_board(npz_file, game, binaryInputNCHWPacked, policyTargetsNCMove):
-    """Refuses rows of another network's board, or of another policy, than the game's module has: those of a binary that
-    was built for another largest board (Tak's policy grows with it). Read as the module's, they would be wrong planes
-    and wrong moves."""
+def check_board(npz_file, game, pos_len, binaryInputNCHWPacked, policyTargetsNCMove):
+    """Refuses a caller's board (pos_len) that is not the game's module's, and rows of another network's board, or of
+    another policy, than the module has: those of a binary that was built for another largest board (Tak's policy grows
+    with it). Read as the module's, they would be wrong planes and wrong moves."""
+    if pos_len != game.MAX_BOARD_LEN:
+        raise ValueError(f"{npz_file}: read for a board of side {pos_len}, and the trainer's module of the game "
+                         f"{game.NAME!r} has a board of side {game.MAX_BOARD_LEN}")
     plane_bytes = (game.MAX_BOARD_LEN ** 2 + 7) // 8
     moves = game.MAX_BOARD_LEN ** 2 * game.POLICY_CHANNELS + 1
     if binaryInputNCHWPacked.shape[2] != plane_bytes or policyTargetsNCMove.shape[2] != moves:
@@ -276,8 +279,7 @@ def read_npz_training_data(
         del npz
 
         assert len(binaryInputNCHWPacked.shape) == 3
-        assert pos_len == game.MAX_BOARD_LEN
-        check_board(npz_file, game, binaryInputNCHWPacked, policyTargetsNCMove)
+        check_board(npz_file, game, pos_len, binaryInputNCHWPacked, policyTargetsNCMove)
         assert binaryInputNCHWPacked.shape[1] == num_bin_features
         assert globalInputNC.shape[1] == num_global_features
         if ENCLOSURE_ZERO_INPUT_CHANNELS:

@@ -47,16 +47,19 @@ MY_TOP, THEIR_TOP = 0, 3   # + the kind (flat, wall, capstone): the top piece
 EDGE_PLANE = 20            # + 4 * side + direction: the square's road group touches the edge of that direction
 
 
+STEPS = ((0, 1), (0, -1), (1, 0), (-1, 0))  # each direction's step (x, y), + - > < numbered 0 to 3
+
+
 def _direction_image(direction, symmetry):
-    """The image of a direction, + - > < numbered 0 to 3 (C++ sym_direction)."""
-    dx, dy = ((0, 1), (0, -1), (1, 0), (-1, 0))[direction]
+    """The image of a direction (C++ sym_direction)."""
+    dx, dy = STEPS[direction]
     if symmetry & 2:
         dx = -dx
     if symmetry & 1:
         dy = -dy
     if symmetry & 4:
         dx, dy = dy, dx
-    return {(0, 1): 0, (0, -1): 1, (1, 0): 2, (-1, 0): 3}[(dx, dy)]
+    return STEPS.index((dx, dy))
 
 
 def _sources(symmetry):
@@ -67,15 +70,29 @@ def _sources(symmetry):
     return sources
 
 
+@functools.lru_cache(maxsize=None)
+def _input_order(symmetry, channels):
+    """The plane to read at each plane's place, after the squares have moved: the edge planes turn."""
+    order = list(range(channels))
+    for side in range(2):
+        first = 1 + EDGE_PLANE + DIRECTIONS * side
+        order[first:first + DIRECTIONS] = [first + d for d in _sources(symmetry)]
+    return order
+
+
 def apply_symmetry_inputs(binary_inputs, symmetry):
     """The input planes (N, C, y, x)."""
     if symmetry == 0:
         return binary_inputs
-    order = list(range(binary_inputs.shape[1]))
-    for side in range(2):
-        first = 1 + EDGE_PLANE + DIRECTIONS * side
-        order[first:first + DIRECTIONS] = [first + d for d in _sources(symmetry)]
-    return apply_symmetry_points(binary_inputs, symmetry)[:, order]
+    return apply_symmetry_points(binary_inputs, symmetry)[:, _input_order(symmetry, binary_inputs.shape[1])]
+
+
+@functools.lru_cache(maxsize=None)
+def _policy_sources(symmetry, device):
+    """The policy index to read at each index of the image: a move's image does not depend on the position, so one
+    gather moves a whole batch."""
+    indices = torch.arange(MAX_BOARD_LEN * MAX_BOARD_LEN * POLICY_CHANNELS + 1, device=device)
+    return _image_policy(indices[None, None], symmetry)[0, 0]
 
 
 def apply_symmetry_policy(policy, symmetry, binary_inputs, global_inputs):
@@ -83,6 +100,11 @@ def apply_symmetry_policy(policy, symmetry, binary_inputs, global_inputs):
     to its direction's image, and pass stays last."""
     if symmetry == 0:
         return policy
+    return policy[..., _policy_sources(symmetry, policy.device)]
+
+
+def _image_policy(policy, symmetry):
+    """apply_symmetry_policy's image, step by step: the squares as pixels, then the spreads' channels."""
     n, c, _ = policy.shape
     points = policy[:, :, :-1].reshape(n, c, MAX_BOARD_LEN, MAX_BOARD_LEN, POLICY_CHANNELS).movedim(-1, 2)
     points = apply_symmetry_points(points, symmetry).movedim(2, -1)

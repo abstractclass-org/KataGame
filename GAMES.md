@@ -73,8 +73,10 @@ the WebAssembly build, the binding and the standalone tests need no new source f
   (`python/katago/train/games/<name>.py`) and gives `katago`'s build the number as `KATAGAME_NETWORK_BOARD_LEN`, or 0
   for a module that does not write a number (Enclosure's) and for a game without one. A game whose rules play several
   largest boards takes its own from it: Tak's rules part plays 8 x 8 in every other build, and 6 x 6 in `katago`'s. So
-  the trainer's module is the one place of the number. In every game `chosengame.h` stops the compile when the game's
-  `MAX_BOARD_LEN` is not that number. Tak's `katago` does not compile without the module.
+  the trainer's module is the one place of the number. In every game whose module writes a number, `chosengame.h` stops
+  the compile when the game's `MAX_BOARD_LEN` is not that number. Tak's `katago` does not compile without the module.
+  `cmake` stops at a module with two lines that assign `MAX_BOARD_LEN`, at a number with more after it than a comment,
+  and at a number with an annotation before it: Python would read another number than CMake.
 - **The headers:** `chosenrules.h` includes `<name>/gamerules.h` and makes `chosengame` the alias of the namespace
   `<name>`. `chosengame.h` includes `<name>/gameencoding.h`. A game's folder and its namespace have the same name.
 - **Other builds** (the WebAssembly module, the fork's standalone tests) define nothing and get Enclosure. So every
@@ -891,7 +893,7 @@ the policy, 05 the inputs, 06 the targets, 10 the additions).
 | Member | Tak |
 |---|---|
 | The largest board | 6 x 6 in `katago`'s build, from the trainer's module ("Choosing the game"). 5 x 5 is in its corner. |
-| `NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS` | 35 planes: each square's top piece, the pieces to depth 7 and whether pieces lie deeper, the edges that its road group touches, the squares that complete a road, and the squares that each of the last 5 moves changed (`HISTORY_PLANE` 30). 14 global inputs. Inputs version 14: no other version adds an input of Tak's. |
+| `NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS` | 35 planes: each square's top piece, the pieces to depth 7 and whether pieces lie deeper, the edges that its road group touches, the squares that complete a road, and the squares that each of the last 5 moves changed (`HISTORY_PLANE` 30). 14 global inputs of Tak's. Inputs version 9 adds KataGame's 2 and version 14 its 5 more (21 in all): no version adds an input of Tak's. |
 | `input_hash` | The squares of the last 5 moves. The position holds them, and no rule reads them. |
 | `POLICY_CHANNELS` | 255: a placement's kind, or a spread's drop pattern and direction |
 | `SYMMETRIES`, `sym_position`, `SymActionMap` | All 8. A spread's direction, and the planes of the edges, turn with the board. |

@@ -621,9 +621,18 @@ set(GAME_NETWORK_BOARD_LEN 0)
 set(GAME_TRAINER_MODULE "${CMAKE_CURRENT_SOURCE_DIR}/../python/katago/train/games/${GAME}.py")
 if(EXISTS "${GAME_TRAINER_MODULE}")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GAME_TRAINER_MODULE}")
-  file(STRINGS "${GAME_TRAINER_MODULE}" GAME_BOARD_LINE REGEX "^MAX_BOARD_LEN = [0-9]+")
-  if(GAME_BOARD_LINE MATCHES "^MAX_BOARD_LEN = ([0-9]+)")
+  # The lines that assign MAX_BOARD_LEN at the module's top level. Python reads the last one, so two of them stop the
+  # configure, as does a number with more after it than a comment or with an annotation before it (Python reads both).
+  file(STRINGS "${GAME_TRAINER_MODULE}" GAME_BOARD_LINES REGEX "^MAX_BOARD_LEN[ \t]*[:=]")
+  list(LENGTH GAME_BOARD_LINES GAME_BOARD_COUNT)
+  if(GAME_BOARD_COUNT GREATER 1)
+    message(FATAL_ERROR "${GAME_TRAINER_MODULE} assigns MAX_BOARD_LEN in ${GAME_BOARD_COUNT} lines: the network's "
+      "board is one line, MAX_BOARD_LEN = N")
+  elseif(GAME_BOARD_LINES MATCHES "^MAX_BOARD_LEN = ([0-9]+)[ \t]*(#.*)?$")
     set(GAME_NETWORK_BOARD_LEN "${CMAKE_MATCH_1}")
+  elseif(GAME_BOARD_LINES MATCHES "^MAX_BOARD_LEN[ \t]*(:[^=]*)?=[ \t]*[0-9]")
+    message(FATAL_ERROR "${GAME_TRAINER_MODULE}: \"${GAME_BOARD_LINES}\" is not a number alone: the network's board "
+      "is the line MAX_BOARD_LEN = N, with a comment after it or none")
   endif()
 endif()
 

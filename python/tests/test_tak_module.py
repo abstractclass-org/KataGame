@@ -91,8 +91,10 @@ def test_the_networks_board_is_a_number_that_cmake_reads():
     """cpp/CMakeLists.txt takes the largest board of katago's build from this line."""
     source = pathlib.Path(tak.__file__).read_text(encoding="utf-8")
     cmake = (CPP / "CMakeLists.txt").read_text(encoding="utf-8")
-    assert 'REGEX "^MAX_BOARD_LEN = [0-9]+"' in cmake
-    assert re.findall(r"^MAX_BOARD_LEN = ([0-9]+)", source, re.MULTILINE) == [str(tak.MAX_BOARD_LEN)] == ["6"]
+    assert 'MATCHES "^MAX_BOARD_LEN = ([0-9]+)[ \\t]*(#.*)?$"' in cmake
+    assert re.findall(r"^MAX_BOARD_LEN[ \t]*[:=]", source, re.MULTILINE) == ["MAX_BOARD_LEN ="]
+    number = re.findall(r"^MAX_BOARD_LEN = ([0-9]+)[ \t]*(?:#.*)?$", source, re.MULTILINE)
+    assert number == [str(tak.MAX_BOARD_LEN)] == ["6"]
     assert tak.POLICY_CHANNELS == 255
     assert modelconfigs.get_game({"game": "tak"}) is tak
 
@@ -185,7 +187,9 @@ def test_the_loader_refuses_rows_of_another_largest_board():
         moves = side * side * (3 + 4 * (2 ** side - 1)) + 1
         return np.zeros((2, 36, (side * side + 7) // 8), np.uint8), np.zeros((2, 2, moves), np.int16)
 
-    data_processing_pytorch.check_board("rows.npz", tak, *rows(6))
+    data_processing_pytorch.check_board("rows.npz", tak, 6, *rows(6))
     for side in (5, 7, 8):
         with pytest.raises(ValueError, match=r"rows.npz: .*board of side 6 with 5 and 9181: .*another largest board"):
-            data_processing_pytorch.check_board("rows.npz", tak, *rows(side))
+            data_processing_pytorch.check_board("rows.npz", tak, 6, *rows(side))
+        with pytest.raises(ValueError, match=rf"rows.npz: read for a board of side {side}, .* board of side 6"):
+            data_processing_pytorch.check_board("rows.npz", tak, side, *rows(side))
