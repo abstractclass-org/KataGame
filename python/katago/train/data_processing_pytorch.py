@@ -84,6 +84,9 @@ def pad_value_targets_nchw(valueTargetsNCHW: np.ndarray) -> np.ndarray:
 # name), and of the rows of a file that this reader reads without it.
 LEGAL_MOVES_ARRAY = "legalMovesNCMovePacked"
 LEGAL_MOVES_PLANES = 2
+# KataGame fork (abscls-shfz.33): the array's first form, one plane a row (abscls-shfz.9). The reader refuses it, as the
+# shuffle does (assert_keys): read as a file without the array, its rows would lose both floors without a word.
+LEGAL_MOVES_ARRAY_ONE_PLANE = "legalMovesNMovePacked"
 
 # The rows that check_policy_masks reads at a time: a row's moves are a byte each there, in about 8 arrays (38 MB at
 # 9,181 moves).
@@ -277,7 +280,11 @@ def read_npz_training_data(
                 qValueTargetsNCMove = select_rank_rows(npz["qValueTargetsNCMove"])
             else:
                 qValueTargetsNCMove = None
-            # KataGame fork (abscls-shfz.9): the rows' legal moves, for a game whose rows hold them.
+            # KataGame fork (abscls-shfz.9, abscls-shfz.33): the rows' legal moves, for a game whose rows hold them, and
+            # no rows of the array's first form.
+            if LEGAL_MOVES_ARRAY_ONE_PLANE in npz.files:
+                raise ValueError(f"{npz_file}: the rows hold {LEGAL_MOVES_ARRAY_ONE_PLANE}, the first form of the "
+                                 f"legal moves (one plane a row, before abscls-shfz.33): write them again")
             legalMovesPacked = None
             if include_legal_moves:
                 legalMovesPacked = select_rank_rows(

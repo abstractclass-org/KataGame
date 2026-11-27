@@ -774,9 +774,8 @@ class Metrics:
         if self.legal_moves_in_rows:
             legal = batch["legalMovesNCMove"]
             legal_rows = torch.any(legal, dim=2)
-            policymask_player, policymask_opponent = (
-                torch.where(legal_rows[:, plane:plane + 1], legal[:, plane].to(policymask.dtype), policymask)
-                for plane in range(2))
+            policymask_player, policymask_opponent = torch.where(
+                legal_rows.unsqueeze(2), legal.to(policymask.dtype), policymask.unsqueeze(1)).unbind(1)
         target_policy_player_soft = (target_policy_player + 1e-7) * policymask_player
         target_policy_player_soft = torch.pow(target_policy_player_soft, 0.25)
         target_policy_player_soft /= torch.sum(target_policy_player_soft, dim=1, keepdim=True)

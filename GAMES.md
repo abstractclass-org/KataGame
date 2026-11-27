@@ -846,7 +846,8 @@ loader also stops, with the file, at an array of another shape than two planes o
 in the rows of a game whose trainer module does not give `LEGAL_MOVES_IN_ROWS`. Without these stops, a visit outside a
 mask would drop from the loss without a word. The rows of the first form of the array (`legalMovesNMovePacked`, one
 plane, before abscls-shfz.33) are of no run: the shuffle refuses a file with an array that it does not know
-(`assert_keys`), and the loader alone reads such a file as rows without masks.
+(`assert_keys`), and the loader refuses a file with that array. Read as rows without masks, they would lose their
+floors without a word.
 
 **A window of both kinds.** A plane of 0 bits has no mask. The shuffle (`shuffle.py`) merges files with the array and
 without it, and gives the rows of the files without it 0 bits in both planes, when any file has the array. It refuses

@@ -207,9 +207,7 @@ def assert_batch_matches(batch, positions=None, symm=None):
 def symmetry_of(batch, arrays, rows):
     """The symmetry that the loader drew for the batch of the arrays' rows: the one whose image of their planes is the
     batch's."""
-    n = arrays["globalTargetsNC"].shape[0]
-    binary = np.unpackbits(arrays["binaryInputNCHWPacked"], axis=2)[:, :, :SIZE * SIZE].reshape(n, 3, SIZE, SIZE)
-    planes = torch.from_numpy(binary[rows].astype(np.float32))
+    planes = torch.from_numpy(unpacked_planes(arrays)[rows].astype(np.float32))
     found = [s for s in range(8) if torch.equal(slides_game.apply_symmetry_inputs(planes, s) if s else planes,
                                                 batch["binaryInputNCHW"])]
     assert len(found) == 1, found
@@ -221,10 +219,15 @@ def unpacked_masks(arrays):
     return np.unpackbits(arrays[LEGAL_MOVES_ARRAY], axis=2, count=MOVES).astype(bool)
 
 
+def unpacked_planes(arrays):
+    """The arrays' input planes (N, 3, SIZE, SIZE), unpacked."""
+    n = arrays["globalTargetsNC"].shape[0]
+    return np.unpackbits(arrays["binaryInputNCHWPacked"], axis=2)[:, :, :SIZE * SIZE].reshape(n, 3, SIZE, SIZE)
+
+
 def row_of(arrays, symm):
     """The tensors of `finish_batch` of the arrays' rows before any symmetry, and the symmetry's batch."""
-    n = arrays["globalTargetsNC"].shape[0]
-    binary = np.unpackbits(arrays["binaryInputNCHWPacked"], axis=2)[:, :, :SIZE * SIZE].reshape(n, 3, SIZE, SIZE)
+    binary = unpacked_planes(arrays)
     return finish_batch(
         slides_game, 9, symm,
         torch.from_numpy(binary.astype(np.float32)), torch.from_numpy(arrays["globalInputNC"]),
@@ -524,6 +527,21 @@ def test_the_rows_of_a_game_without_the_member_that_hold_the_array_stop_the_load
     with pytest.raises(ValueError, match=r"rows\.npz: the rows hold legalMovesNCMovePacked, and the trainer's module of "
                                          r"the game 'slides' does not give LEGAL_MOVES_IN_ROWS"):
         read([path])
+
+
+@pytest.mark.parametrize("member", [True, False])
+def test_the_rows_of_the_arrays_first_form_stop_the_loader(tmp_path, monkeypatch, member):
+    """A file of the array's first form (one plane, under its old name) stops the loader, as it stops the shuffle: read
+    as a file without the array, its rows would lose their floors without a word."""
+    arrays, _ = random_rows(np.random.default_rng(31), 16)
+    arrays["legalMovesNMovePacked"] = arrays.pop(LEGAL_MOVES_ARRAY)[:, 0]
+    path = write(tmp_path / "old.npz", arrays)
+    monkeypatch.setattr(slides_game, "LEGAL_MOVES_IN_ROWS", member)
+    with pytest.raises(ValueError, match=r"old\.npz: the rows hold legalMovesNMovePacked, the first form of the legal "
+                                         r"moves \(one plane a row, before abscls-shfz\.33\): write them again"):
+        read([path])
+    with np.load(path) as npz, pytest.raises(AssertionError):
+        shuffle.assert_keys(npz, include_meta=False, include_qvalues=False)
 
 
 def test_a_row_without_a_mask_is_read_with_0_bits_and_its_static_checks_stay(tmp_path):
