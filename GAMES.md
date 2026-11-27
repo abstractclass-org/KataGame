@@ -815,53 +815,72 @@ A game whose policy has many slots for each legal move gives `LEGAL_MOVES_IN_ROW
 `policy_mask(on_board)` (the trainer's module). Both are off by default. A game without them has the same rows, batches
 and losses as before. Each is on by its game, with no flag of a run.
 
-**The rows** of a game with `LEGAL_MOVES_IN_ROWS` have one more array, `legalMovesNMovePacked`: for each row, the moves
-that the rules make legal in the row's position (`GameRules::legal_actions`), a bit for each policy index, packed as
-`binaryInputNCHWPacked` is (numpy's `packbits`, the highest bit first), zero-padded to a round byte. The bits are at the
-indices of the policy targets of the same row: the labels' frame of input version 13 too. Every kind of row has the
-position that the row's inputs show: a row of the game, a side position, a reanalyzed row, a row in the view of its
-turn's search, and a row of a size of board below the largest, whose slots off the board have no bit. A position of the
-opening has the opening's legal moves (Tak's first two plies place the opponent's flat). Each row has at least one bit,
-because it is a searched position. The array is its own, so that a reader of the other arrays does not see it, and a
-file of the rows of a game without the member has no such array.
+**The rows** of a game with `LEGAL_MOVES_IN_ROWS` have one more array, `legalMovesNCMovePacked`: for each row, two
+planes of the moves that the rules make legal (`GameRules::legal_actions`), a bit for each policy index, packed as
+`binaryInputNCHWPacked` is (numpy's `packbits`, the highest bit first), zero-padded to a round byte. The two planes are
+as the two channels of the policy targets:
+
+- **Plane 0** holds the legal moves of the row's position, at the indices of the row's first policy target: the labels'
+  frame of input version 13 too. Every kind of row has the position that the row's inputs show: a row of the game, a
+  side position, a reanalyzed row, a row in the view of its turn's search, and a row of a size of board below the
+  largest, whose slots off the board have no bit. A position of the opening has the opening's legal moves (Tak's first
+  two plies place the opponent's flat). Plane 0 has at least one bit, because it is a searched position.
+- **Plane 1** holds the legal moves of the position whose search gave the row's second policy target (the next move's),
+  at that target's indices: the next turn's position, in the view of that target when the row has one (the root's
+  views), and in the frame of the next position's labels. The writer takes the position from the same place as that
+  target's labels (`addRow`'s `nextPosition`). A row without a second policy target (its weight C28 is 0: a side
+  position, the last turn of a game, a row reanalyzed without the outcome, a next policy that the row's view lost) has
+  0 bits in plane 1. A row reanalyzed with the outcome keeps the next turn's target, and so its mask.
+
+The array is its own, so that a reader of the other arrays does not see it, and a file of the rows of a game without
+the member has no such array.
 
 **The stops.** The row writer (`TrainingWriteBuffers::addRow`) stops, with the row's turn and game, at a position
-without legal moves, and at a move of the row's policy target with a visit that is not legal in the row's position. The
-loader (`data_processing_pytorch.check_policy_masks`) reads each file's rows and stops, with the file, the row and its
-turn, at a row with visits on a move outside its own legal moves, at a legal move outside `policy_mask`, and at visits
-of either policy target outside `policy_mask`. A policy target whose weight (C26, C28) is 0 is no target and is not
-checked. The loader also stops, with the file, at an array of another size than the policy's, and at the array in the
-rows of a game whose trainer module does not give `LEGAL_MOVES_IN_ROWS`. Without these stops, a visit outside a mask
-would drop from the loss without a word.
+without legal moves, at a move of the row's first policy target with a visit that is not legal in the row's position,
+and at a move of the second policy target with a visit that is not legal in the next position ("The next position of
+the row of turn ..."). The loader (`data_processing_pytorch.check_policy_masks`) reads each file's rows and stops, with
+the file, the row and its turn, at a row with visits of either policy target on a move outside its plane, at a legal
+move of either plane outside `policy_mask`, and at visits of either policy target outside `policy_mask`. A policy
+target whose weight (C26, C28) is 0 is no target and is not checked, and a plane of 0 bits has no moves to check. The
+loader also stops, with the file, at an array of another shape than two planes of the policy's bytes, and at the array
+in the rows of a game whose trainer module does not give `LEGAL_MOVES_IN_ROWS`. Without these stops, a visit outside a
+mask would drop from the loss without a word. The rows of the first form of the array (`legalMovesNMovePacked`, one
+plane, before abscls-shfz.33) are of no run: the shuffle refuses a file with an array that it does not know
+(`assert_keys`), and the loader alone reads such a file as rows without masks.
 
-**A window of both kinds.** A row of 0 bits has no mask. The shuffle (`shuffle.py`) merges files with the array and
-without it, and gives the rows of the files without it 0 bits, when any file has the array. A shuffle of files that all
-lack it writes no array, as before. The loader reads the array of a file that has it, and 0 bits for a file that does
-not, so a run trains on its older rows from before the member. A batch of such a game always has `legalMovesNMove`, a
-row of it all False for a row without a mask. The trainer logs `lmrows`, the share of the rows that have one.
+**A window of both kinds.** A plane of 0 bits has no mask. The shuffle (`shuffle.py`) merges files with the array and
+without it, and gives the rows of the files without it 0 bits in both planes, when any file has the array. It refuses
+files of other shapes of the array. A shuffle of files that all lack it writes no array, as before. The loader reads
+the array of a file that has it, and 0 bits for a file that does not, so a run trains on its older rows from before the
+member. A batch of such a game always has `legalMovesNCMove` (N, 2, policy), a row of it all False in a plane without a
+mask. The trainer logs `lmrows`, the share of the rows that have plane 0, and `lm1rows`, the share that have plane 1.
+On rows written with both planes, `lm1rows` is the share of the rows with a next move's target, below `lmrows`.
 
-**The symmetries.** The loader maps the mask with the same `apply_symmetry_policy` as the mover's q-value targets, with
-the row's planes from before the symmetry, so that it follows the policy targets' map. Where a game's map adds two slots
-up, the mask is set when either is (`> 0`).
+**The symmetries.** The loader maps the two planes with the same `apply_symmetry_policy_targets` as the policy targets,
+with the row's planes and targets from before the symmetry: each plane follows the policy target of its channel. Where
+a game's map adds two slots up, the mask is set when either is (`> 0`).
 
 **The masks of each policy output.** A slot outside the softmax's mask has the logit -5000, as the model gives the slots
 off the board, so it has no probability and no gradient. The softmax's mask is the game's static mask (`policy_mask`) of
 the row's board, or KataGo's on-board slots without one. The next mover's targets are of a later position of the same
-game, which has the same size of board, so they read the same static mask. The row does not hold the legal moves of that
-later position.
+game, which has the same size of board, so they read the same static mask.
 
 | Policy output (`p0`/`p1` is the mover's / the next mover's) | Its softmax is on | The floor of its soft target |
 |---|---|---|
 | 0, the mover's (`p0loss`) | the static mask | None. It has no floor. |
 | 1, the next mover's (`p1loss`) | the static mask | None |
-| 2, the mover's soft policy (`p0softloss`) | the static mask | the row's legal moves, or the static mask for a row without a mask |
-| 3, the next mover's soft policy (`p1softloss`) | the static mask | the static mask, because the row does not hold the next position's legal moves |
+| 2, the mover's soft policy (`p0softloss`) | the static mask | plane 0, or the static mask for a row without it |
+| 3, the next mover's soft policy (`p1softloss`) | the static mask | plane 1, or the static mask for a row without it |
 | 4 and 5, the mover's optimistic policies (`p0lopt`, `p0sopt`) | the static mask | None |
 | 6 and 7, the Q values (from model version 16) | None: they are not a softmax. Each reads the visited moves. | None |
 
 A soft target is `(target + 1e-7) * mask` to the power 0.25, normalized to sum 1 over the mask. KataGo's floor, the
-1e-7 to the power 0.25, is 0.0178 on a slot without visits. Over a mask of S such slots it sums to 0.0178 S.
-The C++ evaluator needs no mask: it reads the legal moves only. The exported network has none.
+1e-7 to the power 0.25, is 0.0178 on a slot without visits. Over a mask of S such slots it sums to 0.0178 S. KataGo has
+the floor on every slot of the board. A game with these members has it on the legal moves of the target's own
+position, because its static mask holds many more slots than the visited moves. A row without plane 1 has the next
+mover's floor on the static mask, so that no row normalizes a target of 0 slots. Its target's weight C28 is 0 in the
+rows of every game, so the loss leaves it out, as before. The C++ evaluator needs no mask: it reads the legal moves
+only. The exported network has none.
 
 ### Connect-4's encoding part
 
@@ -972,7 +991,7 @@ points. Training moves the score's standard deviation and the score belief.
 | `CANONICAL_LABELS` (optional) | True for a game with a canonical order of its labels (C++ `CanonicalActionMap`), which V13's rows hold. The order does not depend on the symmetries, so the augmentation maps V13's rows as V12's. Blueprints: True. | None: False, V13 is V12 (`games.canonical_labels`) | None |
 | `DRAWS_AS_NO_RESULT` (optional) | As in C++. The trainer trains the three value outputs in every game, and does not read it. `enclosure_nn_check.py` and `nn_rows_check.py` do: the evaluator keeps the third output. | None: False (`games.draws_as_no_result`) | None |
 | `ENDING_CLASSES` (optional) | As in C++: the trainer then weighs the targets of one ending apart from C27, and a model can have the ending head ("The targets of one ending"). | None: 0 (`games.ending_classes`) | None |
-| `LEGAL_MOVES_IN_ROWS` (optional) | As in C++: the rows hold their legal moves (the array `legalMovesNMovePacked`), which the loader gives the batch as `legalMovesNMove` ("The legal moves in the rows and the policy's masks"). | None: False (`games.legal_moves_in_rows`) | None |
+| `LEGAL_MOVES_IN_ROWS` (optional) | As in C++: the rows hold their legal moves and those of the next move's position (the array `legalMovesNCMovePacked`), which the loader gives the batch as `legalMovesNCMove` ("The legal moves in the rows and the policy's masks"). | None: False (`games.legal_moves_in_rows`) | None |
 | `policy_mask(on_board)` (optional) | The slots that some position of the rows' size of board can make legal, from the on-board plane (N, y, x) of the rows at their symmetry, as booleans (N, policy), pass included. The policy losses have their softmax on them. | None: the board's slots | None |
 | `legal_moves(binary_inputs, global_inputs)` (optional) | The moves that the rows' inputs make legal, as booleans in the policy's order, from the rows as read (no symmetry), or None for rows without the planes it reads (`games.legal_moves`). Only `python/holdout_losses.py` reads it, not the losses: the policy's mass outside these moves is an error that the search hides. Blueprints gives a placement on its plane of anchors that fit while no pick waits, a pick or a drop on its plane of legal hand actions, and no pass. | None | None |
 

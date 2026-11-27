@@ -764,18 +764,23 @@ class Metrics:
         # the size of board can use, policy_mask), and no logit outside it. Without it, the softmax is on every slot of
         # the board's points, as KataGo's. The mask is one size's for each row's game, so it is the next mover's too.
         policy_logits, policymask = self.apply_policy_mask(policy_logits, policymask, mask)
-        # KataGame fork (abscls-shfz.9): KataGo's floor of the soft target is on every slot that the softmax reads. A
-        # game whose rows hold the legal moves of their positions has the mover's floor on those alone (plane 0), in the
-        # rows that have them. The next mover's floor keeps the softmax's slots.
-        policymask_player, legal_rows = policymask, None
+        # KataGame fork (abscls-shfz.9, abscls-shfz.33): KataGo's floor of the soft target is on every slot that the
+        # softmax reads. A game whose rows hold the legal moves has the floor of each soft target on the legal moves of
+        # its own position alone: the mover's on the row's position's (plane 0), the next mover's on the position's of
+        # the next move's target (plane 1). A plane of 0 bits keeps the softmax's slots: a window's older rows, and
+        # plane 1 of a row without a next move's target, whose weight (C28) is 0. So no row normalizes a target of 0
+        # slots.
+        policymask_player, policymask_opponent, legal_rows = policymask, policymask, None
         if self.legal_moves_in_rows:
-            legal = batch["legalMovesNCMove"][:, 0]
-            legal_rows = torch.any(legal, dim=1)
-            policymask_player = torch.where(legal_rows.unsqueeze(1), legal.to(policymask.dtype), policymask)
+            legal = batch["legalMovesNCMove"]
+            legal_rows = torch.any(legal, dim=2)
+            policymask_player, policymask_opponent = (
+                torch.where(legal_rows[:, plane:plane + 1], legal[:, plane].to(policymask.dtype), policymask)
+                for plane in range(2))
         target_policy_player_soft = (target_policy_player + 1e-7) * policymask_player
         target_policy_player_soft = torch.pow(target_policy_player_soft, 0.25)
         target_policy_player_soft /= torch.sum(target_policy_player_soft, dim=1, keepdim=True)
-        target_policy_opponent_soft = (target_policy_opponent + 1e-7) * policymask
+        target_policy_opponent_soft = (target_policy_opponent + 1e-7) * policymask_opponent
         target_policy_opponent_soft = torch.pow(target_policy_opponent_soft, 0.25)
         target_policy_opponent_soft /= torch.sum(target_policy_opponent_soft, dim=1, keepdim=True)
 
@@ -1284,10 +1289,12 @@ class Metrics:
                 "sekiweightscale_sum": seki_weight_scale * weight,
             }
 
-            # KataGame fork (abscls-shfz.9): the rows that hold their legal moves, in a game with them: the others (a
-            # window's older rows) have the soft target's floor without them.
+            # KataGame fork (abscls-shfz.9, abscls-shfz.33): the rows that hold their legal moves (lmrows) and the legal
+            # moves of their next move's position (lm1rows), in a game with them: the others (a window's older rows, and
+            # for lm1rows the rows without a next move's target) have the soft target's floor without them.
             if legal_rows is not None:
-                extra_results["lmrows_sum"] = legal_rows.to(target_global_nc.dtype).sum()
+                extra_results["lmrows_sum"] = legal_rows[:, 0].to(target_global_nc.dtype).sum()
+                extra_results["lm1rows_sum"] = legal_rows[:, 1].to(target_global_nc.dtype).sum()
 
             if include_model_norms:
                 extra_results.update(self.get_model_norm_metrics(raw_model))

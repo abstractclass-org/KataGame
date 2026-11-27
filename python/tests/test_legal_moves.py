@@ -650,11 +650,11 @@ def soft_target(target, floor_mask):
 
 
 def floors(batch):
-    """The floors of the two soft targets as the rows give them: the mover's on plane 0 of the rows' masks, and the
-    static mask for a plane of 0 bits, the next mover's on the static mask."""
+    """The floors of the two soft targets as the rows give them: each plane of the rows' masks, and the static mask for
+    a plane of 0 bits."""
     static = slides_game.policy_mask(batch["binaryInputNCHW"][:, 0])
     legal = batch["legalMovesNCMove"]
-    return [torch.where(legal[:, 0].any(dim=1, keepdim=True), legal[:, 0], static), static]
+    return [torch.where(legal[:, plane].any(dim=1, keepdim=True), legal[:, plane], static) for plane in range(2)]
 
 
 def expected_losses(model, batch, floor_player, floor_opponent):
@@ -709,8 +709,12 @@ def test_each_policy_loss_reads_its_softmax_and_floor_masks(model):
     for name in POLICY_LOSSES:
         assert sums[name] == pytest.approx(float(expected[name]), rel=2e-4), name
     # The rows 4, 9, 14 and 19 have no next move's target: no mask of its position, and the weight 0.
-    assert sums["lmrows_sum"] == 24.0
+    assert sums["lmrows_sum"] == 24.0 and sums["lm1rows_sum"] == 20.0
     assert legal[:, 1].any(dim=1).tolist() == [row % NO_NEXT != NO_NEXT - 1 for row in range(24)]
+    # The next mover's floor on the static mask (as before abscls-shfz.33) gives another loss.
+    static = slides_game.policy_mask(batch["binaryInputNCHW"][:, 0])
+    on_static = expected_losses(model, batch, legal[:, 0], static)
+    assert abs(float(on_static["p1softloss_sum"]) - sums["p1softloss_sum"]) > 1e-3
 
 
 def test_the_floor_of_a_row_without_a_mask_is_the_static_mask(model):
@@ -724,10 +728,10 @@ def test_the_floor_of_a_row_without_a_mask_is_the_static_mask(model):
     expected = expected_losses(model, batch, floor_player, floor_opponent)
     for name in POLICY_LOSSES:
         assert sums[name] == pytest.approx(float(expected[name]), rel=2e-4), name
-    assert sums["lmrows_sum"] == 10.0
-    # And the floor is not the legal moves of the other rows, which differ.
+    assert sums["lmrows_sum"] == 10.0 and sums["lm1rows_sum"] == 8.0
+    # And the floors are not the legal moves of the other rows, which differ.
     legal_everywhere = expected_losses(model, batch_of(arrays), *floors(batch_of(arrays)))
-    for name in ("p0softloss_sum",):
+    for name in ("p0softloss_sum", "p1softloss_sum"):
         assert abs(float(legal_everywhere[name]) - sums[name]) > 1e-3, name
 
 
@@ -744,13 +748,14 @@ def test_a_row_without_a_next_moves_target_adds_nothing_to_the_next_movers_losse
     part_sums = metric_sums(model, part)
     for name in ("p1loss_sum", "p1softloss_sum"):
         assert sums[name] == pytest.approx(part_sums[name], rel=1e-5), name
+    assert sums["lm1rows_sum"] == part_sums["lm1rows_sum"] == 8.0
 
 
 def test_the_losses_of_a_row_made_by_hand(model):
     """The row made by hand (33 legal moves, 205 static slots), with its masks and without them. Each output has the
     logit ln 3 on one slot and 0 on the 468 others, so that its loss is ln(205 + 2) - ln 3 * (the target on that slot).
     For the soft outputs the slot is a legal move without visits, whose target is the floor's share. The next move's
-    position is the same position, and the next mover's floor is on the static mask."""
+    position is the same position, so the next mover's soft target is the mover's."""
     batch = batch_of(hand_rows(2))
     batch["legalMovesNCMove"][1] = False  # an older row: no mask
     unvisited, visited = hand_slot((1, 0), (1, 1)), hand_slot((1, 0), (4, 0))
@@ -767,13 +772,13 @@ def test_the_losses_of_a_row_made_by_hand(model):
     on_legal, on_static = per_slot / (visits + 31 * per_slot), per_slot / (visits + 203 * per_slot)
     expected = {"p0loss_sum": 2 * loss(0.75), "p1loss_sum": 0.15 * 2 * loss(0.75),
                 "p0softloss_sum": loss(on_legal) + loss(on_static),
-                "p1softloss_sum": 0.15 * 2 * loss(on_static),
+                "p1softloss_sum": 0.15 * (loss(on_legal) + loss(on_static)),
                 "p0lopt_sum": 0.5 * 2 * loss(0.75), "p0sopt_sum": 0.5 * 2 * loss(0.75)}
     for name in POLICY_LOSSES:
         assert sums[name] == pytest.approx(expected[name], rel=1e-6), name
     # The same row, and the two floors, are told apart.
     assert abs(expected["p0softloss_sum"] - 2 * loss(on_static)) > 1e-3
-    assert sums["lmrows_sum"] == 1.0
+    assert sums["lmrows_sum"] == 1.0 and sums["lm1rows_sum"] == 1.0
 
 
 def test_a_masked_slot_has_no_logit_and_no_gradient(model):
@@ -829,7 +834,7 @@ def test_the_value_of_a_game_without_the_members_is_katagos(model, monkeypatch):
     target = torch.pow((player + 1e-7) * board_mask, 0.25)
     target = target / target.sum(dim=1, keepdim=True)
     sums = metric_sums(model, batch)
-    assert "lmrows_sum" not in sums
+    assert "lmrows_sum" not in sums and "lm1rows_sum" not in sums
     log_probs = torch.log_softmax(logits[:, 2], dim=1)
     assert sums["p0softloss_sum"] == pytest.approx(float(-(target * log_probs).sum()), rel=1e-4)
     expected = float(-(player * torch.log_softmax(logits[:, 0], dim=1)).sum())
