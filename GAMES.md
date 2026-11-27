@@ -910,8 +910,8 @@ go by the side to move, and the statistic by the player who moved.
 A larger board is one number, `MAX_BOARD_LEN` of the trainer's module, and then these parts: the planes of the pieces
 below the top (a compile stops until `TOP_DEPTHS` is twice the side plus 1, two moves' reach), the stops of a policy
 of more than 32,768 moves (the CUDA backend's gather, and `Loc`, a 16-bit number: 8 x 8 has 65,473), and the rows and
-networks of the smaller board, which a migration converts (design 03, "Consequences"). Any build refuses a network of another board: the model
-file's policy has other channels, and the message names the board (`desc.cpp`).
+networks of the smaller board, which a migration converts (design 03, "Consequences"). Any build refuses a network of
+another board: the model file's policy has other channels, and the message names the board (`desc.cpp`).
 
 ### The trainer's module
 

@@ -146,11 +146,14 @@ struct GameEncoding {
   // HISTORY + k), each hashed apart.
   static Hash128 input_hash(const Position& p) {
     Hash128 h;
-    for(int k = 0; k < 2 * HISTORY; k++) {
-      const uint64_t squares = k < HISTORY ? p.historyLanded[k] : p.historyLeft[k - HISTORY];
+    auto add = [&](int k, uint64_t squares) {
       if(squares)
         h ^= Hash128(mix64(mix64(0xA4093822299F31D0ULL + uint64_t(k)) ^ squares),
                      mix64(mix64(0x082EFA98EC4E6C89ULL + uint64_t(k)) ^ squares));
+    };
+    for(int k = 0; k < HISTORY; k++) {
+      add(k, p.historyLanded[k]);
+      add(HISTORY + k, p.historyLeft[k]);
     }
     return h;
   }

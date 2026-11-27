@@ -535,20 +535,21 @@ static bool commutingMoves(
 }
 
 //What the searches for a transposition around a reply met (commutingMovesAroundAReply): the candidates (both orders'
-//3 actions legal, the game not over after them), those whose last positions have one board (Board::pos_hash), those
-//whose last positions have one graph key, and the transpositions.
+//3 actions legal, the game not over after them), those whose last positions have one board (Board::pos_hash), and
+//those whose last positions have one graph key.
 struct AroundAReplyCounts {
-  long long candidates = 0, equalBoards = 0, equalKeys = 0, transpositions = 0;
+  long long candidates = 0, equalBoards = 0, equalKeys = 0;
 };
-static AroundAReplyCounts aroundAReply;
 
 //A transposition of a game whose turns have one action: a position R of the game where P's two moves m1 and m2 and the
 //opponent's reply x reach one node in the orders m1 x m2 and m2 x m1, through other nodes. After it, none of the three
 //is legal (placements). one and two are the positions along both orders. False when the game has none. The graph key
 //holds the history planes (input_hash), so the orders meet only when m1 and m2 leave the same history: in Tak, whose
-//history keeps the square that a spread left apart from the squares where it landed, no such pair turns up.
+//history keeps the square that a spread left apart from the squares where it landed, no such pair turns up. counts
+//adds what the search met.
 static bool commutingMovesAroundAReply(
-  NNEvaluator* nnEval, const vector<Position>& game, Rand& rand, vector<Position>& one, vector<Position>& two
+  NNEvaluator* nnEval, const vector<Position>& game, Rand& rand, vector<Position>& one, vector<Position>& two,
+  AroundAReplyCounts& counts
 ) {
   for(size_t i = 2; i + 10 < game.size(); i++) {
     const Position& R = game[i];
@@ -562,22 +563,20 @@ static bool commutingMovesAroundAReply(
       const Loc x = replies[rand.nextUInt((uint32_t)replies.size())];
       one = play(R, {m1, x, m2});
       two = play(R, {m2, x, m1});
-      if(one.size() == 4 && two.size() == 4 && !one[3].hist.isGameFinished) {
-        aroundAReply.candidates++;
-        aroundAReply.equalBoards += one[3].board.pos_hash == two[3].board.pos_hash ? 1 : 0;
-        aroundAReply.equalKeys += graphKey(one[3]) == graphKey(two[3]) ? 1 : 0;
-      }
-      if(one.size() != 4 || two.size() != 4 || one[3].hist.isGameFinished || graphKey(one[3]) != graphKey(two[3]) ||
-         graphKey(one[1]) == graphKey(two[1]) || graphKey(one[2]) == graphKey(two[2]) ||
+      if(one.size() != 4 || two.size() != 4 || one[3].hist.isGameFinished)
+        continue;
+      const bool sameKey = graphKey(one[3]) == graphKey(two[3]);
+      counts.candidates++;
+      counts.equalBoards += one[3].board.pos_hash == two[3].board.pos_hash ? 1 : 0;
+      counts.equalKeys += sameKey ? 1 : 0;
+      if(!sameKey || graphKey(one[1]) == graphKey(two[1]) || graphKey(one[2]) == graphKey(two[2]) ||
          one[2].legal(m1) || two[2].legal(m2) || one[3].legal(x))
         continue;
       bool all = true;
       for(int j = 0; j < 3 && all; j++)
         all = searchable(nnEval, one[j], one[j + 1].lastLoc()) && searchable(nnEval, two[j], two[j + 1].lastLoc());
-      if(all) {
-        aroundAReply.transpositions++;
+      if(all)
         return true;
-      }
     }
   }
   return false;
@@ -956,6 +955,7 @@ int main(int argc, char** argv) {
   vector<Position> game, one, two, chained;
   int seed = 0, chainedSeed = -1;
   bool found = false;
+  AroundAReplyCounts aroundAReply;
   for(; seed < MAX_SEEDS && !found; seed++) {
     Rand rand("testdiversitysearch game " + Global::intToString(seed));
     game = randomGame(rand);
@@ -972,24 +972,25 @@ int main(int argc, char** argv) {
       chained = game;
       chainedSeed = seed;
     }
-    found = chains &&
-      (TURNS ? commutingMoves(nnEval, game, rand, one, two) : commutingMovesAroundAReply(nnEval, game, rand, one, two));
+    found = chains && (TURNS ? commutingMoves(nnEval, game, rand, one, two)
+                             : commutingMovesAroundAReply(nnEval, game, rand, one, two, aroundAReply));
   }
   //A game whose turns have one action can have no transposition within the history's reach: the graph key holds the
   //history planes, and a history that tells each move apart (Tak's keeps the square that a spread left apart from the
   //squares where it landed) leaves no two orders of P's moves around a reply with one key (abscls-shfz.35). Then the
   //test prints what its search met, skips the transposition's check, and runs the rest on the first game with the
   //chains: the checks of the paths to a node below still hold there (paths of other lengths, and paths that differ
-  //before the history's reach). Every other game, and a game with no chains, fails as before.
-  const bool skipTranspositions = !found && !TURNS && chainedSeed >= 0;
+  //before the history's reach). The search must have met orders that reach one board, so that only the graph key kept
+  //them apart. Every other game, a game with no chains, and a game whose orders never reach one board fail as before.
+  const bool skipTranspositions = !found && !TURNS && chainedSeed >= 0 && aroundAReply.equalBoards > 0;
   if(!found && !skipTranspositions) {
     fprintf(stderr, "no random game of %d has the chains and the transposition that the test needs\n", MAX_SEEDS);
     return 1;
   }
   if(skipTranspositions) {
     printf("transposition: none in %d random games: %lld candidates of P's two moves around a reply, %lld with one "
-           "board in both orders, %lld with one graph key, %lld transpositions\n", MAX_SEEDS, aroundAReply.candidates,
-           aroundAReply.equalBoards, aroundAReply.equalKeys, aroundAReply.transpositions);
+           "board in both orders, %lld with one graph key, 0 transpositions\n", MAX_SEEDS, aroundAReply.candidates,
+           aroundAReply.equalBoards, aroundAReply.equalKeys);
     printf("transposition: the graph key holds the history, and the split history keeps a spread and its reverse "
            "apart, so no two orders meet within the history's reach. Skipped: the transposition check\n");
     game = chained;

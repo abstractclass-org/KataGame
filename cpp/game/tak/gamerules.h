@@ -872,29 +872,31 @@ struct GameRules {
       why = "the history has " + std::to_string(moves.size()) + " moves, not " + std::to_string(HISTORY);
       return false;
     }
+    auto square = [&](const std::string& s, size_t k) {  // the square at s[k], or -1 when it is not on the board
+      const int x = s[k] - 'a', y = s[k + 1] - '1';
+      return x < 0 || x >= q.size || y < 0 || y >= q.size ? -1 : point(x, y);
+    };
     for(int h = 0; h < HISTORY; h++) {
       const std::string& m = moves[h];
       if(m == "-")
         continue;
       const size_t colon = m.find(':');
-      const std::string left = colon == std::string::npos ? "" : m.substr(0, colon);
-      const std::string landed = colon == std::string::npos ? m : m.substr(colon + 1);
-      if(landed.empty() || landed.size() % 2 != 0 || (colon != std::string::npos && left.size() != 2) ||
-         (colon == std::string::npos && landed.size() != 2)) {
+      const bool spread = colon != std::string::npos;
+      const std::string left = spread ? m.substr(0, colon) : "";
+      const std::string landed = spread ? m.substr(colon + 1) : m;
+      const bool oneSquare = (spread ? left.size() : landed.size()) == 2;  // the square left, or a placement's square
+      if(landed.empty() || landed.size() % 2 != 0 || !oneSquare) {
         why = "\"" + m + "\" is not the squares of a move (a placement's square, or a spread's square, a colon and "
               "the squares where it dropped), or -";
         return false;
       }
-      auto square = [&](const std::string& s, size_t k) {
-        const int x = s[k] - 'a', y = s[k + 1] - '1';
-        return x < 0 || x >= q.size || y < 0 || y >= q.size ? -1 : point(x, y);
-      };
-      if(!left.empty()) {
-        if(square(left, 0) < 0) {
+      if(spread) {
+        const int from = square(left, 0);
+        if(from < 0) {
           why = "\"" + m + "\": \"" + left + "\" is not a square of the board";
           return false;
         }
-        q.historyLeft[h] = bit(square(left, 0));
+        q.historyLeft[h] = bit(from);
       }
       int last = -1;
       for(size_t k = 0; k < landed.size(); k += 2) {
