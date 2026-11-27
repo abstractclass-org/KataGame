@@ -303,14 +303,15 @@
  *                           game's end, and no target but the policy's and the value's in a no result (endingClasses,
  *                           endingClass).
  *   LEGAL_MOVES_IN_ROWS     bool: true for a game whose training rows hold the moves that the rules make legal in the
- *                           row's position, a bit for each policy index (the rows' array legalMovesNMovePacked,
- *                           dataio/trainingwrite.h). The trainer's module then gives LEGAL_MOVES_IN_ROWS too
- *                           (katago/train/games), and the floor of the soft policy's target is on these moves alone.
- *                           For a game whose policy has many more slots than a position has legal moves: KataGo's
- *                           floor is on every slot of the board, and its sum over many illegal slots can outweigh the
- *                           visited moves. The row writer stops at a row whose position has no legal move, or whose
- *                           policy target visits a move that is not legal in it. Default: false, and the rows have no
- *                           such array (legalMovesInRows).
+ *                           row's position and in the position of its next move's policy target, a bit for each policy
+ *                           index (the rows' array legalMovesNCMovePacked, two planes, dataio/trainingwrite.h). The
+ *                           trainer's module then gives LEGAL_MOVES_IN_ROWS too (katago/train/games), and the floor of
+ *                           each soft policy's target is on its position's moves alone. For a game whose policy has many
+ *                           more slots than a position has legal moves: KataGo's floor is on every slot of the board,
+ *                           and its sum over many illegal slots can outweigh the visited moves. The row writer stops at
+ *                           a row whose position has no legal move, or whose policy targets visit a move that is not
+ *                           legal in their positions. Default: false, and the rows have no such array
+ *                           (legalMovesInRows).
  *   CanonicalActionMap      a type, for a game whose position holds labels that no rule reads (Blueprints' numbers of
  *                           the blueprints): the inputs version 13 (NNInputs V13, model version 22) reads the labels
  *                           in an order that depends only on what they label, so that two positions that differ only

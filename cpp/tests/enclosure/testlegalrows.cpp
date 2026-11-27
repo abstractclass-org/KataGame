@@ -6,13 +6,16 @@
 //
 // A game without the member: the rows have no legal moves, and the file of rows no array of them. A game with it: each
 // row of self-play's games holds the moves that the rules make legal in its position, and no other, a bit for each
-// policy index. The rows are those of the game, of its side positions, and of a reanalyzed game. The test computes the
+// policy index (plane 0). A row with a next move's policy target (abscls-shfz.33) holds the legal moves of the next
+// turn's position too (plane 1), and a row without one (a side position, the last turn, a row reanalyzed without the
+// outcome) 0 bits there. The rows are those of the game, of its side positions, and of a reanalyzed game, without the
+// outcome and with it. The test computes the
 // legal moves from the board alone (expectedLegal), for the test games endings (4 x 4, a point a move) and slides
 // (5 x 5 and 6 x 6 boards in the policy of 6 x 6, with an opening that places the opponent's pieces, 13 channels a
 // point and several hundred slots) and for Tak (the same boards and kind of opening, 255 channels), from its position's
 // text (tpsboard.h).
-// The writer stops at a row with visits on a move that is not legal in its position, and at a row whose position has
-// no legal move, with the row's name.
+// The writer stops at a row with visits on a move that is not legal in its position, at a row whose next move's visits
+// are not legal in the next position, and at a row whose position has no legal move, with the row's name.
 //
 // With DIR, the rows of the games go there as a training file (.npz), for the trainer's loader and its test of the same
 // rows (the rows of two sizes, with the array).
@@ -95,10 +98,11 @@ static set<int> expectedLegal(const Board& board, int turn) {
   return legal;
 }
 
-//A row's mask, as the policy indices that it has.
-static set<int> maskOf(const TrainingWriteBuffers& b, int64_t r) {
+//A plane of a row's mask (0 the row's position's, 1 the next position's), as the policy indices that it has.
+static set<int> maskOf(const TrainingWriteBuffers& b, int64_t r, int plane) {
   set<int> mask;
-  const uint8_t* bits = b.legalMovesNMovePacked.data + r * b.packedPolicyLen;
+  check(b.legalMovesNCMovePacked.shape[1] == 2, "the planes of a row's legal moves");
+  const uint8_t* bits = b.legalMovesNCMovePacked.data + (r * 2 + plane) * b.packedPolicyLen;
   check(b.packedPolicyLen == (SLOTS + 7) / 8, "the bytes of a row's legal moves: " + to_string(b.packedPolicyLen));
   for(int i = 0; i < b.packedPolicyLen * 8; i++)
     if(bits[i >> 3] & (0x80 >> (i & 7))) {
@@ -110,13 +114,16 @@ static set<int> maskOf(const TrainingWriteBuffers& b, int64_t r) {
 
 struct Counts {
   int rows = 0, sideRows = 0, reanalyzedRows = 0, openingRows = 0, smallRows = 0, games = 0;
-  int64_t moves = 0;
+  int nextRows = 0;  //the rows with a next move's policy target, and so a mask of its position
+  int64_t moves = 0, nextMoves = 0;
 };
 
-//A row's mask and its visited moves against the position's legal moves.
-static void checkRow(const TrainingWriteBuffers& b, int64_t r, const Board& board, int turn, Counts& counts,
-                     const string& where) {
-  const set<int> mask = maskOf(b, r);
+//A row's mask and its visited moves against the position's legal moves, and its next position's mask (plane 1)
+//against the legal moves of next, the position after the row's (null for none: a side position's). Plane 1 is that
+//position's legal moves where the row has a next move's policy target (C28 not 0), and empty where it has none.
+static void checkRow(const TrainingWriteBuffers& b, int64_t r, const Board& board, int turn, const Board* next,
+                     Counts& counts, const string& where) {
+  const set<int> mask = maskOf(b, r, 0);
   const set<int> legal = expectedLegal(board, turn);
   check(!mask.empty() && mask == legal, where + ": the mask has " + to_string(mask.size()) + " moves, the rules " +
         to_string(legal.size()));
@@ -124,6 +131,27 @@ static void checkRow(const TrainingWriteBuffers& b, int64_t r, const Board& boar
   for(int64_t a = 0; a < n; a++)
     check(b.policyTargetsNCMove.data[r * 2 * n + a] == 0 || mask.count((int)a) > 0,
           where + ": visits on the move " + to_string(a) + ", which is not in the mask");
+  const set<int> nextMask = maskOf(b, r, 1);
+  const bool hasNext = b.globalTargetsNC.data[r * b.globalTargetsNC.shape[1] + 28] != 0.0f;
+  check(!hasNext || next != nullptr, where + ": a next move's policy target in a row without a next position");
+  if(!hasNext)
+    check(nextMask.empty(), where + ": the next position's mask has " + to_string(nextMask.size()) +
+          " moves in a row without a next move's policy target");
+  else if(next != nullptr) {
+    const set<int> nextLegal = expectedLegal(*next, turn + 1);
+    check(!nextMask.empty() && nextMask == nextLegal, where + ": the next position's mask has " +
+          to_string(nextMask.size()) + " moves, the rules " + to_string(nextLegal.size()));
+    bool visited = false;
+    for(int64_t a = 0; a < n; a++) {
+      const int16_t visits = b.policyTargetsNCMove.data[r * 2 * n + n + a];
+      visited = visited || visits > 0;
+      check(visits == 0 || nextMask.count((int)a) > 0,
+            where + ": visits of the next move on " + to_string(a) + ", which is not in the next position's mask");
+    }
+    check(visited, where + ": a next move's policy target without visits");
+    counts.nextRows++;
+    counts.nextMoves += (int64_t)nextMask.size();
+  }
   if(board.x_size < LEN) {
     counts.smallRows++;
     for(const int a : mask)
@@ -227,15 +255,33 @@ static void checkStops(NNEvaluator* nnEval, Logger& logger, int size) {
     boards.push_back(boards.back());
     boards.back().playMoveAssumeLegal(move.loc, move.pla);
   }
+  //The rows from the turn's on: the turn's own row is the first.
+  vector<float>& weights = data->targetWeightByTurn;
+  auto rowsFrom = [&](int first) {
+    weights.assign(weights.size(), 0.0f);
+    std::fill(weights.begin() + first, weights.end(), 1.0f);
+  };
   vector<PolicyTargetMove>& moves = *data->policyTargetsByTurn[turn].policyTargets;
   const PolicyTargetMove good = moves[0];
   moves[0] = PolicyTargetMove(illegalMove(boards[turn]), 10);
+  rowsFrom(turn);
   string error = errorOf(write);
   const string gameName = data->gameHash.toString();
   check(error.find("The row of turn " + to_string(turn) + " of the game " + gameName) != string::npos &&
         error.find("not legal in its position") != string::npos, "the error of a row's illegal visits: " + error);
   moves[0] = good;
   check(errorOf(write).empty(), "the good rows stop the writer again");
+  //The same target is the next move's of the row before: with the rows from that row on, that row's next position is
+  //the first that it stops.
+  rowsFrom(turn - 1);
+  moves[0] = PolicyTargetMove(illegalMove(boards[turn]), 10);
+  error = errorOf(write);
+  check(error.find("The next position of the row of turn " + to_string(turn - 1) + " of the game " + gameName) !=
+        string::npos && error.find("not legal in its position") != string::npos,
+        "the error of a row's illegal visits of the next move: " + error);
+  moves[0] = good;
+  weights.assign(weights.size(), 1.0f);
+  check(errorOf(write).empty(), "the good rows stop the writer once more");
   //A visited move that is not legal, in a side position's row.
   check(!data->sidePositions.empty(), "a side position to check");
   if(!data->sidePositions.empty()) {
@@ -298,7 +344,7 @@ static void checkHeld(NNEvaluator* nnEval, Logger& logger, const string& outDir,
       for(int64_t r = 0; r < b.curRows; r++) {
         const SidePosition* sp = data->sidePositions[r];
         const int turn = (int)sp->hist.getCurrentTurnNumber();
-        checkRow(b, r, sp->board, turn, counts, where + ", side position " + to_string(r));
+        checkRow(b, r, sp->board, turn, nullptr, counts, where + ", side position " + to_string(r));
         counts.sideRows++;
       }
     });
@@ -306,21 +352,36 @@ static void checkHeld(NNEvaluator* nnEval, Logger& logger, const string& outDir,
     data->targetWeightByTurn.assign(weights.size(), 1.0f);
     vector<SidePosition*> sidePositions;
     sidePositions.swap(data->sidePositions);
-    auto checkGame = [&](const TrainingWriteBuffers& b, int& rows) {
-      check(b.curRows == (int)weights.size(), where + ": the rows of its turns");
-      for(int64_t r = 0; r < b.curRows; r++) {
-        check((int)b.globalTargetsNC.data[r * b.globalTargetsNC.shape[1] + 51] == startTurn + (int)r, where +
-              ": the turn of the row " + to_string(r));
-        checkRow(b, r, boards[r], startTurn + (int)r, counts, where + ", the row of turn " + to_string(startTurn + r));
-        rows++;
-      }
+    //The rows of the game's turns into the counts, with rows the counter of their kind. Each row but the last has a next
+    //move's policy target (expectNext) or none does.
+    auto writeGame = [&](Counts& into, int& rows, bool expectNext, const string& kind) {
+      const int nextBefore = into.nextRows;
+      writeRows(*data, [&](const TrainingWriteBuffers& b) {
+        check(b.curRows == (int)weights.size(), where + ": the rows of its turns");
+        for(int64_t r = 0; r < b.curRows; r++) {
+          check((int)b.globalTargetsNC.data[r * b.globalTargetsNC.shape[1] + 51] == startTurn + (int)r, where +
+                ": the turn of the row " + to_string(r));
+          checkRow(b, r, boards[r], startTurn + (int)r, &boards[r + 1], into,
+                   where + ", the " + kind + " row of turn " + to_string(startTurn + r));
+          rows++;
+        }
+      });
+      check(into.nextRows - nextBefore == (expectNext ? (int)weights.size() - 1 : 0), where + ": " +
+            to_string(into.nextRows - nextBefore) + " " + kind + " rows with a next move's policy target, of " +
+            to_string(weights.size()));
     };
-    writeRows(*data, [&](const TrainingWriteBuffers& b) { checkGame(b, counts.rows); });
+    writeGame(counts, counts.rows, true, "game's");
+    //Reanalyzed without the outcome: no next move's policy target, so no next position's mask.
     ReanalysisData reanalyzed;
     reanalyzed.wasReanalyzed = true;
     reanalyzed.usedOutcomeTargets = false;
     data->reanalysisByTurn.assign(weights.size(), reanalyzed);
-    writeRows(*data, [&](const TrainingWriteBuffers& b) { checkGame(b, counts.reanalyzedRows); });
+    writeGame(counts, counts.reanalyzedRows, false, "reanalyzed");
+    //Reanalyzed with the outcome: the next move's policy target and its position's mask, as in the game's rows.
+    reanalyzed.usedOutcomeTargets = true;
+    data->reanalysisByTurn.assign(weights.size(), reanalyzed);
+    Counts outcome;
+    writeGame(outcome, outcome.rows, true, "reanalyzed with the outcome");
     data->reanalysisByTurn.clear();
     data->targetWeightByTurn = weights;
     data->sidePositions.swap(sidePositions);  //data owns them
@@ -360,7 +421,7 @@ int main(int argc, char** argv) {
   FinishedGameData* sample = playGame(nnEval, logger, HOLDS ? LEN : 0, "sample");
   sample->targetWeightByTurn.assign(sample->targetWeightByTurn.size(), 1.0f);
   const string text = textOf(*sample);
-  check((text.find("legalMovesNMovePacked") != string::npos) == HOLDS, "the array's name in the rows' text");
+  check((text.find("legalMovesNCMovePacked") != string::npos) == HOLDS, "the array's name in the rows' text");
   if(HOLDS) {
     checkHeld(nnEval, logger, argc > 1 ? argv[1] : "", counts);
     checkStops(nnEval, logger, LEN);
@@ -370,10 +431,13 @@ int main(int argc, char** argv) {
            "smaller board; %.1f legal moves a row\n", counts.games, counts.rows, counts.sideRows, counts.reanalyzedRows,
            counts.openingRows, counts.smallRows, (double)counts.moves / std::max(1, counts.rows + counts.sideRows +
            counts.reanalyzedRows));
+    printf("%d rows with a next move's policy target, %.1f legal moves in its position\n", counts.nextRows,
+           (double)counts.nextMoves / std::max(1, counts.nextRows));
+    check(counts.nextRows > 0, "the rows: none with a next move's policy target");
   }
   else {
     writeRows(*sample, [&](const TrainingWriteBuffers& b) {
-      check(b.legalMovesNMovePacked.shape[0] == 1, "the array of a game without the member has one row");
+      check(b.legalMovesNCMovePacked.shape[0] == 1, "the array of a game without the member has one row");
     });
   }
   delete sample;

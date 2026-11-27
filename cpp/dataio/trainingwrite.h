@@ -230,10 +230,10 @@ struct TrainingWriteBuffers {
   int dataXLen;
   int dataYLen;
   int packedBoardArea;
-  int packedPolicyLen;  //KataGame fork: the bytes of a row's legal moves (legalMovesNMovePacked)
+  int packedPolicyLen;  //KataGame fork: the bytes of a plane of a row's legal moves (legalMovesNCMovePacked)
 
   bool hasMetadataInput;
-  //KataGame fork (abscls-shfz.9): whether the rows hold legalMovesNMovePacked (GameInterface: LEGAL_MOVES_IN_ROWS).
+  //KataGame fork (abscls-shfz.9): whether the rows hold legalMovesNCMovePacked (GameInterface: LEGAL_MOVES_IN_ROWS).
   static constexpr bool HAS_LEGAL_MOVES = GameInterface::legalMovesInRows<GameEncoding>();
 
   int curRows;
@@ -391,12 +391,14 @@ struct TrainingWriteBuffers {
   //C2: visits
   NumpyBuffer<int16_t> qValueTargetsNCMove;
 
-  //KataGame fork (abscls-shfz.9): the moves that the rules make legal in the row's position, a bit for each policy
-  //index of policyTargetsNCMove, in the same frame (the labels of the inputs version 13), packed as
-  //binaryInputNCHWPacked is, zero-padded to a round byte. Only in a game that asks for it (HAS_LEGAL_MOVES): else it has
-  //one row, unused, and the file has no such array. A row has at least one bit, so that a row of 0 bits has no mask (the
-  //shuffle gives it to the rows of files without the array).
-  NumpyBuffer<uint8_t> legalMovesNMovePacked;
+  //KataGame fork (abscls-shfz.9, abscls-shfz.33): the moves that the rules make legal, a bit for each policy index of
+  //policyTargetsNCMove, packed as binaryInputNCHWPacked is, zero-padded to a round byte. Two planes, as the policy
+  //targets' two channels: plane 0 the row's position's, in the frame of the first policy target, and plane 1 the
+  //position of the second policy target (the next move's), in that target's frame. Only in a game that asks for it
+  //(HAS_LEGAL_MOVES): else it has one row, unused, and the file has no such array. Plane 0 has at least one bit, so that
+  //a plane of 0 bits has no mask (the shuffle gives it to the rows of files without the array). Plane 1 has 0 bits in a
+  //row without a second policy target (C28 is 0).
+  NumpyBuffer<uint8_t> legalMovesNCMovePacked;
 
   NumpyBuffer<float> metadataInputNC;
 
