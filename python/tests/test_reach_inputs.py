@@ -1,8 +1,8 @@
 """The inputs version 15: the game's planes of reach after version 14's planes (modelconfigs, katago/train/games), their
-map at the symmetries (pixels), the rows of versions 14 and 15 in one window (the shuffle and the reader), the export as
-model version 25 (with hybrid3's patch block too), and add_extended_inputs.py's conversion of a checkpoint of version
-14, so that its network computes on the rows of version 15 what it computed on the rows of version 14, whatever the
-new planes hold. The engine repository's games/blueprints/tests/test_reach_inputs.py checks the planes themselves
+map at the symmetries (pixels), the rows of versions 14 and 15 (the reader fits them, the shuffle refuses to merge
+their files), the export as model version 25 (with hybrid3's patch block too), and add_extended_inputs.py's conversion
+of a checkpoint of version 14, so that its network computes on the rows of version 15 what it computed on the rows of
+version 14, whatever the new planes hold. The engine repository's games/blueprints/tests/test_reach_inputs.py checks the planes themselves
 against the C++ kernel."""
 import os
 import subprocess
@@ -202,17 +202,17 @@ def test_the_fit_changes_the_count_by_the_planes_of_reach_or_of_closed_areas_onl
     assert fit_binary_input_nchw(rows, V14_PLANES + REACH, games.get("enclosure")) is rows
 
 
-def test_the_shuffle_merges_rows_of_versions_14_and_15_at_the_largest():
-    narrow = np.ones((3, V14_PLANES, 5), dtype=np.uint8)
-    wide = np.full((2, V14_PLANES + REACH, 5), 7, dtype=np.uint8)
-    rows = [narrow, wide]
-    shuffle.pad_planes_to_widest(rows, [np.zeros((3, V14_GLOBALS)), np.zeros((2, V14_GLOBALS))])
-    assert rows[1] is wide
-    assert rows[0].shape == (3, V14_PLANES + REACH, 5)
-    assert np.array_equal(rows[0][:, :V14_PLANES], narrow) and not rows[0][:, V14_PLANES:].any()
+def test_the_shuffle_refuses_rows_of_versions_14_and_15():
+    # abscls-l4qm: the pair is not on shuffle.PLANE_PADS. No run merges them: bpj5 wrote its window's rows again as
+    # version 15 at its switch, and leaves out its files of version 14.
+    with pytest.raises(ValueError, match=rf"{V14_PLANES} planes and {V14_GLOBALS} global inputs \(v14\.npz\); "
+                                         rf"{V14_PLANES + REACH} planes and {V14_GLOBALS} global inputs \(v15\.npz\)\. "
+                                         "These counts are not a pair on shuffle.PLANE_PADS"):
+        shuffle.pad_planes_to_widest([np.ones((3, V14_PLANES, 5)), np.ones((2, V14_PLANES + REACH, 5))],
+                                     [np.zeros((3, V14_GLOBALS)), np.zeros((2, V14_GLOBALS))], ["v14.npz", "v15.npz"])
 
 
 def test_the_shuffle_refuses_rows_of_version_12_with_rows_of_version_15():
-    with pytest.raises(ValueError, match="other inputs versions"):
+    with pytest.raises(ValueError, match="not a pair on shuffle.PLANE_PADS"):
         shuffle.pad_planes_to_widest([np.ones((3, V14_PLANES, 5)), np.ones((2, V14_PLANES + REACH, 5))],
-                                     [np.zeros((3, V12_GLOBALS)), np.zeros((2, V14_GLOBALS))])
+                                     [np.zeros((3, V12_GLOBALS)), np.zeros((2, V14_GLOBALS))], ["v12.npz", "v15.npz"])

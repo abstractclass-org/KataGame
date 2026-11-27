@@ -953,11 +953,12 @@ actions). `-inputs-version 12` gives a checkpoint of V11 the planes of closed ar
 channels of the first convolution. The shuffle merges rows of V11 and V12 at V12's planes, and the reader fits a row's
 planes to its model: a row of V11 gets V12's planes at 0, and a row of V12 loses them for a model of V11. So a run
 switches from V11 to V12 with a converted checkpoint and no new run, while its window holds rows of both. Rows of other
-versions stay apart: the shuffle refuses files whose planes and global inputs both differ (V9's and V10's, or V10's and
-V12's), and the reader refuses any other count of planes. `-inputs-version 13` gives a checkpoint of V12 the version
-13 and changes no weight: V13 adds no input. The network then reads each label at its place in the canonical order,
-and it computes what it did wherever that order is the labels' own. Rows of V12 and V13 have the same shapes, so the
-shuffle and the reader cannot tell them apart: a run that switches to V13 trains on its rows of V13 only.
+versions stay apart: the shuffle merges files of other counts of planes only for a pair on `shuffle.PLANE_PADS` (102 and
+104 planes with 52 global inputs: V11 and V12), and the reader refuses any other count of planes.
+`-inputs-version 13` gives a checkpoint of V12 the version 13 and changes no weight: V13 adds no input. The network then
+reads each label at its place in the canonical order, and it computes what it did wherever that order is the labels'
+own. Rows of V12 and V13 have the same shapes, so the shuffle and the reader cannot tell them apart: a run that switches
+to V13 trains on its rows of V13 only.
 `python/add_diversity_members.py CHECKPOINT OUT` gives a checkpoint of V13 V14's latent and the intrinsic value head:
 member 0's column of `linear_global` is 0, so that member 0 computes what the network did, and the other members'
 columns are KataGo's initialization of that layer times 0.1, so that they differ a little. The head is new, with
@@ -967,8 +968,9 @@ targets with zeros to 84. A run of V14 trains on its own rows only: the shuffle 
 targets with files of 80, and the reader refuses rows of an earlier version for a model of V14, because those rows
 hold no member's latent. `python/add_extended_inputs.py CHECKPOINT OUT -inputs-version 15` gives a checkpoint of V14
 the planes of reach as zero input channels of the first convolution, as for V12. Rows of V14 and V15 have the same
-global inputs: the shuffle merges them at V15's planes, and the reader fits a row's planes to its model, as for V11
-and V12. A model of V15 refuses the rows before V14, which hold no latent. For a new `SCORE_SCALE`,
+global inputs, and the reader fits a row's planes to its model, as for V11 and V12. The shuffle does not merge files of
+V14 and V15: their pair is not on `PLANE_PADS`, because no run needs it (Blueprints' bpj5 wrote its window's rows again
+as V15 at its switch). A model of V15 refuses the rows before V14, which hold no latent. For a new `SCORE_SCALE`,
 `-old-score-scale S`, run with the new code, multiplies by S over the new `SCORE_SCALE` the outputs that
 a plain multiplier puts in points: the score mean, the lead and the TD scores. These outputs keep their values in
 points. Training moves the score's standard deviation and the score belief.
@@ -1514,7 +1516,11 @@ Two files beside the trainer also held Enclosure's facts:
   game in the model file. `-game` names the game of a random-initialized model.
 - `python/shuffle.py`: the rows' C5-7 channels, V9's 7 global inputs and V12's planes (`pad_inputs_to_widest`,
   `pad_planes_to_widest`). No change: these are the rows' format, which every game shares, and the padding takes the
-  widest file's width.
+  widest file's width. The planes pad only for a pair on `PLANE_PADS`, which names the game and its inputs versions,
+  keyed by the counts that a file shows (planes, global inputs): no other game's rows have those counts, so the
+  shuffle needs no game argument. Any other mix of counts of planes stops the shuffle (abscls-l4qm). A game that
+  changes its planes in another way, as Tak did at 59 planes (36 before, with the same 21 global inputs), keeps its
+  older rows out of its run's window: it deletes them, or lists them for the shuffle's `-exclude`.
 
 ### The training scripts (`python/selfplay/`)
 

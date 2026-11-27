@@ -208,21 +208,43 @@ def pad_inputs_to_widest(inputList: list[np.ndarray]) -> None:
             padded[:, :arr.shape[1]] = arr
             inputList[i] = padded
 
+# KataGame fork (abscls-l4qm): the pairs of plane counts whose files merge, keyed by the counts that a file shows: (the
+# narrower rows' planes, the wider rows' planes, the global inputs of both). Each pair is one game's move from one
+# inputs version to the next, where the next version adds planes after the planes of the version before and changes
+# nothing else. The counts tell the games apart (no other game's rows have 102 or 104 planes with 52 global inputs), so
+# the shuffle needs no game argument. A game that changes its planes in another way (Tak's 36 planes to 59, abscls-
+# shfz.35, with the same 21 global inputs) has no pair: its rows of both counts do not merge.
+PLANE_PADS = {
+    # Blueprints' inputs versions 11 and 12: version 12 adds the game's planes of closed areas.
+    (102, 104, 52): "Blueprints, the inputs versions 11 and 12",
+}
+
 # KataGame fork (2026-10-27): the rows of the inputs version 12 have the game's planes of closed areas after version
 # 11's planes, and version 11's global inputs. Files of both merge at the larger count of planes, the rows of version
-# 11 with those planes at 0, as the trainer reads them (data_processing_pytorch.fit_binary_input_nchw). Files whose
-# planes differ and whose global inputs differ too are of other versions (V9's 90 planes and 24 global inputs against
-# V10's 102 and 44, or V10's against V12's), whose rows differ in more than these planes: they stay refused, as
-# before the planes merged. Call it before the global inputs merge. KataGame fork (2026-11-03): the rows of the inputs
-# version 15 have the game's planes of reach after version 14's planes, and version 14's global inputs, so files of
-# versions 14 and 15 merge in the same way (the trainer: data_processing_pytorch.fit_binary_input_nchw).
-def pad_planes_to_widest(binaryInputNCHWPackedList: list[np.ndarray], globalInputNCList: list[np.ndarray]) -> None:
-    widths = sorted({(b.shape[1], g.shape[1]) for b, g in zip(binaryInputNCHWPackedList, globalInputNCList)})
-    if len({planes for planes, _ in widths}) > 1 and len({inputs for _, inputs in widths}) > 1:
-        raise ValueError(f"files of other inputs versions, (planes, global inputs) {widths}: files of other counts "
-                         "of planes merge only with the same global inputs (the inputs versions 11 and 12, or 14 and "
-                         "15)")
-    pad_inputs_to_widest(binaryInputNCHWPackedList)
+# 11 with those planes at 0, as the trainer reads them (data_processing_pytorch.fit_binary_input_nchw). KataGame fork
+# (abscls-l4qm): files of other counts of planes merge only for a pair of PLANE_PADS, and every other mix is refused.
+# The refusal names each kind's counts (planes, global inputs) and the first of `files` (each array's file) of that
+# kind. Blueprints' inputs versions 14 and 15 (104 and 113 planes, 57 global inputs) have no pair: no run merges them
+# (bpj5 wrote its window's rows again as version 15 at its switch, and leaves out its files of version 14). Files of
+# one count of planes merge as before, whatever their global inputs. Call it before the global inputs merge.
+def pad_planes_to_widest(
+    binaryInputNCHWPackedList: list[np.ndarray], globalInputNCList: list[np.ndarray], files: Sequence[str]
+) -> None:
+    assert len(binaryInputNCHWPackedList) == len(globalInputNCList) == len(files)
+    kinds: dict[tuple[int, int], str] = {}
+    for b, g, file in zip(binaryInputNCHWPackedList, globalInputNCList, files):
+        kinds.setdefault((b.shape[1], g.shape[1]), file)
+    planes = sorted({p for p, _ in kinds})
+    if len(planes) == 1:
+        return
+    inputs = sorted({g for _, g in kinds})
+    if len(planes) == 2 and len(inputs) == 1 and (planes[0], planes[1], inputs[0]) in PLANE_PADS:
+        pad_inputs_to_widest(binaryInputNCHWPackedList)
+        return
+    raise ValueError("files of other counts of planes: "
+                     + "; ".join(f"{p} planes and {g} global inputs ({file})" for (p, g), file in sorted(kinds.items()))
+                     + ". These counts are not a pair on shuffle.PLANE_PADS, the only files of other counts of "
+                     "planes that merge (the narrower rows with planes at 0 after their own)")
 
 def pad_global_targets_nc(globalTargetsNC: np.ndarray) -> np.ndarray:
     """Zero-pad older-format globalTargetsNC rows up to the current channel count."""
@@ -329,10 +351,12 @@ def shardify(
     metadataInputNCList = [] if include_meta else None
     qValueTargetsNCMoveList = [] if include_qvalues else None
     legalMovesList = []
+    loaded_files = []
 
     for input_file in input_file_group:
         try:
             load_and_accumulate_input_contents(input_file,binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList,legalMovesList,include_meta,include_qvalues,fill_in_qvalues=fill_in_qvalues)
+            loaded_files.append(input_file)
 
         except FileNotFoundError:
             num_files_not_found += 1
@@ -343,7 +367,7 @@ def shardify(
         return num_files_not_found # Early quit since we don't know shapes
 
     refuse_mixed_global_targets(globalTargetsNCList)
-    pad_planes_to_widest(binaryInputNCHWPackedList, globalInputNCList)
+    pad_planes_to_widest(binaryInputNCHWPackedList, globalInputNCList, loaded_files)
     pad_inputs_to_widest(globalInputNCList)
     concatenated_arrs = (
         joint_concatenate(
@@ -439,11 +463,15 @@ def merge_bucket(
     metadataInputNCList = [] if include_meta else None
     qValueTargetsNCMoveList = [] if include_qvalues else None
     legalMovesList = []
+    # KataGame fork (abscls-l4qm): the shards that loaded, for pad_planes_to_widest's refusal. A sharding group of files
+    # of one count of planes passes shardify, so a mix of groups of other counts meets the refusal here.
+    loaded_shards = []
 
     for input_idx in range(num_shards_to_merge):
         shard_filename = os.path.join(out_tmp_dir, str(input_idx) + ".npz")
         try:
             load_and_accumulate_input_contents(shard_filename,binaryInputNCHWPackedList,globalInputNCList,policyTargetsNCMoveList,globalTargetsNCList,scoreDistrNList,valueTargetsNCHWList,metadataInputNCList,qValueTargetsNCMoveList,legalMovesList,include_meta,include_qvalues,fill_in_qvalues=False)
+            loaded_shards.append(shard_filename)
         except FileNotFoundError:
             print("WARNING: Empty shard in merge_bucket for shard :", input_idx, out_tmp_dir)
 
@@ -452,7 +480,7 @@ def merge_bucket(
         return []
 
     refuse_mixed_global_targets(globalTargetsNCList)
-    pad_planes_to_widest(binaryInputNCHWPackedList, globalInputNCList)
+    pad_planes_to_widest(binaryInputNCHWPackedList, globalInputNCList, loaded_shards)
     pad_inputs_to_widest(globalInputNCList)
     concatenated_arrs = (
         joint_concatenate(

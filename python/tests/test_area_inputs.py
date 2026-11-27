@@ -214,7 +214,7 @@ def test_the_shuffle_merges_rows_of_both_counts_at_the_largest():
     narrow = np.ones((3, V11_PLANES, 5), dtype=np.uint8)
     wide = np.full((2, V11_PLANES + AREAS, 5), 7, dtype=np.uint8)
     rows = [narrow, wide]
-    shuffle.pad_planes_to_widest(rows, [np.zeros((3, V11_GLOBALS)), np.zeros((2, V11_GLOBALS))])
+    shuffle.pad_planes_to_widest(rows, [np.zeros((3, V11_GLOBALS)), np.zeros((2, V11_GLOBALS))], ["v11.npz", "v12.npz"])
     assert rows[1] is wide
     assert rows[0].shape == (3, V11_PLANES + AREAS, 5)
     assert np.array_equal(rows[0][:, :V11_PLANES], narrow) and not rows[0][:, V11_PLANES:].any()
@@ -224,10 +224,10 @@ def test_the_shuffle_refuses_rows_of_other_versions():
     # Rows of version 9 (90 planes, 24 global inputs) with rows of version 10 (102, 44), and rows of version 10 with
     # rows of version 12: their planes and their global inputs differ.
     for (p0, g0), (p1, g1) in (((90, 24), (102, 44)), ((102, 44), (V11_PLANES + AREAS, V11_GLOBALS))):
-        with pytest.raises(ValueError, match="other inputs versions"):
+        with pytest.raises(ValueError, match="not a pair on shuffle.PLANE_PADS"):
             shuffle.pad_planes_to_widest([np.ones((3, p0, 5)), np.ones((2, p1, 5))],
-                                         [np.zeros((3, g0)), np.zeros((2, g1))])
+                                         [np.zeros((3, g0)), np.zeros((2, g1))], ["a.npz", "b.npz"])
     # Rows of versions 10 and 11 have the same planes: their global inputs merge, as before.
     rows = [np.ones((3, 102, 5)), np.ones((2, 102, 5))]
-    shuffle.pad_planes_to_widest(rows, [np.zeros((3, 44)), np.zeros((2, V11_GLOBALS))])
+    shuffle.pad_planes_to_widest(rows, [np.zeros((3, 44)), np.zeros((2, V11_GLOBALS))], ["v10.npz", "v11.npz"])
     assert [r.shape[1] for r in rows] == [102, 102]
