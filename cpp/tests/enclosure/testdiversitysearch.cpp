@@ -14,7 +14,10 @@
 //   - a transposition: P's two moves in both orders (Blueprints: two edits, which change the hands only) reach one node
 //     of the search's graph through other nodes, whose rewards differ. Each parent reads that node, and its value holds
 //     its own reward once and no earlier one: KataGo's utility of its evaluation plus w s_P times its reward and its
-//     head's return;
+//     head's return. The graph key holds the history planes, so in a game whose turns have one action the orders can
+//     meet only when the moves leave the same history. Tak's history keeps the square that a spread left apart from
+//     the squares where it landed, so none of its random games has one (abscls-shfz.35): the test prints the counts of
+//     its search, skips this check, and runs the rest. Every other game fails when it finds none;
 //   - on the game's last move, where every move ends the game, a member with w > 0 prefers the move with the larger
 //     reward to the move that the search without the term prefers, and with the reward's sign turned the other move;
 //   - a search of member 3 after a search of member 2 on the same evaluator reads member 3's evaluations only;
@@ -35,7 +38,8 @@
 //   - the statistics of a node that several paths reach (abscls-shfz.11): the search keeps the reward of the path that
 //     created the node, so it counts the nodes whose statistics another path gives differently, and prints by how much
 //     the statistics and the rewards differ. A game's statistic can read what its position's hash leaves out (Tak's
-//     share of spreads reads the move number).
+//     share of spreads reads the move number). These nodes need no transposition around a reply: in Tak, paths of
+//     other lengths reach them, or paths that differ before the history's reach.
 //   - AZdb's team (abscls-hqyw.15, SearchParams::diversityTeam = value): the team's member is the member whose network
 //     gives the player to move the highest value at the root, its search is that member's search, the members' values
 //     come from one symmetry when the evaluator draws them at random, the response reports the member and each
@@ -530,9 +534,19 @@ static bool commutingMoves(
   return false;
 }
 
+//What the searches for a transposition around a reply met (commutingMovesAroundAReply): the candidates (both orders'
+//3 actions legal, the game not over after them), those whose last positions have one board (Board::pos_hash), those
+//whose last positions have one graph key, and the transpositions.
+struct AroundAReplyCounts {
+  long long candidates = 0, equalBoards = 0, equalKeys = 0, transpositions = 0;
+};
+static AroundAReplyCounts aroundAReply;
+
 //A transposition of a game whose turns have one action: a position R of the game where P's two moves m1 and m2 and the
 //opponent's reply x reach one node in the orders m1 x m2 and m2 x m1, through other nodes. After it, none of the three
-//is legal (placements). one and two are the positions along both orders. False when the game has none.
+//is legal (placements). one and two are the positions along both orders. False when the game has none. The graph key
+//holds the history planes (input_hash), so the orders meet only when m1 and m2 leave the same history: in Tak, whose
+//history keeps the square that a spread left apart from the squares where it landed, no such pair turns up.
 static bool commutingMovesAroundAReply(
   NNEvaluator* nnEval, const vector<Position>& game, Rand& rand, vector<Position>& one, vector<Position>& two
 ) {
@@ -548,6 +562,11 @@ static bool commutingMovesAroundAReply(
       const Loc x = replies[rand.nextUInt((uint32_t)replies.size())];
       one = play(R, {m1, x, m2});
       two = play(R, {m2, x, m1});
+      if(one.size() == 4 && two.size() == 4 && !one[3].hist.isGameFinished) {
+        aroundAReply.candidates++;
+        aroundAReply.equalBoards += one[3].board.pos_hash == two[3].board.pos_hash ? 1 : 0;
+        aroundAReply.equalKeys += graphKey(one[3]) == graphKey(two[3]) ? 1 : 0;
+      }
       if(one.size() != 4 || two.size() != 4 || one[3].hist.isGameFinished || graphKey(one[3]) != graphKey(two[3]) ||
          graphKey(one[1]) == graphKey(two[1]) || graphKey(one[2]) == graphKey(two[2]) ||
          one[2].legal(m1) || two[2].legal(m2) || one[3].legal(x))
@@ -555,8 +574,10 @@ static bool commutingMovesAroundAReply(
       bool all = true;
       for(int j = 0; j < 3 && all; j++)
         all = searchable(nnEval, one[j], one[j + 1].lastLoc()) && searchable(nnEval, two[j], two[j + 1].lastLoc());
-      if(all)
+      if(all) {
+        aroundAReply.transpositions++;
         return true;
+      }
     }
   }
   return false;
@@ -932,8 +953,8 @@ int main(int argc, char** argv) {
   //and LONG actions start with each player, which has a transposition (commutingMoves), and whose last move has two
   //moves that end the game.
   const int LONG = TURNS ? 5 : 4, MAX_SEEDS = TURNS ? 50 : 1000;
-  vector<Position> game, one, two;
-  int seed = 0;
+  vector<Position> game, one, two, chained;
+  int seed = 0, chainedSeed = -1;
   bool found = false;
   for(; seed < MAX_SEEDS && !found; seed++) {
     Rand rand("testdiversitysearch game " + Global::intToString(seed));
@@ -945,13 +966,34 @@ int main(int argc, char** argv) {
     for(int j = G - LONG + 1; j <= G; j++)
       whole = whole && game[j].endsMove();
     const vector<Position> last3 = lineOf(game, G - 3), lastLong = lineOf(game, G - LONG);
-    found = whole && last3[0].pla() != lastLong[0].pla() && chainBelow(last3, chainMoves(last3)) &&
-      chainBelow(lastLong, chainMoves(lastLong)) && (TURNS || endingMoves(game[G - 1]) >= 2) &&
+    const bool chains = whole && last3[0].pla() != lastLong[0].pla() && chainBelow(last3, chainMoves(last3)) &&
+      chainBelow(lastLong, chainMoves(lastLong)) && (TURNS || endingMoves(game[G - 1]) >= 2);
+    if(chains && chainedSeed < 0) {
+      chained = game;
+      chainedSeed = seed;
+    }
+    found = chains &&
       (TURNS ? commutingMoves(nnEval, game, rand, one, two) : commutingMovesAroundAReply(nnEval, game, rand, one, two));
   }
-  if(!found) {
+  //A game whose turns have one action can have no transposition within the history's reach: the graph key holds the
+  //history planes, and a history that tells each move apart (Tak's keeps the square that a spread left apart from the
+  //squares where it landed) leaves no two orders of P's moves around a reply with one key (abscls-shfz.35). Then the
+  //test prints what its search met, skips the transposition's check, and runs the rest on the first game with the
+  //chains: the checks of the paths to a node below still hold there (paths of other lengths, and paths that differ
+  //before the history's reach). Every other game, and a game with no chains, fails as before.
+  const bool skipTranspositions = !found && !TURNS && chainedSeed >= 0;
+  if(!found && !skipTranspositions) {
     fprintf(stderr, "no random game of %d has the chains and the transposition that the test needs\n", MAX_SEEDS);
     return 1;
+  }
+  if(skipTranspositions) {
+    printf("transposition: none in %d random games: %lld candidates of P's two moves around a reply, %lld with one "
+           "board in both orders, %lld with one graph key, %lld transpositions\n", MAX_SEEDS, aroundAReply.candidates,
+           aroundAReply.equalBoards, aroundAReply.equalKeys, aroundAReply.transpositions);
+    printf("transposition: the graph key holds the history, and the split history keeps a spread and its reverse "
+           "apart, so no two orders meet within the history's reach. Skipped: the transposition check\n");
+    game = chained;
+    seed = chainedSeed + 1;
   }
   const int G = (int)game.size() - 1;
   printf("game: seed %d, %d actions\n", seed - 1, G);
@@ -999,8 +1041,8 @@ int main(int argc, char** argv) {
 
   //A transposition: P's moves m1 then m2, and m2 then m1, reach one node N, the last of each order's LAST actions. The
   //search may play only their actions, from the root on, and the opponent its reply between them where the turns have
-  //one action, else nothing, so that N is a leaf.
-  {
+  //one action, else nothing, so that N is a leaf. Skipped when the game has no transposition (above).
+  if(!skipTranspositions) {
     const Position& R = one[0];
     const Player P = R.pla();
     const int LAST = (int)one.size() - 1;
