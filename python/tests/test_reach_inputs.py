@@ -2,8 +2,8 @@
 map at the symmetries (pixels), the rows of versions 14 and 15 (the reader fits them, the shuffle refuses to merge
 their files), the export as model version 25 (with hybrid3's patch block too), and add_extended_inputs.py's conversion
 of a checkpoint of version 14, so that its network computes on the rows of version 15 what it computed on the rows of
-version 14, whatever the new planes hold. The engine repository's games/blueprints/tests/test_reach_inputs.py checks the planes themselves
-against the C++ kernel."""
+version 14, whatever the new planes hold. The engine repository's games/blueprints/tests/test_reach_inputs.py checks
+the planes themselves against the C++ kernel."""
 import os
 import subprocess
 import sys

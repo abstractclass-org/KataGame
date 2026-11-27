@@ -238,7 +238,7 @@ def pad_planes_to_widest(
     if len(planes) == 1:
         return
     inputs = sorted({g for _, g in kinds})
-    if len(planes) == 2 and len(inputs) == 1 and (planes[0], planes[1], inputs[0]) in PLANE_PADS:
+    if len(planes) == 2 and len(inputs) == 1 and (*planes, *inputs) in PLANE_PADS:
         pad_inputs_to_widest(binaryInputNCHWPackedList)
         return
     raise ValueError("files of other counts of planes: "

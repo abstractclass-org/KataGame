@@ -33,8 +33,7 @@ def shuffled(tmp_path, groups):
                                 include_meta=False, include_qvalues=False) == 0
     out_file = str(tmp_path / "out.npz")
     shuffle.merge_bucket([out_file], len(groups), str(bucket), include_meta=False, include_qvalues=False)
-    with np.load(out_file) as npz:
-        return dict(npz)
+    return loaded(out_file)
 
 
 def by_policy(rows, sources):
@@ -58,12 +57,10 @@ def test_the_list_holds_blueprints_planes_of_closed_areas_by_their_counts():
     # No other game's rows show either kind of a pair, at any inputs version: the counts tell the games apart.
     names = [m.name for m in pkgutil.iter_modules(games.__path__)]
     assert "tak" in names and "enclosure" in names
-    kinds = {(narrow, wide): g for narrow, wide, g in shuffle.PLANE_PADS}
+    listed = {(p, g) for narrow, wide, g in shuffle.PLANE_PADS for p in (narrow, wide)}
     for name in set(names) - {"blueprints"}:
         for version in modelconfigs.INPUTS_VERSIONS:
-            for narrow, wide in kinds:
-                assert (planes(name, version), global_inputs(name, version)) not in {
-                    (narrow, kinds[narrow, wide]), (wide, kinds[narrow, wide])}, (name, version)
+            assert (planes(name, version), global_inputs(name, version)) not in listed, (name, version)
 
 
 @pytest.mark.parametrize("grouping", GROUPINGS)
