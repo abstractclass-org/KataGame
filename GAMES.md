@@ -893,8 +893,8 @@ the policy, 05 the inputs, 06 the targets, 10 the additions).
 | Member | Tak |
 |---|---|
 | The largest board | 6 x 6 in `katago`'s build, from the trainer's module ("Choosing the game"). 5 x 5 is in its corner. |
-| `NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS` | 35 planes: each square's top piece, the pieces to depth 7 and whether pieces lie deeper, the edges that its road group touches, the squares that complete a road, and the squares that each of the last 5 moves changed (`HISTORY_PLANE` 30). 14 global inputs of Tak's. Inputs version 9 adds KataGame's 2 and version 14 its 5 more (21 in all): no version adds an input of Tak's. |
-| `input_hash` | The squares of the last 5 moves. The position holds them, and no rule reads them. |
+| `NUM_SPATIAL_INPUTS`, `NUM_GLOBAL_INPUTS` | 58 planes: each square's top piece, the pieces to depth 13, each player's count of pieces deeper as a thermometer (1, 2, 4 and 8 or more), the edges that its road group touches, the squares that complete a road, and for each of the last 5 moves the square that a spread left and the squares where pieces landed (`HISTORY_PLANE` 48, 10 planes). 14 global inputs of Tak's. Inputs version 9 adds KataGame's 2 and version 14 its 5 more (21 in all): no version adds an input of Tak's. |
+| `input_hash` | The squares of the last 5 moves, the square left and the squares landed apart. The position holds them, and no rule reads them. `hash` holds every piece of every stack. |
 | `POLICY_CHANNELS` | 255: a placement's kind, or a spread's drop pattern and direction |
 | `SYMMETRIES`, `sym_position`, `SymActionMap` | All 8. A spread's direction, and the planes of the edges, turn with the board. |
 | `TARGETS`, `OWN_TARGETS` | C0 the final flats (flat endings), C1 the squares captured before the end, C2-3 the top owners 4 and 16 plies later, C4 the winning road (road endings), C5-6 the captures of this move and of the reply. All of them are the game's own. |
@@ -908,9 +908,9 @@ too. The planes of a road in one placement and the statistic of the road threats
 go by the side to move, and the statistic by the player who moved.
 
 A larger board is one number, `MAX_BOARD_LEN` of the trainer's module, and then these parts: the planes of the pieces
-below the top (a compile stops until `TOP_DEPTHS` is the side plus 1), the stops of a policy of more than 32,768 moves
-(the CUDA backend's gather, and `Loc`, a 16-bit number: 8 x 8 has 65,473), and the rows and networks of the smaller
-board, which a migration converts (design 03, "Consequences"). Any build refuses a network of another board: the model
+below the top (a compile stops until `TOP_DEPTHS` is twice the side plus 1, two moves' reach), the stops of a policy
+of more than 32,768 moves (the CUDA backend's gather, and `Loc`, a 16-bit number: 8 x 8 has 65,473), and the rows and
+networks of the smaller board, which a migration converts (design 03, "Consequences"). Any build refuses a network of another board: the model
 file's policy has other channels, and the message names the board (`desc.cpp`).
 
 ### The trainer's module
@@ -965,6 +965,7 @@ points. Training moves the score's standard deviation and the score belief.
 | `income_mask(binary_inputs)` (optional) | The points where the loss of C5-6 reads its target, from the batch's input planes at its symmetry: the loss averages each channel over its points, then over the channels that have points. Blueprints gives the cells of each player that can go (not walls). | None: the board's points, both channels together | None |
 | `NUM_EXTENDED_SPATIAL_INPUTS`, `NUM_EXTENDED_GLOBAL_INPUTS` (optional) | As in C++. `apply_symmetry_inputs` maps the extended planes too, in the rows that have them (V10). | None: 0, 0 (`games.extended_spatial_inputs`, `games.extended_global_inputs`) | None |
 | `apply_symmetry_extended_global_inputs(extended, symmetry)` (optional) | The extended global inputs of V10's rows at the symmetry, for a game whose extended global inputs name points. The trainer applies it to every batch at its symmetry (`games.apply_symmetry_global_inputs`). Blueprints gives it: its window boxes' corners. | None: as they are | None |
+| `NUM_HISTORY_ITEMS` (optional) | The items of the history planes, newest first, for a game with several planes of one earlier move: each item has `NUM_HISTORY_PLANES` // `NUM_HISTORY_ITEMS` planes, in a row. The history dropout draws once for each item and clears its planes together, as KataGo's dropout clears a move's plane with its pass input. In V11's rows of a game with turn inputs, the items are the turns (`NUM_HISTORY_TURNS`, below). `games.get` checks that it divides `NUM_HISTORY_PLANES`. Tak: 5 moves, each the square that a spread left and the squares where pieces landed. | None: a draw for each plane (`games.history_items`) | None |
 | `NUM_TURN_GLOBAL_INPUTS`, `NUM_HISTORY_TURNS` (optional) | As in C++, and the turns that V11's history planes and turn inputs show, newest first: each turn has `NUM_HISTORY_PLANES` // `NUM_HISTORY_TURNS` planes and `NUM_TURN_GLOBAL_INPUTS` // `NUM_HISTORY_TURNS` turn inputs. The turn inputs name no point. In V11's rows the history dropout draws once for each turn, as KataGo draws once for each history move, and clears the turn's planes and turn inputs together, as KataGo's pass inputs go with their moves. A game with turn inputs gives `NUM_HISTORY_TURNS`, which divides both counts (`games.get` checks it). Blueprints: 4 turns, each 2 planes and 2 turn inputs. | None: 0 (`games.turn_global_inputs`) | None |
 | `NUM_AREA_SPATIAL_INPUTS` (optional) | As in C++. The planes are points of the board, so `apply_symmetry_inputs` moves them as pixels. Blueprints: 2. | None: 0 (`games.area_spatial_inputs`) | None |
 | `NUM_REACH_SPATIAL_INPUTS` (optional) | As in C++. The planes are points of the board, so `apply_symmetry_inputs` moves them as pixels. Blueprints: 9. | None: 0 (`games.reach_spatial_inputs`) | None |
@@ -1229,8 +1230,14 @@ tree, the reward and the value of its candidate's node in the pass, and with `Ro
 turns have one action (Tak) the transposition is P's two moves in both orders around the opponent's reply, and the test
 counts the nodes that paths of other numbers of moves reach and whose statistics differ from path to path: the search
 keeps the reward of the path that created the node. The test prints the counts and the largest differences. In Tak it
-also builds one such node: a placement that two players' spreads, each taken back by the next move, lead to by paths of
-0 and of 4 moves.
+also tries to build one such node: a placement that two players' spreads, each taken back by the next move, lead to by
+paths of 0 and of 4 moves. The graph key holds the history planes (`input_hash`), so two orders meet only when their
+moves leave the same history. Tak's history keeps the square that a spread left apart from the squares where it landed,
+so a spread and its reverse no longer leave the same history, and the orders do not meet within its 5 moves. Then the
+test prints the counts of its search (the candidates, those with one board, those with one graph key and the
+transpositions), skips the transposition's check, and runs the rest. The nodes that several paths reach still occur in
+Tak's searches: paths of other numbers of moves, and paths that differ before the history's reach. A game whose turns
+have several actions, or a game with no chains, fails as before when it finds no transposition.
 
 **A game's rows outside the C++ code:** `testrows SELFPLAY_CONFIG MODEL GAMES OUT_DIR [OVERRIDES [STARTS]]` runs on a
 build of any game. It plays self-play's games of the config with fixed seeds, every second one from a state of STARTS
