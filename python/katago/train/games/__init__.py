@@ -116,12 +116,15 @@ A module may also give these optional members (mask_targets and loss_coefficient
                         (train.py's -heads ending), which learns the class, in training only: the export leaves it out.
                         Default: 0, KataGo's C27 and no ending head (ending_classes).
   LEGAL_MOVES_IN_ROWS   True for a game whose rows hold the moves that are legal in their positions (C++ GameInterface:
-                        LEGAL_MOVES_IN_ROWS), a bit for each move of the policy (the array legalMovesNMovePacked). The
-                        loader gives each row's moves (legalMovesNMove) and maps them as the mover's policy
-                        (apply_symmetry_policy). The floor of the mover's soft policy target is on them alone
-                        (metrics_pytorch). A row of 0 bits, from a file without the array, has the floor of a game
-                        without this member. The loader refuses a row whose visited moves are not all in it, and the
-                        array in the rows of a game without this member. Default: False (legal_moves_in_rows).
+                        LEGAL_MOVES_IN_ROWS), a bit for each move of the policy, in two planes as the policy targets'
+                        two channels: the row's position's, and the position's of its next move's policy target (the
+                        array legalMovesNCMovePacked). The loader gives each row's moves (legalMovesNCMove) and maps
+                        each plane as the policy target of its channel (apply_symmetry_policy_targets). The floor of
+                        each soft policy target is on its plane's moves alone (metrics_pytorch). A plane of 0 bits (a
+                        row without a next move's target, or from a file without the array) has the floor of a game
+                        without this member. The loader refuses a row whose visited moves are not all in their
+                        plane, and the array in the rows of a game without this member. Default: False
+                        (legal_moves_in_rows).
   policy_mask(on_board)
                         the moves that a position of the rows' board can have (N, policy) as booleans, in the policy's
                         order, pass included, from the on-board plane (N, y, x) of the rows, at their symmetry: a move
@@ -250,7 +253,8 @@ def legal_moves_in_rows(game):
 
 
 def packed_policy_len(policy_len):
-    """The bytes of a row's legal moves, a bit for each of the policy's policy_len moves (C++ packedPolicyLen)."""
+    """The bytes of a plane of a row's legal moves, a bit for each of the policy's policy_len moves (C++
+    packedPolicyLen)."""
     return (policy_len + 7) // 8
 
 
@@ -297,7 +301,7 @@ def row_bytes(game, inputs_version=9):
         + 2 * (points + ROW_EXTRA_SCORE_RADIUS)
         + ROW_VALUE_TARGETS * points
         + 2 * ROW_QVALUE_TARGETS * moves
-        + (packed_policy_len(moves) if legal_moves_in_rows(game) else 0)  # legalMovesNMovePacked
+        + (2 * packed_policy_len(moves) if legal_moves_in_rows(game) else 0)  # legalMovesNCMovePacked: 2 planes
     )
 
 

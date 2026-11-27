@@ -765,12 +765,11 @@ class Metrics:
         # the board's points, as KataGo's. The mask is one size's for each row's game, so it is the next mover's too.
         policy_logits, policymask = self.apply_policy_mask(policy_logits, policymask, mask)
         # KataGame fork (abscls-shfz.9): KataGo's floor of the soft target is on every slot that the softmax reads. A
-        # game whose rows hold the legal moves of their positions has the mover's floor on those alone, in the rows that
-        # have them. The next mover's target is of a later position, whose legal moves no row holds, so its floor keeps
-        # the softmax's slots.
+        # game whose rows hold the legal moves of their positions has the mover's floor on those alone (plane 0), in the
+        # rows that have them. The next mover's floor keeps the softmax's slots.
         policymask_player, legal_rows = policymask, None
         if self.legal_moves_in_rows:
-            legal = batch["legalMovesNMove"]
+            legal = batch["legalMovesNCMove"][:, 0]
             legal_rows = torch.any(legal, dim=1)
             policymask_player = torch.where(legal_rows.unsqueeze(1), legal.to(policymask.dtype), policymask)
         target_policy_player_soft = (target_policy_player + 1e-7) * policymask_player

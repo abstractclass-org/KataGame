@@ -25,9 +25,10 @@ from typing import Sequence
 # Needs to be kept in sync with QVALUE_SPATIAL_TARGET_NUM_CHANNELS in trainingwrite.cpp C++ code among other places.
 EXPECTED_Q_VALUE_TARGETS_NCMOVE_CHANNELS = 3
 
-# KataGame fork (abscls-shfz.9): the array of the rows' legal moves, of a game whose rows have it (C++
-# LEGAL_MOVES_IN_ROWS, data_processing_pytorch.LEGAL_MOVES_ARRAY in the trainer).
-LEGAL_MOVES_ARRAY = "legalMovesNMovePacked"
+# KataGame fork (abscls-shfz.9, abscls-shfz.33): the array of the rows' legal moves, of a game whose rows have it (C++
+# LEGAL_MOVES_IN_ROWS, data_processing_pytorch.LEGAL_MOVES_ARRAY in the trainer): two planes a row, the position's and
+# the next move's position's.
+LEGAL_MOVES_ARRAY = "legalMovesNCMovePacked"
 
 # Needs to be kept in sync with GLOBAL_TARGET_NUM_CHANNELS in trainingwrite.cpp C++ code among other places.
 # Data format version 2 files (recorded in channel 63 of each row) had only 64 channels; they are zero-padded
@@ -138,13 +139,14 @@ def fill_missing_legal_moves(
     """KataGame fork (abscls-shfz.9): each file's legal moves of its rows (None for a file without the array), with 0
     bits, which is no mask to the loader, for the rows of the files without it, when a file has it. So one window holds
     the rows of both kinds. None when no file has it, as with the rows of the games that keep none."""
-    widths = {arr.shape[1] for arr in legalMovesList if arr is not None}
+    widths = {arr.shape[1:] for arr in legalMovesList if arr is not None}
     if len(widths) == 0:
         return None
     if len(widths) > 1:
-        raise ValueError(f"files of {sorted(widths)} bytes of legal moves a row: rows of other policies do not merge")
+        raise ValueError(f"files of {sorted(widths)} planes and bytes of legal moves a row: rows of other policies do "
+                         "not merge")
     (width,) = widths
-    return [arr if arr is not None else np.zeros((targets.shape[0], width), dtype=np.uint8)
+    return [arr if arr is not None else np.zeros((targets.shape[0], *width), dtype=np.uint8)
             for arr, targets in zip(legalMovesList, globalTargetsNCList)]
 
 def save_output_npz(
@@ -156,7 +158,7 @@ def save_output_npz(
     stop: int,
 ):
     assert len(arrs) == 9
-    [binaryInputNCHWPacked,globalInputNC,policyTargetsNCMove,globalTargetsNC,scoreDistrN,valueTargetsNCHW,metadataInputNC,qValueTargetsNCMove,legalMovesNMovePacked] = (
+    [binaryInputNCHWPacked,globalInputNC,policyTargetsNCMove,globalTargetsNC,scoreDistrN,valueTargetsNCHW,metadataInputNC,qValueTargetsNCMove,legalMovesNCMovePacked] = (
         arrs
     )
     assert binaryInputNCHWPacked is not None
@@ -180,8 +182,8 @@ def save_output_npz(
         save_dict["metadataInputNC"] = metadataInputNC[start:stop]
     if qValueTargetsNCMove is not None:
         save_dict["qValueTargetsNCMove"] = qValueTargetsNCMove[start:stop]
-    if legalMovesNMovePacked is not None:
-        save_dict[LEGAL_MOVES_ARRAY] = legalMovesNMovePacked[start:stop]
+    if legalMovesNCMovePacked is not None:
+        save_dict[LEGAL_MOVES_ARRAY] = legalMovesNCMovePacked[start:stop]
 
     savez_zlib_level(filename, SHUFFLE_ZLIB_LEVEL, **save_dict)
 

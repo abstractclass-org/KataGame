@@ -1,8 +1,9 @@
 """The legal moves in the rows (katago/train/games: LEGAL_MOVES_IN_ROWS) and the static mask of the policy by the size
-of board (policy_mask), in the loader, the shuffle and the losses. The game is the test game slides (slides_game.py,
-cpp/tests/games/slides): 469 slots, a 5 x 5 board in the 6 x 6 network, and all 8 symmetries. The test computes the
-legal moves from the position alone (legal_slots). A game without the members trains as before (test_game_module pins
-the games' losses and gradients)."""
+of board (policy_mask), in the loader, the shuffle and the losses. The rows hold two planes: the legal moves of the
+row's position (plane 0) and of its next move's position (plane 1, abscls-shfz.33), each the floor of its soft policy
+target. The game is the test game slides (slides_game.py, cpp/tests/games/slides): 469 slots, a 5 x 5 board in the
+6 x 6 network, and all 8 symmetries. The test computes the legal moves from the positions alone (legal_slots). A game
+without the members trains as before (test_game_module pins the games' losses and gradients)."""
 import math
 import os
 import sys
@@ -62,31 +63,51 @@ def random_position(rng, size, opening=False):
     return cells
 
 
+NO_NEXT = 5  # the rows 4, 9, 14 ... of random_rows have no next move's policy target
+
+
+def planes_of(cells, size):
+    """The planes (on board, the mover's, the opponent's) of a position."""
+    planes = np.zeros((3, SIZE, SIZE), dtype=np.uint8)
+    planes[0, :size, :size] = 1
+    planes[1] = cells == 1
+    planes[2] = cells == -1
+    return planes
+
+
 def random_rows(rng, count, with_mask=True, size=None):
-    """The arrays of `count` rows as the self-play writes them, with their positions (cells, size, opening)."""
+    """The arrays of `count` rows as the self-play writes them, with their positions (cells, size, opening, and the
+    next move's position: its cells and its opening, or None for a row without a next move's policy target)."""
     positions = []
     binary = np.zeros((count, 3, SIZE, SIZE), dtype=np.uint8)
     global_inputs = np.zeros((count, modelconfigs.get_num_global_input_features(config())), dtype=np.float32)
     policy = np.zeros((count, 2, MOVES), dtype=np.int16)
-    legal = np.zeros((count, MOVES), dtype=bool)
+    legal = np.zeros((count, 2, MOVES), dtype=bool)
+    global_targets = np.zeros((count, data_processing_pytorch.GLOBAL_TARGETS_NC_CHANNELS), dtype=np.float32)
+    global_targets[:, [25, 26, 28]] = 1.0  # the row's weight, and the policy targets'
     for row in range(count):
         n = size or (SIZE if rng.random() < 0.5 else SIZE - 1)
         opening = rng.random() < 0.1
         cells = random_position(rng, n, opening)
-        positions.append((cells, n, opening))
-        binary[row, 0, :n, :n] = 1
-        binary[row, 1] = cells == 1
-        binary[row, 2] = cells == -1
+        binary[row] = planes_of(cells, n)
         global_inputs[row, :2] = rng.random(2) < 0.5
         global_inputs[row, 1] = opening
-        legal[row] = legal_slots(cells, n, opening)
-        visited = rng.choice(np.flatnonzero(legal[row]), size=4, replace=False)
+        legal[row, 0] = legal_slots(cells, n, opening)
+        visited = rng.choice(np.flatnonzero(legal[row, 0]), size=4, replace=False)
         policy[row, 0, visited] = rng.integers(1, 200, size=4)
-        # The next move of the next mover: any move that this size of board can have.
-        static = static_slots(n)
-        policy[row, 1, rng.choice(np.flatnonzero(static), size=4, replace=False)] = rng.integers(1, 200, size=4)
-    global_targets = np.zeros((count, data_processing_pytorch.GLOBAL_TARGETS_NC_CHANNELS), dtype=np.float32)
-    global_targets[:, [25, 26, 28]] = 1.0  # the row's weight, and the policy targets'
+        # The next move of the next mover, in a position of its own on the same board (any position: the loader does
+        # not see how the two follow each other), or none: a uniform target of weight 0 and no mask.
+        following = None
+        if row % NO_NEXT == NO_NEXT - 1:
+            policy[row, 1] = 1
+            global_targets[row, 28] = 0.0
+        else:
+            next_opening = opening and rng.random() < 0.5
+            following = (random_position(rng, n, next_opening), next_opening)
+            legal[row, 1] = legal_slots(following[0], n, next_opening)
+            visited = rng.choice(np.flatnonzero(legal[row, 1]), size=4, replace=False)
+            policy[row, 1, visited] = rng.integers(1, 200, size=4)
+        positions.append((cells, n, opening, following))
     global_targets[:, TURN] = np.arange(count) + 10
     arrays = dict(
         binaryInputNCHWPacked=np.packbits(binary.reshape(count, 3, -1), axis=2),
@@ -97,7 +118,7 @@ def random_rows(rng, count, with_mask=True, size=None):
         valueTargetsNCHW=np.zeros((count, 8, SIZE, SIZE), dtype=np.int8),
     )
     if with_mask:
-        arrays[LEGAL_MOVES_ARRAY] = np.packbits(legal, axis=1)
+        arrays[LEGAL_MOVES_ARRAY] = np.packbits(legal, axis=2)
     return arrays, positions
 
 
@@ -145,49 +166,91 @@ def slots_of_planes(planes, opening):
     return shifted
 
 
-def assert_batch_matches(batch):
-    """Each row's mask is the legal slots of its own planes, its visited moves are in it, and it has some."""
+def image_of_planes(planes, symm):
+    """The planes (3, y, x) at the symmetry symm (None: none), by the map of the inputs, not of the policy."""
+    planes = torch.from_numpy(planes.astype(np.float32))[None]
+    return (planes if not symm else slides_game.apply_symmetry_inputs(planes, symm))[0].numpy()
+
+
+def next_slots(position, symm):
+    """The legal slots of a row's next move's position (random_rows' positions) at the symmetry symm, from the image of
+    its planes; none for a row without a next move's policy target."""
+    _, n, _, following = position
+    if following is None:
+        return np.zeros(MOVES, dtype=bool)
+    return slots_of_planes(image_of_planes(planes_of(following[0], n), symm), following[1])
+
+
+def assert_batch_matches(batch, positions=None, symm=None):
+    """Each row's mask of its position (plane 0) is the legal slots of its own planes, its visited moves are in it, and
+    it has some. Its mask of the next position (plane 1) has the next move's visits, the static mask holds it, and it
+    is empty where the row has no next move's target (C28 is 0). With the rows' positions (random_rows) and the batch's
+    symmetry, plane 1 is the legal slots of the image of the next position."""
+    static = slides_game.policy_mask(batch["binaryInputNCHW"][:, 0]).numpy()
     for row in range(batch["binaryInputNCHW"].shape[0]):
         planes = batch["binaryInputNCHW"][row].numpy()
         expected = slots_of_planes(planes, bool(batch["globalInputNC"][row, 1] > 0))
-        mask = batch["legalMovesNMove"][row].numpy()
+        mask, mask_next = batch["legalMovesNCMove"][row].numpy()
         assert mask.dtype == bool and mask.any()
         assert np.array_equal(mask, expected), (row, int((mask ^ expected).sum()))
-        visited = batch["policyTargetsNCMove"][row, 0].numpy() > 0
+        visited, visited_next = batch["policyTargetsNCMove"][row].numpy() > 0
         assert not (visited & ~mask).any()
+        has_next = bool(batch["globalTargetsNC"][row, 28] != 0)
+        assert mask_next.any() == has_next, row
+        if has_next:
+            assert not (visited_next & ~mask_next).any() and not (mask_next & ~static[row]).any(), row
+        if positions is not None:
+            expected_next = next_slots(positions[row], symm)
+            assert np.array_equal(mask_next, expected_next), (row, int((mask_next ^ expected_next).sum()))
+
+
+def symmetry_of(batch, arrays, rows):
+    """The symmetry that the loader drew for the batch of the arrays' rows: the one whose image of their planes is the
+    batch's."""
+    n = arrays["globalTargetsNC"].shape[0]
+    binary = np.unpackbits(arrays["binaryInputNCHWPacked"], axis=2)[:, :, :SIZE * SIZE].reshape(n, 3, SIZE, SIZE)
+    planes = torch.from_numpy(binary[rows].astype(np.float32))
+    found = [s for s in range(8) if torch.equal(slides_game.apply_symmetry_inputs(planes, s) if s else planes,
+                                                batch["binaryInputNCHW"])]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def unpacked_masks(arrays):
+    """The arrays' legal moves (N, 2, moves) as booleans."""
+    return np.unpackbits(arrays[LEGAL_MOVES_ARRAY], axis=2, count=MOVES).astype(bool)
 
 
 def row_of(arrays, symm):
     """The tensors of `finish_batch` of the arrays' rows before any symmetry, and the symmetry's batch."""
     n = arrays["globalTargetsNC"].shape[0]
     binary = np.unpackbits(arrays["binaryInputNCHWPacked"], axis=2)[:, :, :SIZE * SIZE].reshape(n, 3, SIZE, SIZE)
-    mask = np.unpackbits(arrays[LEGAL_MOVES_ARRAY], axis=1, count=MOVES).astype(bool)
     return finish_batch(
         slides_game, 9, symm,
         torch.from_numpy(binary.astype(np.float32)), torch.from_numpy(arrays["globalInputNC"]),
         torch.from_numpy(arrays["policyTargetsNCMove"].astype(np.float32)),
         torch.from_numpy(arrays["globalTargetsNC"]), torch.from_numpy(arrays["scoreDistrN"].astype(np.float32)),
         torch.from_numpy(arrays["valueTargetsNCHW"].astype(np.float32)), None, None,
-        legalMovesNMove=torch.from_numpy(mask))
+        legalMovesNCMove=torch.from_numpy(unpacked_masks(arrays)))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
 # The mask's size, its bits and the static mask.
 
 
-def test_a_row_grows_by_the_bytes_of_its_mask():
+def test_a_row_grows_by_the_bytes_of_its_two_masks():
     assert games.packed_policy_len(MOVES) == 59
     assert games.row_bytes(slides_game) - games.row_bytes(type("Plain", (), dict(
-        vars(slides_game), LEGAL_MOVES_IN_ROWS=False))) == 59
+        vars(slides_game), LEGAL_MOVES_IN_ROWS=False))) == 2 * 59
     # Tak's 6 x 6: 36 points of 255 channels and pass.
     assert games.packed_policy_len(36 * 255 + 1) == 1148
 
 
 @pytest.mark.parametrize("moves", [1, 7, 8, 9, 469, 9181])
 def test_the_bits_are_numpys_packbits(moves):
-    bits = np.random.default_rng(moves).random((5, moves)) < 0.3
-    packed = np.packbits(bits, axis=1)
-    assert packed.shape[1] == games.packed_policy_len(moves)
+    bits = np.random.default_rng(moves).random((5, 2, moves)) < 0.3
+    packed = np.packbits(bits, axis=2)
+    assert packed.shape[1:] == (2, games.packed_policy_len(moves))
     assert np.array_equal(unpack_legal_moves(torch.from_numpy(packed), moves).numpy(), bits)
 
 
@@ -215,43 +278,45 @@ def test_the_games_have_the_members_that_they_give(monkeypatch):
 
 
 @pytest.mark.parametrize("symm", range(8))
-def test_the_mask_follows_the_policys_map_at_each_symmetry(symm):
+def test_the_masks_follow_the_policys_map_at_each_symmetry(symm):
     rng = np.random.default_rng(3 + symm)
-    arrays, _ = random_rows(rng, 16)
+    arrays, positions = random_rows(rng, 16)
     batch = row_of(arrays, symm)
-    assert_batch_matches(batch)
+    assert_batch_matches(batch, positions, symm)
+    assert batch["legalMovesNCMove"][:, 1].any(dim=1).sum() == 13  # 3 of the 16 rows have no next move's target
     # The static mask of the image's board is the image of the row's static mask, and holds the legal moves.
     static = slides_game.policy_mask(batch["binaryInputNCHW"][:, 0])
-    assert not (batch["legalMovesNMove"] & ~static).any()
+    assert not (batch["legalMovesNCMove"] & ~static.unsqueeze(1)).any()
 
 
+@pytest.mark.parametrize("plane", [0, 1])
 @pytest.mark.parametrize("wrong", ["inverse", "none", "no direction"])
-def test_a_wrong_map_of_the_mask_is_found_by_the_same_check(monkeypatch, wrong):
+def test_a_wrong_map_of_either_mask_is_found_by_the_same_check(wrong, plane):
     inverse = [0, 1, 2, 3, 4, 6, 5, 7]
     right = slides_game.apply_symmetry_policy
 
-    def broken(policy, symmetry, binary_inputs, global_inputs):
+    def broken(policy, symmetry):
         if wrong == "inverse":
-            return right(policy, inverse[symmetry], binary_inputs, global_inputs)
+            return right(policy, inverse[symmetry], None, None)
         if wrong == "none":
             return policy
         planes = policy[:, :, :-1].reshape(policy.shape[0], policy.shape[1], SIZE, SIZE, CHANNELS)
         planes = games.apply_symmetry_points(planes.permute(0, 1, 4, 2, 3), symmetry).permute(0, 1, 3, 4, 2)
         return torch.cat((planes.reshape(policy.shape[0], policy.shape[1], -1), policy[:, :, -1:]), dim=2)
 
-    # The map of the policy targets stays right, so that the map of the mask alone is wrong.
+    # The map of the policy targets and of the other plane stays right, so that the map of one plane alone is wrong.
     def finish(arrays, symm):
         batch = row_of(arrays, symm)
-        mask = np.unpackbits(arrays[LEGAL_MOVES_ARRAY], axis=1, count=MOVES).astype(bool)
-        batch["legalMovesNMove"] = broken(torch.from_numpy(mask).unsqueeze(1).float(), symm, None, None).squeeze(1) > 0
+        mask = torch.from_numpy(unpacked_masks(arrays)[:, plane:plane + 1]).float()
+        batch["legalMovesNCMove"][:, plane] = broken(mask, symm)[:, 0] > 0
         return batch
 
     rng = np.random.default_rng(5)
-    arrays, _ = random_rows(rng, 16)
+    arrays, positions = random_rows(rng, 16)
     failed = []
     for symm in range(8):
         try:
-            assert_batch_matches(finish(arrays, symm))
+            assert_batch_matches(finish(arrays, symm), positions, symm)
         except AssertionError:
             failed.append(symm)
     if wrong == "inverse":
@@ -288,7 +353,7 @@ def hand_slot(start, end):
 
 def hand_rows(count):
     """The arrays of `count` rows of the row made by hand, with 3 visits on (1, 0) to (4, 0) and 1 on a placement on
-    (0, 4)."""
+    (0, 4). Its next move's position is the same position, with the same visits and so the same mask."""
     arrays, _ = random_rows(np.random.default_rng(1), count, size=5)
     planes = np.zeros((3, 6, 6), dtype=np.uint8)
     planes[0, :5, :5] = 1
@@ -298,11 +363,12 @@ def hand_rows(count):
     arrays["policyTargetsNCMove"][:] = 0
     arrays["policyTargetsNCMove"][:, :, hand_slot((1, 0), (4, 0))] = 3
     arrays["policyTargetsNCMove"][:, :, hand_slot((0, 4), (0, 4))] = 1
+    arrays["globalTargetsNC"][:, 28] = 1.0
     arrays[LEGAL_MOVES_ARRAY][:] = 0
     for start, channel, end in HAND_MOVES:
         slot = (start[1] * 6 + start[0]) * 13 + channel
         assert slot == hand_slot(start, end)
-        arrays[LEGAL_MOVES_ARRAY][:, slot // 8] |= 128 >> (slot % 8)
+        arrays[LEGAL_MOVES_ARRAY][:, :, slot // 8] |= 128 >> (slot % 8)
     return arrays
 
 
@@ -320,24 +386,32 @@ def test_the_loader_maps_a_row_made_by_hand_at_each_symmetry(tmp_path, monkeypat
     target[hand_slot(image(1, 0), image(4, 0))] = 3
     target[hand_slot(image(0, 4), image(0, 4))] = 1
     for row in range(8):
-        assert np.array_equal(batch["legalMovesNMove"][row].numpy(), expected)
-        assert np.array_equal(batch["policyTargetsNCMove"][row, 0].numpy(), target)
+        for plane in range(2):
+            assert np.array_equal(batch["legalMovesNCMove"][row, plane].numpy(), expected)
+            assert np.array_equal(batch["policyTargetsNCMove"][row, plane].numpy(), target)
     # The 25 placements and 4 x (20 + 15 + 10) slides of a 5 x 5 board, in the corner where the board stands.
     static = slides_game.policy_mask(batch["binaryInputNCHW"][:, 0])
-    assert static.sum(dim=1).tolist() == [205] * 8 and not (batch["legalMovesNMove"] & ~static).any()
+    assert static.sum(dim=1).tolist() == [205] * 8
+    assert not (batch["legalMovesNCMove"] & ~static.unsqueeze(1)).any()
 
 
 def test_the_loader_gives_each_batch_its_own_mask_at_every_symmetry(tmp_path):
     rng = np.random.default_rng(17)
-    files = []
+    files, rows = [], []
     for number in range(3):
-        arrays, _ = random_rows(rng, 64)
+        arrays, positions = random_rows(rng, 64)
         files.append(write(tmp_path / f"rows{number}.npz", arrays))
-    seen = 0
+        rows.append((arrays, positions))
+    seen, drawn = 0, set()
     for batch in read(files, symmetries=True, batch_size=16):
-        assert_batch_matches(batch)
+        # The files' rows in order, 4 batches a file.
+        arrays, positions = rows[seen // 4]
+        part = slice(16 * (seen % 4), 16 * (seen % 4 + 1))
+        symm = symmetry_of(batch, arrays, part)
+        assert_batch_matches(batch, positions[part], symm)
+        drawn.add(symm)
         seen += 1
-    assert seen == 3 * 4
+    assert seen == 3 * 4 and len(drawn) > 2
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -350,11 +424,11 @@ def rows_file(tmp_path, change):
     return write(tmp_path / "rows.npz", arrays)
 
 
-def set_bit(packed, row, move, value):
+def set_bit(packed, row, move, value, plane=0):
     if value:
-        packed[row, move >> 3] |= 0x80 >> (move & 7)
+        packed[row, plane, move >> 3] |= 0x80 >> (move & 7)
     else:
-        packed[row, move >> 3] &= 0xFF ^ (0x80 >> (move & 7))
+        packed[row, plane, move >> 3] &= 0xFF ^ (0x80 >> (move & 7))
 
 
 def test_a_visited_move_outside_the_rows_mask_stops_the_loader_with_the_rows_name(tmp_path):
@@ -367,27 +441,38 @@ def test_a_visited_move_outside_the_rows_mask_stops_the_loader_with_the_rows_nam
         read([rows_file(tmp_path, change)])
 
 
-def test_a_legal_move_outside_the_static_mask_stops_the_loader_with_the_rows_name(tmp_path):
+def test_a_visit_of_the_next_move_outside_its_positions_mask_stops_the_loader_with_the_rows_name(tmp_path):
+    def change(arrays, positions):
+        visited = int(np.flatnonzero(arrays["policyTargetsNCMove"][6, 1])[0])
+        set_bit(arrays[LEGAL_MOVES_ARRAY], 6, visited, False, plane=1)
+
+    with pytest.raises(ValueError, match=r"rows\.npz, row 6 \(turn 16 of its game\) has visits of the next move "
+                                         r"outside the legal moves of its position"):
+        read([rows_file(tmp_path, change)])
+
+
+@pytest.mark.parametrize("plane, row, what", [
+    (0, 9, "a legal move"), (1, 8, "a legal move of its next move's position")])
+def test_a_legal_move_outside_the_static_mask_stops_the_loader_with_the_rows_name(tmp_path, plane, row, what):
     # A slide off the board: legal by no rule, so the static mask has not the slot.
     off_board = (0 * SIZE + 0) * CHANNELS + 1 + 4 * 0 + 1  # (0, 0) slides in -y
 
     def change(arrays, positions):
-        set_bit(arrays[LEGAL_MOVES_ARRAY], 9, off_board, True)
+        set_bit(arrays[LEGAL_MOVES_ARRAY], row, off_board, True, plane)
 
-    with pytest.raises(ValueError, match=r"rows\.npz, row 9 \(turn 19 of its game\) has a legal move outside the "
-                                         r"game's policy_mask: the move \d+ \(x 0, y 0, channel 2\)"):
+    with pytest.raises(ValueError, match=rf"rows\.npz, row {row} \(turn {row + 10} of its game\) has {what} outside "
+                                         r"the game's policy_mask: the move \d+ \(x 0, y 0, channel 2\)"):
         read([rows_file(tmp_path, change)])
 
 
 def test_a_visit_outside_the_static_mask_stops_the_loader_for_either_target(tmp_path):
     for channel, what in ((0, "has visits on a move outside"), (1, "has visits of the next move outside")):
         def change(arrays, positions, channel=channel):
-            # A slide that leaves the board at the corner, and (for the mover's) a legal bit of its own, so that the
+            # A slide that leaves the board at the corner, and a legal bit of its own in its target's plane, so that a
             # check of the static mask is the one that stops.
             move = (0 * SIZE + 0) * CHANNELS + 1 + 4 * 0 + 1
             arrays["policyTargetsNCMove"][3, channel, move] = 50
-            if channel == 0:
-                set_bit(arrays[LEGAL_MOVES_ARRAY], 3, move, True)
+            set_bit(arrays[LEGAL_MOVES_ARRAY], 3, move, True, plane=channel)
 
         with pytest.raises(ValueError, match=rf"row 3 \(turn 13 of its game\) (has a legal move|{what})"):
             read([rows_file(tmp_path, change)])
@@ -416,11 +501,14 @@ def test_the_targets_without_a_weight_are_not_visits(tmp_path):
 
 
 @pytest.mark.parametrize("change, what", [
-    (lambda packed: packed[:, :-1], r"uint8 of the shape \(16, 58\), not uint8 of \(16, 59\)"),
-    (lambda packed: np.concatenate([packed, packed[:, :1]], axis=1),
-     r"uint8 of the shape \(16, 60\), not uint8 of \(16, 59\)"),
-    (lambda packed: packed[:-1], r"uint8 of the shape \(15, 59\), not uint8 of \(16, 59\)"),
-    (lambda packed: packed.astype(np.int16), r"int16 of the shape \(16, 59\), not uint8"),
+    (lambda packed: packed[:, :, :-1], r"uint8 of the shape \(16, 2, 58\), not uint8 of \(16, 2, 59\)"),
+    (lambda packed: np.concatenate([packed, packed[:, :, :1]], axis=2),
+     r"uint8 of the shape \(16, 2, 60\), not uint8 of \(16, 2, 59\)"),
+    (lambda packed: packed[:-1], r"uint8 of the shape \(15, 2, 59\), not uint8 of \(16, 2, 59\)"),
+    (lambda packed: packed.astype(np.int16), r"int16 of the shape \(16, 2, 59\), not uint8"),
+    # One plane, as the rows of abscls-shfz.9 had it, and one plane of two.
+    (lambda packed: packed[:, 0], r"uint8 of the shape \(16, 59\), not uint8 of \(16, 2, 59\)"),
+    (lambda packed: packed[:, :1], r"uint8 of the shape \(16, 1, 59\), not uint8 of \(16, 2, 59\)"),
 ])
 def test_a_mask_of_a_wrong_size_stops_the_loader(tmp_path, change, what):
     def wrong(arrays, positions):
@@ -433,7 +521,7 @@ def test_a_mask_of_a_wrong_size_stops_the_loader(tmp_path, change, what):
 def test_the_rows_of_a_game_without_the_member_that_hold_the_array_stop_the_loader(tmp_path, monkeypatch):
     path = rows_file(tmp_path, lambda arrays, positions: None)
     monkeypatch.setattr(slides_game, "LEGAL_MOVES_IN_ROWS", False)
-    with pytest.raises(ValueError, match=r"rows\.npz: the rows hold legalMovesNMovePacked, and the trainer's module of "
+    with pytest.raises(ValueError, match=r"rows\.npz: the rows hold legalMovesNCMovePacked, and the trainer's module of "
                                          r"the game 'slides' does not give LEGAL_MOVES_IN_ROWS"):
         read([path])
 
@@ -442,8 +530,8 @@ def test_a_row_without_a_mask_is_read_with_0_bits_and_its_static_checks_stay(tmp
     arrays, _ = random_rows(np.random.default_rng(29), 16, with_mask=False)
     path = write(tmp_path / "old.npz", arrays)
     for batch in read([path]):
-        assert batch["legalMovesNMove"].dtype == torch.bool and not batch["legalMovesNMove"].any()
-        assert batch["legalMovesNMove"].shape == (8, MOVES)
+        assert batch["legalMovesNCMove"].dtype == torch.bool and not batch["legalMovesNCMove"].any()
+        assert batch["legalMovesNCMove"].shape == (8, 2, MOVES)
     arrays["policyTargetsNCMove"][2, 0, MOVES - 1] = 5  # a pass, which slides has in no position
     with pytest.raises(ValueError, match=r"row 2 \(turn 12 of its game\) has visits on a move outside the game's "
                                          r"policy_mask: the move 468 \(pass\)"):
@@ -495,12 +583,13 @@ def test_the_shuffle_of_a_window_of_both_kinds_gives_the_older_rows_no_mask(tmp_
     index = np.array(matched(rows, new + old))
     masks = np.concatenate([arrays[LEGAL_MOVES_ARRAY] for arrays in new])
     for row, source in enumerate(index):
-        expected = masks[source] if source < 40 else np.zeros(59, dtype=np.uint8)
+        expected = masks[source] if source < 40 else np.zeros((2, 59), dtype=np.uint8)
         assert np.array_equal(rows[LEGAL_MOVES_ARRAY][row], expected), (row, source)
-    # The loader reads it: the rows of the two kinds have their own masks, and the loss is finite.
+    # The loader reads it: the rows of the two kinds have their own masks. 8 of the 40 newer rows have no next move's
+    # policy target, and so no mask of its position.
     path = write(tmp_path / "window.npz", rows)
-    masks_seen = [batch["legalMovesNMove"].any(dim=1) for batch in read([path])]
-    assert torch.cat(masks_seen).sum().item() == 40
+    masks_seen = torch.cat([batch["legalMovesNCMove"].any(dim=2) for batch in read([path])])
+    assert masks_seen.sum(dim=0).tolist() == [40, 32]
 
 
 def test_the_shuffle_of_rows_without_the_array_has_none(tmp_path):
@@ -513,12 +602,15 @@ def test_the_shuffle_of_rows_without_the_array_has_none(tmp_path):
 
 def test_the_shuffle_refuses_masks_of_other_widths():
     targets = np.zeros((3, 80), dtype=np.float32)
-    wide, narrow = np.zeros((3, 60), dtype=np.uint8), np.zeros((3, 59), dtype=np.uint8)
-    with pytest.raises(ValueError, match=r"files of \[59, 60\] bytes of legal moves"):
+    wide, narrow = np.zeros((3, 2, 60), dtype=np.uint8), np.ones((3, 2, 59), dtype=np.uint8)
+    with pytest.raises(ValueError, match=r"files of \[\(2, 59\), \(2, 60\)\] planes and bytes of legal moves"):
         shuffle.fill_missing_legal_moves([wide, narrow], [targets, targets])
+    # The one plane of abscls-shfz.9's rows does not merge with the two either.
+    with pytest.raises(ValueError, match=r"files of \[\(2, 59\), \(59,\)\] planes and bytes of legal moves"):
+        shuffle.fill_missing_legal_moves([narrow[:, 0], narrow], [targets, targets])
     assert shuffle.fill_missing_legal_moves([None, None], [targets, targets]) is None
     filled = shuffle.fill_missing_legal_moves([None, narrow], [targets, targets])
-    assert [f.shape for f in filled] == [(3, 59), (3, 59)] and not filled[0].any()
+    assert [f.shape for f in filled] == [(3, 2, 59), (3, 2, 59)] and not filled[0].any() and filled[1].all()
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -538,14 +630,16 @@ def batch_of(arrays):
     return row_of(arrays, None)
 
 
-def cross_entropy(logits, target, mask):
+def cross_entropy(logits, target, mask, weight=None):
     """The mean-free sum over the rows of -target * log of the softmax over the slots of the mask, by another code than
-    the trainer's: log_softmax of the masked logits alone."""
+    the trainer's: log_softmax of the masked logits alone. A row of weight 0 (None: all 1) is left out."""
     total = torch.zeros([])
     for row in range(logits.shape[0]):
+        if weight is not None and weight[row] == 0:
+            continue
         kept = mask[row]
         log_probs = torch.log_softmax(logits[row][kept], dim=0)
-        total = total - (target[row][kept] * log_probs).sum()
+        total = total - (1.0 if weight is None else weight[row]) * (target[row][kept] * log_probs).sum()
     return total
 
 
@@ -555,10 +649,18 @@ def soft_target(target, floor_mask):
     return soft / soft.sum(dim=1, keepdim=True)
 
 
-def expected_losses(model, batch, floor_player):
+def floors(batch):
+    """The floors of the two soft targets as the rows give them: the mover's on plane 0 of the rows' masks, and the
+    static mask for a plane of 0 bits, the next mover's on the static mask."""
+    static = slides_game.policy_mask(batch["binaryInputNCHW"][:, 0])
+    legal = batch["legalMovesNCMove"]
+    return [torch.where(legal[:, 0].any(dim=1, keepdim=True), legal[:, 0], static), static]
+
+
+def expected_losses(model, batch, floor_player, floor_opponent):
     """The policy losses of the model on the batch (the sums, as the metrics give them) with a softmax on the static
-    mask of the board's size, and the soft target's floor of the mover on floor_player (booleans) and the next mover's
-    on the static mask."""
+    mask of the board's size, and the soft targets' floors on floor_player and floor_opponent (booleans). Each target
+    has its weight (C26, C28): the next mover's is 0 in a row without a next move's target."""
     with torch.no_grad():
         outputs = model(batch["binaryInputNCHW"], batch["globalInputNC"])
         logits = model.postprocess_output(outputs)[0][0]
@@ -566,16 +668,17 @@ def expected_losses(model, batch, floor_player):
     normalized = [batch["policyTargetsNCMove"][:, c] / batch["policyTargetsNCMove"][:, c].sum(dim=1, keepdim=True)
                   for c in range(2)]
     player, opponent = normalized
+    weight_player, weight_opponent = batch["globalTargetsNC"][:, 26], batch["globalTargetsNC"][:, 28]
     soft_player = soft_target(player, floor_player.float())
-    soft_opponent = soft_target(opponent, static.float())
+    soft_opponent = soft_target(opponent, floor_opponent.float())
     return {
-        "p0loss_sum": cross_entropy(logits[:, 0], player, static),
-        "p1loss_sum": 0.15 * cross_entropy(logits[:, 1], opponent, static),
-        "p0softloss_sum": cross_entropy(logits[:, 2], soft_player, static),
-        "p1softloss_sum": 0.15 * cross_entropy(logits[:, 3], soft_opponent, static),
+        "p0loss_sum": cross_entropy(logits[:, 0], player, static, weight_player),
+        "p1loss_sum": 0.15 * cross_entropy(logits[:, 1], opponent, static, weight_opponent),
+        "p0softloss_sum": cross_entropy(logits[:, 2], soft_player, static, weight_player),
+        "p1softloss_sum": 0.15 * cross_entropy(logits[:, 3], soft_opponent, static, weight_opponent),
         # The optimistic policies are off in these sums (no weight of the game's outcome): 0.5 of the mover's.
-        "p0lopt_sum": 0.5 * cross_entropy(logits[:, 4], player, static),
-        "p0sopt_sum": 0.5 * cross_entropy(logits[:, 5], player, static),
+        "p0lopt_sum": 0.5 * cross_entropy(logits[:, 4], player, static, weight_player),
+        "p0sopt_sum": 0.5 * cross_entropy(logits[:, 5], player, static, weight_player),
     }
 
 
@@ -600,34 +703,56 @@ def test_each_policy_loss_reads_its_softmax_and_floor_masks(model):
     arrays, _ = random_rows(np.random.default_rng(81), 24)
     batch = batch_of(arrays)
     sums = metric_sums(model, batch)
-    expected = expected_losses(model, batch, batch["legalMovesNMove"])
+    assert all(math.isfinite(v) for v in sums.values())
+    legal = batch["legalMovesNCMove"]
+    expected = expected_losses(model, batch, *floors(batch))
     for name in POLICY_LOSSES:
         assert sums[name] == pytest.approx(float(expected[name]), rel=2e-4), name
+    # The rows 4, 9, 14 and 19 have no next move's target: no mask of its position, and the weight 0.
     assert sums["lmrows_sum"] == 24.0
+    assert legal[:, 1].any(dim=1).tolist() == [row % NO_NEXT != NO_NEXT - 1 for row in range(24)]
 
 
 def test_the_floor_of_a_row_without_a_mask_is_the_static_mask(model):
     arrays, _ = random_rows(np.random.default_rng(82), 24)
     batch = batch_of(arrays)
-    batch["legalMovesNMove"][10:] = False  # older rows: no mask
+    batch["legalMovesNCMove"][10:] = False  # older rows: no mask
     sums = metric_sums(model, batch)
     static = slides_game.policy_mask(batch["binaryInputNCHW"][:, 0])
-    floor = torch.where(batch["legalMovesNMove"].any(dim=1, keepdim=True), batch["legalMovesNMove"], static)
-    expected = expected_losses(model, batch, floor)
+    floor_player, floor_opponent = floors(batch)
+    assert torch.equal(floor_opponent[10:], static[10:]) and torch.equal(floor_player[10:], static[10:])
+    expected = expected_losses(model, batch, floor_player, floor_opponent)
     for name in POLICY_LOSSES:
         assert sums[name] == pytest.approx(float(expected[name]), rel=2e-4), name
     assert sums["lmrows_sum"] == 10.0
-    # And the floor is not the legal moves of the other rows, which differs.
-    legal_everywhere = expected_losses(model, batch_of(arrays), batch_of(arrays)["legalMovesNMove"])
-    assert abs(float(legal_everywhere["p0softloss_sum"]) - sums["p0softloss_sum"]) > 1e-3
+    # And the floor is not the legal moves of the other rows, which differ.
+    legal_everywhere = expected_losses(model, batch_of(arrays), *floors(batch_of(arrays)))
+    for name in ("p0softloss_sum",):
+        assert abs(float(legal_everywhere[name]) - sums[name]) > 1e-3, name
+
+
+def test_a_row_without_a_next_moves_target_adds_nothing_to_the_next_movers_losses(model):
+    """Its target is uniform and its mask of 0 bits: its soft target is normalized on the static mask, so that no row
+    gives 0 / 0, and its weight is 0. The losses of the batch are those of its other rows."""
+    arrays, _ = random_rows(np.random.default_rng(83), 10)
+    batch = batch_of(arrays)
+    assert batch["globalTargetsNC"][:, 28].tolist() == [0.0 if row in (4, 9) else 1.0 for row in range(10)]
+    sums = metric_sums(model, batch)
+    assert all(math.isfinite(v) for v in sums.values())
+    kept = [row for row in range(10) if row not in (4, 9)]
+    part = {k: v[kept] for k, v in batch.items()}
+    part_sums = metric_sums(model, part)
+    for name in ("p1loss_sum", "p1softloss_sum"):
+        assert sums[name] == pytest.approx(part_sums[name], rel=1e-5), name
 
 
 def test_the_losses_of_a_row_made_by_hand(model):
-    """The row made by hand (33 legal moves, 205 static slots), with its mask and without it. Each output has the logit
-    ln 3 on one slot and 0 on the 468 others, so that its loss is ln(205 + 2) - ln 3 * (the target on that slot). For
-    the soft outputs the slot is a legal move without visits, whose target is the floor's share."""
+    """The row made by hand (33 legal moves, 205 static slots), with its masks and without them. Each output has the
+    logit ln 3 on one slot and 0 on the 468 others, so that its loss is ln(205 + 2) - ln 3 * (the target on that slot).
+    For the soft outputs the slot is a legal move without visits, whose target is the floor's share. The next move's
+    position is the same position, and the next mover's floor is on the static mask."""
     batch = batch_of(hand_rows(2))
-    batch["legalMovesNMove"][1] = False  # an older row: no mask
+    batch["legalMovesNCMove"][1] = False  # an older row: no mask
     unvisited, visited = hand_slot((1, 0), (1, 1)), hand_slot((1, 0), (4, 0))
     policy = torch.zeros(2, 6, MOVES)
     policy[:, [0, 1, 4, 5], visited] = math.log(3.0)
@@ -641,7 +766,8 @@ def test_the_losses_of_a_row_made_by_hand(model):
     visits = 0.75 ** 0.25 + 0.25 ** 0.25
     on_legal, on_static = per_slot / (visits + 31 * per_slot), per_slot / (visits + 203 * per_slot)
     expected = {"p0loss_sum": 2 * loss(0.75), "p1loss_sum": 0.15 * 2 * loss(0.75),
-                "p0softloss_sum": loss(on_legal) + loss(on_static), "p1softloss_sum": 0.15 * 2 * loss(on_static),
+                "p0softloss_sum": loss(on_legal) + loss(on_static),
+                "p1softloss_sum": 0.15 * 2 * loss(on_static),
                 "p0lopt_sum": 0.5 * 2 * loss(0.75), "p0sopt_sum": 0.5 * 2 * loss(0.75)}
     for name in POLICY_LOSSES:
         assert sums[name] == pytest.approx(expected[name], rel=1e-6), name
@@ -691,8 +817,8 @@ def test_the_value_of_a_game_without_the_members_is_katagos(model, monkeypatch):
     monkeypatch.setattr(slides_game, "LEGAL_MOVES_IN_ROWS", False)
     monkeypatch.setattr(slides_game, "policy_mask", None, raising=False)
     arrays, _ = random_rows(np.random.default_rng(85), 16, with_mask=False)
-    batch = row_of(dict(arrays, **{LEGAL_MOVES_ARRAY: np.zeros((16, 59), dtype=np.uint8)}), None)
-    del batch["legalMovesNMove"]
+    batch = row_of(dict(arrays, **{LEGAL_MOVES_ARRAY: np.zeros((16, 2, 59), dtype=np.uint8)}), None)
+    del batch["legalMovesNCMove"]
     with torch.no_grad():
         outputs = model(batch["binaryInputNCHW"], batch["globalInputNC"])
         logits = model.postprocess_output(outputs)[0][0]
