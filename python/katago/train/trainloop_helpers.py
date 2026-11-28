@@ -595,7 +595,8 @@ def release_cached_gpu_memory(device):
     GPU it does nothing. The trainer calls it at the end of each epoch, before its checkpoint's save: while it waits for
     new rows or for its turn, other CUDA processes can use the memory (the engine repository's
     pipeline/scripts/gpu_turn_guard.sh, which ends the turn at that save's line;
-    games/blueprints/docs/decisions/port.md, abscls-luzl.15).
+    games/blueprints/docs/decisions/port.md, abscls-luzl.15). The trainer's -keep-gpu-cache skips the call: the next
+    epoch's first file then allocates nothing again (abscls-zqkf, a test against the GPU driver resets).
     """
     if device.type != "cuda":
         return

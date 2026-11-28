@@ -140,6 +140,7 @@ if __name__ == "__main__":
     # KataGame fork (abscls-xrpd): the sleep before each subepoch, KataGo's 5 s by default, and the load ahead of the
     # next subepoch's first file.
     optional_args.add_argument('-sleep-seconds-per-subepoch', help='Sleep this long after the choice of each subepoch\'s files, before its training (default 5, KataGo\'s)', type=float, default=5.0, required=False)
+    optional_args.add_argument('-keep-gpu-cache', help='Keep the GPU memory that PyTorch caches at the end of each epoch (default: give it back to the driver before the save, release_cached_gpu_memory)', action='store_true', required=False)
     optional_args.add_argument('-data-prefetch-next-subepoch', help='Load the next subepoch\'s first file (with one subepoch an epoch, the next epoch\'s) while this subepoch\'s last files train, if no reload changes it (one GPU only)', required=False, action='store_true')
     optional_args.add_argument('-max-train-bucket-per-new-data', help='When data added, add this many train rows per data row to bucket', type=float, required=False)
     optional_args.add_argument('-max-train-bucket-size', help='Approx total number of train rows allowed if data stops', type=float, required=False)
@@ -436,6 +437,7 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
     max_training_samples = args["max_training_samples"]
     sleep_seconds_per_epoch = args["sleep_seconds_per_epoch"]
     sleep_seconds_per_subepoch = args["sleep_seconds_per_subepoch"]
+    keep_gpu_cache = args["keep_gpu_cache"]
     data_prefetch_next_subepoch = args["data_prefetch_next_subepoch"]
     max_train_bucket_per_new_data = args["max_train_bucket_per_new_data"]
     max_train_bucket_size = args["max_train_bucket_size"]
@@ -2206,7 +2208,10 @@ def _main_impl(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes
         # outputs and the gradients go first, so that the trainer waits with its weights and optimizer state only.
         batch = model_outputs = postprocessed = None
         optimizer.zero_grad(set_to_none=True)
-        trainloop_helpers.release_cached_gpu_memory(device)
+        # KataGame fork (abscls-zqkf): -keep-gpu-cache keeps the cache. A run with one trainer and self-play needs no
+        # memory back, and the next epoch's first file then allocates nothing again through WSL's GPU path.
+        if not keep_gpu_cache:
+            trainloop_helpers.release_cached_gpu_memory(device)
 
         # Finally save, now after validation and exports are done
         save(ddp_model, swa_model, optimizer, metrics_obj, running_metrics, train_state, last_val_metrics)
