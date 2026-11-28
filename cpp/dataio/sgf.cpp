@@ -2044,6 +2044,13 @@ void WriteSgf::writeSgf(
   out << "KM[" << rules.komi << "]";
   out << "RU[" << (tryNicerRulesString ? rules.toStringNoKomiMaybeNice() : rules.toStringNoKomi()) << "]";
   printGameResult(out,endHist,overrideFinishedWhiteScore);
+  //KataGame fork (abscls-shfz.44): the kind of ending that the rules gave, for a game that names its kinds
+  //(GameInterface: end_kind_name). The records of other games stay KataGo's.
+  if(endHist.isGameFinished) {
+    const string ending = GameInterface::endKindName<GameRules>(endHist.rulesEnd.kind);
+    if(!ending.empty())
+      out << "EN[" << ending << "]";
+  }
 
   bool hasAB = false;
   for(int y = 0; y<ySize; y++) {

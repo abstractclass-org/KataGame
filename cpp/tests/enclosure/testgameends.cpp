@@ -11,7 +11,8 @@
 // (tpsboard.h). Half of its random games prefer spreads, so that they reach the 50-ply rule.
 //
 // 1. The history (BoardHistory) at the end of random games, at several komis: the winner, the final score, isScored,
-//    isNoResult, the kind of ending and the SGF record's result, also after a second call of endAndScoreGameNow and in a
+//    isNoResult, the kind of ending and the SGF record's result and kind of ending (EN, Tak's alone), also after a
+//    second call of endAndScoreGameNow and in a
 //    history that starts at the end. And the same game stopped at each position before its end, as at the move cap:
 //    KataGo's rule, no kind, and never a no result.
 // 2. The evaluator: the no-result output is kept for a game with draws as a class. In every other game it is 0 under
@@ -34,6 +35,7 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -198,6 +200,16 @@ static void checkEnd(const BoardHistory& hist, const Expected& e, const string& 
           where + ": the record's result with another score");
   else if(noResult)
     check(WriteSgf::gameResultNoSgfTag(hist, 7.0) == "0", where + ": the record of a draw with another score");
+  //The whole record: Tak names its kind of ending after the result (end_kind_name). The records of the other games stay
+  //KataGo's, the test game's too: it has kinds and no names.
+  ostringstream record;
+  WriteSgf::writeSgf(record, "black", "white", hist, NULL, false, false);
+  static const char* TAK_ENDINGS[4] = {"road win", "flat win", "flat tie", "50-ply draw"};
+  if(TAK && e.kind >= 0 && e.kind < 4)
+    check(record.str().find("RE[" + expectedText + "]EN[" + TAK_ENDINGS[e.kind] + "]") != string::npos,
+          where + ": the record's kind of ending, in " + record.str().substr(0, 120));
+  else
+    check(record.str().find("EN[") == string::npos, where + ": a kind of ending in the record of another game");
 }
 
 static bool sameEnd(const BoardHistory& a, const BoardHistory& b) {

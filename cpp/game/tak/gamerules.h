@@ -533,6 +533,12 @@ struct GameRules {
     end.scored = p.end == FLATS;
     return end;
   }
+  // The name of each kind of ending in the records (EN[name] after the result): a flat tie and a 50-ply draw are both
+  // RE[0], and a road win and a flat win differ only by the score.
+  static const char* end_kind_name(int kind) {
+    static constexpr const char* NAMES[4] = {"road win", "flat win", "flat tie", "50-ply draw"};
+    return kind >= 0 && kind < 4 ? NAMES[kind] : nullptr;
+  }
   // The player's flats on top, so that KataGo's margin, score(p, 1) - score(p, 0) + komi, is Black's flat count
   // minus White's, plus komi.
   static double score(const Position& p, int player) { return popcount(flats(p, player)); }

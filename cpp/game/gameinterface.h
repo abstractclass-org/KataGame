@@ -146,6 +146,11 @@
  *                           gives no score. The front calls it for a terminal position only: a game that stops earlier
  *                           (self-play's move cap) keeps KataGo's rule. Tak gives it. Default: KataGo's rule, the sign
  *                           of the margin with komi, and no kind (gameEnd).
+ *   end_kind_name(kind)     const char*: the name of a kind of ending of game_end (0 and up), for the records: an SGF
+ *                           record of a game that the rules ended writes it after its result, as EN[name], so that a
+ *                           reader can tell apart the endings that one result covers (Tak's flat tie and its 50-ply
+ *                           draw are both RE[0]). nullptr or "" for a kind with no name. Default: no name, and the
+ *                           records stay KataGo's (endKindName).
  *   state_text(p), parse_state(text, p, why)
  *                           std::string, bool: the whole state that the network reads, as one line: the one-line
  *                           position and what it leaves out that the inputs read (input_hash: the earlier turns of the
@@ -541,6 +546,7 @@ namespace rules {
   GAMEINTERFACE_DETECT(HasViewAction, int,
                        G::view_action(std::declval<const P<G>&>(), 0, std::declval<const P<G>&>()))
   GAMEINTERFACE_DETECT(HasGameEnd, GameEnd, G::game_end(std::declval<const P<G>&>(), 0.0))
+  GAMEINTERFACE_DETECT(HasEndKindName, const char*, G::end_kind_name(0))
   GAMEINTERFACE_DETECT(HasStateText, std::string, G::state_text(std::declval<const P<G>&>()))
   GAMEINTERFACE_DETECT(HasParseState, bool,
                        G::parse_state(std::declval<const std::string&>(), std::declval<P<G>&>(),
@@ -865,6 +871,21 @@ template<class R> GameEnd gameEnd(const typename R::Position& p, double komi) {
     GameEnd end;
     end.result = margin > 0 ? -1 : margin < 0 ? 1 : 0;
     return end;
+  }
+}
+
+//The name of the kind of ending kind (GameEnd's kind) for the records: the game's (end_kind_name), else "", none. A
+//kind below 0 (no kind) has none.
+template<class R> std::string endKindName(int kind) {
+  if constexpr(rules::HasEndKindName<R>::value) {
+    if(kind < 0)
+      return "";
+    const char* name = R::end_kind_name(kind);
+    return name == nullptr ? "" : name;
+  }
+  else {
+    (void)kind;
+    return "";
   }
 }
 
