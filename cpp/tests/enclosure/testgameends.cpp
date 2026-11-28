@@ -315,6 +315,28 @@ static void checkUnscoredRecords() {
   }
 }
 
+static void checkRecordProperties() {
+  //The new property is accepted by the existing SGF and CompactSgf parsers. Their Go-coordinate move reader does
+  //not replay the protocol moves of the game's own records, so this checks EN on a Go-coordinate record.
+  for(const char* ending : {"road win", "flat win", "flat tie", "50-ply draw"}) {
+    const string record = "(;FF[4]SZ[" + to_string(NNPos::MAX_BOARD_LEN) + "]RE[0]EN[" + ending + "];B[aa])";
+    const auto parsed = CompactSgf::parse(record);
+    check(parsed->rootNode.getSingleProperty("EN") == ending && parsed->moves.size() == 1,
+          string("the SGF reader's ending property: ") + ending);
+  }
+  Board board;
+  BoardHistory hist(board, P_BLACK, Rules(), 0);
+  ostringstream unfinished;
+  WriteSgf::writeSgf(unfinished, "black", "white", hist, NULL, false, false);
+  check(unfinished.str().find("RE[") == string::npos && unfinished.str().find("EN[") == string::npos,
+        "an unfinished record has a result or a kind of ending");
+  hist.setWinnerByResignation(P_WHITE);
+  ostringstream resigned;
+  WriteSgf::writeSgf(resigned, "black", "white", hist, NULL, false, false);
+  check(resigned.str().find("RE[W+R]") != string::npos && resigned.str().find("EN[") == string::npos,
+        "a resignation's record lost its result or has a kind of ending");
+}
+
 static NNEvaluator* newEvaluator(Logger& logger) {
   ConfigParser cfg;
   cfg.overrideKey("onnxProvider", "cpu");
@@ -675,6 +697,10 @@ static void checkSelfplay(NNEvaluator* nnEval, Logger& logger, int games, Ends& 
       check(data->hitTurnLimit && !data->endHist.isGameFinished && !data->endHist.isNoResult &&
             data->endHist.rulesEnd.kind == -1, where + ": the game did not stop at the cap");
       check(!Rgsc::gameOutcome(data->endHist, data->hitTurnLimit).has_value(), where + ": RGSC has an outcome");
+      ostringstream record;
+      WriteSgf::writeSgf(record, data->bName, data->wName, data->endHist, data, false, true);
+      check(record.str().find("RE[") == string::npos && record.str().find("EN[") == string::npos,
+            where + ": a record at the move cap has a result or a kind of ending");
       const Board& end = data->endHist.getRecentBoard(0);
       //A position that the engine has not ended is not over by the test's own reading either (a late end).
       check(!TAK || expectedTakEnd(end, rules.komi).kind == -1, where + ": a position of Tak at the cap that is over");
@@ -770,6 +796,7 @@ int main() {
       check(historyEnds.counts.count(name) > 0, string("no game of the history's ended by ") + name);
 
   checkUnscoredRecords();
+  checkRecordProperties();
 
   Logger logger(nullptr, false, false, false);
   NNEvaluator* nnEval = newEvaluator(logger);
